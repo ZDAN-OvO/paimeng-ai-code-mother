@@ -34,8 +34,8 @@ const rules: readonly Rule[] = [
     advice: "Next 的路由播报节点也是 role=alert：收窄到 .ant-alert-error[role=\"alert\"] 或页面内作用域",
   },
   {
-    pattern: /(?:runtime\/evidence|\.agents\/skills\/verify-paimeng\/evidences\/|['\"`]evidences\/)/,
-    advice: "E2E 证据按日期写入 .agents/skills/verify-paimeng/evidences/<YY-MM-DD>/...；使用 tests/e2e/support/evidence.ts 的 evidenceDir/evidencePath",
+    pattern: /(?:runtime\/evidence|\.agents\/skills\/verify-paimeng|verify-paimeng-agent\/evidences|['\"`]evidences\/)/,
+    advice: "E2E 证据位置由 tests/e2e/support/evidence.ts 决定（默认 runtime/evidence，验证技能用 E2E_EVIDENCE_ROOT 改写）；spec 里只能用 evidenceDir/evidencePath，不要自己拼目录",
   },
 ];
 
