@@ -4,7 +4,7 @@ import { login, logout, register, requireUser, requireAdmin } from '@/server/aut
 import * as business from '@/server/business';
 import { generationAccounts } from '@/server/generation/generation-accounting';
 import { chatRuntime, generationStatus, harnessCancelGeneration, harnessCancelInput, harnessChatResponse, harnessSteerGeneration, harnessSubmitInput, loadMessages } from '@/server/generation/durable-engine';
-import { applyModelConfigNow, deleteModelAlias, deleteModelProvider, probeProviderModels, readModelAdminConfig, upsertModelAlias, upsertModelProvider } from '@/server/models/admin';
+import { applyModelConfigNow, createRegisteredProviderModel, deleteModelAlias, deleteModelProvider, probeProviderModels, readModelAdminConfig, updateRegisteredProviderModel, upsertModelAlias, upsertModelProvider } from '@/server/models/admin';
 import { grantCredits, reverseChargeByAdmin, userUsage } from '@/server/billing/admin';
 import { adminCreditOverview, searchAdminUsers } from '@/server/billing/overview';
 import { readQuotaPolicyAdmin, saveQuotaPolicy } from '@/server/billing/quota-policy';
@@ -89,6 +89,8 @@ async function dispatch(req:Request,context:{params:Promise<{path:string[]}>}){
    if(path==='model/admin/config')return success(await readModelAdminConfig(value));
    if(path==='model/admin/provider/upsert')return success(await upsertModelProvider(value));
    if(path==='model/admin/provider/models')return success(await probeProviderModels(value));
+   if(path==='model/admin/provider-model/create')return success(await createRegisteredProviderModel(value));
+   if(path==='model/admin/provider-model/update')return success(await updateRegisteredProviderModel(value));
    if(path==='model/admin/alias/upsert')return success(await upsertModelAlias(value));
    if(path==='model/admin/provider/delete')return success(await deleteModelProvider(value));
    if(path==='model/admin/alias/delete')return success(await deleteModelAlias(value));

@@ -382,6 +382,42 @@ export type ProviderModelUpdate = z.infer<typeof providerModelUpdateSchema>;
 
 export type ProviderModel = ProviderModelInput & { id: string; createTime: string; updateTime: string };
 
+/** 模型详情里的费率摘要：当前生效价、版本数与未来版本数；缺价时价格字段为 null。 */
+export const providerModelRateSummarySchema = z.strictObject({
+  effectiveFrom: z.string().nullable(),
+  creditInputMiss: z.number().int().nullable(),
+  creditInputHit: z.number().int().nullable(),
+  creditOutput: z.number().int().nullable(),
+  versions: z.number().int(),
+  future: z.number().int(),
+});
+export type ProviderModelRateSummary = z.infer<typeof providerModelRateSummarySchema>;
+
+/** 管理端模型视图：引用槽位与费率摘要由服务端组合，界面不再自己拼关系。 */
+export const providerModelViewSchema = providerModelInputSchema.extend({
+  id: providerModelIdSchema,
+  createTime: z.string(),
+  updateTime: z.string(),
+  slots: z.array(modelAliasNameSchema),
+  rate: providerModelRateSummarySchema,
+});
+export type ProviderModelView = z.infer<typeof providerModelViewSchema>;
+
+export const providerModelCreatePayloadSchema = z.strictObject({
+  model: providerModelInputSchema,
+  expectedRevision: decimalVersionSchema,
+  applyImmediately: z.boolean().optional(),
+});
+export type ProviderModelCreatePayload = z.infer<typeof providerModelCreatePayloadSchema>;
+
+export const providerModelUpdatePayloadSchema = z.strictObject({
+  id: providerModelIdSchema,
+  update: providerModelUpdateSchema,
+  expectedRevision: decimalVersionSchema,
+  applyImmediately: z.boolean().optional(),
+});
+export type ProviderModelUpdatePayload = z.infer<typeof providerModelUpdatePayloadSchema>;
+
 export type ModelConfigSnapshot = ModelConfigVersion & {
   providers: ModelProvider[];
   providerModels: ProviderModel[];
@@ -608,6 +644,7 @@ export type ModelAdminConfig = {
   refreshEpoch: string;
   initialized: boolean;
   providers: ModelProviderView[];
+  providerModels: ProviderModelView[];
   aliases: ModelAlias[];
   slots: readonly ModelSlot[];
   providerFormats: readonly ModelProviderFormatView[];
@@ -634,6 +671,7 @@ export const modelAdminConfigViewSchema = z.strictObject({
   refreshEpoch: decimalVersionSchema,
   initialized: z.boolean(),
   providers: z.array(modelProviderViewSchema),
+  providerModels: z.array(providerModelViewSchema),
   aliases: z.array(modelAliasViewSchema),
   slots: z.array(modelSlotViewSchema),
   providerFormats: z.array(modelProviderFormatViewSchema),

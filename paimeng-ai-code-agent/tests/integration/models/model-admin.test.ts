@@ -3,10 +3,10 @@ import { loadEnvFile } from 'node:process';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { testDatabaseUrl } from '../../support/test-database-url';
-import { eq } from 'drizzle-orm';
+import { eq, isNotNull } from 'drizzle-orm';
 import { POST } from '@/app/api/[...path]/route';
 import { db, getPool, now } from '@/server/infra/db';
-import { modelAliases, modelConfigState, modelProviders, providerModels, sessions, users } from '@/server/infra/schema';
+import { creditRateCard, modelAliases, modelConfigState, modelProviders, providerModels, sessions, users } from '@/server/infra/schema';
 import {
   modelConfigStateId,
   type ModelAdminConfig,
@@ -106,6 +106,7 @@ function aliasInput(overrides: Partial<ModelAliasInput> = {}): ModelAliasInput {
 
 async function resetDatabase() {
   await db().delete(modelAliases);
+  await db().delete(creditRateCard).where(isNotNull(creditRateCard.providerModelId));
   await db().delete(providerModels);
   await db().delete(modelProviders);
   await db()
@@ -150,6 +151,81 @@ describe('模型管理 API', () => {
     await getPool().end();
   });
 
+  it('管理端可登记/更新提供商模型，并带出引用槽位与费率摘要', async () => {
+    const before = (await json(await request('model/admin/config', {}, adminCookie))).data as ModelAdminConfig;
+    const existing = before.providerModels[0];
+    if (!existing) throw new Error('初始化未创建提供商模型');
+
+    const capabilities = { streaming: true, toolCalling: true, structuredOutput: true, imageInput: false };
+    const created = await request('model/admin/provider-model/create', {
+      model: {
+        providerId: 'env-default',
+        upstreamModelName: 'second-model',
+        displayName: '第二模型',
+        capabilities,
+        compatibility: { reasoningContentPassthrough: false },
+        enabled: true,
+      },
+      expectedRevision: before.revision,
+    }, adminCookie);
+    expect(created.status).toBe(200);
+    const createdData = (await json(created)).data as { id: string; revision: string };
+    expect(createdData.revision).toBe('2');
+
+    const duplicate = await request('model/admin/provider-model/create', {
+      model: {
+        providerId: 'env-default',
+        upstreamModelName: 'second-model',
+        displayName: '重复',
+        capabilities,
+        compatibility: { reasoningContentPassthrough: false },
+        enabled: true,
+      },
+      expectedRevision: '2',
+    }, adminCookie);
+    expect(duplicate.status).toBe(409);
+
+    const rate = await request('admin/billing/rate-card', {
+      providerModelId: createdData.id,
+      effectiveFrom: '2020-01-01 00:00:00.000',
+      creditInputMiss: 100,
+      creditInputHit: 10,
+      creditOutput: 400,
+    }, adminCookie);
+    expect(rate.status).toBe(200);
+
+    const afterRate = (await json(await request('model/admin/config', {}, adminCookie))).data as ModelAdminConfig;
+    expect(afterRate.providerModels.find(model => model.id === createdData.id)?.rate).toMatchObject({
+      versions: 1,
+      future: 0,
+      effectiveFrom: '2020-01-01 00:00:00.000',
+      creditInputMiss: 100,
+      creditInputHit: 10,
+      creditOutput: 400,
+    });
+
+    const updated = await request('model/admin/provider-model/update', {
+      id: createdData.id,
+      update: { displayName: '第二模型改名', capabilities, compatibility: { reasoningContentPassthrough: false }, enabled: true },
+      expectedRevision: afterRate.revision,
+    }, adminCookie);
+    expect(updated.status).toBe(200);
+    const afterUpdate = (await json(await request('model/admin/config', {}, adminCookie))).data as ModelAdminConfig;
+    expect(afterUpdate.providerModels.find(model => model.id === createdData.id)?.displayName).toBe('第二模型改名');
+
+    const disableReferenced = await request('model/admin/provider-model/update', {
+      id: existing.id,
+      update: {
+        displayName: existing.displayName,
+        capabilities: existing.capabilities,
+        compatibility: existing.compatibility,
+        enabled: false,
+      },
+      expectedRevision: afterUpdate.revision,
+    }, adminCookie);
+    expect(disableReferenced.status).toBe(409);
+  });
+
   it('未登录与普通用户都被拒绝，每个入口都要求管理员', async () => {
     expect((await request('model/admin/config', {})).status).toBe(401);
     expect((await request('model/admin/config', {}, memberCookie)).status).toBe(403);
@@ -158,6 +234,8 @@ describe('模型管理 API', () => {
     expect((await request('model/admin/provider/delete', { id: 'env-default', expectedRevision: '1' }, memberCookie)).status).toBe(403);
     expect((await request('model/admin/alias/delete', { alias: 'codegen.default', expectedRevision: '1' }, memberCookie)).status).toBe(403);
     expect((await request('model/admin/apply', { expectedRevision: '1' }, memberCookie)).status).toBe(403);
+    expect((await request('model/admin/provider-model/create', {}, memberCookie)).status).toBe(403);
+    expect((await request('model/admin/provider-model/update', {}, memberCookie)).status).toBe(403);
     const anonymousUpsert = await request('model/admin/provider/upsert', { provider: providerInput(), expectedRevision: '1' });
     expect(anonymousUpsert.status).toBe(401);
   });
@@ -190,6 +268,7 @@ describe('模型管理 API', () => {
       refreshEpoch: string;
       initialized: boolean;
       providers: { id: string; apiKeyEnv: string; apiKeyConfigured: boolean }[];
+      providerModels: { id: string; providerId: string; upstreamModelName: string; slots: string[]; rate: { versions: number; effectiveFrom: string | null } }[];
       aliases: { alias: string }[];
       slots: { slot: string; label: string; optional: boolean; requires: string[]; missingImpact: string }[];
       providerFormats: { value: string; label: string; optionKeys: string[] }[];
@@ -199,6 +278,13 @@ describe('模型管理 API', () => {
     expect(data).toMatchObject({ revision: '1', refreshEpoch: '0', initialized: true });
     expect(data.providers).toHaveLength(1);
     expect(data.providers[0]).toMatchObject({ id: 'env-default', apiKeyEnv: 'AI_API_KEY', apiKeyConfigured: true });
+    expect(data.providerModels).toHaveLength(1);
+    expect(data.providerModels[0]).toMatchObject({
+      providerId: 'env-default',
+      upstreamModelName: 'gpt-test-model',
+      slots: ['codegen.default', 'route.classify'],
+      rate: { versions: 0, effectiveFrom: null, creditInputMiss: null },
+    });
     expect(data.aliases.map(alias => alias.alias).sort()).toEqual(['codegen.default', 'route.classify']);
     expect(data.slots.map(slot => slot.slot)).toEqual(['codegen.default', 'route.classify', 'version.summary', 'speech.transcribe']);
     expect(data.slots.filter(slot => !slot.optional).map(slot => slot.slot)).toEqual(['codegen.default', 'route.classify']);

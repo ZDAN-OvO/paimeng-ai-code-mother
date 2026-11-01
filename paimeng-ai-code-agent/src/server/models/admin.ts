@@ -11,6 +11,8 @@ import {
   modelConfigApplySchema,
   modelProviderFormatViews,
   modelProviderDeleteSchema,
+  providerModelCreatePayloadSchema,
+  providerModelUpdatePayloadSchema,
   modelProviderProbeSchema,
   modelProviderUpsertSchema,
   modelSlots,
@@ -19,16 +21,20 @@ import {
   type ModelConfigPolicy,
   type ModelConfigVersion,
   type ModelProviderWriteInput,
+  type ProviderModelRateSummary,
   type ProviderModelsView,
 } from '@/shared/model-config';
+import { readRateCardList } from '../billing/rate-card';
 import { modelRegistry } from './registry';
 import { fetchProviderModels } from './probe';
 import { decryptModelSecret } from './secrets';
 import {
   applyModelConfig,
+  createProviderModel,
   deleteAlias,
   deleteProvider,
   readConfigSnapshot,
+  updateProviderModel,
   upsertAlias,
   upsertProvider,
 } from './store';
@@ -57,17 +63,50 @@ async function storageGuarded<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+function instantOf(timestamp: string): number {
+  return Date.parse(`${timestamp.replace(' ', 'T')}Z`);
+}
+
+function rateSummaryOf(modelId: string, rates: Awaited<ReturnType<typeof readRateCardList>>, nowMs: number): ProviderModelRateSummary {
+  const versions = rates.rates.filter(rate => rate.providerModelId === modelId);
+  const currentKey = rates.effectiveNow.find(item => item.providerModelId === modelId);
+  const current = currentKey ? versions.find(rate => rate.effectiveFrom === currentKey.effectiveFrom) ?? null : null;
+  return {
+    effectiveFrom: current?.effectiveFrom ?? null,
+    creditInputMiss: current?.creditInputMiss ?? null,
+    creditInputHit: current?.creditInputHit ?? null,
+    creditOutput: current?.creditOutput ?? null,
+    versions: versions.length,
+    future: versions.filter(rate => instantOf(rate.effectiveFrom) > nowMs).length,
+  };
+}
+
 export async function readModelAdminConfig(raw: unknown): Promise<ModelAdminConfig> {
   modelAdminConfigSchema.parse(raw);
   const config = getConfig();
   const snapshot = await storageGuarded(() => readConfigSnapshot());
+  const rates = await storageGuarded(() => readRateCardList());
+  const nowMs = Date.now();
   return {
     revision: snapshot.revision,
     refreshEpoch: snapshot.refreshEpoch,
-    initialized: snapshot.providers.length > 0 || snapshot.aliases.length > 0,
+    initialized: snapshot.providers.length > 0 || snapshot.providerModels.length > 0 || snapshot.aliases.length > 0,
     providers: snapshot.providers.map(provider =>
       toModelProviderView(provider, provider.apiKeySource === 'inline' || Boolean(process.env[provider.apiKeyEnv])),
     ),
+    providerModels: snapshot.providerModels.map(model => ({
+      id: model.id,
+      providerId: model.providerId,
+      upstreamModelName: model.upstreamModelName,
+      displayName: model.displayName,
+      capabilities: model.capabilities,
+      compatibility: model.compatibility,
+      enabled: model.enabled,
+      createTime: model.createTime,
+      updateTime: model.updateTime,
+      slots: snapshot.aliases.filter(alias => alias.providerModelId === model.id).map(alias => alias.alias),
+      rate: rateSummaryOf(model.id, rates, nowMs),
+    })),
     aliases: snapshot.aliases,
     slots: modelSlots,
     providerFormats: [...modelProviderFormatViews],
@@ -79,6 +118,22 @@ export async function readModelAdminConfig(raw: unknown): Promise<ModelAdminConf
 export async function upsertModelProvider(raw: unknown): Promise<ModelConfigVersion> {
   const payload = modelProviderUpsertSchema.parse(raw);
   return storageGuarded(() => upsertProvider(payload.provider, {
+    expectedRevision: payload.expectedRevision,
+    applyImmediately: payload.applyImmediately,
+  }));
+}
+
+export async function createRegisteredProviderModel(raw: unknown): Promise<ModelConfigVersion & { id: string }> {
+  const payload = providerModelCreatePayloadSchema.parse(raw);
+  return storageGuarded(() => createProviderModel(payload.model, {
+    expectedRevision: payload.expectedRevision,
+    applyImmediately: payload.applyImmediately,
+  }));
+}
+
+export async function updateRegisteredProviderModel(raw: unknown): Promise<ModelConfigVersion & { id: string }> {
+  const payload = providerModelUpdatePayloadSchema.parse(raw);
+  return storageGuarded(() => updateProviderModel(payload.id, payload.update, {
     expectedRevision: payload.expectedRevision,
     applyImmediately: payload.applyImmediately,
   }));
