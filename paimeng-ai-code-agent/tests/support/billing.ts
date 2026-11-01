@@ -129,7 +129,7 @@ export async function seedBillingGeneration(input: {
 
 /** 步骤行：默认一个正常的模型步骤；token 传 null 表示上游没给用量。 */
 export async function seedBillingStep(generationId: string, input: {
-  kind?: string; modelName: string; providerId?: string; upstreamModelId?: string | null;
+  kind?: string; modelName: string; providerId?: string; providerModelId?: string | null; upstreamModelId?: string | null;
   input?: number | null; cacheRead?: number | null; cacheWrite?: number | null; output?: number | null;
   reasoning?: number | null; round?: number; stepNumber?: number;
 }): Promise<void> {
@@ -139,6 +139,7 @@ export async function seedBillingStep(generationId: string, input: {
     round: input.round ?? 1,
     stepNumber: input.stepNumber ?? 0,
     providerId: input.providerId ?? billingRateProvider,
+    providerModelId: input.providerModelId ? BigInt(input.providerModelId) : null,
     modelName: input.modelName,
     upstreamModelId: input.upstreamModelId ?? null,
     inputTokens: input.input === undefined ? 0 : input.input,
@@ -153,7 +154,7 @@ export async function seedBillingStep(generationId: string, input: {
 
 /** 费率版本按 modelName 区分用例，避免相互影响；生效时间固定在 2020，早于任何步骤。 */
 export async function seedBillingRate(input: {
-  modelName: string; providerId?: string; creditInputMiss?: number; creditInputHit?: number; creditOutput?: number;
+  modelName: string; providerId?: string; providerModelId?: string | null; creditInputMiss?: number; creditInputHit?: number; creditOutput?: number;
   usdInputMiss?: string | null; usdInputHit?: string | null; usdOutput?: string | null;
 }): Promise<void> {
   const providerId = input.providerId ?? billingRateProvider;
@@ -161,6 +162,7 @@ export async function seedBillingRate(input: {
   await db().insert(creditRateCard).values({
     providerId,
     modelName: input.modelName,
+    providerModelId: input.providerModelId ? BigInt(input.providerModelId) : null,
     effectiveFrom: '2020-01-01 00:00:00.000',
     creditInputMiss: input.creditInputMiss ?? 600,
     creditInputHit: input.creditInputHit ?? 12,

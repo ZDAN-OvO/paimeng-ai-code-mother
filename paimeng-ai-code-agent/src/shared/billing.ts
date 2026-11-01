@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { idSchema, type GenerationStatus, type GenerationStopReason } from './contracts';
+import { providerModelIdSchema } from './model-config';
 
 /**
  * 计费共享契约（决策见 `docs/adr/0004-credit-billing.md`）：client 与 server 都要用的 DTO、zod schema 与展示标签。
@@ -72,35 +73,44 @@ const optionalText = (max: number) =>
     .nullish()
     .transform((value) => (value ? value : null));
 
+const rateCardFields = {
+  effectiveFrom: naiveTimestamp,
+  creditInputMiss: creditRate,
+  creditInputHit: creditRate,
+  creditOutput: creditRate,
+  usdInputMiss: optionalUsdRate,
+  usdInputHit: optionalUsdRate,
+  usdOutput: optionalUsdRate,
+  // 界面留空时送 null（「成本未知」），所以是 nullish 而不是 optional：optional 只接受 undefined。
+  costBasis: z
+    .enum(costBases, '成本口径只能是 peak / off-peak / unknown')
+    .nullish()
+    .transform((value) => value ?? null),
+  costSource: optionalText(512),
+  note: optionalText(2000),
+};
+
+const rateCardRefine = (value: { creditInputMiss: number; creditInputHit: number; creditOutput: number }) =>
+  value.creditInputMiss > 0 || value.creditInputHit > 0 || value.creditOutput > 0;
+
 export const rateCardInputSchema = z
-  .object({
-    providerId: z.string().trim().min(1, '提供商不能为空').max(64),
-    modelName: z.string().trim().min(1, '模型不能为空').max(256),
-    effectiveFrom: naiveTimestamp,
-    creditInputMiss: creditRate,
-    creditInputHit: creditRate,
-    creditOutput: creditRate,
-    usdInputMiss: optionalUsdRate,
-    usdInputHit: optionalUsdRate,
-    usdOutput: optionalUsdRate,
-    // 界面留空时送 null（「成本未知」），所以是 nullish 而不是 optional：optional 只接受 undefined。
-    costBasis: z
-      .enum(costBases, '成本口径只能是 peak / off-peak / unknown')
-      .nullish()
-      .transform((value) => value ?? null),
-    costSource: optionalText(512),
-    note: optionalText(2000),
-  })
-  .refine(
-    (value) => value.creditInputMiss > 0 || value.creditInputHit > 0 || value.creditOutput > 0,
-    '三个费率不能同时为 0：那会让这个模型的每次生成都收 0 Credit',
-  );
+  .union([
+    z.strictObject({ providerModelId: providerModelIdSchema, ...rateCardFields }),
+    // 过渡写法：P5 切换管理界面后删除。旧页面仍能追加历史费率和未关联模型的价格。
+    z.strictObject({
+      providerId: z.string().trim().min(1, '提供商不能为空').max(64),
+      modelName: z.string().trim().min(1, '模型不能为空').max(256),
+      ...rateCardFields,
+    }),
+  ])
+  .refine(rateCardRefine, '三个费率不能同时为 0：那会让这个模型的每次生成都收 0 Credit');
 
 export type RateCardInput = z.infer<typeof rateCardInputSchema>;
 
 export const rateCardViewSchema = z.object({
   providerId: z.string(),
   modelName: z.string(),
+  providerModelId: z.string().nullable(),
   effectiveFrom: z.string(),
   creditInputMiss: z.number().int(),
   creditInputHit: z.number().int(),
@@ -121,6 +131,8 @@ export type RateCardView = z.infer<typeof rateCardViewSchema>;
 export const rateCardVersionKeySchema = z.object({
   providerId: z.string(),
   modelName: z.string(),
+  /** 旧账单快照没有这个键；读取历史快照时允许缺省。 */
+  providerModelId: z.string().nullable().optional(),
   effectiveFrom: z.string(),
 });
 
@@ -535,6 +547,8 @@ export type UsageSnapshotStep = {
   /** `generation_step.id` 的字符串形式：补结算按它判断「这一步是否已经进过账」（93）。 */
   stepId: string | null;
   providerId: string | null;
+  /** 新步骤的稳定模型身份；旧快照没有该键。 */
+  providerModelId?: string | null;
   modelName: string | null;
   upstreamModelId: string | null;
   at: string;

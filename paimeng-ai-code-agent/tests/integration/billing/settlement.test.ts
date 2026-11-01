@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, like } from 'drizzle-orm';
 import {
   applyBillingMigrations, billingBalancesOf, billingRateProvider, billingRequest, createBillingUser, envelopeOf,
   grantBillingCredits,
@@ -11,11 +11,11 @@ import {
   withoutMonthlyQuota,
   type BillingTestUser,
 } from '../../support/billing';
-import { db, getPool } from '@/server/infra/db';
+import { db, getPool, now } from '@/server/infra/db';
 import {
   appAuthority, appPreviewPointers, apps, creditAccounts, creditCharges, creditEntries, creditGrants, creditQuotaAdjustments, creditQuotaIssues,
   generationDeliveries, generationExecutions, generationInputs, generationQuestions, generationSteps,
-  generationTransitions, generations, sessions, sourceSnapshots, users, versionRecords,
+  generationTransitions, generations, modelProviders, providerModels, sessions, sourceSnapshots, users, versionRecords,
 } from '@/server/infra/schema';
 import { effectiveCreditsOf, entriesOfCharge } from '@/server/billing/ledger';
 import { settleGenerationBilling } from '@/server/billing/settlement';
@@ -82,6 +82,8 @@ afterAll(async () => {
     await db().delete(users).where(inArray(users.id, ids));
   }
   await purgeBillingRateCards();
+  await db().delete(providerModels).where(like(providerModels.providerId, 'settlement_model_%'));
+  await db().delete(modelProviders).where(like(modelProviders.id, 'settlement_model_%'));
   for (const app of createdWorkspaces) {
     await purgeVersions(app).catch(() => undefined);
     await rm(workspace(app), { recursive: true, force: true }).catch(() => undefined);
@@ -191,6 +193,89 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     expect(charges[0].credits).toBe(60);
     expect(await entriesOfCharge(charges[0].generationId)).toHaveLength(1);
     expect(await balancesOf(owner.id)).toEqual({ quota: monthlyQuotaCredits + 1000 - 60, balance: 0 });
+  });
+
+  it('同名模型按各自 ID 定价，旧步骤仍按字符串解析', async () => {
+    const owner = await withoutMonthlyQuota(await newUser());
+    const providerA = 'settlement_model_a';
+    const providerB = 'settlement_model_b';
+    const modelA = '920000000000000001';
+    const modelB = '920000000000000002';
+    await db().delete(providerModels).where(like(providerModels.providerId, 'settlement_model_%'));
+    await db().delete(modelProviders).where(like(modelProviders.id, 'settlement_model_%'));
+    for (const [providerId, modelId] of [[providerA, modelA], [providerB, modelB]] as const) {
+      await db().insert(modelProviders).values({
+        id: providerId,
+        displayName: providerId,
+        apiFormat: 'openai-chat',
+        baseUrl: `https://${providerId}.example.test/v1`,
+        apiKeyEnv: 'AI_API_KEY',
+        options: {},
+        enabled: 1,
+        createTime: now(),
+        updateTime: now(),
+      });
+      await db().insert(providerModels).values({
+        id: BigInt(modelId),
+        providerId,
+        upstreamModelName: 'shared-model',
+        displayName: `${providerId} / shared-model`,
+        capabilities: { streaming: true, toolCalling: true, structuredOutput: false, imageInput: false },
+        compatibility: { reasoningContentPassthrough: false },
+        enabled: 1,
+        createTime: now(),
+        updateTime: now(),
+      });
+    }
+    await seedRate({ providerId: providerA, providerModelId: modelA, modelName: 'shared-model', creditInputMiss: 100 });
+    await seedRate({ providerId: providerB, providerModelId: modelB, modelName: 'shared-model', creditInputMiss: 900 });
+    await seedRate({ providerId: 'legacy-settlement-provider', modelName: 'shared-model', creditInputMiss: 500 });
+    await grant(owner.id, 'balance', 5_000);
+    const app = await newApp(owner);
+    const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
+    await seedStep(generationId, { providerId: providerA, providerModelId: modelA, modelName: 'shared-model', input: 1_000_000 });
+    await seedStep(generationId, { providerId: providerB, providerModelId: modelB, modelName: 'shared-model', input: 1_000_000 });
+    await seedStep(generationId, { providerId: 'legacy-settlement-provider', modelName: 'shared-model', input: 1_000_000 });
+
+    await settleGenerationBilling(generationId);
+    const [charge] = await chargeRows(generationId);
+    expect(charge).toMatchObject({ status: 'settled', credits: 1500 });
+    expect(charge?.usageSnapshot.map(step => step.rate?.providerModelId ?? null)).toEqual([modelA, modelB, null]);
+    expect(charge?.rateCardSnapshot.map(rate => rate.providerModelId ?? null).sort()).toEqual([modelA, modelB, null].sort());
+    expect(await balancesOf(owner.id)).toMatchObject({ balance: 3_500 });
+  });
+
+  it('旧快照没有模型 ID 时仍可补记晚到步骤', async () => {
+    const owner = await withoutMonthlyQuota(await newUser());
+    await seedRate({ providerId: 'legacy-snapshot-provider', modelName: 'legacy-snapshot-model', creditInputMiss: 600 });
+    await grant(owner.id, 'balance', 1_000);
+    const app = await newApp(owner);
+    const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
+    await seedStep(generationId, { providerId: 'legacy-snapshot-provider', modelName: 'legacy-snapshot-model', input: 100_000, stepNumber: 0 });
+    await settleGenerationBilling(generationId);
+
+    await getPool().query(
+      `UPDATE credit_charge
+          SET usage_snapshot = (SELECT jsonb_agg(elem - 'providerModelId') FROM jsonb_array_elements(usage_snapshot) elem),
+              rate_card_snapshot = (SELECT jsonb_agg(elem - 'providerModelId') FROM jsonb_array_elements(rate_card_snapshot) elem)
+        WHERE generation_id = $1`,
+      [generationId],
+    );
+    const [before] = await chargeRows(generationId);
+    expect(before?.usageSnapshot[0]).not.toHaveProperty('providerModelId');
+    expect(before?.rateCardSnapshot[0]).not.toHaveProperty('providerModelId');
+
+    await seedStep(generationId, { providerId: 'legacy-snapshot-provider', modelName: 'legacy-snapshot-model', input: 100_000, stepNumber: 1 });
+    await settleGenerationBilling(generationId);
+    const [after] = await chargeRows(generationId);
+    expect(after?.status).toBe('settled');
+    expect(after?.usageSnapshot).toHaveLength(2);
+    expect(after?.usageSnapshot[0]).not.toHaveProperty('providerModelId');
+    expect(after?.rateCardSnapshot[0]).not.toHaveProperty('providerModelId');
+    expect(after?.credits).toBeGreaterThan(before?.credits ?? 0);
+    expect(await entriesOfCharge(generationId)).toHaveLength(2);
+    await settleGenerationBilling(generationId);
+    expect(await entriesOfCharge(generationId)).toHaveLength(2);
   });
 
   it('只有 build 步骤的终态也写一条 0 Credit 的 charge，不写 entry', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveRate, SELL_UNIT, validateRateInput } from '@/server/billing/rate-card';
+import { resolveRate, resolveRateById, SELL_UNIT, validateRateInput } from '@/server/billing/rate-card';
 import { creditDenominationLabel, rateCardUnitLabel, type RateCardView } from '@/shared/billing';
 
 /** 只填费率解析关心的字段，其余按「成本未知」构造，避免每个用例重复 12 个字段。 */
@@ -7,6 +7,7 @@ function rate(providerId: string, modelName: string, effectiveFrom: string, cred
   return {
     providerId,
     modelName,
+    providerModelId: null,
     effectiveFrom,
     creditInputMiss,
     creditInputHit: 12,
@@ -60,6 +61,18 @@ describe('按步骤时刻解析费率', () => {
     expect(resolveRate(rates, 'env-default', null, '2026-10-15 00:00:00.000')).toBeNull();
   });
 
+  it('按模型 ID 解析；ID 不在表里时不回退到同名旧费率', () => {
+    const byId = { ...rate('primary', 'same-model', '2026-01-01 00:00:00.000', 100), providerModelId: '7001' };
+    const legacy = rate('primary', 'same-model', '2026-01-01 00:00:00.000', 900);
+    expect(resolveRateById([byId, legacy], '7001', '2026-02-01 00:00:00.000')?.creditInputMiss).toBe(100);
+    expect(resolveRateById([legacy], '7001', '2026-02-01 00:00:00.000')).toBeNull();
+    expect(resolveRateById([byId], null, '2026-02-01 00:00:00.000')).toBeNull();
+
+    const future = { ...rate('primary', 'same-model', '2026-06-01 00:00:00.000', 200), providerModelId: '7001' };
+    expect(resolveRateById([byId, future], '7001', '2026-03-01 00:00:00.000')?.creditInputMiss).toBe(100);
+    expect(resolveRateById([byId, future], '7001', '2026-07-01 00:00:00.000')?.creditInputMiss).toBe(200);
+  });
+
   it('空费率表返回未定价', () => {
     expect(resolveRate([], 'env-default', 'deepseek-flash', '2026-10-15 00:00:00.000')).toBeNull();
   });
@@ -90,6 +103,18 @@ describe('费率输入校验', () => {
       costSource: null,
       note: null,
     });
+  });
+
+  it('不能同时提交模型 ID 与旧提供商/模型名', () => {
+    expect(() => validateRateInput({
+      providerModelId: '7001',
+      providerId: 'primary',
+      modelName: 'same-model',
+      effectiveFrom: '2026-01-01 00:00:00.000',
+      creditInputMiss: 100,
+      creditInputHit: 10,
+      creditOutput: 400,
+    })).toThrow();
   });
 
   it('拒绝负费率', () => {

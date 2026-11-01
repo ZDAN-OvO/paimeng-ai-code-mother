@@ -1,5 +1,5 @@
 import 'server-only';
-import { asc, desc } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import {
   rateCardColumns,
   rateCardInputSchema,
@@ -10,7 +10,7 @@ import {
 } from '@/shared/billing';
 import { db, now, type Transaction } from '../infra/db';
 import { BusinessError } from '../infra/http';
-import { creditRateCard } from '../infra/schema';
+import { creditRateCard, providerModels } from '../infra/schema';
 
 /**
  * 费率表：读取、按时刻解析、管理员追加版本。
@@ -33,19 +33,13 @@ function instantOf(timestamp: string): number {
  * 取 `at` 时刻生效的版本：同一 (providerId, modelName) 里 `effective_from <= at` 的最新一条。
  * 未来版本不会提前生效；没有匹配返回 null。
  */
-export function resolveRate(
-  rates: readonly RateCardView[],
-  providerId: string | null,
-  modelName: string | null,
-  at: string,
-): RateCardView | null {
-  if (!providerId || !modelName) return null;
+function latestAt(rates: readonly RateCardView[], at: string, matches: (rate: RateCardView) => boolean): RateCardView | null {
   const atMs = instantOf(at);
   if (Number.isNaN(atMs)) return null;
   let matched: RateCardView | null = null;
   let matchedMs = Number.NEGATIVE_INFINITY;
   for (const rate of rates) {
-    if (rate.providerId !== providerId || rate.modelName !== modelName) continue;
+    if (!matches(rate)) continue;
     const effectiveMs = instantOf(rate.effectiveFrom);
     if (Number.isNaN(effectiveMs) || effectiveMs > atMs) continue;
     if (effectiveMs > matchedMs) {
@@ -54,6 +48,22 @@ export function resolveRate(
     }
   }
   return matched;
+}
+
+export function resolveRate(
+  rates: readonly RateCardView[],
+  providerId: string | null,
+  modelName: string | null,
+  at: string,
+): RateCardView | null {
+  if (!providerId || !modelName) return null;
+  return latestAt(rates, at, rate => rate.providerId === providerId && rate.modelName === modelName);
+}
+
+/** 新步骤只按稳定模型 ID 取价；ID 查不到就是待处理，不回退到响应名或当前槽位。 */
+export function resolveRateById(rates: readonly RateCardView[], providerModelId: string | null, at: string): RateCardView | null {
+  if (!providerModelId) return null;
+  return latestAt(rates, at, rate => rate.providerModelId === providerModelId);
 }
 
 /**
@@ -76,18 +86,22 @@ export async function readRateCardList(at: string = now()): Promise<RateCardList
   const rates = await readRates();
   const models = new Map<string, RateCardView[]>();
   for (const rate of rates) {
-    const key = `${rate.providerId}\u0000${rate.modelName}`;
+    const key = rate.providerModelId ? `model:${rate.providerModelId}` : `${rate.providerId}\u0000${rate.modelName}`;
     const group = models.get(key);
     if (group) group.push(rate);
     else models.set(key, [rate]);
   }
   const effectiveNow: RateCardList['effectiveNow'] = [];
   for (const group of models.values()) {
-    const current = resolveRate(group, group[0].providerId, group[0].modelName, at);
+    const first = group[0];
+    const current = first.providerModelId
+      ? resolveRateById(group, first.providerModelId, at)
+      : resolveRate(group, first.providerId, first.modelName, at);
     if (current) {
       effectiveNow.push({
         providerId: current.providerId,
         modelName: current.modelName,
+        providerModelId: current.providerModelId ?? null,
         effectiveFrom: current.effectiveFrom,
       });
     }
@@ -106,19 +120,49 @@ export function validateRateInput(input: unknown): RateCardInput {
  */
 export async function appendRate(input: unknown, createdBy: string): Promise<RateCardView> {
   const parsed = validateRateInput(input);
+  let identity: { providerId: string; modelName: string; providerModelId: string | null };
+  if ('providerModelId' in parsed) {
+    const [model] = await db().select().from(providerModels).where(eq(providerModels.id, BigInt(parsed.providerModelId))).limit(1);
+    if (!model) throw new BusinessError(404, 40400, `提供商模型 ${parsed.providerModelId} 不存在`);
+    identity = { providerId: model.providerId, modelName: model.upstreamModelName, providerModelId: parsed.providerModelId };
+  } else {
+    // 过渡写法：P5 切换管理界面后删除。已登记的模型只允许补历史价，避免同时维护两套当前价。
+    const [linked] = await db()
+      .select({ id: providerModels.id })
+      .from(providerModels)
+      .where(and(eq(providerModels.providerId, parsed.providerId), eq(providerModels.upstreamModelName, parsed.modelName)))
+      .limit(1);
+    if (linked && instantOf(parsed.effectiveFrom) >= Date.now()) {
+      throw new BusinessError(
+        409,
+        40900,
+        `提供商 ${parsed.providerId} 已登记请求模型 ${parsed.modelName}；追加当前或未来费率请使用模型 ID，历史补价请填过去的生效时间`,
+      );
+    }
+    identity = { providerId: parsed.providerId, modelName: parsed.modelName, providerModelId: null };
+  }
+  const fields = {
+    effectiveFrom: parsed.effectiveFrom,
+    creditInputMiss: parsed.creditInputMiss,
+    creditInputHit: parsed.creditInputHit,
+    creditOutput: parsed.creditOutput,
+    usdInputMiss: parsed.usdInputMiss,
+    usdInputHit: parsed.usdInputHit,
+    usdOutput: parsed.usdOutput,
+    costBasis: parsed.costBasis,
+    costSource: parsed.costSource,
+    note: parsed.note,
+  };
   try {
     const [row] = await db()
       .insert(creditRateCard)
-      .values({ ...parsed, createdBy: BigInt(createdBy), createTime: now() })
+      .values({ ...fields, providerId: identity.providerId, modelName: identity.modelName, providerModelId: identity.providerModelId === null ? null : BigInt(identity.providerModelId), createdBy: BigInt(createdBy), createTime: now() })
       .returning();
     return rateCardViewOf(row);
   } catch (error) {
     if (uniqueViolation(error)) {
-      throw new BusinessError(
-        409,
-        40900,
-        `${parsed.providerId} / ${parsed.modelName} 在 ${parsed.effectiveFrom} 已有一个版本；改价请填一个更晚的生效时间`,
-      );
+      const target = identity.providerModelId ? `提供商模型 ${identity.providerModelId}` : `${identity.providerId} / ${identity.modelName}`;
+      throw new BusinessError(409, 40900, `${target} 在 ${parsed.effectiveFrom} 已有一个版本；改价请填一个更晚的生效时间`);
     }
     throw error;
   }
@@ -141,6 +185,7 @@ function rateCardViewOf(row: typeof creditRateCard.$inferSelect): RateCardView {
   return {
     providerId: row.providerId,
     modelName: row.modelName,
+    providerModelId: row.providerModelId === null ? null : row.providerModelId.toString(),
     effectiveFrom: fixedMillis(row.effectiveFrom),
     creditInputMiss: row.creditInputMiss,
     creditInputHit: row.creditInputHit,

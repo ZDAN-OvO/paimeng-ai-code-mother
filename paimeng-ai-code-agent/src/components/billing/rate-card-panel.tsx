@@ -55,8 +55,8 @@ function utcNow(): string {
   return new Date().toISOString().slice(0, 23).replace('T', ' ');
 }
 
-function versionKey(rate: { providerId: string; modelName: string; effectiveFrom: string }): string {
-  return [rate.providerId, rate.modelName, rate.effectiveFrom].join('\u0000');
+function versionKey(rate: { providerId: string; modelName: string; providerModelId?: string | null; effectiveFrom: string }): string {
+  return [rate.providerModelId ?? '', rate.providerId, rate.modelName, rate.effectiveFrom].join('\u0000');
 }
 
 /** 空白的可选字段送 null，而不是空字符串：服务端把 null 读成「未知」。 */

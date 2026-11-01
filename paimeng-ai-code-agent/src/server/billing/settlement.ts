@@ -184,7 +184,7 @@ function pendingReasonOf(snapshot: readonly UsageSnapshotStep[]): string {
 function missingRateKeysOf(steps: readonly UsageSnapshotStep[]): string[] {
   return [...new Set(steps
     .filter(row => !row.priced)
-    .map(row => `${row.providerId ?? '—'}/${row.modelName ?? '—'}`))];
+    .map(row => row.providerModelId ? `model:${row.providerModelId}` : `${row.providerId ?? '—'}/${row.modelName ?? '—'}`))];
 }
 
 /**
@@ -203,7 +203,7 @@ function mergeSnapshot(existing: readonly UsageSnapshotStep[], incoming: readonl
 
 /** 费率快照同样只追加：新用到的版本补进去，旧步骤引用的历史版本不能被挤掉。 */
 function mergeRates(existing: readonly RateCardView[], incoming: readonly RateCardView[]): RateCardView[] {
-  const key = (rate: RateCardView) => `${rate.providerId}\u0000${rate.modelName}\u0000${rate.effectiveFrom}`;
+  const key = (rate: RateCardView) => `${rate.providerId}\u0000${rate.modelName}\u0000${rate.providerModelId ?? ''}\u0000${rate.effectiveFrom}`;
   const seen = new Set(existing.map(key));
   const merged = [...existing];
   for (const rate of incoming) {
@@ -395,6 +395,7 @@ function ratedStepOf(row: typeof generationSteps.$inferSelect, rates: readonly R
   const step: PricedStep = {
     stepId: String(row.id),
     providerId: row.providerId,
+    providerModelId: row.providerModelId === null ? null : String(row.providerModelId),
     modelName: row.modelName,
     upstreamModelId: row.upstreamModelId,
     at: row.createTime,

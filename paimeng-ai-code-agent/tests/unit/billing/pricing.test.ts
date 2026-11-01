@@ -13,6 +13,7 @@ function rate(providerId: string, modelName: string, overrides: Partial<RateCard
   return {
     providerId,
     modelName,
+    providerModelId: null,
     effectiveFrom: '2026-10-01 00:00:00.000',
     creditInputMiss: 600,
     creditInputHit: 12,
@@ -32,6 +33,7 @@ function rate(providerId: string, modelName: string, overrides: Partial<RateCard
 function step(overrides: Partial<PricedStep> = {}): PricedStep {
   return {
     stepId: null,
+    providerModelId: null,
     providerId: 'env-default',
     modelName: 'deepseek-flash',
     upstreamModelId: null,
@@ -204,6 +206,18 @@ describe('费率候选键', () => {
     // 别名没建费率时退回上游模型名（第 4 个候选）
     expect(resolveStepRate(rates, step({ providerId: 'deepseek#a1b2c3d4', modelName: 'alias-only', upstreamModelId: 'deepseek-flash-2026' })))
       .toMatchObject({ modelName: 'deepseek-flash-2026' });
+  });
+
+  it('有模型 ID 的步骤只按 ID 取价，查不到时待处理而不是回退字符串', () => {
+    const idRate = rate('primary', 'configured-model', { providerModelId: '7001', creditInputMiss: 111 });
+    const legacySameName = rate('primary', 'response-name', { creditInputMiss: 999 });
+    const linked = step({ providerModelId: '7001', providerId: 'primary', modelName: 'response-name', upstreamModelId: 'response-name', input: 1 });
+    expect(resolveStepRate([legacySameName], linked)).toBeNull();
+    expect(resolveStepRate([idRate, legacySameName], linked)).toMatchObject({ providerModelId: '7001', creditInputMiss: 111 });
+
+    const priced = priceSteps([{ step: linked, rate: idRate }]);
+    expect(priced.steps[0]).toMatchObject({ providerModelId: '7001', rate: { providerModelId: '7001' } });
+    expect(priced.rates).toEqual([idRate]);
   });
 
   it('每一步按自己的 create_time 解析当时有效的版本', () => {

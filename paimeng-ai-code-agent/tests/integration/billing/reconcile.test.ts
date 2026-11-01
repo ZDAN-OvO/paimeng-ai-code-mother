@@ -7,10 +7,10 @@ import {
   loadBillingDatabase, purgeBillingRateCards, seedBillingApp, seedBillingGeneration, seedBillingRate, seedBillingStep,
   type BillingTestUser,
 } from '../../support/billing';
-import { db, getPool, type Transaction } from '@/server/infra/db';
+import { db, getPool, now, type Transaction } from '@/server/infra/db';
 import * as schema from '@/server/infra/schema';
 import {
-  apps, creditAccounts, creditCharges, creditEntries, creditGrants, creditQuotaAdjustments, creditQuotaIssues, generationSteps, generations, sessions, users,
+  apps, creditAccounts, creditCharges, creditEntries, creditGrants, creditQuotaAdjustments, creditQuotaIssues, generationSteps, generations, modelProviders, providerModels, sessions, users,
 } from '@/server/infra/schema';
 import { effectiveCreditsOf, entriesOfCharge, rebuildAccount } from '@/server/billing/ledger';
 import { auditAccount, pendingSettlements, reconcileSettlements, settleGenerationBilling, settleGenerationBillingTx } from '@/server/billing/settlement';
@@ -53,6 +53,8 @@ afterAll(async () => {
     await db().delete(users).where(inArray(users.id, ids));
   }
   await purgeBillingRateCards();
+  await db().delete(providerModels).where(inArray(providerModels.providerId, ['reconcile_model_provider']));
+  await db().delete(modelProviders).where(inArray(modelProviders.id, ['reconcile_model_provider']));
   await getPool().end().catch(() => undefined);
 });
 
@@ -187,6 +189,50 @@ describe('对账扫描：待处理与后补', () => {
     expect(again.scanned).toBe(0);
     expect(await entriesOfCharge(generationId)).toHaveLength(1);
     expect(await totalCreditsOf(owner.id)).toBe(before - stepCredits);
+  });
+
+  it('按模型 ID 的步骤缺价时待处理，补价后只补一次', async () => {
+    const owner = await newUser();
+    await grant(owner.id, 'balance', 100);
+    const providerId = 'reconcile_model_provider';
+    const modelId = '930000000000000001';
+    await db().insert(modelProviders).values({
+      id: providerId,
+      displayName: providerId,
+      apiFormat: 'openai-chat',
+      baseUrl: `https://${providerId}.example.test/v1`,
+      apiKeyEnv: 'AI_API_KEY',
+      options: {},
+      enabled: 1,
+      createTime: now(),
+      updateTime: now(),
+    });
+    await db().insert(providerModels).values({
+      id: BigInt(modelId),
+      providerId,
+      upstreamModelName: 'reconcile-model-id',
+      displayName: '对账模型',
+      capabilities: { streaming: true, toolCalling: true, structuredOutput: false, imageInput: false },
+      compatibility: { reasoningContentPassthrough: false },
+      enabled: 1,
+      createTime: now(),
+      updateTime: now(),
+    });
+    const app = await newApp(owner);
+    const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
+    await seedStep(generationId, { providerId, providerModelId: modelId, modelName: 'reconcile-model-id', input: 100_000 });
+    await settleGenerationBilling(generationId);
+    expect(await chargeRows(generationId)).toMatchObject([{ status: 'unpriced', credits: 0 }]);
+
+    await seedRate({ providerId, providerModelId: modelId, modelName: 'reconcile-model-id' });
+    const retried = await reconcileSettlements({ userId: owner.id });
+    expect(retried.results[0]).toMatchObject({ generationId, outcome: 'retried' });
+    expect(await chargeRows(generationId)).toMatchObject([{ status: 'settled', credits: stepCredits }]);
+    expect(await entriesOfCharge(generationId)).toHaveLength(1);
+
+    const again = await reconcileSettlements({ userId: owner.id });
+    expect(again.scanned).toBe(0);
+    expect(await entriesOfCharge(generationId)).toHaveLength(1);
   });
 
   it('晚到的步骤只按差额补记一次，快照保留两步身份', async () => {

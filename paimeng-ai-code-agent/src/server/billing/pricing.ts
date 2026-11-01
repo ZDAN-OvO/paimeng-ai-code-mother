@@ -1,5 +1,5 @@
 import type { ChargeStatus, RateCardVersionKey, RateCardView, UsageSnapshotStep } from '@/shared/billing';
-import { resolveRate } from './rate-card';
+import { resolveRate, resolveRateById } from './rate-card';
 
 /**
  * 计价：`步骤用量 + 每步费率 → 整数 Credit + USD 成本`（折算单位与 3 倍 Markup 见
@@ -21,6 +21,8 @@ const usdRateScale = 1_000_000;
 export type PricedStep = {
   /** `generation_step.id`：补结算据此去重（93），同一行只计一次。 */
   stepId: string | null;
+  /** 新步骤的稳定模型身份；旧步骤为 null，走字符串兼容分支。 */
+  providerModelId: string | null;
   providerId: string | null;
   modelName: string | null;
   /** 上游实际服务的模型；别名查不到费率时它是最后一条回退键。 */
@@ -79,8 +81,12 @@ export function candidateRateKeys(
     candidates.findIndex(other => other.providerId === candidate.providerId && other.modelName === candidate.modelName) === index);
 }
 
-/** 按候选顺序取第一个命中的费率版本；全部未命中返回 null（该步骤待处理）。 */
+/**
+ * 新步骤只按模型 ID 取价，查不到就是待处理，不回退到响应名或当前槽位；
+ * 旧步骤保持原来的字符串候选顺序，作为明确的兼容分支。
+ */
 export function resolveStepRate(rates: readonly RateCardView[], step: PricedStep): RateCardView | null {
+  if (step.providerModelId !== null) return resolveRateById(rates, step.providerModelId, step.at);
   for (const key of candidateRateKeys(step)) {
     const matched = resolveRate(rates, key.providerId, key.modelName, step.at);
     if (matched) return matched;
@@ -196,11 +202,19 @@ function statusOf(input: { pricedSteps: number; unpricedSteps: number; estimated
 }
 
 function sameRateVersion(left: RateCardView, right: RateCardView): boolean {
-  return left.providerId === right.providerId && left.modelName === right.modelName && left.effectiveFrom === right.effectiveFrom;
+  return left.providerId === right.providerId
+    && left.modelName === right.modelName
+    && (left.providerModelId ?? null) === (right.providerModelId ?? null)
+    && left.effectiveFrom === right.effectiveFrom;
 }
 
 function rateKeyOf(rate: RateCardView): RateCardVersionKey {
-  return { providerId: rate.providerId, modelName: rate.modelName, effectiveFrom: rate.effectiveFrom };
+  return {
+    providerId: rate.providerId,
+    modelName: rate.modelName,
+    providerModelId: rate.providerModelId ?? null,
+    effectiveFrom: rate.effectiveFrom,
+  };
 }
 
 function snapshotOf(
@@ -215,6 +229,7 @@ function snapshotOf(
   return {
     stepId: step.stepId,
     providerId: step.providerId,
+    providerModelId: step.providerModelId,
     modelName: step.modelName,
     upstreamModelId: step.upstreamModelId,
     at: step.at,
