@@ -1,0 +1,355 @@
+{
+  "schemaVersion": 1,
+  "suite": "smoke",
+  "title": "冒烟：四种产物类型与一次追加",
+  "description": "最短路径覆盖 html、multi_file、vue_project、react_project、自动选择与 follow-up。用来确认测评管线本身可用，不用来比较模型强弱。",
+  "cases": [
+    {
+      "id": "smoke-01-html-portfolio",
+      "title": "原生 HTML 摄影作品集",
+      "difficulty": "easy",
+      "codeGenType": "html",
+      "templateId": "html",
+      "execution": "runner",
+      "tags": ["static", "gallery", "interaction"],
+      "prompt": "做一个摄影作品集单页：顶部是名字「林野」和一句介绍，下面 6 张作品卡片（用 CSS 渐变当图片，不要外链图片），点任意作品能展开看标题和拍摄地点。手机和电脑都要好看。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "打开预览首页",
+          "expect": "首屏能看到「林野」和一句个人介绍，页面只有一个主要标题层级"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "数页面上的作品卡片",
+          "expect": "正好 6 张作品卡片，每张有可见标题或编号，没有破图"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "点击第 2 张作品卡片",
+          "expect": "展开或显示出该作品的标题与拍摄地点；再次点击或点关闭能收起"
+        },
+        {
+          "id": "R4",
+          "evidence": "visual",
+          "action": "把视口设为 390×844 再打开页面",
+          "expect": "作品变成单列，无横向滚动，文字没有被卡片遮挡"
+        },
+        {
+          "id": "R5",
+          "evidence": "network",
+          "action": "查看页面加载期间的请求",
+          "expect": "没有图片来源的外部请求；页面资源全部来自预览站点自身"
+        },
+        {
+          "id": "R6",
+          "evidence": "source",
+          "action": "检查源码文件结构",
+          "expect": "除模板自带的 AGENTS.md 外，只有 index.html（可含 assets/），没有 package.json、构建配置或框架入口"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 8
+      },
+      "notes": "覆盖静态产物与简单点击交互。常见失败：6 张卡片全靠 JS 生成但脚本报错，导致空白。"
+    },
+    {
+      "id": "smoke-02-multi-event",
+      "title": "多文件读书会活动页",
+      "difficulty": "easy",
+      "codeGenType": "multi_file",
+      "templateId": "multi-file",
+      "execution": "runner",
+      "tags": ["static", "multi-file", "form"],
+      "prompt": "做一个社区读书会活动页：活动名「晚灯读书会」，时间 11 月 20 日 19:30，地点在城南图书馆三楼，下面是 4 项活动议程，最后有一个「我要报名」按钮，点了之后按钮变成「已报名」并显示一句确认。样式放 css/，脚本放 js/。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "打开预览首页",
+          "expect": "活动名、日期时间、地点三项信息完整可见，没有缺项或占位符"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "数活动议程条目",
+          "expect": "4 项议程，每项有一句可读说明"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "点击「我要报名」",
+          "expect": "按钮文字变为「已报名」，并出现一句确认文案"
+        },
+        {
+          "id": "R4",
+          "evidence": "runtime",
+          "action": "查看加载期间的失败请求与控制台",
+          "expect": "css/js 均成功加载，无 404、无脚本报错"
+        },
+        {
+          "id": "R5",
+          "evidence": "source",
+          "action": "检查源码目录",
+          "expect": "存在 index.html、css/ 与 js/，样式和脚本分文件，不是全部内联在 index.html"
+        },
+        {
+          "id": "R6",
+          "evidence": "visual",
+          "action": "390×844 视口查看",
+          "expect": "内容单列可读，报名按钮完整可见且可点"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 8
+      },
+      "notes": "覆盖多文件目录与相对路径。常见失败：css/js 用绝对路径 /css/...，在预览子路径下 404。"
+    },
+    {
+      "id": "smoke-03-vue-chores",
+      "title": "Vue 模板改成家务清单",
+      "difficulty": "medium",
+      "codeGenType": "vue_project",
+      "templateId": "vue-ts",
+      "execution": "runner",
+      "tags": ["vue", "crud", "persistence"],
+      "prompt": "把示例任务清单改成家务清单：预置 4 项家务，能添加新家务、勾选完成、删除；顶部显示还剩几项。刷新页面后数据还在。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "打开预览",
+          "expect": "初始正好 4 项家务，未完成数量与初始勾选状态一致"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "添加一项「擦窗」，再勾选它",
+          "expect": "新任务出现在列表中；勾选后剩余数量减 1"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "删除一项任务",
+          "expect": "该任务从列表消失，剩余数量同步更新"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "刷新页面",
+          "expect": "新增与删除的结果、勾选状态都保留"
+        },
+        {
+          "id": "R5",
+          "evidence": "source",
+          "action": "检查 package.json 与模板入口",
+          "expect": "依赖集合与模板一致，没有新增依赖；保留 src/main.ts 与模板 vite 配置"
+        },
+        {
+          "id": "R6",
+          "evidence": "runtime",
+          "action": "查看控制台",
+          "expect": "无 Vue 运行时警告或报错"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 10
+      },
+      "notes": "覆盖 Vue 模板与 localStorage。常见失败：改模板时破坏类型，或把 useTasks 的存储键换掉导致刷新丢数据。"
+    },
+    {
+      "id": "smoke-04-react-ledger",
+      "title": "React 记账小工具",
+      "difficulty": "medium",
+      "codeGenType": "react_project",
+      "templateId": "react-ts",
+      "execution": "runner",
+      "tags": ["react", "crud", "validation", "persistence"],
+      "prompt": "做一个记账小工具：输入说明和金额，记录一笔支出；列表显示所有支出和总额，可以删除单笔。金额为 0 或空时不能提交。刷新后数据还在，没有记录时显示「还没有记账」。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "记录一笔「午餐 32」",
+          "expect": "列表出现该笔支出，总额显示 32.00"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "再记录一笔「地铁 4」，然后删除「午餐」",
+          "expect": "删除后列表只剩地铁，总额变为 4.00"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "金额留空或填 0 后提交",
+          "expect": "不新增记录，并出现可见的校验提示"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "刷新页面",
+          "expect": "记录与总额保留"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "删除全部记录",
+          "expect": "显示「还没有记账」空状态，总额为 0.00"
+        },
+        {
+          "id": "R6",
+          "evidence": "source",
+          "action": "检查入口与依赖",
+          "expect": "仍使用 src/main.tsx 与模板依赖，没有新增依赖或另建 JS 工程"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 10
+      },
+      "notes": "覆盖 React 模板、受控表单与金额格式化。常见失败：删除后总额不更新，或金额用浮点直接显示 32 而不是 32.00。"
+    },
+    {
+      "id": "smoke-05-auto-coffee",
+      "title": "自动选择类型的咖啡杯数工具",
+      "difficulty": "easy",
+      "codeGenType": "auto",
+      "templateId": null,
+      "execution": "runner",
+      "tags": ["auto-routing", "mobile", "persistence"],
+      "prompt": "做一个咖啡店用的每日杯数记录小工具：手机上一只手就能点，点一下加一杯，显示今天总数和本周平均。刷新后今天的数据还在。不需要登录，也不要接后端。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "runtime",
+          "action": "创建后查看应用类型与预览",
+          "expect": "自动选择了一个合法产物类型，构建/预览成功，页面不是模板占位页"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "连续点主按钮 4 次",
+          "expect": "今日总数从 0 依次变为 1、2、3、4"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "查看本周平均",
+          "expect": "显示本周平均，且数值能和页面上可见的每日数据对上；如果只记录今天，要说明口径"
+        },
+        {
+          "id": "R4",
+          "evidence": "visual",
+          "action": "390×844 视口查看",
+          "expect": "主按钮在首屏内、高度不小于 44px，无横向滚动"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "刷新页面",
+          "expect": "今日总数与刷新前一致"
+        },
+        {
+          "id": "R6",
+          "evidence": "network",
+          "action": "查看加载与点击期间的请求",
+          "expect": "没有业务接口请求，功能完全在浏览器本地完成"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 8
+      },
+      "notes": "覆盖自动路由。自动选择只要求结果合法，不要求命中某个特定类型。"
+    },
+    {
+      "id": "smoke-06-html-followup",
+      "title": "HTML 首页追加推荐区块",
+      "difficulty": "easy",
+      "codeGenType": "html",
+      "templateId": "html",
+      "execution": "runner",
+      "tags": ["follow-up", "static", "regression"],
+      "prompt": "做一个咖啡店首页：店名「北窗咖啡」，招牌饮品 4 款带价格，写营业时间和地址，整体暖色调。",
+      "followUps": [
+        {
+          "kind": "follow-up",
+          "text": "加一个「本周推荐」区块，推荐其中 1 款饮品并写一句推荐理由；原来的 4 款饮品和营业信息都保留。"
+        }
+      ],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "打开首页",
+          "expect": "「北窗咖啡」、营业时间、地址三项可见"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "数招牌饮品",
+          "expect": "4 款饮品，每款有名称与价格"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "查看追加后的页面",
+          "expect": "出现「本周推荐」区块，推荐 1 款饮品并有一句具体理由"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "对比追加前后的内容",
+          "expect": "原来的 4 款饮品、营业时间、地址都还在，价格没有被改动"
+        },
+        {
+          "id": "R5",
+          "evidence": "visual",
+          "action": "追加后截图",
+          "expect": "整体仍是暖色系，新旧区块的字体与间距属于同一套版式"
+        },
+        {
+          "id": "R6",
+          "evidence": "network",
+          "action": "查看加载请求",
+          "expect": "无外部图片或字体请求"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 10
+      },
+      "notes": "覆盖 follow-up 增量修改与回归。常见失败：重写整页时丢掉原价格或营业时间。"
+    }
+  ]
+}
