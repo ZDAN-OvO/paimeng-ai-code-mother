@@ -183,7 +183,7 @@ DDL 和回填前备份，并记录库版本及迁移批次。回填事务失败�
 - P2 历史回填：回填工具见 [PR #126](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/126)；初始化创建提供商模型与槽位引用持久化见 [PR #128](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/128)。
 - P3 模型解析与运行身份：统一槽位解析、两条 Adapter、语音同源解析、步骤与运行描述写入模型 ID 见 [PR #129](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/129)。
 - P4 按身份定价：费率写入支持模型 ID、步骤 ID 优先取价、快照与补结算保留模型 ID 见 [PR #130](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/130)；旧字符串写入作为过渡保留。
-- P5 管理流程联动：后端读模型、登记/更新接口与界面已实现；模型/槽位/费率 E2E 13 passed，等待评审。
+- P5 管理流程联动：后端读模型与登记/更新接口见 [PR #131](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/131)，界面与 E2E 见 [PR #132](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/132)（13 passed）。
 - P6：未开始。
 
 ## 实施阶段与依赖
