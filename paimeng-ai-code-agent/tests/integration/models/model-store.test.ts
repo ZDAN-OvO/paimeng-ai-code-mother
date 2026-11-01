@@ -136,8 +136,18 @@ describe('模型配置存储', () => {
     expect(snapshot.providers).toHaveLength(1);
     expect(snapshot.providers[0]).toMatchObject({ id: 'env-default', baseUrl: 'https://api.example.test/v1', apiKeyEnv: 'AI_API_KEY', enabled: true });
     expect(snapshot.aliases.map(alias => alias.alias).sort()).toEqual(['codegen.default', 'route.classify']);
-    expect(snapshot.aliases.find(alias => alias.alias === 'codegen.default')?.capabilities).toEqual({ streaming: true, toolCalling: true, structuredOutput: false, imageInput: false });
-    expect(snapshot.aliases.find(alias => alias.alias === 'route.classify')?.capabilities).toEqual({ streaming: false, toolCalling: false, structuredOutput: true, imageInput: false });
+    const [initializedModel] = snapshot.providerModels;
+    expect(initializedModel).toMatchObject({
+      providerId: 'env-default',
+      upstreamModelName: 'gpt-test-model',
+      capabilities: { streaming: true, toolCalling: true, structuredOutput: true, imageInput: false },
+      compatibility: { reasoningContentPassthrough: false },
+      enabled: true,
+    });
+    for (const alias of snapshot.aliases) {
+      expect(alias.providerModelId).toBe(initializedModel?.id);
+      expect(alias.capabilities).toEqual(initializedModel?.capabilities);
+    }
 
     const second = await seedFromEnv();
     expect(second).toEqual({ initialized: false, revision: '1', refreshEpoch: '0', providerId: null });
@@ -209,13 +219,13 @@ describe('模型配置存储', () => {
 
   it('槽位要求的能力缺失时点名具体能力', async () => {
     await seedFromEnv();
-    await expect(upsertAlias(codegenAlias({ capabilities: { streaming: true, toolCalling: false, structuredOutput: false, imageInput: false } }), { expectedRevision: '1' }))
+    await expect(upsertAlias(codegenAlias({ providerModelId: null, capabilities: { streaming: true, toolCalling: false, structuredOutput: false, imageInput: false } }), { expectedRevision: '1' }))
       .rejects.toMatchObject({ status: 400, code: 40000, message: expect.stringContaining('工具调用') as unknown as string });
   });
 
   it('别名必须指向存在的提供商', async () => {
     await seedFromEnv();
-    await expect(upsertAlias(routeAlias({ providerId: 'ghost' }), { expectedRevision: '1' })).rejects.toMatchObject({ status: 400, code: 40000 });
+    await expect(upsertAlias(routeAlias({ providerModelId: null, providerId: 'ghost' }), { expectedRevision: '1' })).rejects.toMatchObject({ status: 400, code: 40000 });
     expect((await readConfigSnapshot()).providers).toHaveLength(1);
   });
 

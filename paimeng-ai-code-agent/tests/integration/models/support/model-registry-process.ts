@@ -1,7 +1,7 @@
 import { createInterface } from 'node:readline';
 import { getPool } from '@/server/infra/db';
 import { modelRegistry } from '@/server/models/registry';
-import { readConfigSnapshot, upsertAlias } from '@/server/models/store';
+import { createProviderModel, readConfigSnapshot, upsertAlias } from '@/server/models/store';
 import type { ModelAliasInput } from '@/shared/model-config';
 
 type Command =
@@ -27,15 +27,36 @@ async function handle(message: Command): Promise<Record<string, unknown>> {
       const snapshot = await readConfigSnapshot();
       const alias = snapshot.aliases.find(candidate => candidate.alias === 'codegen.default');
       if (!alias) throw new Error('缺少 codegen.default');
+      let revision = snapshot.revision;
+      let providerModelId = alias.providerModelId ?? null;
+      const current = snapshot.providerModels.find(model => model.id === providerModelId);
+      if (current?.upstreamModelName !== message.modelName) {
+        const existing = snapshot.providerModels.find(model => model.providerId === alias.providerId && model.upstreamModelName === message.modelName);
+        if (existing) {
+          providerModelId = existing.id;
+        } else {
+          const created = await createProviderModel({
+            providerId: alias.providerId,
+            upstreamModelName: message.modelName,
+            displayName: message.modelName,
+            capabilities: alias.capabilities,
+            compatibility: { reasoningContentPassthrough: false },
+            enabled: true,
+          }, { expectedRevision: revision });
+          providerModelId = created.id;
+          revision = created.revision;
+        }
+      }
       const input: ModelAliasInput = {
         alias: alias.alias,
+        providerModelId,
         providerId: alias.providerId,
         modelName: message.modelName,
         capabilities: alias.capabilities,
         settings: alias.settings,
         enabled: alias.enabled,
       };
-      const version = await upsertAlias(input, { expectedRevision: snapshot.revision, applyImmediately: message.applyImmediately });
+      const version = await upsertAlias(input, { expectedRevision: revision, applyImmediately: message.applyImmediately });
       return { ok: true, revision: version.revision, refreshEpoch: version.refreshEpoch };
     }
     case 'close':

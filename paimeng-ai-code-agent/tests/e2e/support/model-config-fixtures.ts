@@ -30,21 +30,45 @@ export async function seedModelConfig(client: pg.Client, baseUrl = 'https://api.
     "INSERT INTO model_provider (id, display_name, api_format, base_url, api_key_env, options, enabled, create_time, update_time) VALUES ($1,$2,$3,$4,$5,$6,$7,timezone('UTC', now()),timezone('UTC', now()))",
     ['env-default', '默认提供商', 'openai-chat', baseUrl, 'AI_API_KEY', JSON.stringify({}), 1],
   );
-  const aliasInsert =
-    "INSERT INTO model_alias (alias, provider_id, model_name, capabilities, settings, enabled, create_time, update_time) VALUES ($1,$2,$3,$4,$5,$6,timezone('UTC', now()),timezone('UTC', now()))";
-  await client.query(aliasInsert, [
-    'codegen.default',
+  const modelInsert =
+    "INSERT INTO provider_model (id, provider_id, upstream_model_name, display_name, capabilities, compatibility, enabled, create_time, update_time) VALUES ($1,$2,$3,$4,$5,$6,$7,timezone('UTC', now()),timezone('UTC', now()))";
+  const codegenModelId = '900000000000000001';
+  const routeModelId = '900000000000000002';
+  await client.query(modelInsert, [
+    codegenModelId,
     'env-default',
     'test-codegen-model',
-    JSON.stringify({ streaming: true, toolCalling: true, structuredOutput: false }),
+    '默认提供商 / test-codegen-model',
+    JSON.stringify({ streaming: true, toolCalling: true, structuredOutput: false, imageInput: false }),
+    JSON.stringify({}),
+    1,
+  ]);
+  await client.query(modelInsert, [
+    routeModelId,
+    'env-default',
+    'test-route-model',
+    '默认提供商 / test-route-model',
+    JSON.stringify({ streaming: false, toolCalling: false, structuredOutput: true, imageInput: false }),
+    JSON.stringify({}),
+    1,
+  ]);
+  const aliasInsert =
+    "INSERT INTO model_alias (alias, provider_model_id, provider_id, model_name, capabilities, settings, enabled, create_time, update_time) VALUES ($1,$2,$3,$4,$5,$6,$7,timezone('UTC', now()),timezone('UTC', now()))";
+  await client.query(aliasInsert, [
+    'codegen.default',
+    codegenModelId,
+    'env-default',
+    'test-codegen-model',
+    JSON.stringify({ streaming: true, toolCalling: true, structuredOutput: false, imageInput: false }),
     JSON.stringify({}),
     1,
   ]);
   await client.query(aliasInsert, [
     'route.classify',
+    routeModelId,
     'env-default',
     'test-route-model',
-    JSON.stringify({ streaming: false, toolCalling: false, structuredOutput: true }),
+    JSON.stringify({ streaming: false, toolCalling: false, structuredOutput: true, imageInput: false }),
     JSON.stringify({}),
     1,
   ]);

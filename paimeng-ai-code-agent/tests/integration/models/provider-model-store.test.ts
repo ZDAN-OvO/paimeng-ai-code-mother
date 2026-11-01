@@ -12,6 +12,7 @@ import {
   readConfigSnapshot,
   readProviderModels,
   updateProviderModel,
+  upsertAlias,
   upsertProvider,
 } from '@/server/models/store';
 
@@ -116,12 +117,13 @@ describe('提供商模型存储', () => {
     expect(b).toMatchObject({ revision: '5', refreshEpoch: '0' });
     const snapshot = await readConfigSnapshot();
     expect(snapshot.revision).toBe('5');
-    expect(snapshot.providerModels).toHaveLength(2);
-    expect(snapshot.providerModels.map(item => [item.id, item.providerId, item.upstreamModelName]).sort()).toEqual([
+    const createdModels = snapshot.providerModels.filter(item => item.providerId !== 'env-default');
+    expect(createdModels).toHaveLength(2);
+    expect(createdModels.map(item => [item.id, item.providerId, item.upstreamModelName]).sort()).toEqual([
       [a.id, 'provider-a', 'same-model'],
       [b.id, 'provider-b', 'same-model'],
     ]);
-    expect(await readProviderModels()).toHaveLength(2);
+    expect((await readProviderModels()).filter(item => item.providerId !== 'env-default')).toHaveLength(2);
   });
 
   it('同一提供商下仅大小写不同的请求名是两条身份', async () => {
@@ -131,7 +133,7 @@ describe('提供商模型存储', () => {
     const lower = await createProviderModel(model('primary', 'same-model'), { expectedRevision: '3' });
     expect(upper.id).not.toBe(lower.id);
     const snapshot = await readConfigSnapshot();
-    expect(snapshot.providerModels.map(item => item.upstreamModelName).sort()).toEqual(['Same-Model', 'same-model']);
+    expect(snapshot.providerModels.filter(item => item.providerId === 'primary').map(item => item.upstreamModelName).sort()).toEqual(['Same-Model', 'same-model']);
   });
 
   it('同一提供商重复请求名被拒绝，不改变版本或已有记录', async () => {
@@ -141,7 +143,7 @@ describe('提供商模型存储', () => {
     await expect(createProviderModel(model('primary'), { expectedRevision: '3' })).rejects.toMatchObject({ status: 409, code: 40904 });
     const snapshot = await readConfigSnapshot();
     expect(snapshot.revision).toBe('3');
-    expect(snapshot.providerModels).toHaveLength(1);
+    expect(snapshot.providerModels.filter(item => item.providerId === 'primary')).toHaveLength(1);
   });
 
   it('更新只改展示、能力与兼容声明，保留身份并遵守版本冲突', async () => {
@@ -194,7 +196,110 @@ describe('提供商模型存储', () => {
     }
     const snapshot = await readConfigSnapshot();
     expect(snapshot.revision).toBe('2');
-    expect(snapshot.providerModels).toHaveLength(1);
+    expect(snapshot.providerModels.filter(item => item.providerId === 'primary')).toHaveLength(1);
+  });
+
+  it('槽位带模型 ID 时从模型派生身份，省略 ID 保持链接，显式 null 解除', async () => {
+    await seedRequiredSlots();
+    const initial = await readConfigSnapshot();
+    const model = initial.providerModels.find(candidate => candidate.providerId === 'env-default');
+    if (!model) throw new Error('初始化未创建提供商模型');
+
+    const derived = await upsertAlias({
+      alias: 'codegen.default',
+      providerModelId: model.id,
+      providerId: 'ghost-provider',
+      modelName: 'ghost-model',
+      capabilities: { streaming: false, toolCalling: false, structuredOutput: false, imageInput: false },
+      settings: { temperature: 0.4 },
+      enabled: true,
+    }, { expectedRevision: '1' });
+    expect(derived).toMatchObject({ revision: '2' });
+    let alias = (await readConfigSnapshot()).aliases.find(candidate => candidate.alias === 'codegen.default');
+    expect(alias).toMatchObject({
+      providerModelId: model.id,
+      providerId: 'env-default',
+      modelName: 'gpt-test-model',
+      capabilities: model.capabilities,
+      settings: { temperature: 0.4 },
+    });
+
+    await upsertAlias({
+      alias: 'codegen.default',
+      providerId: 'env-default',
+      modelName: 'gpt-test-model',
+      capabilities: model.capabilities,
+      settings: { temperature: 0.2 },
+      enabled: true,
+    }, { expectedRevision: '2' });
+    alias = (await readConfigSnapshot()).aliases.find(candidate => candidate.alias === 'codegen.default');
+    expect(alias).toMatchObject({ providerModelId: model.id, settings: { temperature: 0.2 } });
+
+    await upsertAlias({
+      alias: 'codegen.default',
+      providerModelId: null,
+      providerId: 'env-default',
+      modelName: 'qpt-test-model',
+      capabilities: model.capabilities,
+      settings: {},
+      enabled: true,
+    }, { expectedRevision: '3' });
+    alias = (await readConfigSnapshot()).aliases.find(candidate => candidate.alias === 'codegen.default');
+    expect(alias?.providerModelId).toBeNull();
+    expect(alias?.modelName).toBe('qpt-test-model');
+  });
+
+  it('启用槽位引用模型时不能停用模型或移除必需能力', async () => {
+    await seedRequiredSlots();
+    const created = await createProviderModel({
+      providerId: 'env-default',
+      upstreamModelName: 'guarded-model',
+      displayName: '受保护模型',
+      capabilities,
+      compatibility: { reasoningContentPassthrough: false },
+      enabled: true,
+    }, { expectedRevision: '1' });
+    await upsertAlias({
+      alias: 'codegen.default',
+      providerModelId: created.id,
+      providerId: 'env-default',
+      modelName: 'guarded-model',
+      capabilities,
+      settings: {},
+      enabled: true,
+    }, { expectedRevision: '2' });
+
+    await expect(updateProviderModel(created.id, {
+      displayName: '受保护模型',
+      capabilities: { ...capabilities, toolCalling: false },
+      compatibility: { reasoningContentPassthrough: false },
+      enabled: true,
+    }, { expectedRevision: '3' })).rejects.toMatchObject({ status: 409, code: 40902, message: expect.stringContaining('工具调用') as unknown as string });
+
+    await expect(updateProviderModel(created.id, {
+      displayName: '受保护模型',
+      capabilities,
+      compatibility: { reasoningContentPassthrough: false },
+      enabled: false,
+    }, { expectedRevision: '3' })).rejects.toMatchObject({ status: 409, code: 40902 });
+
+    const initialModel = (await readConfigSnapshot()).providerModels.find(candidate => candidate.providerId === 'env-default');
+    if (!initialModel) throw new Error('初始化未创建提供商模型');
+    await upsertAlias({
+      alias: 'codegen.default',
+      providerModelId: initialModel.id,
+      providerId: 'env-default',
+      modelName: initialModel.upstreamModelName,
+      capabilities: initialModel.capabilities,
+      settings: {},
+      enabled: true,
+    }, { expectedRevision: '3' });
+    await expect(updateProviderModel(created.id, {
+      displayName: '受保护模型',
+      capabilities,
+      compatibility: { reasoningContentPassthrough: false },
+      enabled: false,
+    }, { expectedRevision: '4' })).resolves.toMatchObject({ id: created.id, revision: '5' });
   });
 
   it('未知提供商不能登记，停用的提供商也保留其已登记身份', async () => {
@@ -206,7 +311,7 @@ describe('提供商模型存储', () => {
     await createProviderModel(model('primary'), { expectedRevision: '2' });
     await upsertProvider({ ...provider('primary'), enabled: false }, { expectedRevision: '3' });
     const snapshot = await readConfigSnapshot();
-    expect(snapshot.providerModels).toHaveLength(1);
+    expect(snapshot.providerModels.filter(item => item.providerId === 'primary')).toHaveLength(1);
     expect(snapshot.revision).toBe('4');
   });
 

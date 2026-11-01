@@ -4,12 +4,14 @@ import { getConfig } from '../infra/config';
 import { db, now, type Transaction } from '../infra/db';
 import { BusinessError } from '../infra/http';
 import { modelAliases, modelConfigState, modelProviders, providerModels } from '../infra/schema';
-import { nextSnowflakeId } from '../infra/snowflake';
+import { nextSnowflakeId, nextSnowflakeIdInTransaction } from '../infra/snowflake';
 import {
   baseModelApiKeyEnv,
   capabilitiesForSlot,
   defaultModelProviderId,
+  missingSlotCapabilities,
   modelAliasInputSchema,
+  modelCapabilityLabels,
   modelConfigIssues,
   modelConfigStateId,
   modelProviderInputSchema,
@@ -120,6 +122,7 @@ function aliasFromRow(row: typeof modelAliases.$inferSelect): ModelAlias {
   return {
     ...modelAliasInputSchema.parse({
       alias: row.alias,
+      providerModelId: row.providerModelId === null ? null : row.providerModelId.toString(),
       providerId: row.providerId,
       modelName: row.modelName,
       capabilities: row.capabilities,
@@ -194,12 +197,42 @@ function assertValid(providers: readonly ModelProviderInput[], aliases: readonly
   if (issues.length) throw new BusinessError(400, 40000, issues.join('；'));
 }
 
+/**
+ * 槽位写入口径以模型为唯一身份：带 providerModelId 时，提供商、请求名与能力都从模型派生，
+ * 客户端另填的值不参与存储。过渡期不传 ID 的旧页面保留已有链接；显式 null 才解除。
+ */
+function normalizeAlias(mutation: ModelAliasInput, existing: ModelAlias | undefined, models: readonly ProviderModel[]): ModelAliasInput {
+  if (mutation.providerModelId === undefined) {
+    const linked = existing?.providerModelId ? models.find(candidate => candidate.id === existing.providerModelId) : undefined;
+    // 旧页面只送了同样的提供商/请求名：保留已有链接，继续以模型为身份。
+    if (linked && mutation.providerId === linked.providerId && mutation.modelName === linked.upstreamModelName) {
+      return { ...mutation, providerModelId: linked.id, capabilities: linked.capabilities };
+    }
+    // 旧页面把槽位改到另一家提供商/模型：按旧语义重新指向，并解除旧链接。
+    return { ...mutation, providerModelId: null };
+  }
+  const requested = mutation.providerModelId;
+  if (requested === null) return { ...mutation, providerModelId: null };
+  const model = models.find(candidate => candidate.id === requested);
+  if (!model) throw new BusinessError(404, 40400, `提供商模型 ${requested} 不存在`);
+  if (mutation.enabled && !model.enabled) {
+    throw new BusinessError(409, 40902, `提供商模型 ${requested} 已停用，启用中的槽位不能引用`);
+  }
+  return {
+    ...mutation,
+    providerModelId: model.id,
+    providerId: model.providerId,
+    modelName: model.upstreamModelName,
+    capabilities: model.capabilities,
+  };
+}
+
 function applyMutation(
   mutation: StoredModelConfigMutation,
   providers: readonly ModelProvider[],
   providerModelRows: readonly ProviderModel[],
   aliases: readonly ModelAlias[],
-) {
+): { providers: ModelProviderInput[]; providerModels: ProviderModel[]; aliases: ModelAliasInput[] } {
   switch (mutation.kind) {
     case 'upsertProvider': {
       const next: ModelProviderInput[] = providers.filter(provider => provider.id !== mutation.provider.id);
@@ -218,8 +251,9 @@ function applyMutation(
         const names = modelSlots.map(candidate => `${candidate.label}（${candidate.slot}）`).join('、');
         throw new BusinessError(400, 40000, `模型分配只有四个固定槽位：${names}，不能自建 ${mutation.alias.alias}`);
       }
+      const existing = aliases.find(alias => alias.alias === mutation.alias.alias);
       const next: ModelAliasInput[] = aliases.filter(alias => alias.alias !== mutation.alias.alias);
-      next.push(mutation.alias);
+      next.push(normalizeAlias(mutation.alias, existing, providerModelRows));
       return { providers: [...providers], providerModels: [...providerModelRows], aliases: next };
     }
     case 'deleteAlias': {
@@ -245,6 +279,18 @@ function applyMutation(
       const existing = providerModelRows.find(model => model.id === mutation.id);
       if (!existing) throw new BusinessError(404, 40400, '提供商模型不存在');
       const updated: ProviderModel = { ...existing, ...mutation.update, updateTime: now() };
+      const referencing = aliases.filter(alias => alias.providerModelId === mutation.id);
+      for (const alias of referencing) {
+        if (!alias.enabled) continue;
+        if (!updated.enabled) throw new BusinessError(409, 40902, `槽位 ${alias.alias} 仍在启用，不能停用提供商模型 ${mutation.id}`);
+        const slot = modelSlotOf(alias.alias);
+        if (!slot) continue;
+        const missing = missingSlotCapabilities(slot, updated.capabilities);
+        if (missing.length) {
+          const labels = missing.map(requirement => modelCapabilityLabels[requirement]).join('、');
+          throw new BusinessError(409, 40902, `槽位 ${alias.alias} 仍需要${labels}能力，不能从提供商模型 ${mutation.id} 移除`);
+        }
+      }
       return {
         providers: [...providers],
         providerModels: providerModelRows.map(model => (model.id === mutation.id ? updated : model)),
@@ -276,6 +322,7 @@ async function upsertProviderRow(tx: Transaction, provider: ModelProviderInput, 
 async function upsertAliasRow(tx: Transaction, alias: ModelAliasInput, existing: ModelAlias | undefined) {
   const set = {
     providerId: alias.providerId,
+    providerModelId: alias.providerModelId === undefined || alias.providerModelId === null ? null : BigInt(alias.providerModelId),
     modelName: alias.modelName,
     capabilities: alias.capabilities,
     settings: alias.settings,
@@ -291,6 +338,7 @@ async function persistMutation(
   providers: readonly ModelProvider[],
   aliases: readonly ModelAlias[],
   nextProviderModels: readonly ProviderModel[],
+  nextAliases: readonly ModelAliasInput[],
 ) {
   switch (mutation.kind) {
     case 'upsertProvider':
@@ -299,9 +347,12 @@ async function persistMutation(
     case 'deleteProvider':
       await tx.delete(modelProviders).where(eq(modelProviders.id, mutation.id));
       return;
-    case 'upsertAlias':
-      await upsertAliasRow(tx, mutation.alias, aliases.find(alias => alias.alias === mutation.alias.alias));
+    case 'upsertAlias': {
+      const alias = nextAliases.find(candidate => candidate.alias === mutation.alias.alias);
+      if (!alias) throw new Error('写入槽位后未在候选快照中找到该别名');
+      await upsertAliasRow(tx, alias, aliases.find(candidate => candidate.alias === mutation.alias.alias));
       return;
+    }
     case 'deleteAlias':
       await tx.delete(modelAliases).where(eq(modelAliases.alias, mutation.alias));
       return;
@@ -376,7 +427,7 @@ export async function writeModelConfig(write: ModelConfigWrite, mutation: ModelC
     const stored = storageMutation(mutation, providers);
     const next = applyMutation(stored, providers, providerModelRows, aliases);
     assertValid(next.providers, next.aliases);
-    await persistMutation(tx, stored, providers, aliases, next.providerModels);
+    await persistMutation(tx, stored, providers, aliases, next.providerModels, next.aliases);
     const revision = state.revision + 1n;
     const refreshEpoch = write.applyImmediately ? state.refreshEpoch + 1n : state.refreshEpoch;
     await tx.update(modelConfigState).set({ revision, refreshEpoch, updateTime: now() }).where(eq(modelConfigState.id, modelConfigStateId));
@@ -464,16 +515,49 @@ export async function initializeModelConfigFromEnv(): Promise<ModelInitializatio
       options: {},
       enabled: true,
     });
-    const aliasesToCreate = modelSlots.filter(slot => !slot.optional).map(slot => modelAliasInputSchema.parse({
+    const requiredSlots = modelSlots.filter(slot => !slot.optional);
+    // 一个模型要同时满足所有必需槽位：能力取各槽位要求的并集，与旧初始化按槽位推断的语义一致。
+    const capabilities = requiredSlots.reduce((merged, slot) => {
+      const required = capabilitiesForSlot(slot);
+      return {
+        streaming: merged.streaming || required.streaming,
+        toolCalling: merged.toolCalling || required.toolCalling,
+        structuredOutput: merged.structuredOutput || required.structuredOutput,
+        imageInput: merged.imageInput || required.imageInput,
+      };
+    }, { streaming: false, toolCalling: false, structuredOutput: false, imageInput: false });
+    const modelInput = providerModelInputSchema.parse({
+      providerId: defaultModelProviderId,
+      upstreamModelName: config.aiModel,
+      displayName: `环境默认提供商 / ${config.aiModel}`.slice(0, 128),
+      capabilities,
+      compatibility: { reasoningContentPassthrough: false },
+      enabled: true,
+    });
+    const providerModelId = await nextSnowflakeIdInTransaction(tx);
+    const aliasesToCreate = requiredSlots.map(slot => modelAliasInputSchema.parse({
       alias: slot.slot,
+      providerModelId: providerModelId.toString(),
       providerId: defaultModelProviderId,
       modelName: config.aiModel,
-      capabilities: capabilitiesForSlot(slot),
+      capabilities,
       settings: {},
       enabled: true,
     }));
     assertValid([provider], aliasesToCreate);
     await upsertProviderRow(tx, provider, undefined);
+    const timestamp = now();
+    await tx.insert(providerModels).values({
+      id: providerModelId,
+      providerId: modelInput.providerId,
+      upstreamModelName: modelInput.upstreamModelName,
+      displayName: modelInput.displayName,
+      capabilities: modelInput.capabilities,
+      compatibility: modelInput.compatibility,
+      enabled: modelInput.enabled ? 1 : 0,
+      createTime: timestamp,
+      updateTime: timestamp,
+    });
     for (const alias of aliasesToCreate) await upsertAliasRow(tx, alias, undefined);
     const revision = state.revision + 1n;
     await tx.update(modelConfigState).set({ revision, updateTime: now() }).where(eq(modelConfigState.id, modelConfigStateId));

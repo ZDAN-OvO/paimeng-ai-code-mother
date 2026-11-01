@@ -349,7 +349,7 @@ describe('模型管理 API', () => {
     expect(disabledProvider.status).toBe(400);
 
     const ghostProvider = await request('model/admin/alias/upsert', {
-      alias: aliasInput({ alias: 'route.classify', providerId: 'ghost', capabilities: { streaming: false, toolCalling: false, structuredOutput: true, imageInput: false } }),
+      alias: aliasInput({ alias: 'version.summary', providerId: 'ghost', capabilities: { streaming: false, toolCalling: false, structuredOutput: true, imageInput: false } }),
       expectedRevision: '1',
     }, adminCookie);
     expect(ghostProvider.status).toBe(400);

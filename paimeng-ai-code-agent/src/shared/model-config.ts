@@ -328,8 +328,15 @@ export const aliasSettingsSchema = z.strictObject({
 }).default({});
 export type ModelAliasSettings = z.infer<typeof aliasSettingsSchema>;
 
+export const providerModelIdSchema = z
+  .string()
+  .regex(/^[1-9][0-9]*$/, '模型 ID 必须是十进制字符串')
+  .refine(value => /^[1-9][0-9]*$/.test(value) && BigInt(value) <= 9223372036854775807n, '模型 ID 超出范围');
+
 export const modelAliasInputSchema = z.strictObject({
   alias: modelAliasNameSchema,
+  /** 目标提供商模型；过渡期可省略（旧页面），省略时保留已有链接，显式 null 表示解除。 */
+  providerModelId: providerModelIdSchema.nullable().optional(),
   providerId: modelProviderIdSchema,
   modelName: z.string().min(1).max(256),
   capabilities: aliasCapabilitiesSchema,
@@ -344,10 +351,6 @@ export type ModelAlias = ModelAliasInput & { createTime: string; updateTime: str
  * 槽位、费率与运行用量都引用这条记录，所以即使不同提供商使用同名模型也互不影响；
  * providerId 与 upstreamModelName 创建后不可变，离线登记走后端发号。
  */
-export const providerModelIdSchema = z
-  .string()
-  .regex(/^[1-9][0-9]*$/, '模型 ID 必须是十进制字符串')
-  .refine(value => /^[1-9][0-9]*$/.test(value) && BigInt(value) <= 9223372036854775807n, '模型 ID 超出范围');
 export const providerModelUpstreamNameSchema = z.string().min(1).max(256);
 export const providerModelDisplayNameSchema = z.string().min(1).max(128);
 
