@@ -181,7 +181,7 @@ DDL 和回填前备份，并记录库版本及迁移批次。回填事务失败�
 
 - P1 契约与存储：已实现（`provider_model`、三个可空引用列、存储读写与测试），见 [PR #122](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/122)。
 - P2 历史回填：回填工具见 [PR #126](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/126)；初始化创建提供商模型与槽位引用持久化见 [PR #128](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/128)。
-- P3 模型解析与运行身份：统一槽位解析、两条 Adapter、语音同源解析、步骤与运行描述写入模型 ID 已实现，等待评审。
+- P3 模型解析与运行身份：统一槽位解析、两条 Adapter、语音同源解析、步骤与运行描述写入模型 ID 见 [PR #129](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/129)。
 - P4–P6：未开始。
 
 ## 实施阶段与依赖
