@@ -5,7 +5,7 @@ import { generateText, Output, streamText, tool } from 'ai';
 import { z } from 'zod';
 import { buildAliasModels, type AliasModel, type AliasModels } from '@/server/models/adapters';
 import { encryptModelSecret } from '@/server/models/secrets';
-import type { ModelAlias, ModelProvider } from '@/shared/model-config';
+import type { ModelAlias, ModelProvider, ProviderModel } from '@/shared/model-config';
 
 type CapturedRequest = {
   path: string;
@@ -155,6 +155,31 @@ afterEach(() => {
 });
 
 describe('buildAliasModels', () => {
+  it('链接提供商模型时使用模型请求名与能力，并暴露模型 ID', () => {
+    process.env.AI_API_KEY = 'local-secret';
+    const linked: ProviderModel = {
+      id: '7001',
+      providerId: 'local-provider',
+      upstreamModelName: 'upstream-linked-model',
+      displayName: '本地测试提供商 / upstream-linked-model',
+      capabilities: { streaming: true, toolCalling: true, structuredOutput: true, imageInput: true },
+      compatibility: { reasoningContentPassthrough: false },
+      enabled: true,
+      createTime: '',
+      updateTime: '',
+    };
+    const models = buildAliasModels(
+      [{ ...providerFixture, baseUrl }],
+      [aliasFixture({ providerModelId: '7001', modelName: 'upstream-linked-model', capabilities: { streaming: false, toolCalling: false, structuredOutput: false, imageInput: false } })],
+      ['codegen.default'],
+      [linked],
+    );
+    const binding = bindingOf(models, 'codegen.default');
+    expect(binding.modelName).toBe('upstream-linked-model');
+    expect(binding.providerModelId).toBe('7001');
+    expect(binding.capabilities).toEqual(linked.capabilities);
+  });
+
   it('把模型名、密钥与别名设置发到本地端点，并返回文本', async () => {
     process.env.AI_API_KEY = 'local-secret';
     respond = (_body, reply) => replyJson(reply, completion({ role: 'assistant', content: '你好' }));
@@ -381,7 +406,7 @@ describe('buildAliasModels', () => {
 
   it('非必需别名构建失败只记录原因，必需别名仍然失败关闭', () => {
     process.env.AI_API_KEY = 'local-secret';
-    const optionalAlias: ModelAlias = { ...aliasFixture({ alias: 'memory.summarize' }), providerId: 'summary-only' };
+    const optionalAlias: ModelAlias = { ...aliasFixture({ alias: 'version.summary' }), providerId: 'summary-only' };
     const brokenProvider: ModelProvider = {
       id: 'summary-only', displayName: '摘要专用', apiFormat: 'openai-chat', baseUrl,
       apiKeySource: 'inline', apiKeyCiphertext: 'not-a-ciphertext', options: {}, enabled: true, createTime: '', updateTime: '',
@@ -389,8 +414,8 @@ describe('buildAliasModels', () => {
     const models = buildAliasModels([{ ...providerFixture, baseUrl }, brokenProvider], [aliasFixture(), optionalAlias]);
 
     expect(bindingOf(models, 'codegen.default').modelName).toBe(modelName);
-    expect(models.bindings['memory.summarize']).toBeUndefined();
-    expect(models.failures['memory.summarize']).toContain('密钥密文格式无法识别');
+    expect(models.bindings['version.summary']).toBeUndefined();
+    expect(models.failures['version.summary']).toContain('密钥密文格式无法识别');
     expect(Object.isFrozen(models.failures)).toBe(true);
     expect(() => buildAliasModels([{ ...providerFixture, baseUrl, apiKeySource: 'inline', apiKeyCiphertext: 'not-a-ciphertext' }], [aliasFixture()]))
       .toThrow(/密钥密文格式无法识别/);

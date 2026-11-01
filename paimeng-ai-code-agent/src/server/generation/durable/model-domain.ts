@@ -28,12 +28,14 @@ import {
 	modelIdentifierSchema,
 	providerApiFormats,
 	providerHeadersSchema,
+	providerModelCompatibilitySchema,
+	providerModelIdSchema,
 	providerOptionsSchema,
-	type ModelAlias,
 	type ModelAliasSettings,
 	type ModelProvider,
 	type ModelProviderOptions,
 	type ProviderApiFormat,
+	type ProviderModelCompatibility,
 	type ReasoningLevel,
 } from "@/shared/model-config";
 import { getConfig } from "../../infra/config";
@@ -42,6 +44,7 @@ import { aliasNotConfiguredMessage } from "../model";
 import { ModelConfigInvalidError } from "../../models/errors";
 import { decryptModelSecret } from "../../models/secrets";
 import { readConfigSnapshot } from "../../models/store";
+import { resolveSlotConfig, type ResolvedSlot } from "../../models/resolver";
 import { fauxFixtureEnabled, fauxFixtureRef } from "./faux-fixture";
 import { fauxModelEnabled, fauxModelRef } from "./faux-model";
 
@@ -73,6 +76,9 @@ const productDescriptorSchema = z.strictObject({
 	ref: modelRefSchema,
 	alias: z.string(),
 	providerId: modelIdentifierSchema,
+	/** 旧描述没有模型 ID；读取时按兼容分支处理，不伪造。 */
+	providerModelId: providerModelIdSchema.nullable().optional(),
+	compatibility: providerModelCompatibilitySchema.optional(),
 	apiFormat: z.enum(providerApiFormats),
 	baseUrl: modelBaseUrlSchema,
 	headers: providerHeadersSchema,
@@ -127,7 +133,7 @@ const passthroughThinkingLevels: ThinkingLevelMap = { off: null, minimal: "minim
  */
 const deepSeekThinkingLevels: ThinkingLevelMap = { off: "disabled", minimal: "low", low: "low", medium: null, high: "high", xhigh: null, max: "max" };
 
-function openAiCompatible(options: ModelProviderOptions, settings: ModelAliasSettings): OpenAICompletionsCompat {
+function openAiCompatible(options: ModelProviderOptions, compatibility: ProviderModelCompatibility): OpenAICompletionsCompat {
 	return {
 		supportsStore: false,
 		supportsDeveloperRole: false,
@@ -135,21 +141,21 @@ function openAiCompatible(options: ModelProviderOptions, settings: ModelAliasSet
 		supportsUsageInStreaming: options.includeUsage ?? true,
 		maxTokensField: "max_tokens",
 		// 第三方网关跑 DeepSeek 类混合推理模型时，上游处于 thinking 模式会要求回传 reasoning_content
-		// （否则 400）；这个声明跟着别名走，同一提供商下别的模型不受影响。
-		...(settings.reasoningContentPassthrough ? { requiresReasoningContentOnAssistantMessages: true } : {}),
+		// （否则 400）；兼容声明属于提供商模型，同一提供商下别的模型不受影响。
+		...(compatibility.reasoningContentPassthrough ? { requiresReasoningContentOnAssistantMessages: true } : {}),
 	};
 }
 
-function deepSeekCompatible(options: ModelProviderOptions, supportsReasoningEffort: boolean): OpenAICompletionsCompat {
+function deepSeekCompatible(options: ModelProviderOptions, supportsReasoningEffort: boolean, compatibility: ProviderModelCompatibility): OpenAICompletionsCompat {
 	return {
-		...openAiCompatible(options, {}),
+		...openAiCompatible(options, compatibility),
 		supportsReasoningEffort,
 		requiresReasoningContentOnAssistantMessages: true,
 		thinkingFormat: "deepseek",
 	};
 }
 
-const overrideCompat: OpenAICompletionsCompat = deepSeekCompatible({}, true);
+const overrideCompat: OpenAICompletionsCompat = deepSeekCompatible({}, true, { reasoningContentPassthrough: true });
 
 function declaredReasoning(settings: ModelAliasSettings): Exclude<ReasoningLevel, "none"> | undefined {
 	return settings.reasoning === undefined || settings.reasoning === "none" ? undefined : settings.reasoning;
@@ -157,21 +163,21 @@ function declaredReasoning(settings: ModelAliasSettings): Exclude<ReasoningLevel
 
 type ThinkingPlan = { level: ModelThinkingLevel; compat: OpenAICompletionsCompat; thinkingLevelMap: ThinkingLevelMap };
 
-function thinkingPlan(options: ModelProviderOptions, settings: ModelAliasSettings): ThinkingPlan {
+function thinkingPlan(options: ModelProviderOptions, settings: ModelAliasSettings, compatibility: ProviderModelCompatibility): ThinkingPlan {
 	const reasoning = declaredReasoning(settings);
 	switch (options.thinkingSwitch) {
 		case "disabled":
 			// 不发强度就是 DeepSeek 的关闭路径：pi 见 off 非 null 时写 thinking.type=disabled。
-			return { level: "off", compat: deepSeekCompatible(options, false), thinkingLevelMap: deepSeekThinkingLevels };
+			return { level: "off", compat: deepSeekCompatible(options, false, compatibility), thinkingLevelMap: deepSeekThinkingLevels };
 		case "enabled":
 			return {
 				// 没有强度时给一个已声明的档位，只要不是 off 就会发出 thinking.type=enabled。
 				level: reasoning ?? "minimal",
-				compat: deepSeekCompatible(options, reasoning !== undefined),
+				compat: deepSeekCompatible(options, reasoning !== undefined, compatibility),
 				thinkingLevelMap: deepSeekThinkingLevels,
 			};
 		default:
-			return { level: reasoning ?? "off", compat: openAiCompatible(options, settings), thinkingLevelMap: passthroughThinkingLevels };
+			return { level: reasoning ?? "off", compat: openAiCompatible(options, compatibility), thinkingLevelMap: passthroughThinkingLevels };
 	}
 }
 
@@ -233,6 +239,8 @@ type ProductModelSpec = {
 	ref: ModelRef;
 	alias: string;
 	providerId: string;
+	providerModelId: string | null;
+	compatibility: ProviderModelCompatibility;
 	apiFormat: ProviderApiFormat;
 	baseUrl: string;
 	headers: Record<string, string>;
@@ -248,6 +256,8 @@ function specOfDescriptor(descriptor: RunModelDescriptor): ProductModelSpec {
 		ref: descriptor.ref,
 		alias: descriptor.alias,
 		providerId: descriptor.providerId,
+		providerModelId: descriptor.providerModelId ?? null,
+		compatibility: descriptor.compatibility ?? { reasoningContentPassthrough: descriptor.settings.reasoningContentPassthrough ?? false },
 		apiFormat: descriptor.apiFormat,
 		baseUrl: descriptor.baseUrl,
 		headers: descriptor.headers,
@@ -264,6 +274,8 @@ function descriptorOfSpec(spec: ProductModelSpec): RunModelDescriptor {
 		ref: spec.ref,
 		alias: spec.alias,
 		providerId: spec.providerId,
+		providerModelId: spec.providerModelId,
+		compatibility: spec.compatibility,
 		apiFormat: spec.apiFormat,
 		baseUrl: spec.baseUrl,
 		headers: spec.headers,
@@ -275,7 +287,7 @@ function descriptorOfSpec(spec: ProductModelSpec): RunModelDescriptor {
 }
 
 function productBinding(spec: ProductModelSpec, admittedCiphertext?: string): GenerationModelBinding {
-	const plan = thinkingPlan(spec.options, spec.settings);
+	const plan = thinkingPlan(spec.options, spec.settings, spec.compatibility);
 	const { api, streams } = piApiFor(spec.apiFormat);
 	const baseUrl = spec.apiFormat === "anthropic-messages" ? anthropicBaseUrl(spec.baseUrl) : spec.baseUrl;
 	const input: ModelInputModality[] = spec.imageInput ? ["text", "image"] : ["text"];
@@ -315,7 +327,7 @@ function productBinding(spec: ProductModelSpec, admittedCiphertext?: string): Ge
 	});
 	return {
 		ref: spec.ref,
-		identity: { alias: spec.alias, providerId: spec.providerId, modelName: spec.ref.modelId, apiFormat: spec.apiFormat },
+		identity: { alias: spec.alias, providerId: spec.providerId, providerModelId: spec.providerModelId, modelName: spec.ref.modelId, apiFormat: spec.apiFormat },
 		thinkingLevel: plan.level,
 		imageInput: spec.imageInput,
 		descriptor: descriptorOfSpec(spec),
@@ -358,7 +370,7 @@ function envOverrideBinding(ref: ModelRef, baseUrl: string, imageInput: boolean)
 	});
 	return {
 		ref,
-		identity: { alias: generationModelAlias, providerId: envModelProviderId, modelName: ref.modelId, apiFormat: "openai-chat" },
+		identity: { alias: generationModelAlias, providerId: envModelProviderId, providerModelId: null, modelName: ref.modelId, apiFormat: "openai-chat" },
 		thinkingLevel: "off",
 		imageInput,
 		descriptor: { source: "env-override", ref, baseUrl, imageInput },
@@ -369,7 +381,7 @@ function envOverrideBinding(ref: ModelRef, baseUrl: string, imageInput: boolean)
 function fixtureBinding(ref: ModelRef, imageInput: boolean): GenerationModelBinding {
 	return {
 		ref,
-		identity: { alias: generationModelAlias, providerId: ref.provider, modelName: ref.modelId, apiFormat: null },
+		identity: { alias: generationModelAlias, providerId: ref.provider, providerModelId: null, modelName: ref.modelId, apiFormat: null },
 		thinkingLevel: "off",
 		imageInput,
 		descriptor: { source: "fixture", ref, imageInput },
@@ -389,7 +401,7 @@ function envOverride(): EnvOverride | null {
 	return { baseUrl: values[0]!, modelId: values[2]! };
 }
 
-async function databaseModel(aliasName: string): Promise<{ provider: ModelProvider; alias: ModelAlias }> {
+async function databaseModel(aliasName: string): Promise<ResolvedSlot> {
 	let snapshot;
 	try {
 		snapshot = await readConfigSnapshot();
@@ -410,9 +422,9 @@ async function databaseModel(aliasName: string): Promise<{ provider: ModelProvid
 	const issues = modelConfigIssues(snapshot.providers, snapshot.aliases, {
 		allowedApiKeyEnvs: config.modelApiKeyEnvAllowlist,
 		internalOrigins: config.modelInternalBaseUrlOrigins,
-	});
+	}, snapshot.providerModels);
 	if (issues.length) throw new BusinessError(503, 50300, `模型配置不可用：${issues.join("；")}`.slice(0, 300));
-	return { provider, alias };
+	return resolveSlotConfig(snapshot, aliasName);
 }
 
 function keyReferenceOf(provider: ModelProvider): KeyReference {
@@ -447,19 +459,22 @@ async function admittedModel(): Promise<GenerationModelBinding> {
 	if (fauxModelEnabled()) return fixtureBinding(fauxModelRef(), true);
 	const override = envOverride();
 	if (override) return envOverrideBinding({ provider: envModelProviderId, modelId: override.modelId }, override.baseUrl, true);
-	const { provider, alias } = await databaseModel(generationModelAlias);
+	const resolved = await databaseModel(generationModelAlias);
+	const provider = resolved.provider;
 	const key = keyReferenceOf(provider);
 	validateKey(key, provider);
 	return productBinding({
-		ref: { provider: instanceProviderId(generationModelAlias), modelId: alias.modelName },
-		alias: alias.alias,
-		providerId: provider.id,
+		ref: { provider: instanceProviderId(generationModelAlias), modelId: resolved.upstreamModelName },
+		alias: resolved.alias,
+		providerId: resolved.providerId,
+		providerModelId: resolved.providerModelId,
+		compatibility: resolved.compatibility,
 		apiFormat: provider.apiFormat,
 		baseUrl: provider.baseUrl,
 		headers: provider.headers ?? {},
 		options: provider.options,
-		settings: alias.settings,
-		imageInput: alias.capabilities.imageInput,
+		settings: resolved.settings,
+		imageInput: resolved.capabilities.imageInput,
 		key,
 	}, provider.apiKeySource === "inline" ? provider.apiKeyCiphertext : undefined);
 }
@@ -488,17 +503,19 @@ export function rebuildRunModel(descriptor: RunModelDescriptor): GenerationModel
 export function identityOfDescriptor(descriptor: RunModelDescriptor): GenerationModelIdentity {
 	switch (descriptor.source) {
 		case "product":
-			return { alias: descriptor.alias, providerId: descriptor.providerId, modelName: descriptor.ref.modelId, apiFormat: descriptor.apiFormat };
+			return { alias: descriptor.alias, providerId: descriptor.providerId, providerModelId: descriptor.providerModelId ?? null, modelName: descriptor.ref.modelId, apiFormat: descriptor.apiFormat };
 		case "env-override":
-			return { alias: generationModelAlias, providerId: envModelProviderId, modelName: descriptor.ref.modelId, apiFormat: "openai-chat" };
+			return { alias: generationModelAlias, providerId: envModelProviderId, providerModelId: null, modelName: descriptor.ref.modelId, apiFormat: "openai-chat" };
 		case "fixture":
-			return { alias: generationModelAlias, providerId: descriptor.ref.provider, modelName: descriptor.ref.modelId, apiFormat: null };
+			return { alias: generationModelAlias, providerId: descriptor.ref.provider, providerModelId: null, modelName: descriptor.ref.modelId, apiFormat: null };
 	}
 }
 
 /** 描述里的思考档位；只读描述，不解析密钥、不读当前别名。 */
 export function thinkingLevelOfDescriptor(descriptor: RunModelDescriptor): ModelThinkingLevel {
-	return descriptor.source === "product" ? thinkingPlan(descriptor.options, descriptor.settings).level : "off";
+	if (descriptor.source !== "product") return "off";
+	const compatibility = descriptor.compatibility ?? { reasoningContentPassthrough: descriptor.settings.reasoningContentPassthrough ?? false };
+	return thinkingPlan(descriptor.options, descriptor.settings, compatibility).level;
 }
 
 /** 读一个会话的持久运行描述；没有或结构不认识时返回 null（只读存储）。 */

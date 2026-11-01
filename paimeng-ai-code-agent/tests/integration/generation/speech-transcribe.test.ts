@@ -6,7 +6,7 @@ import { GET, POST } from '@/app/api/[...path]/route';
 import { db, getPool, now } from '@/server/infra/db';
 import { modelAliases, modelConfigState, modelProviders, providerModels, sessions, users } from '@/server/infra/schema';
 import { defaultModelProviderId, modelConfigStateId, type ModelAliasInput } from '@/shared/model-config';
-import { initializeModelConfigFromEnv, readConfigSnapshot, upsertAlias } from '@/server/models/store';
+import { createProviderModel, initializeModelConfigFromEnv, readConfigSnapshot, upsertAlias } from '@/server/models/store';
 
 const prefix = `ts_speech_${Date.now()}`;
 const origin = 'http://localhost:3000';
@@ -114,6 +114,25 @@ describe('语音转写接口', () => {
     expect(payload.code).toBe(40900);
     expect(payload.message).toContain('未配置语音转写模型');
     expect(payload.message).toContain('speech.transcribe');
+  });
+
+  it('语音槽位链接到已停用的模型时按未配置处理', async () => {
+    const snapshot = await readConfigSnapshot();
+    const created = await createProviderModel({
+      providerId: defaultModelProviderId,
+      upstreamModelName: 'whisper-disabled',
+      displayName: '默认提供商 / whisper-disabled',
+      capabilities: speechAlias.capabilities,
+      compatibility: { reasoningContentPassthrough: false },
+      enabled: true,
+    }, { expectedRevision: snapshot.revision });
+    await upsertAlias({ ...speechAlias, providerModelId: created.id, modelName: 'whisper-disabled' }, { expectedRevision: created.revision });
+    await db().update(providerModels).set({ enabled: 0 }).where(eq(providerModels.id, BigInt(created.id)));
+
+    expect(await json(await getTranscribe(cookie))).toMatchObject({ code: 0, data: { enabled: false } });
+    const response = await postTranscribe(cookie, recordingForm(audioBlob(8)));
+    expect(response.status).toBe(409);
+    expect((await json(response)).message).toContain('未配置语音转写模型');
   });
 
   it('配置别名后可用，音频转发到 /audio/transcriptions', async () => {

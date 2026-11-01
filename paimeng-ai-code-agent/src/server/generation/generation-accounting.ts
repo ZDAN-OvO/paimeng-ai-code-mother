@@ -8,6 +8,16 @@ import { generationStopReasons, type AccountStep, type AccountStepKind, type Acc
 
 export type { AccountStep, AccountStepKind, AccountToolCall, GenerationAccount, GenerationStopReason, ModelIdentity };
 
+/** 持久描述里的模型 ID 已经过 schema 校验；这里再兜一层，坏值降级为 null，不阻断步骤落库。 */
+function providerModelIdOf(value: string | null | undefined): bigint | null {
+  if (!value || !/^[1-9][0-9]*$/.test(value)) return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+}
+
 /** 数据库里读回的停止原因按词汇表验证；未知值当没有（不把脏字符串透给调用方）。 */
 export function stopReasonFrom(value: string | null): GenerationStopReason | null {
   return value !== null && (generationStopReasons as readonly string[]).includes(value) ? value as GenerationStopReason : null;
@@ -69,6 +79,7 @@ export async function recordAssistantStep(input: {
     stepNumber: input.stepNumber,
     modelAlias: input.model.alias,
     providerId: input.model.providerId,
+    providerModelId: providerModelIdOf(input.model.providerModelId),
     modelName: input.model.modelName,
     upstreamProvider: input.upstreamProvider,
     upstreamModelId: input.upstreamModelId,
@@ -124,6 +135,7 @@ function toAccountStep(row: typeof generationSteps.$inferSelect): AccountStep {
     reasoningTokens: row.reasoningTokens,
     modelAlias: row.modelAlias,
     providerId: row.providerId,
+    providerModelId: row.providerModelId === null ? null : String(row.providerModelId),
     modelName: row.modelName,
     upstreamProvider: row.upstreamProvider,
     upstreamModelId: row.upstreamModelId,
@@ -182,7 +194,7 @@ function accountOf(task: typeof generations.$inferSelect, steps: AccountStep[]):
     status: task.status as GenerationAccount['status'],
     error: task.error,
     stopReason: stopReasonFrom(task.stopReason),
-    model: { alias: firstModel?.modelAlias ?? null, providerId: firstModel?.providerId ?? null, modelName: firstModel?.modelName ?? null },
+    model: { alias: firstModel?.modelAlias ?? null, providerId: firstModel?.providerId ?? null, providerModelId: firstModel?.providerModelId ?? null, modelName: firstModel?.modelName ?? null },
     totals: { ...totalsOf(steps), totalMs: wallClockMs(task) },
     steps,
   };

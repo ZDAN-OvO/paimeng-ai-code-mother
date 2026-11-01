@@ -192,8 +192,12 @@ function uniqueViolation(error: unknown): boolean {
   return false;
 }
 
-function assertValid(providers: readonly ModelProviderInput[], aliases: readonly ModelAliasInput[]) {
-  const issues = modelConfigIssues(providers, aliases, modelConfigPolicy());
+function assertValid(
+  providers: readonly ModelProviderInput[],
+  aliases: readonly ModelAliasInput[],
+  providerModels: readonly ProviderModel[] = [],
+) {
+  const issues = modelConfigIssues(providers, aliases, modelConfigPolicy(), providerModels);
   if (issues.length) throw new BusinessError(400, 40000, issues.join('；'));
 }
 
@@ -426,7 +430,7 @@ export async function writeModelConfig(write: ModelConfigWrite, mutation: ModelC
     const aliases = await readAliasRows(tx);
     const stored = storageMutation(mutation, providers);
     const next = applyMutation(stored, providers, providerModelRows, aliases);
-    assertValid(next.providers, next.aliases);
+    assertValid(next.providers, next.aliases, next.providerModels);
     await persistMutation(tx, stored, providers, aliases, next.providerModels, next.aliases);
     const revision = state.revision + 1n;
     const refreshEpoch = write.applyImmediately ? state.refreshEpoch + 1n : state.refreshEpoch;
@@ -483,7 +487,7 @@ export async function applyModelConfig(write: ModelConfigWrite): Promise<ModelCo
   return db().transaction(async tx => {
     const state = await lockState(tx);
     assertRevision(state.revision, write.expectedRevision);
-    assertValid(await readProviderRows(tx), await readAliasRows(tx));
+    assertValid(await readProviderRows(tx), await readAliasRows(tx), await readProviderModelRows(tx));
     const refreshEpoch = state.refreshEpoch + 1n;
     await tx.update(modelConfigState).set({ refreshEpoch, updateTime: now() }).where(eq(modelConfigState.id, modelConfigStateId));
     return { revision: state.revision.toString(), refreshEpoch: refreshEpoch.toString() };
@@ -544,9 +548,15 @@ export async function initializeModelConfigFromEnv(): Promise<ModelInitializatio
       settings: {},
       enabled: true,
     }));
-    assertValid([provider], aliasesToCreate);
     await upsertProviderRow(tx, provider, undefined);
     const timestamp = now();
+    const modelRecord: ProviderModel = {
+      id: providerModelId.toString(),
+      ...modelInput,
+      createTime: timestamp,
+      updateTime: timestamp,
+    };
+    assertValid([provider], aliasesToCreate, [modelRecord]);
     await tx.insert(providerModels).values({
       id: providerModelId,
       providerId: modelInput.providerId,

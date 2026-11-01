@@ -20,7 +20,7 @@ import { appendInput, markInputPlaced } from '@/server/generation/control-store'
 import { withRateLimitRedis } from '@/server/infra/redis';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import { workspace as appWorkspace } from '@/server/workspace/workspace';
-import { initializeModelConfigFromEnv, readConfigSnapshot, upsertAlias, upsertProvider } from '@/server/models/store';
+import { createProviderModel, initializeModelConfigFromEnv, readConfigSnapshot, upsertAlias, upsertProvider } from '@/server/models/store';
 import { generationModelAlias, modelAdmissionSchema, type ModelAdmission } from '@/shared/durable-model';
 import { modelConfigStateId, type ModelAliasInput, type ModelAliasSettings, type ModelProviderOptions, type ModelProviderWriteInput } from '@/shared/model-config';
 import { baseUrl, freePort, harnessAvailable, kill9, postgresReachable, postgresUrl, stopHarness, waitForState, waitHealthy, type HarnessProcess, type HarnessState } from './support';
@@ -67,8 +67,11 @@ class StubUpstream {
 		this.baseUrl = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
 	}
 
+	responseModel: string | null = null;
+
 	reset(): void {
 		this.requests.length = 0;
+		this.responseModel = null;
 		this.toolCallFirst = false;
 		this.retryFirst = false;
 		this.failFirst = false;
@@ -119,8 +122,9 @@ class StubUpstream {
 			return;
 		}
 		response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' });
+		const responseModel = this.responseModel ?? model;
 		const chunk = (choices: unknown[], extra: Record<string, unknown> = {}) =>
-			JSON.stringify({ id: 'chatcmpl-stub', object: 'chat.completion.chunk', created: 1, model, choices, ...extra });
+			JSON.stringify({ id: 'chatcmpl-stub', object: 'chat.completion.chunk', created: 1, model: responseModel, choices, ...extra });
 		if (this.toolCallFirst && calls === 1) {
 			const call = { index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: 'function', function: { name: 'listFiles', arguments: '{}' } };
 			response.write(`data: ${chunk([{ index: 0, delta: { role: 'assistant', tool_calls: [call] }, finish_reason: null }])}\n\n`);
@@ -222,6 +226,36 @@ async function writeCodegenAlias(options: { modelName: string; providerId?: stri
 	await upsertAlias(alias, { expectedRevision: revision });
 }
 
+async function writeLinkedCodegen(options: { providerId?: string; modelName: string; settings?: ModelAliasSettings }): Promise<string> {
+	const snapshot = await readConfigSnapshot();
+	const providerId = options.providerId ?? 'stub-provider';
+	const capabilities = { streaming: true, toolCalling: true, structuredOutput: false, imageInput: false };
+	let modelId = snapshot.providerModels.find(model => model.providerId === providerId && model.upstreamModelName === options.modelName)?.id;
+	let revision = snapshot.revision;
+	if (!modelId) {
+		const created = await createProviderModel({
+			providerId,
+			upstreamModelName: options.modelName,
+			displayName: `${providerId} / ${options.modelName}`,
+			capabilities,
+			compatibility: { reasoningContentPassthrough: false },
+			enabled: true,
+		}, { expectedRevision: revision });
+		modelId = created.id;
+		revision = created.revision;
+	}
+	await upsertAlias({
+		alias: generationModelAlias,
+		providerModelId: modelId,
+		providerId,
+		modelName: options.modelName,
+		capabilities,
+		settings: options.settings ?? {},
+		enabled: true,
+	}, { expectedRevision: revision });
+	return modelId;
+}
+
 async function seedStubModel(options: { apiKey?: string; apiKeySource?: 'inline' | 'env'; modelName?: string; settings?: ModelAliasSettings; headers?: Record<string, string> } = {}): Promise<void> {
 	await resetModelConfig();
 	await writeStubProvider(options);
@@ -275,7 +309,7 @@ async function submitOrFail(conversationId: number, text: string, token?: string
 	expect(status, `submit expected 202, got ${status}`).toBe(202);
 }
 
-async function modelIdentity(conversationId: number): Promise<{ model: { provider: string; modelId: string } | null; identity: { alias: string; providerId: string | null; modelName: string | null } | null }> {
+async function modelIdentity(conversationId: number): Promise<{ model: { provider: string; modelId: string } | null; identity: { alias: string; providerId: string | null; providerModelId?: string | null; modelName: string | null } | null }> {
 	const response = await fetch(`${harnessBase}/model?conversationId=${conversationId}`);
 	expect(response.status).toBe(200);
 	return await response.json() as Awaited<ReturnType<typeof modelIdentity>>;
@@ -411,7 +445,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 		const firstPid = await harnessPid();
 
 		const first = await admit();
-		expect(first.identity).toEqual({ alias: generationModelAlias, providerId: 'stub-provider', modelName: 'stub-model-a', apiFormat: 'openai-chat' });
+		expect(first.identity).toEqual({ alias: generationModelAlias, providerId: 'stub-provider', providerModelId: null, modelName: 'stub-model-a', apiFormat: 'openai-chat' });
 		expect(first.imageInput).toBe(false);
 		expect(first.thinkingLevel).toBe('max');
 		expect(JSON.stringify(first)).not.toContain(sentinel('a'));
@@ -504,6 +538,69 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 		expect(stub.requests).toHaveLength(0);
 	}, 180_000);
 
+	it('链接模型的身份进入准入门票、步骤与账单读模型；响应名只进 upstream_model_id', async () => {
+		await resetModelConfig();
+		await writeStubProvider({ apiKey: sentinel('linked') });
+		const before = await readConfigSnapshot();
+		const created = await createProviderModel({
+			providerId: 'stub-provider',
+			upstreamModelName: 'linked-model',
+			displayName: '桩上游 / linked-model',
+			capabilities: { streaming: true, toolCalling: true, structuredOutput: false, imageInput: false },
+			compatibility: { reasoningContentPassthrough: false },
+			enabled: true,
+		}, { expectedRevision: before.revision });
+		await upsertAlias({
+			alias: generationModelAlias,
+			providerModelId: created.id,
+			providerId: 'stub-provider',
+			modelName: 'linked-model',
+			capabilities: { streaming: true, toolCalling: true, structuredOutput: false, imageInput: false },
+			settings: { reasoning: 'max' },
+			enabled: true,
+		}, { expectedRevision: created.revision });
+		stub.responseModel = 'upstream-alias-name';
+
+		const admission = await admit();
+		expect(admission.identity).toEqual({
+			alias: generationModelAlias,
+			providerId: 'stub-provider',
+			providerModelId: created.id,
+			modelName: 'linked-model',
+			apiFormat: 'openai-chat',
+		});
+
+		const userId = await nextSnowflakeId();
+		await db().insert(users).values({ id: userId, userAccount: 'model_linked_' + randomUUID(), userPassword: 'unused', userRole: 'user', createTime: now(), updateTime: now() });
+		const [row] = await db().select().from(users).where(eq(users.id, userId));
+		const actor = publicUser(row);
+		const appId = await createApp({ initPrompt: '链接模型身份验收', codeGenType: 'html' }, actor);
+		const previousUrl = process.env.DURABLE_HARNESS_URL;
+		process.env.DURABLE_HARNESS_URL = harnessBase;
+		const requestId = randomUUID();
+		try {
+			const response = await harnessChatResponse(new Request('http://localhost:3000/api/app/chat/gen/code'), {
+				appId, requestId, message: { id: requestId, role: 'user', parts: [{ type: 'text', text: '链接模型身份验收' }] },
+			}, actor);
+			await waitForRequests(requests => requests.some(request => request.model === 'linked-model'), '链接模型的实际请求');
+			await response.text();
+			const account = await generationAccount(requestId);
+			expect(account?.model).toMatchObject({ providerId: 'stub-provider', providerModelId: created.id, modelName: 'linked-model' });
+			const step = account?.steps.find(candidate => candidate.kind === 'model');
+			expect(step).toMatchObject({
+				providerModelId: created.id,
+				modelName: 'linked-model',
+				upstreamModelId: 'upstream-alias-name',
+			});
+		} finally {
+			if (previousUrl === undefined) delete process.env.DURABLE_HARNESS_URL; else process.env.DURABLE_HARNESS_URL = previousUrl;
+			await db().delete(leases).where(eq(leases.appId, BigInt(appId)));
+			await db().delete(generations).where(eq(generations.id, requestId));
+			await db().delete(apps).where(eq(apps.id, BigInt(appId)));
+			await db().delete(users).where(eq(users.id, userId));
+		}
+	}, 180_000);
+
 	it.each(['normal', 'retry', 'new-input-after-error'] as const)('产品入口配置校验与最终成功记账（%s）', async mode => {
 		await seedStubModel({ apiKey: sentinel('account'), modelName: 'stub-model-account' });
 		const userId = await nextSnowflakeId();
@@ -578,6 +675,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 
 	it('运行中改别名 + kill -9 重启：恢复的旧运行仍用原提供商与原密钥', async () => {
 		await seedStubModel({ apiKey: sentinel('e'), modelName: 'stub-model-old' });
+		const oldModelId = await writeLinkedCodegen({ modelName: 'stub-model-old' });
 		stub.holdModels.add('stub-model-old');
 
 		const admission = await admit();
@@ -599,7 +697,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 		await settleRun(conversationId, requestsBeforeRestart);
 		expect(await modelIdentity(conversationId)).toMatchObject({
 			model: { provider: expect.stringMatching(new RegExp(`^${generationModelAlias}#[0-9a-f]{8}$`)), modelId: 'stub-model-old' },
-			identity: { alias: generationModelAlias, providerId: 'stub-provider', modelName: 'stub-model-old' },
+			identity: { alias: generationModelAlias, providerId: 'stub-provider', providerModelId: oldModelId, modelName: 'stub-model-old' },
 		});
 	}, 240_000);
 

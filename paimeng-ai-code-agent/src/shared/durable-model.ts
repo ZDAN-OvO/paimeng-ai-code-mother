@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { providerModelIdSchema } from './model-config';
 
 
 export const generationModelAlias = 'codegen.default';
@@ -9,6 +10,8 @@ export const envModelProviderId = 'durable';
 export const generationModelIdentitySchema = z.object({
 	alias: z.string(),
 	providerId: z.string().nullable(),
+	/** 产品库模型的稳定身份；环境覆盖与夹具为 null，不伪造产品模型 ID。 */
+	providerModelId: providerModelIdSchema.nullable().optional(),
 	modelName: z.string().nullable(),
 	apiFormat: z.string().nullable(),
 });

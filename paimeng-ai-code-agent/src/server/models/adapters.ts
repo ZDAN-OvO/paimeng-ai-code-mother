@@ -13,17 +13,20 @@ import {
   type ModelAliasSettings,
   type ModelProvider,
   type ProviderKeySource,
+  type ProviderModel,
   type ReasoningLevel,
 } from '@/shared/model-config';
 import { ModelConfigInvalidError } from './errors';
 import { responsesReasoningFetch } from './responses-reasoning';
 import { decryptModelSecret } from './secrets';
+import { resolveSlotConfig, type ResolvedSlot } from './resolver';
 
 export { ModelConfigInvalidError } from './errors';
 
 export type AliasModel = {
   readonly alias: string;
   readonly providerId: string;
+  readonly providerModelId: string | null;
   readonly modelName: string;
   readonly apiKeySource: ProviderKeySource;
   readonly capabilities: ModelAliasCapabilities;
@@ -116,9 +119,10 @@ function buildProviderModel(provider: ModelProvider, modelName: string, apiKey: 
   }
 }
 
-function buildLanguageModel(provider: ModelProvider, alias: ModelAlias): LanguageModelV4 {
-  const settings = aliasDefaultSettings(alias.settings);
-  const reasoning = alias.settings.reasoning;
+function buildLanguageModel(resolved: ResolvedSlot): LanguageModelV4 {
+  const provider = resolved.provider;
+  const settings = aliasDefaultSettings(resolved.settings);
+  const reasoning = resolved.settings.reasoning;
   const middleware: LanguageModelMiddleware[] = [];
   if (reasoning && provider.apiFormat === 'openai-responses') {
     // 未知模型名不会被 SDK 当成推理模型，必须用 forceReasoning 才会发出 reasoning 字段；
@@ -135,7 +139,7 @@ function buildLanguageModel(provider: ModelProvider, alias: ModelAlias): Languag
   const customHeaders = Object.freeze({ ...provider.headers });
   if (Object.keys(customHeaders).length > 0) middleware.push(providerHeadersMiddleware(customHeaders));
   const wrapped = wrapLanguageModel({
-    model: buildProviderModel(provider, alias.modelName, resolveModelApiKey(provider)),
+    model: buildProviderModel(provider, resolved.upstreamModelName, resolveModelApiKey(provider)),
     middleware,
   });
   return Object.freeze(wrapped);
@@ -145,23 +149,24 @@ export function buildAliasModels(
   providers: readonly ModelProvider[],
   aliases: readonly ModelAlias[],
   requiredAliases: readonly string[] = requiredModelAliases,
+  providerModels: readonly ProviderModel[] = [],
 ): AliasModels {
-  const providersById = new Map(providers.map(provider => [provider.id, provider]));
+  const snapshot = { providers, providerModels, aliases };
   const bindings: Record<string, AliasModel> = Object.create(null);
   const failures: Record<string, string> = Object.create(null);
   const languageModels: Record<string, LanguageModel> = Object.create(null);
   for (const alias of aliases) {
+    if (!alias.enabled) continue;
     try {
-      const provider = providersById.get(alias.providerId);
-      if (!provider) throw new ModelConfigInvalidError(`别名 ${alias.alias} 指向不存在的提供商 ${alias.providerId}`);
-      if (!provider.enabled || !alias.enabled) continue;
-      const model = buildLanguageModel(provider, alias);
+      const resolved = resolveSlotConfig(snapshot, alias.alias);
+      const model = buildLanguageModel(resolved);
       bindings[alias.alias] = Object.freeze({
         alias: alias.alias,
-        providerId: provider.id,
-        modelName: alias.modelName,
-        apiKeySource: provider.apiKeySource,
-        capabilities: alias.capabilities,
+        providerId: resolved.providerId,
+        providerModelId: resolved.providerModelId,
+        modelName: resolved.upstreamModelName,
+        apiKeySource: resolved.provider.apiKeySource,
+        capabilities: resolved.capabilities,
         model,
       });
       languageModels[alias.alias] = model;

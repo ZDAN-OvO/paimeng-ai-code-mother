@@ -472,6 +472,7 @@ export function modelConfigIssues(
   providers: readonly ModelProviderInput[],
   aliases: readonly ModelAliasInput[],
   policy: ModelConfigPolicy,
+  providerModels: readonly ProviderModel[],
 ): string[] {
   const issues: string[] = [];
   const providerIds = new Set<string>();
@@ -487,6 +488,7 @@ export function modelConfigIssues(
     if (optionsIssue) issues.push(`提供商 ${provider.id}：${optionsIssue}`);
   }
   const providersById = new Map(providers.map(provider => [provider.id, provider]));
+  const modelsById = new Map(providerModels.map(model => [model.id, model]));
   const aliasNames = new Set<string>();
   for (const alias of aliases) {
     if (aliasNames.has(alias.alias)) issues.push(`别名重复：${alias.alias}`);
@@ -494,6 +496,15 @@ export function modelConfigIssues(
     const provider = providersById.get(alias.providerId);
     if (!provider) issues.push(`别名 ${alias.alias} 指向不存在的提供商 ${alias.providerId}`);
     else if (alias.enabled && !provider.enabled) issues.push(`启用中的别名 ${alias.alias} 不能指向已禁用的提供商 ${alias.providerId}`);
+    if (alias.providerModelId === undefined || alias.providerModelId === null) continue;
+    const model = modelsById.get(alias.providerModelId);
+    if (!model) {
+      issues.push(`别名 ${alias.alias} 引用的提供商模型 ${alias.providerModelId} 不存在`);
+      continue;
+    }
+    if (model.providerId !== alias.providerId) issues.push(`别名 ${alias.alias} 与提供商模型 ${model.id} 不属于同一提供商`);
+    if (model.upstreamModelName !== alias.modelName) issues.push(`别名 ${alias.alias} 的请求名与提供商模型 ${model.id} 不一致`);
+    if (alias.enabled && !model.enabled) issues.push(`启用中的别名 ${alias.alias} 不能指向已停用的提供商模型 ${model.id}`);
   }
   for (const slot of modelSlots) {
     if (slot.optional) continue;
@@ -506,7 +517,8 @@ export function modelConfigIssues(
     if (!alias.enabled) issues.push(`必需槽位${name}不能禁用`);
     const provider = providersById.get(alias.providerId);
     if (provider && !provider.enabled) issues.push(`必需槽位${name}不能指向已禁用的提供商 ${alias.providerId}`);
-    const missing = missingSlotCapabilities(slot, alias.capabilities);
+    const linkedModel = alias.providerModelId ? modelsById.get(alias.providerModelId) : undefined;
+    const missing = missingSlotCapabilities(slot, linkedModel?.capabilities ?? alias.capabilities);
     if (missing.length) {
       const required = missing.map(requirement => modelCapabilityLabels[requirement]).join('、');
       issues.push(`槽位${name}需要${required}能力，当前未勾选`);

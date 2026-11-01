@@ -32,6 +32,7 @@ import {
   type ModelProviderWriteInput,
   type ProviderApiFormat,
   type ProviderKeySource,
+  type ProviderModel,
 } from '@/shared/model-config';
 
 const policy = { allowedApiKeyEnvs: [], internalOrigins: ['http://model-gateway.internal:8080'] };
@@ -98,6 +99,19 @@ const codegenAlias = (overrides: Partial<ModelAliasInput> = {}): ModelAliasInput
   ...overrides,
 });
 
+const providerModel = (overrides: Partial<ProviderModel> = {}): ProviderModel => ({
+  id: '7001',
+  providerId: 'primary',
+  upstreamModelName: 'gpt-test',
+  displayName: '主提供商 / gpt-test',
+  capabilities: { streaming: true, toolCalling: true, structuredOutput: true, imageInput: false },
+  compatibility: { reasoningContentPassthrough: false },
+  enabled: true,
+  createTime: '',
+  updateTime: '',
+  ...overrides,
+});
+
 const routeAlias = (overrides: Partial<ModelAliasInput> = {}): ModelAliasInput => ({
   alias: 'route.classify',
   providerId: 'primary',
@@ -149,6 +163,7 @@ describe('API 格式、选项与密钥来源', () => {
       [provider({ apiFormat: 'openai-responses', options: { includeUsage: true } })],
       [codegenAlias(), routeAlias()],
       policy,
+      [],
     );
     expect(issues.some(issue => issue.includes('不支持选项 includeUsage'))).toBe(true);
   });
@@ -180,6 +195,7 @@ describe('API 格式、选项与密钥来源', () => {
       [provider({ apiFormat: 'anthropic-messages', options: { thinkingSwitch: 'enabled' } })],
       [codegenAlias(), routeAlias()],
       policy,
+      [],
     );
     expect(issues.some(issue => issue.includes('不支持选项 thinkingSwitch'))).toBe(true);
   });
@@ -312,27 +328,41 @@ describe('部署允许名单配置', () => {
 
 describe('完整候选配置校验', () => {
   it('两个必需别名齐全且能力满足时通过', () => {
-    expect(modelConfigIssues([provider()], [codegenAlias(), routeAlias()], policy)).toEqual([]);
+    expect(modelConfigIssues([provider()], [codegenAlias(), routeAlias()], policy, [])).toEqual([]);
   });
 
   it('缺少、禁用必需槽位或能力不符会被拒绝', () => {
-    const missing = modelConfigIssues([provider()], [codegenAlias()], policy);
+    const missing = modelConfigIssues([provider()], [codegenAlias()], policy, []);
     expect(missing.some(issue => issue.includes('缺少必需槽位类型路由（route.classify）'))).toBe(true);
     expect(missing.some(issue => issue.includes('无法识别工程类型'))).toBe(true);
-    expect(modelConfigIssues([provider()], [codegenAlias({ enabled: false }), routeAlias()], policy))
+    expect(modelConfigIssues([provider()], [codegenAlias({ enabled: false }), routeAlias()], policy, []))
       .toContain('必需槽位代码生成（codegen.default）不能禁用');
-    expect(modelConfigIssues([provider()], [codegenAlias({ capabilities: { streaming: true, toolCalling: false, structuredOutput: false, imageInput: false } }), routeAlias()], policy))
+    expect(modelConfigIssues([provider()], [codegenAlias({ capabilities: { streaming: true, toolCalling: false, structuredOutput: false, imageInput: false } }), routeAlias()], policy, []))
       .toContain('槽位代码生成（codegen.default）需要工具调用能力，当前未勾选');
   });
 
   it('别名必须指向存在的启用提供商', () => {
-    expect(modelConfigIssues([provider()], [codegenAlias({ providerId: 'missing' }), routeAlias({ providerId: 'missing' })], policy).some(issue => issue.includes('不存在的提供商'))).toBe(true);
-    expect(modelConfigIssues([provider({ enabled: false })], [codegenAlias(), routeAlias()], policy).some(issue => issue.includes('已禁用的提供商'))).toBe(true);
+    expect(modelConfigIssues([provider()], [codegenAlias({ providerId: 'missing' }), routeAlias({ providerId: 'missing' })], policy, []).some(issue => issue.includes('不存在的提供商'))).toBe(true);
+    expect(modelConfigIssues([provider({ enabled: false })], [codegenAlias(), routeAlias()], policy, []).some(issue => issue.includes('已禁用的提供商'))).toBe(true);
+  });
+
+  it('链接提供商模型时按模型能力校验，并校验引用完整性', () => {
+    const linked = [codegenAlias({ providerModelId: '7001' }), routeAlias({ providerModelId: '7001' })];
+    expect(modelConfigIssues([provider()], linked, policy, [providerModel()])).toEqual([]);
+
+    expect(modelConfigIssues([provider()], linked, policy, []).some(issue => issue.includes('引用的提供商模型 7001 不存在'))).toBe(true);
+    expect(modelConfigIssues([provider()], linked, policy, [providerModel({ enabled: false })]).some(issue => issue.includes('不能指向已停用的提供商模型'))).toBe(true);
+    expect(modelConfigIssues([provider()], linked, policy, [providerModel({ providerId: 'other' })]).some(issue => issue.includes('不属于同一提供商'))).toBe(true);
+    expect(modelConfigIssues([provider()], linked, policy, [providerModel({ upstreamModelName: 'renamed' })]).some(issue => issue.includes('请求名与提供商模型'))).toBe(true);
+
+    // 别名自己的能力仍写着工具调用，但链接模型没有；以模型为准。
+    const withoutToolCalling = providerModel({ capabilities: { streaming: true, toolCalling: false, structuredOutput: true, imageInput: false } });
+    expect(modelConfigIssues([provider()], linked, policy, [withoutToolCalling]).some(issue => issue.includes('工具调用'))).toBe(true);
   });
 
   it('未允许的密钥引用与非法地址会被拒绝', () => {
-    expect(modelConfigIssues([provider({ apiKeyEnv: 'PRIMARY_KEY' })], [codegenAlias(), routeAlias()], policy).some(issue => issue.includes('未允许的环境变量'))).toBe(true);
-    expect(modelConfigIssues([provider({ baseUrl: 'http://evil.example/v1' })], [codegenAlias(), routeAlias()], policy).some(issue => issue.includes('地址不合法'))).toBe(true);
+    expect(modelConfigIssues([provider({ apiKeyEnv: 'PRIMARY_KEY' })], [codegenAlias(), routeAlias()], policy, []).some(issue => issue.includes('未允许的环境变量'))).toBe(true);
+    expect(modelConfigIssues([provider({ baseUrl: 'http://evil.example/v1' })], [codegenAlias(), routeAlias()], policy, []).some(issue => issue.includes('地址不合法'))).toBe(true);
   });
 });
 

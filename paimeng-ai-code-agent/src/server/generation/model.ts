@@ -6,13 +6,7 @@ import { BusinessError } from '../infra/http';
 import { codeGenTypes, type CodeGenType } from '@/shared/contracts';
 import { modelRegistry } from '../models/registry';
 
-export function aliasNotConfiguredMessage(alias: string): string {
- return `模型别名 ${alias} 未配置或未启用`;
-}
-
-export function isAliasNotConfigured(error: unknown, alias: string): boolean {
- return error instanceof BusinessError && error.status === 503 && error.code === 50300 && error.message === aliasNotConfiguredMessage(alias);
-}
+export { aliasNotConfiguredMessage, isAliasNotConfigured } from '../models/errors';
 
 function routingFailureDetail(error: unknown) {
  const raw = error instanceof Error ? error.message : String(error);

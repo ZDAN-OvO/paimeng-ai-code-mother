@@ -159,8 +159,8 @@ async function harnessModelIdentity(conversationId: number): Promise<ModelIdenti
   const parsed = conversationModelSchema.safeParse(await harnessJson<unknown>(`/model?conversationId=${conversationId}`));
   if (!parsed.success) return null;
   const { model, identity } = parsed.data;
-  if (identity) return { alias: identity.alias, providerId: identity.providerId, modelName: identity.modelName };
-  return model ? { alias: null, providerId: null, modelName: model.modelId } : null;
+  if (identity) return { alias: identity.alias, providerId: identity.providerId, providerModelId: identity.providerModelId ?? null, modelName: identity.modelName };
+  return model ? { alias: null, providerId: null, providerModelId: null, modelName: model.modelId } : null;
 }
 
 class HarnessRequestError extends Error {
@@ -885,7 +885,7 @@ function finishReasonOf(stopReason: string | undefined): string | null {
 
 type PendingModel = {
   stepNumber: number;
-  model: { alias: string | null; providerId: string | null; modelName: string | null };
+  model: ModelIdentity;
   upstreamProvider: string | null;
   upstreamModelId: string | null;
   usage: EntryUsage | null;
@@ -1051,7 +1051,12 @@ class RunTranslator {
     const { provider, model, responseModel, stopReason, durationMs, usage } = parsed.data;
     this.#pending = {
       stepNumber,
-      model: { alias: this.model.alias, providerId: this.model.providerId ?? provider ?? null, modelName: responseModel ?? model ?? this.model.modelName ?? null },
+      model: {
+        alias: this.model.alias,
+        providerId: this.model.providerId ?? provider ?? null,
+        providerModelId: this.model.providerModelId ?? null,
+        modelName: this.model.modelName ?? responseModel ?? model ?? null,
+      },
       upstreamProvider: provider ?? null,
       upstreamModelId: responseModel ?? model ?? null,
       usage: usage ? { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, reasoning: usage.reasoning ?? null } : null,
@@ -1591,7 +1596,12 @@ export async function harnessChatResponse(req: Request, raw: unknown, user: User
     ...attachmentImages.map(image => ({ type: 'image' as const, data: image.bytes.toString('base64'), mimeType: image.mediaType })),
   ];
   const instructions = harnessInstructions(app, attachmentImages.length > 0);
-  const model: ModelIdentity = { alias: admission.identity.alias, providerId: admission.identity.providerId, modelName: admission.identity.modelName };
+  const model: ModelIdentity = {
+    alias: admission.identity.alias,
+    providerId: admission.identity.providerId,
+    providerModelId: admission.identity.providerModelId ?? null,
+    modelName: admission.identity.modelName,
+  };
   const binding = admission.token ?? undefined;
   const stop = new AbortController();
   const holder = `next:${process.pid}:${randomUUID()}`;

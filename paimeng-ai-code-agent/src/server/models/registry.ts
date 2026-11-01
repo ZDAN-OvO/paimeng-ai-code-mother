@@ -10,11 +10,13 @@ import {
   defaultModelProviderId,
   modelConfigIssues,
   modelSlots,
+  requiredModelAliases,
   type ModelAlias,
   type ModelConfigSnapshot,
   type ModelProvider,
 } from '@/shared/model-config';
 import { buildAliasModels, ModelConfigInvalidError, type AliasModel, type AliasModels } from './adapters';
+import { resolveSlotConfig, type ModelSlotSnapshot, type ResolvedSlot } from './resolver';
 import { readConfigSnapshot, readRefreshEpoch } from './store';
 
 /** 快照存活时间，从一致读事务开始计时。 */
@@ -62,6 +64,8 @@ export type ModelRegistry = {
    */
   resolveBindingsWithFailures(aliases: readonly string[]): Promise<ModelRegistryBindings>;
   resolveModel(alias: string): Promise<LanguageModel>;
+  /** 与运行绑定额外的连接信息来自同一份快照，供语音等专用调用使用。 */
+  resolveSlot(alias: string): Promise<ResolvedSlot>;
   status(): ModelRegistryStatus;
 };
 
@@ -69,6 +73,7 @@ type LoadedSnapshot = {
   revision: string;
   refreshEpoch: string;
   models: AliasModels;
+  raw: ModelSlotSnapshot;
   source: 'database' | 'environment';
   readAt: number;
   loadedAt: number;
@@ -117,7 +122,7 @@ function validateSnapshot(snapshot: ModelConfigSnapshot): void {
   const issues = modelConfigIssues(snapshot.providers, snapshot.aliases, {
     allowedApiKeyEnvs: config.modelApiKeyEnvAllowlist,
     internalOrigins: config.modelInternalBaseUrlOrigins,
-  });
+  }, snapshot.providerModels);
   if (issues.length) throw new ModelConfigInvalidError(issues.join('；'));
 }
 
@@ -172,7 +177,8 @@ export function createModelRegistry(options: ModelRegistryOptions = {}): ModelRe
     return {
       revision: snapshot.revision,
       refreshEpoch: snapshot.refreshEpoch,
-      models: buildAliasModels(snapshot.providers, snapshot.aliases),
+      models: buildAliasModels(snapshot.providers, snapshot.aliases, requiredModelAliases, snapshot.providerModels),
+      raw: { providers: snapshot.providers, providerModels: snapshot.providerModels, aliases: snapshot.aliases },
       source: empty ? 'environment' : 'database',
       readAt,
       loadedAt: clock(),
@@ -321,6 +327,10 @@ export function createModelRegistry(options: ModelRegistryOptions = {}): ModelRe
     async resolveModel(alias) {
       const { snapshot } = await loadedFor(alias);
       return snapshot.models.provider.languageModel(alias);
+    },
+    async resolveSlot(alias) {
+      const { snapshot } = await loadedFor(alias);
+      return resolveSlotConfig(snapshot.raw, alias);
     },
     status() {
       return {

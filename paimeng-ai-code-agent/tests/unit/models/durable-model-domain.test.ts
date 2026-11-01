@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Api, Model, Provider } from '@earendil-works/pi-ai';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { encryptModelSecret } from '@/server/models/secrets';
-import type { ModelAlias, ModelAliasInput, ModelConfigSnapshot, ModelProvider, ModelProviderInput, ProviderApiFormat, ProviderKeySource } from '@/shared/model-config';
+import type { ModelAlias, ModelAliasInput, ModelConfigSnapshot, ModelProvider, ModelProviderInput, ProviderApiFormat, ProviderKeySource, ProviderModel } from '@/shared/model-config';
 import { envModelProviderId, generationModelAlias } from '@/shared/durable-model';
 import {
 	admitGenerationModel,
@@ -84,6 +84,23 @@ const routeAlias = aliasRecord({ alias: 'route.classify', modelName: 'route-mode
 function snapshotOf(providers: ModelProvider[], aliases: ModelAlias[]): ModelConfigSnapshot {
 	return { revision: '3', refreshEpoch: '2', providers, providerModels: [], aliases };
 }
+
+function snapshotWithModels(providers: ModelProvider[], providerModels: ProviderModel[], aliases: ModelAlias[]): ModelConfigSnapshot {
+	return { revision: '3', refreshEpoch: '2', providers, providerModels, aliases };
+}
+
+const linkedModel = (overrides: Partial<ProviderModel> = {}): ProviderModel => ({
+	id: '7001',
+	providerId: 'gateway',
+	upstreamModelName: 'model-linked',
+	displayName: '网关 / model-linked',
+	capabilities: { streaming: true, toolCalling: true, structuredOutput: false, imageInput: true },
+	compatibility: { reasoningContentPassthrough: false },
+	enabled: true,
+	createTime: '2026-10-18 00:00:00.000',
+	updateTime: '2026-10-18 00:00:00.000',
+	...overrides,
+});
 
 type CapturedRequest = { url: string; headers: Record<string, string>; body: Record<string, unknown> };
 
@@ -171,7 +188,7 @@ describe('产品库别名 → pi-ai 请求', () => {
 		));
 		const binding = await admitGenerationModel();
 
-		expect(binding.identity).toEqual({ alias: generationModelAlias, providerId: 'gateway', modelName: 'upstream-model-one', apiFormat: 'openai-chat' });
+		expect(binding.identity).toEqual({ alias: generationModelAlias, providerId: 'gateway', providerModelId: null, modelName: 'upstream-model-one', apiFormat: 'openai-chat' });
 		expect(binding.thinkingLevel).toBe('max');
 		expect(binding.imageInput).toBe(false);
 		expect(binding.ref.provider).toMatch(new RegExp(`^${generationModelAlias}#[0-9a-f]{8}$`));
@@ -189,6 +206,62 @@ describe('产品库别名 → pi-ai 请求', () => {
 		expect(request.body.thinking).toBeUndefined();
 		expect(request.headers.authorization).toBe(`Bearer ${sentinel('inline')}`);
 		expect(request.headers['x-provider-tag']).toBe('tag-one');
+	});
+
+	it('链接提供商模型时请求名、能力与身份来自模型，描述保留模型 ID', async () => {
+		mocks.readConfigSnapshot.mockResolvedValue(snapshotWithModels(
+			[providerRecord()],
+			[linkedModel({ compatibility: { reasoningContentPassthrough: true } })],
+			[
+				aliasRecord({ providerModelId: '7001', modelName: 'model-linked', settings: { reasoningContentPassthrough: false }, capabilities: { streaming: false, toolCalling: false, structuredOutput: false, imageInput: false } }),
+				routeAlias,
+			],
+		));
+		const binding = await admitGenerationModel();
+		expect(binding.identity).toEqual({
+			alias: generationModelAlias,
+			providerId: 'gateway',
+			providerModelId: '7001',
+			modelName: 'model-linked',
+			apiFormat: 'openai-chat',
+		});
+		expect(binding.ref.modelId).toBe('model-linked');
+		expect(binding.imageInput).toBe(true);
+		expect(binding.descriptor).toMatchObject({
+			source: 'product',
+			providerModelId: '7001',
+			compatibility: { reasoningContentPassthrough: true },
+			ref: { modelId: 'model-linked' },
+		});
+		expect(identityOfDescriptor(binding.descriptor)).toEqual(binding.identity);
+
+		const request = await requestOf(binding);
+		expect(request.body.model).toBe('model-linked');
+
+		// 重启时当前配置已换到别的模型，描述仍按原模型与原兼容声明重建。
+		mocks.readConfigSnapshot.mockResolvedValue(snapshotOf([providerRecord({ baseUrl: 'https://changed.example.test/v1' })], [aliasRecord()]));
+		const rebuilt = rebuildRunModel(binding.descriptor);
+		expect(rebuilt?.identity).toEqual(binding.identity);
+		expect(rebuilt?.descriptor).toMatchObject({ providerModelId: '7001', compatibility: { reasoningContentPassthrough: true } });
+	});
+
+	it('旧描述没有模型 ID 时仍按原地址与原模型重建', async () => {
+		const descriptor: RunModelDescriptor = {
+			source: 'product',
+			ref: { provider: 'codegen.default#abcdef12', modelId: 'upstream-model-one' },
+			alias: generationModelAlias,
+			providerId: 'gateway',
+			apiFormat: 'openai-chat',
+			baseUrl,
+			headers: {},
+			options: {},
+			settings: { temperature: 0.2 },
+			imageInput: false,
+			key: { kind: 'env', env: envKeyName },
+		};
+		const rebuilt = rebuildRunModel(descriptor);
+		expect(rebuilt?.identity).toMatchObject({ providerModelId: null, modelName: 'upstream-model-one' });
+		expect(rebuilt?.descriptor).toMatchObject({ source: 'product', providerModelId: null, ref: { modelId: 'upstream-model-one' } });
 	});
 
 	it('思考开关 enabled + 别名 reasoning=max：thinking 开启并按映射发强度', async () => {
@@ -380,7 +453,7 @@ describe('解析顺序与重启恢复', () => {
 		process.env.DURABLE_MODEL_API_KEY = sentinel('override');
 		process.env.DURABLE_MODEL_ID = 'override-model';
 		const binding = await admitGenerationModel();
-		expect(binding.identity).toEqual({ alias: generationModelAlias, providerId: envModelProviderId, modelName: 'override-model', apiFormat: 'openai-chat' });
+		expect(binding.identity).toEqual({ alias: generationModelAlias, providerId: envModelProviderId, providerModelId: null, modelName: 'override-model', apiFormat: 'openai-chat' });
 		expect(binding.imageInput).toBe(true);
 		expect(mocks.readConfigSnapshot).not.toHaveBeenCalled();
 		const request = await requestOf(binding);
@@ -425,7 +498,7 @@ describe('持久运行描述：旧运行不跟着当前别名走', () => {
 
 		const rebuilt = rebuildRunModel(descriptor);
 		expect(rebuilt).not.toBeNull();
-		expect(rebuilt!.identity).toEqual({ alias: generationModelAlias, providerId: 'gateway', modelName: 'upstream-model-one', apiFormat: 'openai-chat' });
+		expect(rebuilt!.identity).toEqual({ alias: generationModelAlias, providerId: 'gateway', providerModelId: null, modelName: 'upstream-model-one', apiFormat: 'openai-chat' });
 		expect(rebuilt!.ref).toEqual(descriptor.ref);
 		expect(identityOfDescriptor(descriptor)).toEqual(rebuilt!.identity);
 		expect(thinkingLevelOfDescriptor(descriptor)).toBe(rebuilt!.thinkingLevel);

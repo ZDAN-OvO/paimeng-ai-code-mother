@@ -4,10 +4,9 @@ import { isAllowedModelApiKeyEnv, type ModelProvider } from '@/shared/model-conf
 import { getConfig } from '../infra/config';
 import { BusinessError } from '../infra/http';
 import { isAliasNotConfigured } from './model';
-import type { AliasModel } from '../models/adapters';
 import { modelRegistry } from '../models/registry';
+import { SlotConfigUnavailableError, type ResolvedSlot } from '../models/resolver';
 import { decryptModelSecret } from '../models/secrets';
-import { readConfigSnapshot } from '../models/store';
 
 /**
  * 语音输入的服务端：录音由浏览器（MediaRecorder）产生，转写走「可配置的 OpenAI 兼容
@@ -142,11 +141,11 @@ function readAudioPart(body: Buffer, boundary: string): { contentType: string | 
 }
 
 /** 别名未配置或未启用时 registry 抛固定文案的 503；只有这一种情况算「没配」，其它错误照常上抛。 */
-async function transcribeBinding(): Promise<AliasModel | null> {
+async function transcribeSlot(): Promise<ResolvedSlot | null> {
   try {
-    return await modelRegistry().resolveBinding(speechTranscribeAlias);
+    return await modelRegistry().resolveSlot(speechTranscribeAlias);
   } catch (error) {
-    if (isAliasNotConfigured(error, speechTranscribeAlias)) return null;
+    if (isAliasNotConfigured(error, speechTranscribeAlias) || error instanceof SlotConfigUnavailableError) return null;
     throw error;
   }
 }
@@ -176,14 +175,11 @@ type TranscriptionTarget = { baseUrl: string; modelName: string; apiKey: string 
  * 别名缺失、提供商被删/禁用、密钥取不到都返回 null，由调用方决定是禁用按钮还是报 409。
  */
 async function transcribeTarget(): Promise<TranscriptionTarget | null> {
-  const binding = await transcribeBinding();
-  if (!binding) return null;
-  const snapshot = await readConfigSnapshot();
-  const provider = snapshot.providers.find(candidate => candidate.id === binding.providerId && candidate.enabled);
-  if (!provider) return null;
-  const apiKey = providerApiKey(provider);
+  const slot = await transcribeSlot();
+  if (!slot) return null;
+  const apiKey = providerApiKey(slot.provider);
   if (!apiKey) return null;
-  return { baseUrl: provider.baseUrl, modelName: binding.modelName, apiKey };
+  return { baseUrl: slot.provider.baseUrl, modelName: slot.upstreamModelName, apiKey };
 }
 
 /** 别名已配置且可用时为 true；读取失败按不可用处理（禁用麦克风并提示，不假装可用）。 */
