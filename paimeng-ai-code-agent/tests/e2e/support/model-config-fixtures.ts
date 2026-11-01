@@ -15,6 +15,7 @@ export async function grantAdmin(client: pg.Client, account: string) {
 
 export async function emptyModelConfig(client: pg.Client) {
   await client.query('DELETE FROM model_alias');
+  await client.query('DELETE FROM provider_model');
   await client.query('DELETE FROM model_provider');
   await client.query(
     "INSERT INTO model_config_state (id, revision, refresh_epoch, update_time) VALUES ('models', 0, 0, timezone('UTC', now())) ON CONFLICT (id) DO UPDATE SET revision=0, refresh_epoch=0, update_time=timezone('UTC', now())",
@@ -23,6 +24,7 @@ export async function emptyModelConfig(client: pg.Client) {
 
 export async function seedModelConfig(client: pg.Client, baseUrl = 'https://api.example.test/v1') {
   await client.query('DELETE FROM model_alias');
+  await client.query('DELETE FROM provider_model');
   await client.query('DELETE FROM model_provider');
   await client.query(
     "INSERT INTO model_provider (id, display_name, api_format, base_url, api_key_env, options, enabled, create_time, update_time) VALUES ($1,$2,$3,$4,$5,$6,$7,timezone('UTC', now()),timezone('UTC', now()))",

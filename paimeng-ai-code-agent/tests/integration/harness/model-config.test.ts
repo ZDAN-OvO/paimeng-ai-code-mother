@@ -11,7 +11,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { testDatabaseUrl } from '../../support/test-database-url';
 import { db, getPool, now } from '@/server/infra/db';
-import { apps, generations, leases, users, modelAliases, modelConfigState, modelProviders } from '@/server/infra/schema';
+import { apps, generations, leases, users, modelAliases, modelConfigState, modelProviders, providerModels } from '@/server/infra/schema';
 import { publicUser } from '@/server/auth/auth';
 import { createApp } from '@/server/business';
 import { harnessChatResponse } from '@/server/generation/durable-engine';
@@ -140,7 +140,7 @@ let harnessBase = '';
 let runDir = '';
 let workspace = '';
 let port = 0;
-let savedModels: { providers: typeof modelProviders.$inferSelect[]; aliases: typeof modelAliases.$inferSelect[]; state: typeof modelConfigState.$inferSelect[] } | undefined;
+let savedModels: { providers: typeof modelProviders.$inferSelect[]; providerModels: typeof providerModels.$inferSelect[]; aliases: typeof modelAliases.$inferSelect[]; state: typeof modelConfigState.$inferSelect[] } | undefined;
 
 function startProductHarness(port: number, options: { reset: boolean } = { reset: true }): HarnessProcess {
 	let output = '';
@@ -172,6 +172,7 @@ function startProductHarness(port: number, options: { reset: boolean } = { reset
 
 async function resetModelConfig(): Promise<void> {
 	await db().delete(modelAliases);
+	await db().delete(providerModels);
 	await db().delete(modelProviders);
 	await db()
 		.insert(modelConfigState)
@@ -367,7 +368,7 @@ async function inputBeforeSettlement(appId: string, generationId: string) {
 
 describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配置驱动生成', () => {
 	beforeAll(async () => {
-		savedModels = { providers: await db().select().from(modelProviders), aliases: await db().select().from(modelAliases), state: await db().select().from(modelConfigState) };
+		savedModels = { providers: await db().select().from(modelProviders), providerModels: await db().select().from(providerModels), aliases: await db().select().from(modelAliases), state: await db().select().from(modelConfigState) };
 		process.env.MODEL_API_KEY_ENV_ALLOWLIST = allowedKeyEnv;
 		runDir = mkdtempSync(join(tmpdir(), 'durable-model-config-'));
 		workspace = join(runDir, 'workspace');
@@ -386,9 +387,11 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 				const saved = savedModels;
 				await db().transaction(async tx => {
 					await tx.delete(modelAliases);
+					await tx.delete(providerModels);
 					await tx.delete(modelProviders);
 					await tx.delete(modelConfigState);
 					if (saved.providers.length) await tx.insert(modelProviders).values(saved.providers);
+					if (saved.providerModels.length) await tx.insert(providerModels).values(saved.providerModels);
 					if (saved.aliases.length) await tx.insert(modelAliases).values(saved.aliases);
 					if (saved.state.length) await tx.insert(modelConfigState).values(saved.state);
 				});

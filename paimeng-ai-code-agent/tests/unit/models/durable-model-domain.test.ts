@@ -82,7 +82,7 @@ const aliasRecord = (overrides: Partial<ModelAliasInput> = {}): ModelAlias => {
 const routeAlias = aliasRecord({ alias: 'route.classify', modelName: 'route-model', settings: {}, capabilities: { streaming: false, toolCalling: false, structuredOutput: true, imageInput: false } });
 
 function snapshotOf(providers: ModelProvider[], aliases: ModelAlias[]): ModelConfigSnapshot {
-	return { revision: '3', refreshEpoch: '2', providers, aliases };
+	return { revision: '3', refreshEpoch: '2', providers, providerModels: [], aliases };
 }
 
 type CapturedRequest = { url: string; headers: Record<string, string>; body: Record<string, unknown> };

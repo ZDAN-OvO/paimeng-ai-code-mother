@@ -41,6 +41,7 @@ function configuredRegistry(codegenModel = 'codegen-model', routeModel = 'test-m
   const snapshot: ModelConfigSnapshot = {
     revision: '1', refreshEpoch: '0',
     providers: [provider],
+    providerModels: [],
     aliases: [alias('codegen.default', codegenModel), alias('route.classify', routeModel)],
   };
   return createModelRegistry({

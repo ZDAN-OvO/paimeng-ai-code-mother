@@ -61,6 +61,7 @@ function snapshotOf(modelBaseUrl: string, revision: string, refreshEpoch: string
   return {
     revision, refreshEpoch,
     providers: [providerFixture(modelBaseUrl)],
+    providerModels: [],
     aliases: [aliasFixture('codegen.default', modelName, settings), aliasFixture('route.classify', 'route-model', {})],
   };
 }

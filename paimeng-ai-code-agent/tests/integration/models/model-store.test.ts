@@ -4,7 +4,7 @@ import { testDatabaseUrl } from '../../support/test-database-url';
 import { eq } from 'drizzle-orm';
 import { db, getPool, now } from '@/server/infra/db';
 import { getConfig } from '@/server/infra/config';
-import { modelAliases, modelConfigState, modelProviders } from '@/server/infra/schema';
+import { modelAliases, modelConfigState, modelProviders, providerModels } from '@/server/infra/schema';
 import {
   modelConfigStateId,
   type ModelAliasInput,
@@ -92,6 +92,7 @@ const routeAlias = (overrides: Partial<ModelAliasInput> = {}): ModelAliasInput =
 
 async function resetDatabase() {
   await db().delete(modelAliases);
+  await db().delete(providerModels);
   await db().delete(modelProviders);
   await db()
     .insert(modelConfigState)
@@ -309,6 +310,7 @@ describe('模型配置存储', () => {
   it('配置为空但版本非零时拒绝重新初始化', async () => {
     await seedFromEnv();
     await db().delete(modelAliases);
+    await db().delete(providerModels);
     await db().delete(modelProviders);
     await expect(initializeModelConfigFromEnv()).rejects.toMatchObject({ status: 409, code: 40903 });
     await db().update(modelConfigState).set({ revision: 0n, refreshEpoch: 4n }).where(eq(modelConfigState.id, modelConfigStateId));

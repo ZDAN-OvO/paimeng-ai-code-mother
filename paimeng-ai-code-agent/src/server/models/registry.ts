@@ -99,7 +99,7 @@ function environmentSnapshot(): ModelConfigSnapshot {
     createTime: '',
     updateTime: '',
   }));
-  return { revision: '0', refreshEpoch: '0', providers: [provider], aliases };
+  return { revision: '0', refreshEpoch: '0', providers: [provider], providerModels: [], aliases };
 }
 
 /** 只回显自己构造的配置错误信息；其余错误（含 Drizzle/SQL 文本）一律静态化，避免泄漏连接串、参数与密钥。 */

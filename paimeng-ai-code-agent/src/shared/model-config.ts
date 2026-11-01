@@ -339,8 +339,49 @@ export const modelAliasInputSchema = z.strictObject({
 export type ModelAliasInput = z.infer<typeof modelAliasInputSchema>;
 export type ModelAlias = ModelAliasInput & { createTime: string; updateTime: string };
 
+/**
+ * 提供商模型：一条「某个提供商下已确认的请求模型」的稳定身份。
+ * 槽位、费率与运行用量都引用这条记录，所以即使不同提供商使用同名模型也互不影响；
+ * providerId 与 upstreamModelName 创建后不可变，离线登记走后端发号。
+ */
+export const providerModelIdSchema = z
+  .string()
+  .regex(/^[1-9][0-9]*$/, '模型 ID 必须是十进制字符串')
+  .refine(value => /^[1-9][0-9]*$/.test(value) && BigInt(value) <= 9223372036854775807n, '模型 ID 超出范围');
+export const providerModelUpstreamNameSchema = z.string().min(1).max(256);
+export const providerModelDisplayNameSchema = z.string().min(1).max(128);
+
+/** 模型级兼容声明：同一模型被多个槽位共用时只声明一次。 */
+export const providerModelCompatibilitySchema = z.strictObject({
+  reasoningContentPassthrough: z.boolean().default(false),
+});
+export type ProviderModelCompatibility = z.infer<typeof providerModelCompatibilitySchema>;
+
+/** 登记一个提供商模型；能力必须显式确认，不按槽位要求或同类模型自动推断。 */
+export const providerModelInputSchema = z.strictObject({
+  providerId: modelProviderIdSchema,
+  upstreamModelName: providerModelUpstreamNameSchema,
+  displayName: providerModelDisplayNameSchema,
+  capabilities: aliasCapabilitiesSchema,
+  compatibility: providerModelCompatibilitySchema.default({ reasoningContentPassthrough: false }),
+  enabled: z.boolean(),
+});
+export type ProviderModelInput = z.infer<typeof providerModelInputSchema>;
+
+/** 可编辑字段：提供商与上游请求名不在其中，改名要登记另一条模型。 */
+export const providerModelUpdateSchema = z.strictObject({
+  displayName: providerModelDisplayNameSchema,
+  capabilities: aliasCapabilitiesSchema,
+  compatibility: providerModelCompatibilitySchema,
+  enabled: z.boolean(),
+});
+export type ProviderModelUpdate = z.infer<typeof providerModelUpdateSchema>;
+
+export type ProviderModel = ProviderModelInput & { id: string; createTime: string; updateTime: string };
+
 export type ModelConfigSnapshot = ModelConfigVersion & {
   providers: ModelProvider[];
+  providerModels: ProviderModel[];
   aliases: ModelAlias[];
 };
 

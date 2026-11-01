@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 import { testDatabaseUrl } from '../../support/test-database-url';
 import { db, getPool, now } from '@/server/infra/db';
-import { modelAliases, modelConfigState, modelProviders } from '@/server/infra/schema';
+import { modelAliases, modelConfigState, modelProviders, providerModels } from '@/server/infra/schema';
 import { modelConfigStateId } from '@/shared/model-config';
 import { initializeModelConfigFromEnv } from '@/server/models/store';
 import { modelRegistryTtlMs } from '@/server/models/registry';
@@ -75,6 +75,7 @@ function startRegistryProcess(): RegistryProcess {
 
 async function resetDatabase() {
   await db().delete(modelAliases);
+  await db().delete(providerModels);
   await db().delete(modelProviders);
   await db()
     .insert(modelConfigState)

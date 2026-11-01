@@ -4,7 +4,7 @@ import { testDatabaseUrl } from '../../support/test-database-url';
 import { eq } from 'drizzle-orm';
 import { GET, POST } from '@/app/api/[...path]/route';
 import { db, getPool, now } from '@/server/infra/db';
-import { modelAliases, modelConfigState, modelProviders, sessions, users } from '@/server/infra/schema';
+import { modelAliases, modelConfigState, modelProviders, providerModels, sessions, users } from '@/server/infra/schema';
 import { defaultModelProviderId, modelConfigStateId, type ModelAliasInput } from '@/shared/model-config';
 import { initializeModelConfigFromEnv, readConfigSnapshot, upsertAlias } from '@/server/models/store';
 
@@ -69,6 +69,7 @@ const audioBlob = (bytes: number, type = 'audio/webm') => new Blob([new Uint8Arr
 
 async function resetModelConfig() {
   await db().delete(modelAliases);
+  await db().delete(providerModels);
   await db().delete(modelProviders);
   await db()
     .insert(modelConfigState)

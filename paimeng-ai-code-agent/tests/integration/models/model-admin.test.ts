@@ -6,7 +6,7 @@ import { testDatabaseUrl } from '../../support/test-database-url';
 import { eq } from 'drizzle-orm';
 import { POST } from '@/app/api/[...path]/route';
 import { db, getPool, now } from '@/server/infra/db';
-import { modelAliases, modelConfigState, modelProviders, sessions, users } from '@/server/infra/schema';
+import { modelAliases, modelConfigState, modelProviders, providerModels, sessions, users } from '@/server/infra/schema';
 import {
   modelConfigStateId,
   type ModelAdminConfig,
@@ -106,6 +106,7 @@ function aliasInput(overrides: Partial<ModelAliasInput> = {}): ModelAliasInput {
 
 async function resetDatabase() {
   await db().delete(modelAliases);
+  await db().delete(providerModels);
   await db().delete(modelProviders);
   await db()
     .insert(modelConfigState)
@@ -446,6 +447,7 @@ describe('模型管理 API', () => {
 
   it('空配置读取返回 initialized:false、版本 0、空列表，且不会自动初始化也不调用上游', async () => {
     await db().delete(modelAliases);
+    await db().delete(providerModels);
     await db().delete(modelProviders);
     await db().update(modelConfigState).set({ revision: 0n, refreshEpoch: 0n });
 

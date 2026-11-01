@@ -46,12 +46,13 @@ function snapshot(revision: string, refreshEpoch: string, modelName: string): Mo
     revision,
     refreshEpoch,
     providers: [providerFixture()],
+    providerModels: [],
     aliases: requiredAliasNames.map(alias => aliasFixture(alias, modelName)),
   };
 }
 
 function emptySnapshot(revision: string, refreshEpoch: string): ModelConfigSnapshot {
-  return { revision, refreshEpoch, providers: [], aliases: [] };
+  return { revision, refreshEpoch, providers: [], providerModels: [], aliases: [] };
 }
 
 function controlledClock(start = 0) {
