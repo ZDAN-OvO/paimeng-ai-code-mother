@@ -43,10 +43,11 @@ All of them run from `paimeng-ai-code-agent/`, not the repo root.
 
 ## Pending one-off scripts
 
-Kept only until the production switch in `docs/plans/legacy-import.md` finishes, then deleted under rule 2:
+Kept only while their plans are open, then deleted under rule 2:
 
-- `npm run db:import -- <snapshot>` — import a reviewed JSON copy of old users and apps, optionally copying legacy artifacts.
-- `npm run legacy:import -- --runtime <copy>` — import old previews and unpublished drafts into the new delivery/draft control plane.
+- `npm run db:import -- <snapshot>` — import a reviewed JSON copy of old users and apps, optionally copying legacy artifacts (`docs/plans/legacy-import.md`).
+- `npm run legacy:import -- --runtime <copy>` — import old previews and unpublished drafts into the new delivery/draft control plane (`docs/plans/legacy-import.md`).
+- `npm run db:backfill-provider-models` — dry-run the provider-model identity backfill; `--apply --expect-revision <n>` writes it (`docs/plans/provider-model-billing.md` P2).
 
 ## Already removed
 

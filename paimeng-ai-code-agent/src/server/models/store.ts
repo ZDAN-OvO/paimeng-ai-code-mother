@@ -177,6 +177,10 @@ function assertRevision(revision: bigint, expectedRevision: string) {
   }
 }
 
+/** 一次性回填工具复用同一把状态行锁与版本校验，避免出现第二套并发语义。 */
+export const lockModelConfigState = lockState;
+export const assertModelConfigRevision = assertRevision;
+
 /** drizzle 把 SQL 错误包在 cause 里，唯一键冲突的 23505 要顺着 cause 链找。 */
 function uniqueViolation(error: unknown): boolean {
   for (let current = error; current; current = (current as { cause?: unknown }).cause) {

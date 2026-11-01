@@ -28,6 +28,7 @@
     "legacy:import": "tsx --conditions=react-server --env-file=.env scripts/db/import-legacy-state.ts",
     "db:admin": "tsx --env-file=.env scripts/db/admin.ts",
     "db:init-models": "tsx --conditions=react-server --env-file=.env scripts/db/initialize-models.ts",
+    "db:backfill-provider-models": "tsx --conditions=react-server --env-file=.env scripts/db/backfill-provider-models.ts",
     "check:ui": "tsx scripts/verify/check-ui-patterns.ts",
     "check:e2e": "tsx scripts/verify/check-e2e-patterns.ts",
     "verify:boundary": "tsx scripts/verify/verify-boundary.ts",

@@ -48,6 +48,11 @@ export async function nextSnowflakeId(): Promise<bigint> {
   return db().transaction(allocate);
 }
 
+/** 在调用方事务内发号：与同一事务里的配置写入一起提交或回滚。 */
+export async function nextSnowflakeIdInTransaction(tx: Transaction): Promise<bigint> {
+  return allocate(tx);
+}
+
 export async function reserveImportedSnowflakeIds(tx: Pick<Transaction, 'update'>, ids: Iterable<bigint>) {
   let maximum = 0n;
   for (const id of ids) {
