@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { bigint, bigserial, char, index, integer, jsonb, numeric, pgTable, primaryKey, smallint, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
-import type { ChargeStatus, CreditPool, GrantSource, QuotaPolicyMode, QuotaPolicyScope, QuotaPolicySource, RateCardView, UsageSnapshotStep } from '@/shared/billing';
+import type { ChargeStatus, CreditPool, GrantSource, QuotaAdjustmentMode, QuotaPolicyMode, QuotaPolicyScope, QuotaPolicySource, RateCardView, UsageSnapshotStep } from '@/shared/billing';
 
 const times = { createTime: timestamp('create_time', { mode: 'string' }).notNull(), updateTime: timestamp('update_time', { mode: 'string' }).notNull() };
 export const users = pgTable('app_user', { id: bigint('id', { mode: 'bigint' }).primaryKey(), userAccount: varchar('user_account', { length: 256 }).notNull(), userPassword: varchar('user_password', { length: 512 }).notNull(), userName: varchar('user_name', { length: 256 }), userAvatar: varchar('user_avatar', { length: 1024 }), userProfile: varchar('user_profile', { length: 512 }), userRole: varchar('user_role', { length: 256 }).notNull().default('user'), ...times, isDelete: integer('is_delete').notNull().default(0) }, t => [uniqueIndex('uk_app_user_account').on(t.userAccount)]);
@@ -239,6 +239,25 @@ export const creditQuotaIssues = pgTable('credit_quota_issue', {
 }, t => [
   uniqueIndex('uk_credit_quota_issue_period').on(t.userId, t.period),
   index('idx_credit_quota_issue_period_status').on(t.period, t.status),
+]);
+
+// 当月配额调整：只追加有符号差额，不修改 grant/entry；request_id 保证重试幂等。
+export const creditQuotaAdjustments = pgTable('credit_quota_adjustment', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  userId: bigint('user_id', { mode: 'bigint' }).notNull(),
+  period: varchar('period', { length: 7 }).notNull(),
+  mode: varchar('mode', { length: 16 }).$type<QuotaAdjustmentMode>().notNull(),
+  credits: bigint('credits', { mode: 'number' }).notNull(),
+  reason: varchar('reason', { length: 500 }).notNull(),
+  operatorId: bigint('operator_id', { mode: 'bigint' }).notNull(),
+  requestId: varchar('request_id', { length: 128 }).notNull(),
+  requestFingerprint: varchar('request_fingerprint', { length: 64 }).notNull(),
+  beforeCredits: bigint('before_credits', { mode: 'number' }).notNull(),
+  afterCredits: bigint('after_credits', { mode: 'number' }).notNull(),
+  createTime: timestamp('create_time', { mode: 'string', precision: 3 }).notNull(),
+}, t => [
+  uniqueIndex('uk_credit_quota_adjust_request').on(t.userId, t.requestId),
+  index('idx_credit_quota_adjust_period').on(t.period, t.userId),
 ]);
 
 // ---- 计费（migrations/012_credit_charge_entry.sql）----

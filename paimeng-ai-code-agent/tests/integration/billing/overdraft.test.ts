@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, getPool, now } from '@/server/infra/db';
 import {
-  creditAccounts, creditCharges, creditEntries, creditGrants, creditQuotaIssues, generationSteps, generations, sessions, users,
+  creditAccounts, creditCharges, creditEntries, creditGrants, creditQuotaAdjustments, creditQuotaIssues, generationSteps, generations, sessions, users,
 } from '@/server/infra/schema';
 import { evaluateRunningOverdraft, settleGenerationBilling } from '@/server/billing/settlement';
 import {
@@ -28,7 +28,7 @@ const rateModel = 'model-overdraft';
 beforeAll(async () => {
   await applyBillingMigrations(
     '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql',
-    '014_credit_entry_audit.sql', '018_credit_entry_reason_length.sql', '020_credit_quota_policy.sql',
+    '014_credit_entry_audit.sql', '018_credit_entry_reason_length.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql',
   );
   await seedBillingRate({ modelName: rateModel });
 });
@@ -45,6 +45,7 @@ afterAll(async () => {
   if (createdApps.length) await db().delete(creditCharges).where(inArray(creditCharges.appId, createdApps));
   if (createdUsers.length) {
     const ids = createdUsers.map(id => BigInt(id));
+    await db().delete(creditQuotaAdjustments).where(inArray(creditQuotaAdjustments.userId, ids));
     await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, ids));
     await db().delete(creditGrants).where(inArray(creditGrants.userId, ids));
     await db().delete(creditAccounts).where(inArray(creditAccounts.userId, ids));

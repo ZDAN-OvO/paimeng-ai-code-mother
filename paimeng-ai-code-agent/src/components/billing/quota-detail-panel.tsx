@@ -4,8 +4,8 @@ import { Alert, Descriptions, Table, Tag } from 'antd';
 import { api } from '@/client/api';
 import { formatBeijingTime, formatStoredTime } from '@/shared/display';
 import {
-  adminQuotaStatusLabels, poolLabels, quotaPolicySourceLabels, sourceLabels,
-  type AdminCreditUser, type AdminUserUsage, type CreditGrantView, type QuotaIssueView,
+  adminQuotaStatusLabels, poolLabels, quotaAdjustmentModeLabels, quotaPolicySourceLabels, sourceLabels,
+  type AdminCreditUser, type AdminUserUsage, type CreditGrantView, type QuotaAdjustmentView, type QuotaIssueView,
 } from '@/shared/billing';
 import { AdminUserIdentity } from './admin-credit-overview';
 import styles from '@/components/admin-view.module.css';
@@ -86,6 +86,28 @@ export function QuotaDetailPanel({ user }: { user: AdminCreditUser }) {
         { title: '版本', dataIndex: 'policyVersion', width: 80, render: (value: number | null) => value === null ? '—' : `v${value}` },
         { title: 'Grant ID', dataIndex: 'grantId', width: 220, render: (value: string | null) => value ?? '无（0 配额）' },
         { title: '时间', dataIndex: 'createTime', width: 160, render: (value: string) => formatStoredTime(value) },
+      ]}
+    />
+    <div className={styles.sectionHeading}>
+      <h2>最近当月配额调整</h2>
+      <span className={styles.statusHint}>只追加有符号差额；扣回不会改写已发生的消费</span>
+    </div>
+    <Table<QuotaAdjustmentView>
+      rowKey="id"
+      size="small"
+      dataSource={credit.adjustments}
+      pagination={false}
+      scroll={{ x: 980 }}
+      locale={{ emptyText: '这个用户还没有配额调整' }}
+      columns={[
+        { title: '时间', dataIndex: 'createTime', width: 160, render: (value: string) => formatStoredTime(value) },
+        { title: '账期', dataIndex: 'period', width: 90 },
+        { title: '方式', dataIndex: 'mode', width: 130, render: (value: QuotaAdjustmentView['mode']) => quotaAdjustmentModeLabels[value] },
+        { title: '差额', dataIndex: 'credits', width: 100, render: (value: number) => `${value} Credit` },
+        { title: '调整前', dataIndex: 'beforeCredits', width: 100, render: (value: number) => `${value} Credit` },
+        { title: '调整后', dataIndex: 'afterCredits', width: 100, render: (value: number) => `${value} Credit` },
+        { title: '理由', dataIndex: 'reason', width: 220, render: (value: string) => value },
+        { title: '操作人', dataIndex: 'operatorId', width: 140 },
       ]}
     />
     <div className={styles.sectionHeading}>

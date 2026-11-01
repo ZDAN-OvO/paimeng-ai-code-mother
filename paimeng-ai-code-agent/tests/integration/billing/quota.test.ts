@@ -10,7 +10,7 @@ import {
   type BillingTestUser,
 } from '../../support/billing';
 import { db, getPool, now } from '@/server/infra/db';
-import { creditAccounts, creditGrants, creditQuotaIssues, sessions, users } from '@/server/infra/schema';
+import { creditAccounts, creditGrants, creditQuotaAdjustments, creditQuotaIssues, sessions, users } from '@/server/infra/schema';
 import { naiveTime, nextPeriodStart, periodOf, periodRange } from '@/server/billing/period';
 import { ensureCurrentPeriod, ensurePeriodQuota, issueMonthlyQuota } from '@/server/billing/quota';
 import { monthlyQuotaCredits, type AccountSummary } from '@/shared/billing';
@@ -56,6 +56,8 @@ async function removeCurrentGrant(user: BillingTestUser) {
   await db().delete(creditGrants)
     .where(and(eq(creditGrants.userId, idOf(user)), eq(creditGrants.period, period)));
   // C2 起发放状态以 issue 为准：模拟「停机错过当月」时两件事都要回到未发。
+  await db().delete(creditQuotaAdjustments)
+    .where(and(eq(creditQuotaAdjustments.userId, idOf(user)), eq(creditQuotaAdjustments.period, period)));
   await db().delete(creditQuotaIssues)
     .where(and(eq(creditQuotaIssues.userId, idOf(user)), eq(creditQuotaIssues.period, period)));
 }
@@ -70,7 +72,7 @@ beforeAll(async () => {
   loadBillingDatabase();
   // 配额余额是「当期 grant − 当期 quota entry」的重算（`quotaUsageOfPeriod` 直接查 `credit_entry`，
   // 缺表就是部署没迁移到位），所以配额用例必须把结算表一起应用上。
-  await applyBillingMigrations('010_credit_grant_account.sql', chargeEntryMigration, '020_credit_quota_policy.sql');
+  await applyBillingMigrations('010_credit_grant_account.sql', chargeEntryMigration, '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql');
 });
 
 afterAll(async () => {

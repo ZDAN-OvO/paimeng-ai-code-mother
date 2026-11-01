@@ -8,7 +8,7 @@ import { db, getPool, now } from '@/server/infra/db';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import { failure } from '@/server/infra/http';
 import {
-  appAuthority, apps, creditAccounts, creditCharges, creditGrants, creditQuotaIssues, generationExecutions, generationInputs,
+  appAuthority, apps, creditAccounts, creditCharges, creditGrants, creditQuotaAdjustments, creditQuotaIssues, generationExecutions, generationInputs,
   generations, users,
 } from '@/server/infra/schema';
 import { appendInput } from '@/server/generation/control-store';
@@ -89,7 +89,7 @@ beforeAll(async () => {
   loadBillingDatabase();
   process.env.GENERATION_MAX_CONCURRENT = '64';
   await applyBillingMigrations(
-    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '014_credit_entry_audit.sql', '020_credit_quota_policy.sql',
+    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '014_credit_entry_audit.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql',
   );
   tree = await realpath(await mkdtemp(join(tmpdir(), 'paimeng-admission-')));
   runtimeRoot = join(tree, 'runtime');
@@ -111,6 +111,7 @@ afterAll(async () => {
     await db().delete(apps).where(inArray(apps.id, createdAppIds));
   }
   if (userIds.length) {
+    await db().delete(creditQuotaAdjustments).where(inArray(creditQuotaAdjustments.userId, userIds));
     await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, userIds));
     await db().delete(creditGrants).where(inArray(creditGrants.userId, userIds));
     await db().delete(creditAccounts).where(inArray(creditAccounts.userId, userIds));

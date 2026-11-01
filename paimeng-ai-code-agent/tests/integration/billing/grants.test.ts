@@ -5,7 +5,7 @@ import {
   applyBillingMigrations, billingRequest, createBillingUser, envelopeOf, loadBillingDatabase, type BillingTestUser,
 } from '../../support/billing';
 import { db, getPool } from '@/server/infra/db';
-import { creditAccounts, creditGrants, creditQuotaIssues, sessions, users } from '@/server/infra/schema';
+import { creditAccounts, creditGrants, creditQuotaAdjustments, creditQuotaIssues, sessions, users } from '@/server/infra/schema';
 import { accountSnapshot, lockAccounts, recordGrant, rebuildAccount } from '@/server/billing/ledger';
 import { grantCredits } from '@/server/billing/admin';
 import { monthlyQuotaCredits, type AccountSnapshot, type GrantReceipt } from '@/shared/billing';
@@ -19,12 +19,13 @@ import { monthlyQuotaCredits, type AccountSnapshot, type GrantReceipt } from '@/
 const createdUsers: string[] = [];
 
 beforeAll(async () => {
-  await applyBillingMigrations('010_credit_grant_account.sql', '020_credit_quota_policy.sql');
+  await applyBillingMigrations('010_credit_grant_account.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql');
 });
 
 afterAll(async () => {
   if (createdUsers.length) {
     const ids = createdUsers.map(id => BigInt(id));
+    await db().delete(creditQuotaAdjustments).where(inArray(creditQuotaAdjustments.userId, ids));
     await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, ids));
     await db().delete(creditGrants).where(inArray(creditGrants.userId, ids));
     await db().delete(creditAccounts).where(inArray(creditAccounts.userId, ids));

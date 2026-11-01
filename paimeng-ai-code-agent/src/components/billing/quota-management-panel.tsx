@@ -1,10 +1,10 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, App, Button, Descriptions, Form, Input, InputNumber, Select, Table, Tag } from 'antd';
+import { Alert, App, Button, Descriptions, Form, Input, InputNumber, Modal, Select, Table, Tag } from 'antd';
 import { api } from '@/client/api';
 import {
-  adminQuotaStatusLabels, maxMonthlyQuotaCredits, quotaPolicyModeLabels, quotaPolicySourceLabels,
-  type AdminCreditOverview, type AdminCreditOverviewItem, type AdminCreditUser,
+  adminQuotaStatusLabels, maxMonthlyQuotaCredits, quotaAdjustmentModeLabels, quotaPolicyModeLabels, quotaPolicySourceLabels,
+  type AdminCreditOverview, type AdminCreditOverviewItem, type AdminCreditUser, type QuotaAdjustmentMode, type QuotaAdjustmentReceipt,
   type QuotaPolicyAdminView, type QuotaPolicySaveReceipt, type QuotaPolicyView,
 } from '@/shared/billing';
 import { formatStoredTime } from '@/shared/display';
@@ -13,6 +13,7 @@ import { UserSearchSelect } from './user-search-select';
 import styles from '@/components/admin-view.module.css';
 
 type PolicyForm = { effectivePeriod: string; mode?: 'inherit' | 'override'; credits?: number; note?: string };
+type AdjustForm = { mode: QuotaAdjustmentMode; amount: number; reason: string };
 
 /** 同一账期已有版本时取最大 revision；没有则 null，服务端据此判断「新建」还是「替换」。 */
 function revisionFor(versions: QuotaPolicyView[], effectivePeriod: string): number | null {
@@ -36,10 +37,15 @@ export function QuotaManagementPanel({ onSelect }: { onSelect: (user: AdminCredi
   const [userId, setUserId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState<'global' | 'user' | null>(null);
+  const [saving, setSaving] = useState<'global' | 'user' | 'adjust' | null>(null);
   const [globalForm] = Form.useForm<PolicyForm>();
   const [userForm] = Form.useForm<PolicyForm>();
+  const [adjustForm] = Form.useForm<AdjustForm>();
   const userMode = Form.useWatch('mode', userForm);
+  const adjustMode = Form.useWatch('mode', adjustForm);
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
+  const [adjustReceipt, setAdjustReceipt] = useState<QuotaAdjustmentReceipt | null>(null);
+  const [pendingAdjust, setPendingAdjust] = useState<AdjustForm | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -75,6 +81,13 @@ export function QuotaManagementPanel({ onSelect }: { onSelect: (user: AdminCredi
   }, [globalForm, userForm, userId]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    // 换用户就换一次调整意图键，避免把上一个用户的 requestId 带进新载荷。
+    setRequestId(crypto.randomUUID());
+    setAdjustReceipt(null);
+    setPendingAdjust(null);
+    adjustForm.resetFields();
+  }, [adjustForm, userId]);
 
   async function submitGlobal(values: PolicyForm) {
     if (!policy) return;
@@ -119,9 +132,58 @@ export function QuotaManagementPanel({ onSelect }: { onSelect: (user: AdminCredi
     }
   }
 
+  function calcAdjust(before: number, values: AdjustForm): { before: number; delta: number; after: number } {
+    const delta = values.mode === 'increase' ? values.amount : values.mode === 'decrease' ? -values.amount : values.amount - before;
+    return { before, delta, after: before + delta };
+  }
+
+  function submitAdjust(values: AdjustForm) {
+    if (!policy?.user) return;
+    const preview = calcAdjust(policy.user.quota.remainingCredits, values);
+    if (preview.after < 0) {
+      message.error(`扣回后配额会变成 ${preview.after}，不能超过当前有效剩余 ${preview.before}`);
+      return;
+    }
+    if (preview.delta === 0) {
+      message.error('调整后剩余与当前相同，无需调整');
+      return;
+    }
+    setPendingAdjust(values);
+    setAdjustReceipt(null);
+  }
+
+  async function confirmAdjust() {
+    if (!policy?.user || !pendingAdjust) return;
+    setSaving('adjust');
+    try {
+      const receipt = await api<QuotaAdjustmentReceipt>('admin/billing/quota/adjust', {
+        userId: policy.user.userId,
+        mode: pendingAdjust.mode,
+        amount: pendingAdjust.amount,
+        reason: pendingAdjust.reason,
+        requestId,
+      });
+      setAdjustReceipt(receipt);
+      setPendingAdjust(null);
+      setRequestId(crypto.randomUUID());
+      adjustForm.resetFields();
+      message.success(receipt.created
+        ? `已调整：${receipt.beforeCredits} → ${receipt.afterCredits} Credit`
+        : '这次请求之前已经调整过，没有重复变更');
+      await load();
+    } catch (problem) {
+      message.error((problem as Error).message);
+    } finally {
+      setSaving(null);
+    }
+  }
+
   if (error) return <Alert type="error" showIcon title={error} />;
   if (!overview || !pending || !policy) return <p className={styles.statusHint}>正在读取配额策略…</p>;
   const issued = overview.stats.userCount - pending.stats.pendingCount;
+  const pendingPreview = policy.user && pendingAdjust
+    ? calcAdjust(policy.user.quota.remainingCredits, pendingAdjust)
+    : null;
   return <section aria-label="配额管理">
     <div className={styles.sectionHeading}>
       <h2>月度配额策略</h2>
@@ -171,6 +233,8 @@ export function QuotaManagementPanel({ onSelect }: { onSelect: (user: AdminCredi
       <Descriptions bordered size="small" column={{ xs: 1, sm: 2 }} style={{ marginBottom: 12 }} items={[
         { key: 'current', label: '当前账期有效规则', children: effectiveText(policy.user.current) },
         { key: 'next', label: '下一账期有效规则', children: effectiveText(policy.user.next) },
+        { key: 'remaining', label: '当前有效剩余', children: `${policy.user.quota.remainingCredits} Credit（基础 ${policy.user.quota.baseCredits} + 调整 ${policy.user.quota.adjustmentCredits} − 已用 ${policy.user.quota.usedCredits}）` },
+        { key: 'expires', label: '配额到期', children: policy.user.quota.expiresAt },
       ]} />
       <Form form={userForm} layout="vertical" onFinish={submitUser} className={styles.policyForm}>
         <Form.Item label="生效账期" name="effectivePeriod" rules={[
@@ -195,6 +259,38 @@ export function QuotaManagementPanel({ onSelect }: { onSelect: (user: AdminCredi
           <Button type="primary" htmlType="submit" loading={saving === 'user'}>保存用户策略</Button>
         </Form.Item>
       </Form>
+      <div className={styles.sectionHeading}>
+        <h2>当月剩余调整</h2>
+        <span className={styles.statusHint}>只改当前月有效剩余，不改下月标准；理由必填，支持同键重试幂等</span>
+      </div>
+      <Form form={adjustForm} layout="vertical" onFinish={submitAdjust} className={styles.policyForm}>
+        <Form.Item label="调整方式" name="mode" initialValue="increase" rules={[{ required: true, message: '请选择调整方式' }]}>
+          <Select aria-label="调整方式" options={[
+            { value: 'increase', label: '增加当月剩余' },
+            { value: 'decrease', label: '扣回当月剩余' },
+            { value: 'target', label: '设为目标剩余' },
+          ]} />
+        </Form.Item>
+        <Form.Item label={adjustMode === 'target' ? '目标剩余（Credit）' : '调整金额（Credit）'} name="amount" rules={[{ required: true, message: '请填写金额' }]}>
+          <InputNumber aria-label="调整金额" min={adjustMode === 'target' ? 0 : 1} max={policy.limits.maxQuotaAdjustmentCredits} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item label="调整理由" name="reason" rules={[{ required: true, message: '请填写调整理由' }, { max: 500, message: '理由最多 500 字' }]}>
+          <Input aria-label="调整理由" maxLength={500} placeholder="例如：按投诉补偿 / 修正误发" />
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" htmlType="submit" loading={saving === 'adjust'}>确认调整</Button>
+        </Form.Item>
+      </Form>
+      {adjustReceipt && <Descriptions bordered size="small" column={{ xs: 1, sm: 2 }} style={{ marginTop: 12 }} items={[
+        { key: 'created', label: '是否本次新增', children: adjustReceipt.created ? '是' : '否（重放，未重复变更）' },
+        { key: 'period', label: '账期', children: adjustReceipt.period },
+        { key: 'before', label: '调整前剩余', children: `${adjustReceipt.beforeCredits} Credit` },
+        { key: 'delta', label: '调整差额', children: `${adjustReceipt.adjustment.credits} Credit` },
+        { key: 'after', label: '调整后剩余', children: `${adjustReceipt.afterCredits} Credit` },
+        { key: 'expires', label: '到期', children: adjustReceipt.expiresAt },
+        { key: 'reason', label: '理由', children: adjustReceipt.adjustment.reason },
+        { key: 'operator', label: '操作人', children: adjustReceipt.adjustment.operatorId },
+      ]} />}
       <PolicyVersions versions={policy.user.versions} title="这个用户的未来策略版本" />
     </>}
     {!policy.user && <p className={styles.statusHint}>先搜索并选中一个用户，才能查看或设置单用户覆盖。</p>}
@@ -223,6 +319,31 @@ export function QuotaManagementPanel({ onSelect }: { onSelect: (user: AdminCredi
         { title: '余额池', dataIndex: 'balance', width: 110, render: (value: number) => `${value} Credit` },
       ]}
     />
+    <Modal
+      title="确认调整当月配额"
+      open={pendingAdjust !== null}
+      onCancel={() => setPendingAdjust(null)}
+      onOk={() => void confirmAdjust()}
+      okText="确认调整"
+      cancelText="取消"
+      confirmLoading={saving === 'adjust'}
+      okButtonProps={{ disabled: !pendingPreview || pendingPreview.after < 0 || pendingPreview.delta === 0 }}
+      destroyOnHidden
+    >
+      {policy.user && pendingAdjust && pendingPreview && <>
+        <Descriptions bordered size="small" column={1} items={[
+          { key: 'user', label: '用户', children: <AdminUserIdentity user={policy.user} /> },
+          { key: 'period', label: '账期', children: policy.period },
+          { key: 'mode', label: '调整方式', children: quotaAdjustmentModeLabels[pendingAdjust.mode] },
+          { key: 'before', label: '当前有效剩余', children: `${pendingPreview.before} Credit` },
+          { key: 'delta', label: '调整差额', children: `${pendingPreview.delta} Credit` },
+          { key: 'after', label: '调整后剩余', children: `${pendingPreview.after} Credit` },
+          { key: 'expires', label: '到期', children: policy.user.quota.expiresAt },
+          { key: 'reason', label: '理由', children: pendingAdjust.reason },
+        ]} />
+        <p className={styles.statusHint}>只改当前月剩余，不改下月标准；结束时以服务端重算结果为准。</p>
+      </>}
+    </Modal>
   </section>;
 }
 

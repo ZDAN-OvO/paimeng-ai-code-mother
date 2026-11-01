@@ -285,7 +285,13 @@ export type QuotaPolicyAdminView = {
   defaultCredits: number;
   limits: { maxMonthlyQuotaCredits: number; maxQuotaAdjustmentCredits: number };
   global: QuotaPolicyRange;
-  user: (QuotaPolicyRange & { userId: string; userAccount: string; userName: string | null }) | null;
+  user: (QuotaPolicyRange & {
+    userId: string;
+    userAccount: string;
+    userName: string | null;
+    /** 当前账期的配额事实，供调整表单显示调整前剩余。 */
+    quota: AdminQuotaDetail;
+  }) | null;
 };
 
 const quotaPeriod = z.string().trim().regex(/^\d{4}-(0[1-9]|1[0-2])$/u, '账期必须形如 2026-12');
@@ -337,6 +343,59 @@ export type QuotaIssueView = {
   reason: string | null;
   createTime: string;
   updateTime: string;
+};
+
+// ---- 单用户当月配额调整（migrations/021_credit_quota_adjustment.sql）----
+
+export const quotaAdjustmentModes = ['increase', 'decrease', 'target'] as const;
+export type QuotaAdjustmentMode = (typeof quotaAdjustmentModes)[number];
+export const quotaAdjustmentModeLabels: Record<QuotaAdjustmentMode, string> = {
+  increase: '增加当月剩余',
+  decrease: '扣回当月剩余',
+  target: '设为目标剩余',
+};
+
+/** 调整请求：金额对 increase/decrease 是差额，对 target 是目标剩余。 */
+export const quotaAdjustmentRequestSchema = z
+  .object({
+    userId: idSchema,
+    /** 只允许当前账期；省略时由服务端取当前账期。 */
+    period: z.string().trim().regex(/^\d{4}-(0[1-9]|1[0-2])$/u, '账期必须形如 2026-11').optional(),
+    mode: z.enum(quotaAdjustmentModes),
+    amount: z.number().int('金额必须是整数 Credit').min(0, '金额不能是负数').max(maxQuotaAdjustmentCredits, `单次调整不能超过 ${maxQuotaAdjustmentCredits} Credit`),
+    reason: z.string().trim().min(1, '请填写调整理由').max(500, '调整理由最多 500 字'),
+    requestId: z.string().trim().min(1).max(128),
+  })
+  .superRefine((value, ctx) => {
+    if (value.mode !== 'target' && value.amount < 1) {
+      ctx.addIssue({ code: 'custom', message: '增加或扣回金额必须大于 0' });
+    }
+  });
+export type QuotaAdjustmentRequest = z.infer<typeof quotaAdjustmentRequestSchema>;
+
+export type QuotaAdjustmentView = {
+  id: string;
+  userId: string;
+  period: string;
+  mode: QuotaAdjustmentMode;
+  /** 有符号差额：增加为正，扣回为负；不会为 0。 */
+  credits: number;
+  reason: string;
+  operatorId: string;
+  requestId: string;
+  beforeCredits: number;
+  afterCredits: number;
+  createTime: string;
+};
+
+/** 调整回执：`created=false` 表示同键同载荷的重放，没有再改余额。 */
+export type QuotaAdjustmentReceipt = {
+  created: boolean;
+  adjustment: QuotaAdjustmentView;
+  period: string;
+  beforeCredits: number;
+  afterCredits: number;
+  expiresAt: string;
 };
 // ---- Credit Charge（migrations/012_credit_charge_entry.sql）----
 
@@ -677,5 +736,7 @@ export type AdminUserCreditDetail = {
   rule: { current: EffectiveQuotaPolicy; next: EffectiveQuotaPolicy };
   /** 最近的基础发放事实，含 0 配额；与 grant 流水分开。 */
   issues: QuotaIssueView[];
+  /** 最近当月配额调整；金额是有符号差额。 */
+  adjustments: QuotaAdjustmentView[];
   asOf: string;
 };

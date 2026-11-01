@@ -47,13 +47,26 @@ npm run billing:quota-issue -- --apply --limit=200
   ```
   时间取北京时间 1 号 00:10；即使漏跑或重跑，下一次任何人读额度摘要时也会补当期。
 
+### 当月单用户调整
+
+策略只管未来账期；当月少给/多给/需要统一到某个剩余时，走 Admin 的「配额管理 → 当月剩余调整」，代码在 `src/server/billing/quota-adjustment.ts`。
+
+- 三种意图：`increase`（增加当月剩余）、`decrease`（扣回未使用部分）、`target`（把剩余设为目标值，服务端在锁内算差额）。
+- 只允许当前北京账期；已结束月份只读，未来账期不能提前调整。
+- 扣回不得超过当前有效剩余，配额池永不为负；调整不会改写已发生的 Charge 或 entry。
+- 每次调整写一行 `credit_quota_adjustment`，包含有符号差额、理由、操作者、`requestId` 与调整前后剩余。同 `requestId` 同载荷返回原回执，不同载荷返回 409。
+- 调整只属于该账期，月底随配额失效；下个月标准仍由策略决定。
+- 调整与结算使用同一对 `credit_account` 行锁；并发时先结算或先调整，最终都等于「基础 + 调整 − 消费」。
+
 ### 核对
 
-配额余额是余额快照（`credit_account.pool = 'quota'`），真值在 `credit_grant`（发放）与 `credit_entry`（扣减，归属看父 Charge 的 `create_time`）。查某个用户：
+配额余额是余额快照（`credit_account.pool = 'quota'`），真值在 `credit_quota_issue`（基础发放）、`credit_quota_adjustment`（调整）与 `credit_entry`（扣减，归属看父 Charge 的 `create_time`）。查某个用户：
 
 ```bash
 docker exec -i zslm-postgres psql -U postgres -d paimeng_app -c \
-  "select period, credits, create_time from credit_grant where user_id = 123 and source = 'monthly_quota' order by period"
+  "select period, base_credits, status, policy_source, grant_id from credit_quota_issue where user_id = 123 order by period"
+docker exec -i zslm-postgres psql -U postgres -d paimeng_app -c \
+  "select period, mode, credits, before_credits, after_credits, reason from credit_quota_adjustment where user_id = 123 order by create_time"
 docker exec -i zslm-postgres psql -U postgres -d paimeng_app -c \
   "select pool, balance, update_time from credit_account where user_id = 123 order by pool"
 ```

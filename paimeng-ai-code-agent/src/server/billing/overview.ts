@@ -2,7 +2,7 @@ import 'server-only';
 import { desc, eq, sql, type SQL } from 'drizzle-orm';
 import { db, now } from '@/server/infra/db';
 import { BusinessError } from '@/server/infra/http';
-import { creditAccounts, creditGrants, creditQuotaIssues } from '@/server/infra/schema';
+import { creditAccounts, creditGrants, creditQuotaAdjustments, creditQuotaIssues } from '@/server/infra/schema';
 import { idSchema } from '@/shared/contracts';
 import {
   type AdminCreditFilter, type AdminCreditOverview, type AdminCreditOverviewItem, type AdminCreditOverviewQuery,
@@ -75,6 +75,12 @@ function factsCte(period: string): SQL {
       from credit_quota_issue
       where period = ${period}
     ),
+    adjustment_facts as (
+      select user_id, coalesce(sum(credits), 0) as net
+      from credit_quota_adjustment
+      where period = ${period}
+      group by user_id
+    ),
     account_snapshots as (
       select user_id,
         max(case when pool = 'quota' then balance end) as quota_snapshot,
@@ -89,11 +95,12 @@ function factsCte(period: string): SQL {
         app_user.user_name,
         case when issue_facts.status = 'granted' then issue_facts.base_credits
           else coalesce(grant_facts.monthly_granted, 0) end::bigint as base_credits,
-        0::bigint as adjustment_credits,
+        coalesce(adjustment_facts.net, 0)::bigint as adjustment_credits,
         coalesce(quota_used.used, 0)::bigint as used_credits,
         greatest(0,
           (case when issue_facts.status = 'granted' then issue_facts.base_credits
-            else coalesce(grant_facts.monthly_granted, 0) end) - coalesce(quota_used.used, 0)
+            else coalesce(grant_facts.monthly_granted, 0) end)
+          + coalesce(adjustment_facts.net, 0) - coalesce(quota_used.used, 0)
         )::bigint as remaining_credits,
         (coalesce(grant_facts.balance_granted, 0) - coalesce(balance_used.used, 0))::bigint as balance,
         coalesce(account_snapshots.quota_snapshot, 0)::bigint as quota_snapshot,
@@ -107,7 +114,8 @@ function factsCte(period: string): SQL {
         (coalesce(grant_facts.balance_granted, 0) - coalesce(balance_used.used, 0)
           + greatest(0,
             (case when issue_facts.status = 'granted' then issue_facts.base_credits
-              else coalesce(grant_facts.monthly_granted, 0) end) - coalesce(quota_used.used, 0)
+              else coalesce(grant_facts.monthly_granted, 0) end)
+            + coalesce(adjustment_facts.net, 0) - coalesce(quota_used.used, 0)
           ))::bigint as total,
         greatest(0, -(coalesce(grant_facts.balance_granted, 0) - coalesce(balance_used.used, 0)))::bigint as debt,
         coalesce(grant_facts.purchased_credits, 0)::bigint as purchased_credits,
@@ -118,6 +126,7 @@ function factsCte(period: string): SQL {
       left join quota_used on quota_used.user_id = app_user.id
       left join balance_used on balance_used.user_id = app_user.id
       left join issue_facts on issue_facts.user_id = app_user.id
+      left join adjustment_facts on adjustment_facts.user_id = app_user.id
       left join account_snapshots on account_snapshots.user_id = app_user.id
       where app_user.is_delete = 0
     )
@@ -252,12 +261,14 @@ export async function adminUserCreditDetail(userId: string): Promise<AdminUserCr
   const row = result.rows[0] as RawRow | undefined;
   if (!row) throw new BusinessError(404, 40400, '用户不存在');
 
-  const [grants, accounts, issues, currentRule, nextRule] = await Promise.all([
+  const [grants, accounts, issues, adjustments, currentRule, nextRule] = await Promise.all([
     db().select().from(creditGrants).where(eq(creditGrants.userId, BigInt(userId)))
       .orderBy(desc(creditGrants.createTime)).limit(50),
     db().select().from(creditAccounts).where(eq(creditAccounts.userId, BigInt(userId))),
     db().select().from(creditQuotaIssues).where(eq(creditQuotaIssues.userId, BigInt(userId)))
       .orderBy(desc(creditQuotaIssues.period)).limit(24),
+    db().select().from(creditQuotaAdjustments).where(eq(creditQuotaAdjustments.userId, BigInt(userId)))
+      .orderBy(desc(creditQuotaAdjustments.createTime)).limit(24),
     resolveQuotaPolicy(db(), BigInt(userId), period),
     resolveQuotaPolicy(db(), BigInt(userId), nextPeriodOf(period)),
   ]);
@@ -307,6 +318,19 @@ export async function adminUserCreditDetail(userId: string): Promise<AdminUserCr
       reason: issue.reason,
       createTime: issue.createTime,
       updateTime: issue.updateTime,
+    })),
+    adjustments: adjustments.map(adjustment => ({
+      id: adjustment.id,
+      userId: String(adjustment.userId),
+      period: adjustment.period,
+      mode: adjustment.mode,
+      credits: adjustment.credits,
+      reason: adjustment.reason,
+      operatorId: String(adjustment.operatorId),
+      requestId: adjustment.requestId,
+      beforeCredits: adjustment.beforeCredits,
+      afterCredits: adjustment.afterCredits,
+      createTime: adjustment.createTime,
     })),
     asOf: now(),
   };

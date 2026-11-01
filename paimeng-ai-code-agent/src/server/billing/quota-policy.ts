@@ -10,6 +10,7 @@ import {
   type QuotaPolicyView, type QuotaPolicyScope,
 } from '@/shared/billing';
 import { periodOf } from './period';
+import { quotaDetailOf, quotaFactsOfPeriod } from './quota-facts';
 import type { Transaction } from '@/server/infra/db';
 
 /**
@@ -125,10 +126,11 @@ export async function readQuotaPolicyAdmin(input: { userId?: string }): Promise<
   const [user] = await db().select({ id: users.id, account: users.userAccount, name: users.userName }).from(users)
     .where(and(eq(users.id, userId), eq(users.isDelete, 0))).limit(1);
   if (!user) throw new BusinessError(404, 40400, '用户不存在');
-  const [current, next, versions] = await Promise.all([
+  const [current, next, versions, quotaFacts] = await Promise.all([
     resolveQuotaPolicy(db(), userId, period),
     resolveQuotaPolicy(db(), userId, nextPeriod),
     versionsOf('user', userId, period),
+    quotaFactsOfPeriod(db(), userId, period),
   ]);
   return {
     period,
@@ -143,6 +145,7 @@ export async function readQuotaPolicyAdmin(input: { userId?: string }): Promise<
       current,
       next,
       versions,
+      quota: quotaDetailOf(period, quotaFacts),
     },
   };
 }

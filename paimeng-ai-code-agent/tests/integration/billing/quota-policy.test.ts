@@ -10,7 +10,7 @@ import {
 } from '../../support/billing';
 import { db, getPool } from '@/server/infra/db';
 import {
-  creditAccounts, creditGrants, creditQuotaIssues, creditQuotaPolicies, sessions, users,
+  creditAccounts, creditGrants, creditQuotaAdjustments, creditQuotaIssues, creditQuotaPolicies, sessions, users,
 } from '@/server/infra/schema';
 import { ensurePeriodQuota, issueMonthlyQuota } from '@/server/billing/quota';
 import { quotaFactsOfPeriod } from '@/server/billing/quota-facts';
@@ -37,7 +37,7 @@ const nextAt = nextPeriodStart(new Date());
 beforeAll(async () => {
   loadBillingDatabase();
   await applyBillingMigrations(
-    '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '020_credit_quota_policy.sql',
+    '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql',
   );
   admin = await createBillingUser({ role: 'admin' });
 });
@@ -50,6 +50,7 @@ afterAll(async () => {
   await db().execute(sql`delete from credit_entry where charge_id in (
     select generation_id from credit_charge where user_id in (${scope}))`);
   await db().execute(sql`delete from credit_charge where user_id in (${scope})`);
+  await db().delete(creditQuotaAdjustments).where(inArray(creditQuotaAdjustments.userId, userIds));
   await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, userIds));
   await db().delete(creditGrants).where(inArray(creditGrants.userId, userIds));
   await db().delete(creditAccounts).where(inArray(creditAccounts.userId, userIds));
@@ -203,6 +204,7 @@ describe('基础发放与 0 配额', () => {
   it('已有 legacy grant 时以 grant 为准，不按新策略重解释，也不重复写 grant', async () => {
     const user = await newUser();
     // 模拟迁移前数据：保留 grant，删掉回填 issue。
+    await db().delete(creditQuotaAdjustments).where(eq(creditQuotaAdjustments.userId, BigInt(user.id)));
     await db().delete(creditQuotaIssues).where(eq(creditQuotaIssues.userId, BigInt(user.id)));
     const [legacy] = await grantsOf(user.id, period);
     expect(legacy).toBeTruthy();
