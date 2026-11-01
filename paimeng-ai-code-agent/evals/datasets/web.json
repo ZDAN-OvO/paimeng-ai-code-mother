@@ -1,0 +1,242 @@
+{
+  "schemaVersion": 1,
+  "suite": "web",
+  "title": "联网：事实、素材、缺口与引用",
+  "description": "只在 WEB_ACCESS_ENABLED=true 时跑。测真实事实检索、来源引用、图片导入与署名，以及查不到时是否承认缺口而不是编造。",
+  "cases": [
+    {
+      "id": "web-01-nobel-2025",
+      "title": "2025 年诺贝尔物理学奖介绍",
+      "difficulty": "medium",
+      "codeGenType": "html",
+      "templateId": "html",
+      "execution": "runner",
+      "tags": ["facts", "citations", "science"],
+      "prompt": "做一页 2025 年诺贝尔物理学奖得主的介绍：列出三位得主的姓名、所属机构、获奖原因，并给出至少 2 条可点击的来源链接。事实必须准确。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "核对三位得主姓名",
+          "expect": "页面列出 John Clarke、Michel Devoret、John Martinis 三人，姓名拼写正确"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "核对获奖原因",
+          "expect": "描述与官方一致：在电路中观察到宏观量子隧穿与能量量子化；没有写成黑洞、量子计算芯片等无关主题"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "核对所属机构",
+          "expect": "机构信息准确（加州大学伯克利分校、耶鲁大学、加州大学圣塔芭芭拉分校或其官方英文名），没有编造"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "点击页面上的来源链接",
+          "expect": "至少 2 条链接指向真实可打开的来源（nobelprize.org 或权威媒体），不是空链接或搜索首页"
+        },
+        {
+          "id": "R5",
+          "evidence": "transcript",
+          "action": "查看联网工具调用",
+          "expect": "使用了搜索或网页读取工具，工具结果里能看到与页面事实对应的来源"
+        },
+        {
+          "id": "R6",
+          "evidence": "dom",
+          "action": "搜索页面文字",
+          "expect": "没有编造的获奖年份、机构名或颁奖词"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "required",
+        "earlyPreview": true,
+        "citations": true,
+        "maxMinutes": 12
+      },
+      "notes": "事实有唯一答案，适合检验检索是否真的发生。模型记忆可能只到 2024 年。"
+    },
+    {
+      "id": "web-02-images",
+      "title": "导入三张山景图并标注来源",
+      "difficulty": "hard",
+      "codeGenType": "html",
+      "templateId": "html",
+      "execution": "runner",
+      "tags": ["images", "license", "attribution"],
+      "prompt": "做一页山间民宿介绍，选 3 张真实的山景或木屋照片放进页面，并标注每张图的来源和授权情况。图片要能正常显示，不要只放外链。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "查看页面图片",
+          "expect": "至少 3 张照片成功显示，内容是山景或木屋，不是纯色占位或破图；其中 3 张有署名"
+        },
+        {
+          "id": "R2",
+          "evidence": "network",
+          "action": "查看图片请求地址",
+          "expect": "图片来自预览站点自身的工程目录（assets/ 等），不是第三方热链"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "查看每张图的署名",
+          "expect": "每张图都有来源链接或作者署名，信息与该图对应"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "核对授权说明",
+          "expect": "授权状态未知时明确写「授权需自行确认」；若声称 CC0 / CC BY，必须能对应到可核对的来源页"
+        },
+        {
+          "id": "R5",
+          "evidence": "transcript",
+          "action": "查看图片工具调用",
+          "expect": "使用了图片搜索与导入工具，导入结果被实际写入工程"
+        },
+        {
+          "id": "R6",
+          "evidence": "visual",
+          "action": "390×844 视口查看",
+          "expect": "三张图不溢出、不变形，署名文字可读"
+        },
+        {
+          "id": "R7",
+          "evidence": "dom",
+          "action": "检查页面文案",
+          "expect": "没有编造摄影师姓名或图库名称"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "required",
+        "earlyPreview": true,
+        "citations": true,
+        "maxMinutes": 15
+      },
+      "notes": "图片授权是产品硬要求。非严格许可模式下必须保留来源并提示授权待确认。"
+    },
+    {
+      "id": "web-03-missing-info",
+      "title": "查不到的小区物业信息",
+      "difficulty": "hard",
+      "codeGenType": "html",
+      "templateId": "html",
+      "execution": "runner",
+      "tags": ["no-result", "honesty", "placeholder"],
+      "prompt": "做一页「青岚里小区」的物业服务指南，要有物业电话、维修电话和收费标准。信息必须真实，查不到就写清楚，不要编。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "搜索页面上的电话号码",
+          "expect": "没有出现未经核实的 11 位手机号或编造的座机号"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "查看电话与收费区域",
+          "expect": "明确标注「待补充 / 需向物业确认」，并说明无法核实的原因"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "查看指南主体",
+          "expect": "仍有可用的报修流程、联系方式和注意事项等通用内容，不是一张只有「查不到」的空页"
+        },
+        {
+          "id": "R4",
+          "evidence": "transcript",
+          "action": "阅读回复",
+          "expect": "说明检索了什么、哪些信息没有可靠来源、建议用户从哪里获取"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "核对页面上其他具体信息",
+          "expect": "没有编造小区地址、物业公司名称或收费标准数字"
+        },
+        {
+          "id": "R6",
+          "evidence": "transcript",
+          "action": "查看联网工具调用",
+          "expect": "确实执行了搜索；没有在无结果时改用模型记忆硬编"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "required",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 12
+      },
+      "notes": "检索无结果时的诚实性。提示词已说明「查不到就写清楚」，所以不应提问或编造。"
+    },
+    {
+      "id": "web-04-policy-citations",
+      "title": "新能源车购置税政策与官方来源",
+      "difficulty": "hard",
+      "codeGenType": "html",
+      "templateId": "html",
+      "execution": "runner",
+      "tags": ["policy", "citations", "freshness"],
+      "prompt": "做一页「2026 年国内新能源汽车购置税政策」解读：列出政策要点、适用时间、减免上限，并给出来源链接。至少 3 条来源，其中至少 1 条是政府或税务部门官网。不要编文号。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "查看来源列表",
+          "expect": "至少 3 条可点击来源链接，其中至少 1 条域名为 gov.cn 或 chinatax.gov.cn"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "核对政策时间",
+          "expect": "明确写出政策覆盖 2026-01-01 至 2027-12-31（或等价表述），没有漏掉结束时间或写成 2026 全年"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "核对减免口径",
+          "expect": "写明按 5% 征收（减半）以及每辆减免不超过 1.5 万元，或与所引来源一致的等价表述"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "核对适用车型",
+          "expect": "说明适用于符合条件的新能源乘用车，没有扩大到所有新能源车或燃油车"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "搜索页面文字",
+          "expect": "没有编造财政部/税务总局文号、日期或「已取消购置税」等错误结论"
+        },
+        {
+          "id": "R6",
+          "evidence": "transcript",
+          "action": "查看联网工具调用与来源",
+          "expect": "实际读取了至少一个官方来源，页面事实与该来源一致"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "required",
+        "earlyPreview": true,
+        "citations": true,
+        "maxMinutes": 15
+      },
+      "notes": "时效性政策。不要用模型记忆替代检索；来源优先级高于文笔。"
+    }
+  ]
+}

@@ -24,8 +24,10 @@ paimeng-ai-code-agent/
 │   ├── shared/        # zod contracts and types imported by both sides
 │   └── client/        # browser API client and response envelope
 ├── templates/         # versioned skeletons copied into new apps: html, multi-file, react-ts, vue-ts
+├── config/            # runtime-read policy files (input guardrail rules); env override in .env.example
 ├── migrations/        # SQL; applied files are immutable history
 ├── tests/             # suites split by allowed resources; see tests/AGENTS.md
+├── evals/             # generation-quality datasets, rubric and evidence scripts; see evals/AGENTS.md
 ├── scripts/           # reusable entry points only; prerequisites, ports, rules in scripts/AGENTS.md
 ├── docs/              # contracts, ADRs, plans, prototypes; placement rules in docs/AGENTS.md
 ├── runtime/           # local runtime data, never source
@@ -35,6 +37,7 @@ paimeng-ai-code-agent/
 ## Read next
 
 - Run it, prerequisites, ports: `scripts/AGENTS.md`
+- Generation quality evals: `evals/AGENTS.md`
 - Server module boundaries: `src/server/AGENTS.md`
 - Cross-module invariants: `docs/implementation-contract.md`
 

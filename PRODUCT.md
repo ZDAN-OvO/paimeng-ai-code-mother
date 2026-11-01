@@ -60,6 +60,7 @@ web
 - `paimeng-ai-code-agent/docs/`：产品、数据模型、运行与迁移文档。
 - `paimeng-ai-code-agent/public/paimeng.png` 是现有的派蒙同人角色图；它来自外部作品，不能作为新品牌的视觉基础。
 - `docs/prototypes/in-progress/workbench/`：当前方向的界面原型（首页 / 工作台 / 移动端，明暗双主题）。
+- `paimeng-ai-code-agent/docs/prototypes/in-progress/folded-run/`：AI 输出「过程折叠」的三个变体（一行折叠组 / 左侧时间线 / 摘要行 + 侧栏），用来对齐折叠形态。
 - **没有**可直接引用的真实精选案例、客户证言、用户数量、性能基准或生产部署 URL。原型中的 App 名称、委托方、日期、版本号和网址均为演示数据。
 
 ## Product Principles
