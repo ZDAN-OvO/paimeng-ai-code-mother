@@ -1,0 +1,66 @@
+# P6 迁移演练：全新 Postgres 从零执行全部迁移
+
+```text
+$ docker run -d --name paimeng-p6-pg -e POSTGRES_PASSWORD=*** -e POSTGRES_DB=paimeng_app -p 55432:5432 postgres:16-alpine
+$ DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/paimeng_app node --import tsx scripts/db/migrate.ts
+已执行 001_initial.sql
+已执行 002_drop_rate_limit.sql
+已执行 004_versioning.sql
+已执行 005_version_ledger.sql
+已执行 006_harness_control.sql
+已执行 007_harness_attempt_tool.sql
+已执行 008_credit_rate_card.sql
+已执行 010_credit_grant_account.sql
+已执行 012_credit_charge_entry.sql
+已执行 014_credit_entry_audit.sql
+已执行 018_credit_entry_reason_length.sql
+已执行 019_provider_model.sql
+产品 Postgres 库迁移完成
+
+$ DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/paimeng_app npx tsx --env-file=.env --conditions=react-server scripts/db/backfill-provider-models.ts
+    "revision": "0",
+    "refreshEpoch": "0"
+  },
+  "expectedRevision": "0",
+  "providers": [],
+  "models": [],
+  "groups": [],
+  "conflicts": [],
+  "rates": {
+    "linkable": [],
+    "orphans": [
+      {
+        "providerId": "env-default",
+        "modelName": "deepseek-flash",
+        "versions": 1,
+        "reason": "no-model"
+      },
+      {
+        "providerId": "env-default",
+        "modelName": "deepseek-v4-pro",
+        "versions": 1,
+        "reason": "no-model"
+      }
+    ],
+    "mismatched": [],
+    "alreadyLinked": 0
+  },
+  "steps": {
+    "unlinkedModelSteps": 0,
+    "keys": []
+  },
+  "aliases": {
+    "total": 0,
+    "linked": 0,
+    "unlinked": 0
+  },
+  "counts": {
+    "modelsToCreate": 0,
+    "aliasesToLink": 0,
+    "ratesToLink": 0,
+    "conflicts": 0
+  }
+}
+预检：模型待创建 0，槽位待关联 0，费率待关联 0，冲突 0，错链费率 0
+dry-run 未写库；确认后执行 --apply --expect-revision 0
+```

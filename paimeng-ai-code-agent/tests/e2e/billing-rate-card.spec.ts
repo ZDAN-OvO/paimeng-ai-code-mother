@@ -96,6 +96,7 @@ test('管理员追加费率版本，历史版本仍然在表里', async ({ page 
   await expect(page.getByRole('columnheader', { name: '输出' })).toBeVisible();
   await expect(page.getByText('1 Credit = ¥0.01').first()).toBeVisible();
   await expect(page.getByRole('row').filter({ hasText: 'legacy-rate-model' })).toContainText('历史费率，未关联模型');
+  await page.screenshot({ path: evidencePath('billing', 'rate-card-legacy.png'), fullPage: true });
 
   await appendVersion(page, firstEffectiveFrom, { miss: 100, hit: 10, output: 400 });
   const firstRow = versionRow(page, firstEffectiveFrom);

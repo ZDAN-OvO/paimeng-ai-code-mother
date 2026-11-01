@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import type pg from 'pg';
 import { loadEnvFile } from 'node:process';
 import { appOrigin } from './support/app-origin';
+import { evidencePath } from './support/evidence';
 import { emptyModelConfig, readProviderHeaders, seedModelConfig, testConnection } from './support/model-config-fixtures';
 
 loadEnvFile('.env');
@@ -226,6 +227,7 @@ test('能力与回传思考内容属于提供商模型，槽位只选模型并�
   await expect(aliasDialog.getByRole('switch', { name: '回传思考内容' })).toHaveCount(0);
   await expect(aliasDialog.getByText('能力与兼容声明由提供商模型决定', { exact: false })).toBeVisible();
   await expect(aliasDialog.getByText('工具调用', { exact: true })).toBeVisible();
+  await page.screenshot({ path: evidencePath('provider-model', 'slot-model-readonly.png'), fullPage: true });
   await aliasDialog.getByRole('button', { name: /取\s*消$/ }).click();
 
   // 可选槽位从已登记模型里选，不能自建上游模型名。
@@ -265,6 +267,7 @@ test('同一请求名在两家提供商下是两条身份，槽位按提供商�
   await expect(page.getByRole('row').filter({ hasText: 'test-codegen-model' })).toHaveCount(2);
   await expect(page.getByText('env-secondary', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('env-default', { exact: true }).first()).toBeVisible();
+  await page.screenshot({ path: evidencePath('provider-model', 'same-name-two-providers.png'), fullPage: true });
 
   await openSlot(page, '代码生成');
   const dialog = page.getByRole('dialog');
@@ -281,6 +284,12 @@ test('同一请求名在两家提供商下是两条身份，槽位按提供商�
   } finally {
     await stored.end();
   }
+
+  await page.setViewportSize({ width: 480, height: 900 });
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '提供商模型' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
+  await page.screenshot({ path: evidencePath('provider-model', 'narrow-480.png'), fullPage: true });
 });
 
 test('直接输入的密钥以密文入库，界面与接口都不回显明文', async ({ page }) => {
@@ -441,6 +450,7 @@ test('从上游候选登记模型并分配给槽位', async ({ page }) => {
     const dialog = page.getByRole('dialog');
     await dialog.getByRole('button', { name: '获取上游候选' }).click();
     await expect(dialog.getByText(/获取到 2 个上游模型/)).toBeVisible({ timeout: 30000 });
+    await page.screenshot({ path: evidencePath('provider-model', 'upstream-candidates.png'), fullPage: true });
     await dialog.getByText('mimo-v2.6-flash', { exact: true }).click();
     await expect(dialog.getByLabel('请求模型名', { exact: true })).toHaveValue('mimo-v2.6-flash');
     await dialog.getByRole('switch', { name: '模型能力流式' }).click();

@@ -3,6 +3,33 @@
 Credit 有两个运维面：**月度配额**（发放、补发、查账）与**补结算/余额对账**（漏账补记、待处理重试、快照核对）。
 两个面都没有常驻定时器：触发点都在请求路径、Admin 入口或外部 cron 调的 CLI 上。
 
+## 费率与提供商模型
+
+Rate card 的当前身份是 **提供商模型**（`provider_model_id`）+ 生效时间，不再是任意 `(provider_id, model_name)` 字符串。同名模型在不同提供商下各用各的价；改价仍然只追加版本。
+
+- 管理界面在「模型管理 → 提供商模型」下按模型追加费率；`POST admin/billing/rate-card` 新请求只接受 `providerModelId`，服务端从模型派生 `provider_id` / `model_name`，未知模型 404、同模型同生效时间 409。
+- 旧费率行保留 `provider_model_id = NULL`，界面标为「历史费率，未关联模型」。旧 `(provider_id, model_name)` 写法在过渡期只允许补历史价；该提供商下已登记同名模型时，当前或未来生效的旧写法会被拒绝，避免同时维护两套当前价。
+- 有 `provider_model_id` 的 `generation_step` 只按模型 ID 与步骤时间取价，查不到就是 `unpriced`/`partial`，不回退到上游响应名或当前槽位。旧步骤（ID 为空）继续走原来的四组字符串候选键。
+- 账单快照的 `usage_snapshot` / `rate_card_snapshot` 记录模型 ID；旧快照缺少该键仍可读。补结算与运行期透支评估复用同一份步骤映射，不会出现两套价格。
+- 共享价格不跨提供商：A、B 两家提供商的同名模型即使价格不同，步骤会按各自 ID 命中各自版本。
+
+### 历史数据回填
+
+新表与可空引用列由迁移 `019_provider_model.sql` 建立；历史槽位、费率和步骤的关联由一次性工具完成。工具默认 dry-run，整批在一个事务里，冲突不吞，不触碰账单、步骤或结算：
+
+```bash
+cd paimeng-ai-code-agent
+npm run db:backfill-provider-models                 # 预检：模型待创建、槽位/费率待关联、冲突、孤立费率
+npm run db:backfill-provider-models -- --apply --expect-revision <dry-run 输出的 revision>
+```
+
+- 只在 `paimeng_app` / `paimeng_app_test` 上运行；`--apply` 必须带预检里的 `expectedRevision`，预检后配置变化会中止。
+- 同一 `(provider_id, 请求名)` 下能力或兼容声明不一致时整批中止，不取并集；先人工确认再重跑。
+- 费率只在 `(provider_id, model_name)` 精确对应已登记模型时关联；孤立费率保持未关联并列入报告；008 的两条 `env-default` 初始费率不会被自动套到新模型。
+- 步骤只统计不关联；历史价格补记与任何可能扣费的动作必须单独审查后执行。
+
+切换顺序：应用 `019` → 跑 dry-run 并处理冲突 → 暂停配置写入与新生成提交、等待活动生成结束 → `--apply` → 同版本部署 Next 与 harness → 核验必需槽位都有模型 ID、已确认费率关联正确、没有新增 Charge/entry → 恢复提交。回退代码前先核对新描述与按 ID 写入的费率，避免旧代码把 ID 费率当成未定价。
+
 ## 月度配额
 
 按 [ADR-0004](adr/0004-credit-billing.md) 的「Two pools, deducted quota first」与 [ADR-0005](adr/0005-configurable-monthly-quota.md) 的「versioned policy + issue fact」实现的月度配额。操作面仍是三件事：什么时候发、怎么补、怎么核对。代码在 `src/server/billing/quota.ts`、`quota-policy.ts`、`quota-adjustment.ts` 与 `quota-batch.ts`；原始设计与验收见[归档计划](plans/archive/admin-credit-quota.md)。

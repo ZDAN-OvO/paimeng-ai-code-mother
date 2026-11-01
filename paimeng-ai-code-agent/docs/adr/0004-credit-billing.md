@@ -51,4 +51,6 @@ Non-token costs (self-check and platform builds, web search, fetch, deployment) 
 - **Payment is out of scope for this phase**, but the top-up table already distinguishes `purchase` from `admin_grant` and carries a nullable external reference, so wiring a payment callback later is a new caller of the same credit function, not a ledger change.
 - **Changing the Credit denomination is effectively forbidden.** Prices are edited in the Rate card; 1 Credit = ¥0.01 is a fixed commitment across all history.
 
+后续扩展：Rate card 的模型身份在 2026-11-02 改为 `provider_model_id`，见 [ADR-0005](0005-provider-model-identity.md)。账本、分池与透支规则不变。
+
 Source: grilling session 2026-10-30; upstream prices from [DeepSeek Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/).

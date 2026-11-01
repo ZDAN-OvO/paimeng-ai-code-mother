@@ -154,6 +154,20 @@ _Avoid_: slug, public key, release key
 从旧平台迁移、可能没有 Version 或 Delivery 的 App；它可能回退到 App workspace 提供预览和下载。
 _Avoid_: old app, imported app
 
+## 模型配置
+
+**Model provider**:
+一份实际接入配置：地址、API 格式、凭据、自定义请求头和连接级选项。同一厂商的官方端点和第三方网关是不同提供商，不是同一身份。
+_Avoid_: vendor, 渠道, endpoint
+
+**Provider model**:
+某个提供商下已登记的请求模型，拥有稳定 ID、不可变的上游请求名、能力与兼容声明。同一请求名在不同提供商下是两条 Provider model；槽位、费率和运行用量都引用它。
+_Avoid_: 物理模型, 全局模型, catalog model
+
+**Model slot**:
+固定的业务用途（代码生成、类型路由、版本标题、语音转写），决定该用途需要的能力与调用参数。槽位选择一条 Provider model，但不拥有模型的请求名或能力声明。
+_Avoid_: alias, 别名, 模型分配
+
 ## 计费
 
 **Usage**:
@@ -165,7 +179,7 @@ _Avoid_: consumption, cost, 成本
 _Avoid_: token, 积分, points, 点数
 
 **Rate card**:
-把 Usage 和按次动作折算成 Credit 的价目表，按模型和动作分别定价，定价基准是上游峯时真实成本乘 Markup。Rate card 带生效时间，改价不修改历史 Credit charge。
+把 Usage 和按次动作折算成 Credit 的价目表，按 Provider model 和动作分别定价，定价基准是上游峯时真实成本乘 Markup。Rate card 带生效时间，改价只追加版本，不修改历史 Credit charge。
 _Avoid_: 价格表, pricing, tariff
 
 **Markup**:

@@ -4,6 +4,15 @@
 
 表结构、字段校验与错误码以 `src/server/infra/schema.ts`、`src/shared/model-config.ts`、`src/server/models/` 为准，本文只写跨模块规则。
 
+## 提供商模型与槽位身份
+
+- `model_provider` 表示一个实际接入配置（地址、协议、凭据、headers、连接级选项）；同一厂商的官方端点和第三方网关是不同提供商。
+- `provider_model` 是提供商下已登记的请求模型：稳定 ID、`upstream_model_name`（不可变、按原字符串区分大小写）、展示名、能力、兼容声明与启用状态。同一请求名在不同提供商下是两条身份。
+- `model_alias` 仍是四个固定槽位的存储；`provider_model_id` 是槽位唯一的模型身份。能力与 `reasoningContentPassthrough` 属于模型，temperature / topP / maxOutputTokens / reasoning 属于槽位。
+- 统一解析在 `src/server/models/resolver.ts`：一次快照组装提供商连接、模型能力/兼容与槽位参数，返回不可变有效配置。Next adapter、harness adapter 与语音转写都走它；缺少槽位、停用模型、引用断开或能力不满足返回 503/50300。
+- 旧槽位（`provider_model_id` 为空）保留明确兼容分支：请求名、能力与兼容声明仍读别名投影，直到旧字符串写法在最终阶段移除。
+- 管理入口：`model/admin/config` 返回 `providerModels`（含引用槽位与费率摘要）；`model/admin/provider-model/create|update` 登记与编辑模型。槽位与费率的旧写入口仍兼容，但 P5 界面只提交模型 ID。
+
 ## 每轮模型准入
 
 1. Next 调用 harness `POST /model`。harness 一致读取产品库模型配置，检查别名与提供商已启用、格式和凭据来源有效，并固定这轮的模型描述。
@@ -25,7 +34,7 @@
 
 普通运行在内存 auth 闭包中保留准入时的 inline 密文，请求时才解密，因此轮换提供商密钥不会改变正在执行的运行。持久描述不包含该密文；重启恢复时按原提供商的凭据引用读取当前可用密钥。原凭据来源不存在时明确失败，不改用当前别名的提供商。
 
-初始化（`npm run db:init-models`）只在提供商与别名均为空、`revision` 与 `refreshEpoch` 都为 0 时，用 `AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY` 建一个提供商和两个必需别名，已有配置不覆盖。初始化之后 DB 是唯一来源：读取失败不等于表空，不能借此回退环境变量。两个必需别名是 `codegen.default`（生成）与 `route.classify`（应用类型分类），同一个物理模型可以绑定多个别名。
+初始化（`npm run db:init-models`）只在提供商与别名均为空、`revision` 与 `refreshEpoch` 都为 0 时，用 `AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY` 建一个提供商、一个提供商模型（能力取必需槽位要求的并集）和两个必需别名，已有配置不覆盖。初始化之后 DB 是唯一来源：读取失败不等于表空，不能借此回退环境变量。两个必需别名是 `codegen.default`（生成）与 `route.classify`（应用类型分类），都引用同一个模型；旧库由回填工具受控建立关联。
 
 密钥两种来源：`apiKeySource='env'` 只存引用名，默认允许 `AI_API_KEY`，其余需列进 `MODEL_API_KEY_ENV_ALLOWLIST`；`apiKeySource='inline'` 的明文不落库，AES-256-GCM 加密后只存密文，主密钥取自 `MODEL_SECRET_KEY`，未设置时自动生成 `runtime/model-secret.key`（0600）。该文件丢失后已存密钥无法解密，必须在管理端重输。接口只返回 `apiKeySource` 与当前实例是否已配置。
 
@@ -39,7 +48,7 @@
 | `openai-responses` | `openai-responses` | `{baseUrl}/responses` |
 | `anthropic-messages` | `anthropic-messages` | 产品地址末尾的 `/v1` 由适配器归一，避免重复 `/v1/v1/messages` |
 
-请求使用提供商自定义 headers 和别名 modelName、reasoning，输出预算来自别名设置。通用 OpenAI Chat 不附带 DeepSeek 的 thinking 字段；显式设置 `thinkingSwitch` 时按保存值强制开启/关闭。关闭优先于 alias reasoning，开启且未指定强度时只发送开启指令。
+请求使用提供商自定义 headers、有效请求名（新数据来自提供商模型，旧数据来自别名 `modelName`）与别名 reasoning，输出预算来自别名设置。通用 OpenAI Chat 不附带 DeepSeek 的 thinking 字段；显式设置 `thinkingSwitch` 时按保存值强制开启/关闭。关闭优先于 alias reasoning，开启且未指定强度时只发送开启指令。
 
 协议选项按格式白名单化：`openai-chat` 支持布尔项 `includeUsage`、`supportsStructuredOutputs`、`supportsMultiPartToolContent` 与命名项 `thinkingSwitch`（`none`/`enabled`/`disabled`，非 `none` 时在请求体追加 `thinking:{type}`）；另外两种格式没有可配置选项，提交不支持的选项会被拒绝。新增格式或适配器仍需改代码和部署，DS 里不存可执行脚本。
 
@@ -65,19 +74,19 @@ DeepSeek 的 Responses 格式把思考文本放在 `output[].content`（`reasoni
 
 手动「立即生效」不能只清本进程缓存，否则请求落到别的实例仍用旧配置：每次业务模型解析前读一次状态行的 `refreshEpoch`（轻量检查不进 TTL），管理员提交时锁状态行、校验 `expectedRevision` 与完整配置、递增 `refreshEpoch`。其他实例在下次解析时发现序号变化，跳过 TTL 等完整快照加载完成。
 
-加载状态行、提供商与别名必须在同一一致性读事务里完成；新快照解析校验完成后一次替换引用，不原地改旧注册表；同进程并发刷新复用一个加载 Promise，且不因单个请求取消而中止。
+加载状态行、提供商、提供商模型与别名必须在同一一致性读事务里完成；新快照解析校验完成后一次替换引用，不原地改旧注册表；同进程并发刷新复用一个加载 Promise，且不因单个请求取消而中止。
 
 故障分级：冷启动无快照且读不到配置 → 503，不凭空换模型；TTL 到期但 DB 暂时不可读、且没观察到更高 `refreshEpoch` → 最多沿用距上次一致读 60 秒内的旧快照（失败后退避约 1 秒，只暂缓整份重载，序号探测照常），超时后拒绝新调用；已看到更高 `refreshEpoch` 却加载失败 → 本次 503，不能用旧配置假装生效。上游鉴权失败、模型不存在、429 或协议错误属于调用故障，沿用旧快照无用，不自动切换别名、不重放已执行工具的生成。
 
-配置写入在事务中锁 `model_config_state` 的 `models` 行、检查 `expectedRevision`；版本以十进制字符串传输，避免 JS 大整数精度丢失。版本冲突返回 409，载荷或引用校验失败返回 400，DB 不可用返回 503。被引用的提供商不能删；必需别名不能删、禁用或指向已禁用提供商。
+配置写入在事务中锁 `model_config_state` 的 `models` 行、检查 `expectedRevision`；版本以十进制字符串传输，避免 JS 大整数精度丢失。版本冲突返回 409，载荷或引用校验失败返回 400，DB 不可用返回 503。被引用的提供商不能删；提供商模型被槽位、费率或步骤引用时不能删；停用模型或移除必需能力前要检查仍启用的引用槽位。必需别名不能删、禁用或指向已禁用提供商/模型。
 
 ## 重启与记账
 
-每轮公开描述保存在 pi-durable 会话文档 `app.run-model`：原 providerId、模型引用、地址、API 格式、请求头、设置、能力和凭据引用。没有明文或密文，不新增产品表。
+每轮公开描述保存在 pi-durable 会话文档 `app.run-model`：原 providerId、可选 `providerModelId`、模型引用、地址、API 格式、请求头、槽位设置、能力、兼容声明与凭据引用。没有明文或密文，不新增产品表。旧描述缺少新字段时按别名设置推导兼容声明。
 
 恢复不重新解释当前别名：即使别名已改指 P2，旧运行仍按原 P1 的描述重建。已结束模型循环的会话也可通过只读 `GET /model?conversationId=` 返回原身份，支持产品最终构建阶段的接管。显式环境覆盖恢复时同样使用持久引用里的模型与地址。
 
-账目继续记录 alias、产品 providerId 与实际模型名；上游请求元数据另存。实时助手消息使用合法 SDK metadata 的 generationId 对应用量，刷新后的历史使用原助手条目 id。
+账目记录 alias、产品 providerId、`provider_model_id` 与配置请求名；上游实际响应名只写入 `upstream_provider` / `upstream_model_id`，不覆盖配置身份。费率按 `provider_model_id` 与步骤时间选择；没有模型 ID 的旧步骤保留字符串候选分支。实时助手消息使用合法 SDK metadata 的 generationId 对应用量，刷新后的历史使用原助手条目 id。
 
 ## 类型分类仍在 Next
 
@@ -86,8 +95,10 @@ DeepSeek 的 Responses 格式把思考文本放在 `output[].content`（`reasoni
 ## 实现与验证落点
 
 - 运行描述、凭据与适配：`src/server/generation/durable/model-domain.ts`。
+- 槽位统一解析：`src/server/models/resolver.ts`。
 - 公开 HTTP schema：`src/shared/durable-model.ts`。
 - 准入、持久化与恢复：`src/server/generation/durable/harness-server.ts`。
 - 产品任务、attach、记账与实时 metadata：`src/server/generation/durable-engine.ts`。
-- 请求契约单测：`tests/unit/models/durable-model-domain.test.ts`。
+- 请求契约单测：`tests/unit/models/durable-model-domain.test.ts`、`tests/unit/models/resolver.test.ts`。
 - 热更新、忙碌拒绝、凭据隔离与重启：`tests/integration/harness/model-config.test.ts`。
+- 历史回填：`scripts/db/backfill-provider-models.ts`（一次性；切换完成后删除）。
