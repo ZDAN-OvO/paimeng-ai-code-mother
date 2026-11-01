@@ -10,6 +10,7 @@ import {
 } from '@/shared/billing';
 import { stopReasonFrom } from '@/server/generation/generation-accounting';
 import { isCurrentPeriod, naiveTime, parseNaiveTime, periodOf, periodRange } from './period';
+import { quotaFactsOfPeriod } from './quota-facts';
 
 export type { ChargeStatus, CreditPool, GrantSource };
 export type CreditGrantRow = typeof creditGrants.$inferSelect;
@@ -52,35 +53,38 @@ export function overdraftOf(purchasedCredits: number): number {
  * 只有确实插入了新行才动快照。
  */
 export async function recordGrant(input: GrantInput): Promise<{ grant: CreditGrantRow; created: boolean }> {
+  return db().transaction(tx => recordGrantTx(tx, input));
+}
+
+/** `recordGrant` 的事务本体：配额发放需要在同一个事务里写 issue 并重算快照，不能再开新事务。 */
+export async function recordGrantTx(tx: Transaction, input: GrantInput): Promise<{ grant: CreditGrantRow; created: boolean }> {
   const userId = BigInt(input.userId);
-  return db().transaction(async tx => {
-    const [inserted] = await tx.insert(creditGrants).values({
-      id: randomUUID(),
-      userId,
-      pool: input.pool,
-      credits: input.credits,
-      source: input.source,
-      externalRef: input.externalRef ?? null,
-      requestId: input.requestId ?? null,
-      grantedBy: input.grantedBy ? BigInt(input.grantedBy) : null,
-      period: input.period ?? null,
-      note: input.note ?? null,
-      createTime: now(),
-    }).onConflictDoNothing().returning();
-    if (!inserted) {
-      const existing = await findGrantByKeys(tx, userId, input);
-      if (!existing) throw new BusinessError(409, 40900, '该发放请求已存在，但无法定位对应记录');
-      return { grant: existing, created: false };
-    }
-    // 余额只做一次原子自增：并发的两笔发放各自生效，不需要额外的加锁步骤。
-    await tx.insert(creditAccounts)
-      .values({ userId, pool: input.pool, balance: input.credits, updateTime: now() })
-      .onConflictDoUpdate({
-        target: [creditAccounts.userId, creditAccounts.pool],
-        set: { balance: sql`${creditAccounts.balance} + ${input.credits}`, updateTime: now() },
-      });
-    return { grant: inserted, created: true };
-  });
+  const [inserted] = await tx.insert(creditGrants).values({
+    id: randomUUID(),
+    userId,
+    pool: input.pool,
+    credits: input.credits,
+    source: input.source,
+    externalRef: input.externalRef ?? null,
+    requestId: input.requestId ?? null,
+    grantedBy: input.grantedBy ? BigInt(input.grantedBy) : null,
+    period: input.period ?? null,
+    note: input.note ?? null,
+    createTime: now(),
+  }).onConflictDoNothing().returning();
+  if (!inserted) {
+    const existing = await findGrantByKeys(tx, userId, input);
+    if (!existing) throw new BusinessError(409, 40900, '该发放请求已存在，但无法定位对应记录');
+    return { grant: existing, created: false };
+  }
+  // 余额只做一次原子自增：并发的两笔发放各自生效，不需要额外的加锁步骤。
+  await tx.insert(creditAccounts)
+    .values({ userId, pool: input.pool, balance: input.credits, updateTime: now() })
+    .onConflictDoUpdate({
+      target: [creditAccounts.userId, creditAccounts.pool],
+      set: { balance: sql`${creditAccounts.balance} + ${input.credits}`, updateTime: now() },
+    });
+  return { grant: inserted, created: true };
 }
 
 /** 在调用方事务里锁住某用户两个池的余额行；顺序固定按 pool 升序，避免并发扣减互等。 */
@@ -109,23 +113,19 @@ export async function expectedBalancesOf(
   const run = tx ?? db();
   const id = BigInt(userId);
   const period = periodOf(at);
-  const { start, end } = periodRange(period);
   const [granted] = await run.select({
-    quota: sql<string>`coalesce(sum(case when ${creditGrants.source} = 'monthly_quota' and ${creditGrants.period} = ${period} then ${creditGrants.credits} else 0 end), 0)`,
     balance: sql<string>`coalesce(sum(case when ${creditGrants.pool} = 'balance' then ${creditGrants.credits} else 0 end), 0)`,
   }).from(creditGrants).where(eq(creditGrants.userId, id));
   // entry 不归账期：它属于父 Charge 的 create_time 所在北京月（04 §5）。
   const used = await run.execute(sql`select
-    coalesce(sum(case when entry.pool = 'quota' then entry.credits else 0 end), 0) as quota,
     coalesce(sum(case when entry.pool = 'balance' then entry.credits else 0 end), 0) as balance
     from credit_entry entry
     join credit_charge charge on charge.generation_id = entry.charge_id
-    where charge.user_id = ${id}
-      and (entry.pool <> 'quota' or (charge.create_time >= ${naiveTime(start)} and charge.create_time < ${naiveTime(end)}))`);
-  const quota = Number(granted?.quota ?? 0) - Number(used.rows[0]?.quota ?? 0);
+    where charge.user_id = ${id} and entry.pool = 'balance'`);
+  // 配额不再在这里单独算：基础发放 + 调整 − 当期消费由 `quotaFactsOfPeriod` 统一维护。
+  const quota = await quotaFactsOfPeriod(run, id, period);
   const balance = Number(granted?.balance ?? 0) - Number(used.rows[0]?.balance ?? 0);
-  // 配额池永不为负（跨期失效后 grant 与当期扣减可能算出负数）。
-  return { quota: Math.max(0, quota), balance };
+  return { quota: quota.remainingCredits, balance };
 }
 
 /**

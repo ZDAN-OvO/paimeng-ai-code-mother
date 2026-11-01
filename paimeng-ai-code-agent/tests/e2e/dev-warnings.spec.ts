@@ -64,11 +64,14 @@ test('管理端与模型配置弹窗在 dev 模式下没有告警', async ({ pag
   await page.locator('form').getByRole('button', { name: /^登\s*录$/ }).click();
   await expect(page).toHaveURL('/');
 
-  for (const path of ['/admin/userManage', '/admin/appManage', '/admin/modelManage']) {
+  for (const path of ['/admin/userManage', '/admin/appManage', '/admin/modelManage', '/admin/billing']) {
     await page.goto(path);
     await expect(page.locator('body')).toBeVisible();
   }
+  await page.getByRole('tab', { name: '配额管理' }).click();
+  await expect(page.getByRole('heading', { name: '月度配额策略' })).toBeVisible();
 
+  await page.goto('/admin/modelManage');
   await page.getByRole('button', { name: '新增提供商' }).click();
   await page.getByRole('dialog').getByRole('button', { name: /取\s*消$/ }).click();
   const provider = page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'https://api.example.test/v1', exact: true }) });

@@ -5,7 +5,7 @@ import { api } from '@/client/api';
 import { formatBeijingTime, formatStoredTime } from '@/shared/display';
 import {
   adminQuotaStatusLabels, poolLabels, quotaPolicySourceLabels, sourceLabels,
-  type AdminCreditUser, type AdminUserUsage, type CreditGrantView,
+  type AdminCreditUser, type AdminUserUsage, type CreditGrantView, type QuotaIssueView,
 } from '@/shared/billing';
 import { AdminUserIdentity } from './admin-credit-overview';
 import styles from '@/components/admin-view.module.css';
@@ -46,6 +46,10 @@ export function QuotaDetailPanel({ user }: { user: AdminCreditUser }) {
         </span>,
       },
       { key: 'expires', label: '配额到期', children: `北京时间 ${formatBeijingTime(credit.quota.expiresAt)}` },
+      {
+        key: 'rule', label: '当前 / 下一账期规则',
+        children: `${credit.rule.current.credits} Credit（${quotaPolicySourceLabels[credit.rule.current.source]}） / ${credit.rule.next.credits} Credit（${quotaPolicySourceLabels[credit.rule.next.source]}）`,
+      },
       { key: 'base', label: '基础已发', children: `${credit.quota.baseCredits} Credit` },
       { key: 'adjust', label: '当月调整净额', children: `${credit.quota.adjustmentCredits} Credit` },
       { key: 'used', label: '当月已用', children: `${credit.quota.usedCredits} Credit` },
@@ -63,6 +67,27 @@ export function QuotaDetailPanel({ user }: { user: AdminCreditUser }) {
       title="余额快照与账本事实不一致"
       description={`快照：配额 ${credit.snapshot.quota}、余额 ${credit.snapshot.balance}；事实：配额 ${credit.quota.remainingCredits}、余额 ${credit.balance}。本页只读，不用界面写库；修复按账本事实重建（CLI 的 audit/rebuild）。`}
     />}
+    <div className={styles.sectionHeading}>
+      <h2>最近基础发放事实</h2>
+      <span className={styles.statusHint}>每用户每账期一条；0 配额也会出现，不伪造零金额 grant</span>
+    </div>
+    <Table<QuotaIssueView>
+      rowKey="id"
+      size="small"
+      dataSource={credit.issues}
+      pagination={false}
+      scroll={{ x: 860 }}
+      locale={{ emptyText: '还没有基础发放事实' }}
+      columns={[
+        { title: '账期', dataIndex: 'period', width: 100 },
+        { title: '基础金额', dataIndex: 'baseCredits', width: 110, render: (value: number) => `${value} Credit` },
+        { title: '状态', dataIndex: 'status', width: 90, render: (value: QuotaIssueView['status']) => value === 'granted' ? '已发' : '失败' },
+        { title: '来源', dataIndex: 'policySource', width: 110, render: (value: QuotaIssueView['policySource']) => quotaPolicySourceLabels[value] },
+        { title: '版本', dataIndex: 'policyVersion', width: 80, render: (value: number | null) => value === null ? '—' : `v${value}` },
+        { title: 'Grant ID', dataIndex: 'grantId', width: 220, render: (value: string | null) => value ?? '无（0 配额）' },
+        { title: '时间', dataIndex: 'createTime', width: 160, render: (value: string) => formatStoredTime(value) },
+      ]}
+    />
     <div className={styles.sectionHeading}>
       <h2>最近发放记录</h2>
       <span className={styles.statusHint}>只读流水；月度配额与余额发放分开显示</span>

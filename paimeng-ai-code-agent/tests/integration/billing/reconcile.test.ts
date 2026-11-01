@@ -10,7 +10,7 @@ import {
 import { db, getPool, type Transaction } from '@/server/infra/db';
 import * as schema from '@/server/infra/schema';
 import {
-  apps, creditAccounts, creditCharges, creditEntries, creditGrants, generationSteps, generations, sessions, users,
+  apps, creditAccounts, creditCharges, creditEntries, creditGrants, creditQuotaIssues, generationSteps, generations, sessions, users,
 } from '@/server/infra/schema';
 import { effectiveCreditsOf, entriesOfCharge, rebuildAccount } from '@/server/billing/ledger';
 import { auditAccount, pendingSettlements, reconcileSettlements, settleGenerationBilling, settleGenerationBillingTx } from '@/server/billing/settlement';
@@ -28,7 +28,7 @@ const createdGenerations: string[] = [];
 
 beforeAll(async () => {
   await applyBillingMigrations(
-    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '014_credit_entry_audit.sql',
+    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '014_credit_entry_audit.sql', '020_credit_quota_policy.sql',
   );
 });
 
@@ -45,6 +45,7 @@ afterAll(async () => {
   if (createdApps.length) await db().delete(apps).where(inArray(apps.id, createdApps));
   if (createdUsers.length) {
     const ids = createdUsers.map(id => BigInt(id));
+    await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, ids));
     await db().delete(creditGrants).where(inArray(creditGrants.userId, ids));
     await db().delete(creditAccounts).where(inArray(creditAccounts.userId, ids));
     await db().delete(sessions).where(inArray(sessions.userId, ids));

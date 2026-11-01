@@ -19,18 +19,35 @@ export function UserSearchSelect({ value, onChange, ariaLabel = '选择用户', 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requested = useRef('');
 
+  async function fetchUsers(query: string): Promise<AdminCreditUser[]> {
+    const result = await api<AdminUserSearchResult>(
+      'admin/billing/users?limit=10&q=' + encodeURIComponent(query.trim()),
+    );
+    return result.users;
+  }
+
   async function search(query: string) {
     requested.current = query;
     setLoading(true);
     try {
-      const result = await api<AdminUserSearchResult>(
-        'admin/billing/users?limit=10&q=' + encodeURIComponent(query.trim()),
-      );
-      if (requested.current === query) setOptions(result.users);
+      const users = await fetchUsers(query);
+      if (requested.current === query) setOptions(users);
     } catch {
       if (requested.current === query) setOptions([]);
     } finally {
       if (requested.current === query) setLoading(false);
+    }
+  }
+
+  /** 完整 ID 粘贴后直接回车：先取一次精确结果，有候选就选中第一条，不要求用户再点下拉。 */
+  async function selectFirst(query: string) {
+    try {
+      const users = await fetchUsers(query);
+      setOptions(users);
+      const first = users[0];
+      if (first) onChange?.(first.userId, first);
+    } catch {
+      setOptions([]);
     }
   }
 
@@ -55,6 +72,11 @@ export function UserSearchSelect({ value, onChange, ariaLabel = '选择用户', 
     placeholder={placeholder}
     filterOption={false}
     onSearch={schedule}
+    onInputKeyDown={(event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      void selectFirst(event.currentTarget.value);
+    }}
     notFoundContent={loading ? <Spin size="small" /> : '没有匹配的用户'}
     options={options.map(user => ({
       value: user.userId,

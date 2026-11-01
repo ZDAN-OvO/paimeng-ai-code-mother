@@ -11,7 +11,7 @@ import {
 } from '../../support/billing';
 import { db, getPool, now } from '@/server/infra/db';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
-import { creditAccounts, creditGrants, sessions, users } from '@/server/infra/schema';
+import { creditAccounts, creditGrants, creditQuotaIssues, sessions, users } from '@/server/infra/schema';
 import type { AdminCreditOverview, AdminUserSearchResult, AdminUserUsage } from '@/shared/billing';
 
 /**
@@ -25,7 +25,7 @@ let admin: BillingTestUser;
 
 beforeAll(async () => {
   loadBillingDatabase();
-  await applyBillingMigrations('010_credit_grant_account.sql', '012_credit_charge_entry.sql');
+  await applyBillingMigrations('010_credit_grant_account.sql', '012_credit_charge_entry.sql', '020_credit_quota_policy.sql');
   admin = await createBillingUser({ role: 'admin' });
 });
 
@@ -36,6 +36,7 @@ afterAll(async () => {
     await db().execute(sql`delete from credit_entry
       where charge_id in (select generation_id from credit_charge where user_id in (${scope}))`);
     await db().execute(sql`delete from credit_charge where user_id in (${scope})`);
+    await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, ids));
     await db().delete(creditGrants).where(inArray(creditGrants.userId, ids));
     await db().delete(creditAccounts).where(inArray(creditAccounts.userId, ids));
     await db().delete(sessions).where(inArray(sessions.userId, ids));

@@ -10,7 +10,7 @@ import {
   type BillingTestUser,
 } from '../../support/billing';
 import { db, getPool, now } from '@/server/infra/db';
-import { creditAccounts, creditGrants, sessions, users } from '@/server/infra/schema';
+import { creditAccounts, creditGrants, creditQuotaIssues, sessions, users } from '@/server/infra/schema';
 import { naiveTime, nextPeriodStart, periodOf, periodRange } from '@/server/billing/period';
 import { ensureCurrentPeriod, ensurePeriodQuota, issueMonthlyQuota } from '@/server/billing/quota';
 import { monthlyQuotaCredits, type AccountSummary } from '@/shared/billing';
@@ -52,8 +52,12 @@ async function setQuotaBalance(user: BillingTestUser, balance: number) {
 }
 
 async function removeCurrentGrant(user: BillingTestUser) {
+  const period = periodOf(new Date());
   await db().delete(creditGrants)
-    .where(and(eq(creditGrants.userId, idOf(user)), eq(creditGrants.period, periodOf(new Date()))));
+    .where(and(eq(creditGrants.userId, idOf(user)), eq(creditGrants.period, period)));
+  // C2 起发放状态以 issue 为准：模拟「停机错过当月」时两件事都要回到未发。
+  await db().delete(creditQuotaIssues)
+    .where(and(eq(creditQuotaIssues.userId, idOf(user)), eq(creditQuotaIssues.period, period)));
 }
 
 async function summaryOf(user: BillingTestUser): Promise<AccountSummary> {
@@ -66,7 +70,7 @@ beforeAll(async () => {
   loadBillingDatabase();
   // 配额余额是「当期 grant − 当期 quota entry」的重算（`quotaUsageOfPeriod` 直接查 `credit_entry`，
   // 缺表就是部署没迁移到位），所以配额用例必须把结算表一起应用上。
-  await applyBillingMigrations('010_credit_grant_account.sql', chargeEntryMigration);
+  await applyBillingMigrations('010_credit_grant_account.sql', chargeEntryMigration, '020_credit_quota_policy.sql');
 });
 
 afterAll(async () => {
@@ -103,7 +107,7 @@ describe('月度配额发放', () => {
   it('重复 ensured 同一账期只有一条 grant，余额不翻倍', async () => {
     const user = await createUser();
     const at = new Date();
-    expect(await ensurePeriodQuota(user.id, at)).toEqual({ granted: false, period: periodOf(at) });
+    expect(await ensurePeriodQuota(user.id, at)).toMatchObject({ granted: false, period: periodOf(at) });
     expect(await monthlyGrantsOf(user)).toHaveLength(1);
     expect(await quotaBalanceOf(user)).toBe(monthlyQuotaCredits);
   });

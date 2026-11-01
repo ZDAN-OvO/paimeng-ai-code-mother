@@ -46,3 +46,6 @@
  .overviewStats{grid-template-columns:1fr 1fr}
 }
 .userJump{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
+.policyForm{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 16px;border:1px solid #f0f0f0;border-radius:8px;padding:16px 16px 0}
+.policyForm :global(.ant-form-item:last-child){grid-column:1/-1;margin-bottom:16px}
+.policyUserPicker{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0 12px}

@@ -140,11 +140,11 @@ export function AdminUsagePanel({ user }: { user: AdminCreditUser }) {
     {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 12 }} />}
     {usage && <>
       <Descriptions bordered size="small" column={{ xs: 1, sm: 2 }} items={[
-        { key: 'total', label: '合计可用', children: `${usage.account.total} Credit` },
-        { key: 'quota', label: '配额池', children: `${usage.account.quota} Credit` },
-        { key: 'balance', label: '余额池', children: `${usage.account.balance} Credit` },
-        { key: 'purchased', label: '近 60 天购买', children: `${usage.account.purchasedCredits60d} Credit` },
-        { key: 'overdraft', label: '当前透支线', children: `${usage.account.overdraft} Credit` },
+        { key: 'total', label: '合计可用', children: `${usage.credit.total} Credit` },
+        { key: 'quota', label: '配额池（有效剩余）', children: `${usage.credit.quota.remainingCredits} Credit` },
+        { key: 'balance', label: '余额池', children: `${usage.credit.balance} Credit` },
+        { key: 'purchased', label: '近 60 天购买', children: `${usage.credit.purchasedCredits60d} Credit` },
+        { key: 'overdraft', label: '当前透支线', children: `${usage.credit.overdraft} Credit` },
       ]} />
       <div className={styles.usageLegend}>
         <span>最近 {usage.charges.length} 笔账单</span>

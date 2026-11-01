@@ -221,7 +221,123 @@ export const monthlyQuotaCredits = 500;
  * `period` 是北京自然月 `YYYY-MM`（`billing/period.ts`）；`quotaExpiresAt` 是账期半开区间的终点，
  * UTC 朴素时间戳，界面按北京时间显示。
  */
-export type AccountSummary = AccountSnapshot & { period: string; quotaExpiresAt: string };
+export type AccountSummary = AccountSnapshot & {
+  period: string;
+  quotaExpiresAt: string;
+  /** 当期基础发放、调整净额与已用，界面据此解释配额池余额，不再假设固定 500。 */
+  quotaBase: number;
+  quotaAdjustments: number;
+  quotaUsed: number;
+  quotaPolicySource: QuotaPolicySource;
+  quotaPolicyVersion: number | null;
+};
+
+// ---- 可配置月度配额策略（migrations/020_credit_quota_policy.sql）----
+
+/** 策略范围：global 是默认值，user 是单用户覆盖或显式恢复继承。 */
+export const quotaPolicyScopes = ['global', 'user'] as const;
+export type QuotaPolicyScope = (typeof quotaPolicyScopes)[number];
+
+/** `inherit` 只允许出现在用户范围；全局策略必须是 `override`。 */
+export const quotaPolicyModes = ['inherit', 'override'] as const;
+export type QuotaPolicyMode = (typeof quotaPolicyModes)[number];
+export const quotaPolicyModeLabels: Record<QuotaPolicyMode, string> = {
+  inherit: '继承全局默认',
+  override: '覆盖金额',
+};
+
+/** 月度标准与单次调整的上限；共享契约校验，前端表单与服务端都读这一处。 */
+export const maxMonthlyQuotaCredits = 1_000_000;
+export const maxQuotaAdjustmentCredits = 1_000_000;
+
+/** 策略版本的一行；只追加，不改旧行。 */
+export type QuotaPolicyView = {
+  id: string;
+  scope: QuotaPolicyScope;
+  userId: string | null;
+  effectivePeriod: string;
+  mode: QuotaPolicyMode;
+  credits: number | null;
+  revision: number;
+  note: string | null;
+  createdBy: string | null;
+  createTime: string;
+};
+
+/** 某一账期解析后的有效规则；没有保存过策略时是代码兜底 500。 */
+export type EffectiveQuotaPolicy = {
+  credits: number;
+  source: QuotaPolicySource;
+  version: number | null;
+  policyId: string | null;
+  effectivePeriod: string | null;
+};
+
+/** `GET admin/billing/quota/policy`：当前/下一账期的全局规则，可附带单个用户的覆盖。 */
+export type QuotaPolicyRange = {
+  current: EffectiveQuotaPolicy;
+  next: EffectiveQuotaPolicy;
+  versions: QuotaPolicyView[];
+};
+export type QuotaPolicyAdminView = {
+  period: string;
+  nextPeriod: string;
+  defaultCredits: number;
+  limits: { maxMonthlyQuotaCredits: number; maxQuotaAdjustmentCredits: number };
+  global: QuotaPolicyRange;
+  user: (QuotaPolicyRange & { userId: string; userAccount: string; userName: string | null }) | null;
+};
+
+const quotaPeriod = z.string().trim().regex(/^\d{4}-(0[1-9]|1[0-2])$/u, '账期必须形如 2026-12');
+
+/** 保存策略：expectedRevision 为 null 表示新建；带值表示替换该账期当前版本。 */
+export const quotaPolicySaveSchema = z
+  .object({
+    scope: z.enum(quotaPolicyScopes),
+    userId: idSchema.optional(),
+    effectivePeriod: quotaPeriod,
+    mode: z.enum(quotaPolicyModes),
+    credits: z.number().int('配额必须是整数 Credit').min(0, '配额不能是负数').max(maxMonthlyQuotaCredits, `单月配额不能超过 ${maxMonthlyQuotaCredits}`).nullish(),
+    expectedRevision: z.number().int().min(1).nullish(),
+    note: z.string().trim().max(500).nullish(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.scope === 'global' && (value.userId !== undefined || value.mode !== 'override')) {
+      ctx.addIssue({ code: 'custom', message: '全局策略必须是 override，且不能带 userId' });
+    }
+    if (value.scope === 'user' && value.userId === undefined) {
+      ctx.addIssue({ code: 'custom', message: '用户策略必须指定 userId' });
+    }
+    if (value.mode === 'override' && (value.credits === null || value.credits === undefined)) {
+      ctx.addIssue({ code: 'custom', message: '覆盖策略必须填写金额' });
+    }
+    if (value.mode === 'inherit' && value.credits !== null && value.credits !== undefined) {
+      ctx.addIssue({ code: 'custom', message: '继承策略不能带金额' });
+    }
+  });
+export type QuotaPolicySaveRequest = z.infer<typeof quotaPolicySaveSchema>;
+
+export type QuotaPolicySaveReceipt = {
+  policy: QuotaPolicyView;
+  /** 保存后按目标账期重新解析的结果，便于界面立即核对。 */
+  effective: EffectiveQuotaPolicy;
+};
+
+/** 每用户每账期一条基础发放事实；零配额也记一行。 */
+export type QuotaIssueView = {
+  id: string;
+  userId: string;
+  period: string;
+  baseCredits: number;
+  status: 'granted' | 'failed';
+  policySource: QuotaPolicySource;
+  policyVersion: number | null;
+  policyId: string | null;
+  grantId: string | null;
+  reason: string | null;
+  createTime: string;
+  updateTime: string;
+};
 // ---- Credit Charge（migrations/012_credit_charge_entry.sql）----
 
 /**
@@ -557,5 +673,9 @@ export type AdminUserCreditDetail = {
   snapshot: { quota: number; balance: number; updateTime: string | null };
   snapshotAnomaly: boolean;
   grants: CreditGrantView[];
+  /** 当前/下一账期的有效规则；用户覆盖会改变 source 与金额。 */
+  rule: { current: EffectiveQuotaPolicy; next: EffectiveQuotaPolicy };
+  /** 最近的基础发放事实，含 0 配额；与 grant 流水分开。 */
+  issues: QuotaIssueView[];
   asOf: string;
 };

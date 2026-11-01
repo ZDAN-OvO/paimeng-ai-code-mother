@@ -4,7 +4,7 @@ import { App } from 'antd';
 import { api } from '@/client/api';
 import { useAuth } from '@/components/providers';
 import { formatBeijingTime } from '@/shared/display';
-import { monthlyQuotaCredits, poolLabels, type AccountSummary } from '@/shared/billing';
+import { poolLabels, quotaPolicySourceLabels, type AccountSummary } from '@/shared/billing';
 import styles from './credit-balance.module.css';
 
 /**
@@ -43,7 +43,7 @@ export function CreditBalance({ refreshToken }: { refreshToken?: string }) {
       <span>合计<strong>{summary.total}</strong></span>
     </p>
     <p className={styles.detail}>
-      <span>{`本期配额 ${monthlyQuotaCredits} Credit，有效期至北京时间 ${formatBeijingTime(summary.quotaExpiresAt)}`}</span>
+      <span>{`本期配额 ${summary.quotaBase} Credit（${quotaPolicySourceLabels[summary.quotaPolicySource]}），有效期至北京时间 ${formatBeijingTime(summary.quotaExpiresAt)}`}</span>
       <span aria-hidden="true">·</span>
       <span>月底清零，不累积、不折现</span>
     </p>

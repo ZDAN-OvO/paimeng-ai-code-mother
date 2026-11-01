@@ -54,6 +54,7 @@ async function userWithoutCredit(page: Page, account: string): Promise<string> {
   const connection = await testConnection();
   try {
     await connection.query('DELETE FROM credit_account WHERE user_id = $1', [id]);
+    await connection.query('DELETE FROM credit_quota_issue WHERE user_id = $1', [id]);
     await connection.query('DELETE FROM credit_grant WHERE user_id = $1', [id]);
   } finally {
     await connection.end();
@@ -72,6 +73,7 @@ test.afterAll(async () => {
   const connection = await testConnection();
   try {
     await connection.query('DELETE FROM credit_account WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
+    await connection.query('DELETE FROM credit_quota_issue WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
     await connection.query('DELETE FROM credit_grant WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
     await connection.query('DELETE FROM user_session WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
     await connection.query('DELETE FROM app_user WHERE id = ANY($1::bigint[])', [createdUserIds]);
@@ -172,8 +174,8 @@ test('配额管理只读展示本月待发，补结算只在 Credit 管理按需
   await expect(page.getByRole('heading', { name: '全用户额度总览' })).toBeVisible();
   // 切换页签和浏览总览不触发补结算读请求，更不会触发写操作。
   await page.getByRole('tab', { name: '配额管理' }).click();
-  await expect(page.getByRole('heading', { name: '本月配额' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: '待发用户' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '月度配额策略' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '本月发放与待发' })).toBeVisible();
   await page.screenshot({ path: evidencePath('billing', 'admin-quota-tab.png'), fullPage: true });
   expect(reconcileListRequests).toBe(0);
 

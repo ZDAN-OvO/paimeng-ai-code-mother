@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { bigint, bigserial, char, index, integer, jsonb, numeric, pgTable, primaryKey, smallint, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
-import type { ChargeStatus, CreditPool, GrantSource, RateCardView, UsageSnapshotStep } from '@/shared/billing';
+import type { ChargeStatus, CreditPool, GrantSource, QuotaPolicyMode, QuotaPolicyScope, QuotaPolicySource, RateCardView, UsageSnapshotStep } from '@/shared/billing';
 
 const times = { createTime: timestamp('create_time', { mode: 'string' }).notNull(), updateTime: timestamp('update_time', { mode: 'string' }).notNull() };
 export const users = pgTable('app_user', { id: bigint('id', { mode: 'bigint' }).primaryKey(), userAccount: varchar('user_account', { length: 256 }).notNull(), userPassword: varchar('user_password', { length: 512 }).notNull(), userName: varchar('user_name', { length: 256 }), userAvatar: varchar('user_avatar', { length: 1024 }), userProfile: varchar('user_profile', { length: 512 }), userRole: varchar('user_role', { length: 256 }).notNull().default('user'), ...times, isDelete: integer('is_delete').notNull().default(0) }, t => [uniqueIndex('uk_app_user_account').on(t.userAccount)]);
@@ -202,6 +202,44 @@ export const creditAccounts = pgTable('credit_account', {
   balance: bigint('balance', { mode: 'number' }).notNull().default(0),
   updateTime: timestamp('update_time', { mode: 'string', precision: 3 }).notNull(),
 }, t => [primaryKey({ columns: [t.userId, t.pool] })]);
+
+// ---- 可配置月度配额（migrations/020_credit_quota_policy.sql）----
+// 策略只追加；解析时取 <= 目标账期的最大 effective_period、再取最大 revision。
+export const creditQuotaPolicies = pgTable('credit_quota_policy', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  scope: varchar('scope', { length: 16 }).$type<QuotaPolicyScope>().notNull(),
+  userId: bigint('user_id', { mode: 'bigint' }),
+  effectivePeriod: varchar('effective_period', { length: 7 }).notNull(),
+  mode: varchar('mode', { length: 16 }).$type<QuotaPolicyMode>().notNull(),
+  credits: bigint('credits', { mode: 'number' }),
+  revision: integer('revision').notNull(),
+  note: text('note'),
+  createdBy: bigint('created_by', { mode: 'bigint' }),
+  createTime: timestamp('create_time', { mode: 'string', precision: 3 }).notNull(),
+}, t => [
+  uniqueIndex('uk_credit_quota_policy_global').on(t.effectivePeriod, t.revision).where(sql`scope = 'global'`),
+  uniqueIndex('uk_credit_quota_policy_user').on(t.userId, t.effectivePeriod, t.revision).where(sql`scope = 'user'`),
+  index('idx_credit_quota_policy_lookup').on(t.scope, t.userId, t.effectivePeriod.desc(), t.revision.desc()),
+]);
+
+// 每用户每账期一条基础发放事实；金额为 0 也记一行，不伪造零金额 grant。
+export const creditQuotaIssues = pgTable('credit_quota_issue', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  userId: bigint('user_id', { mode: 'bigint' }).notNull(),
+  period: varchar('period', { length: 7 }).notNull(),
+  baseCredits: bigint('base_credits', { mode: 'number' }).notNull(),
+  status: varchar('status', { length: 16 }).$type<'granted' | 'failed'>().notNull(),
+  policySource: varchar('policy_source', { length: 16 }).$type<QuotaPolicySource>().notNull(),
+  policyVersion: integer('policy_version'),
+  policyId: varchar('policy_id', { length: 36 }),
+  grantId: varchar('grant_id', { length: 36 }),
+  reason: text('reason'),
+  createTime: timestamp('create_time', { mode: 'string', precision: 3 }).notNull(),
+  updateTime: timestamp('update_time', { mode: 'string', precision: 3 }).notNull(),
+}, t => [
+  uniqueIndex('uk_credit_quota_issue_period').on(t.userId, t.period),
+  index('idx_credit_quota_issue_period_status').on(t.period, t.status),
+]);
 
 // ---- 计费（migrations/012_credit_charge_entry.sql）----
 // 出账聚合根：一次 Generation 一行（generation_id 唯一）。credits / cost_usd / status 是分红推导出来的投影，

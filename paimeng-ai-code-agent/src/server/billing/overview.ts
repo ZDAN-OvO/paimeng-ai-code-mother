@@ -2,7 +2,7 @@ import 'server-only';
 import { desc, eq, sql, type SQL } from 'drizzle-orm';
 import { db, now } from '@/server/infra/db';
 import { BusinessError } from '@/server/infra/http';
-import { creditAccounts, creditGrants } from '@/server/infra/schema';
+import { creditAccounts, creditGrants, creditQuotaIssues } from '@/server/infra/schema';
 import { idSchema } from '@/shared/contracts';
 import {
   type AdminCreditFilter, type AdminCreditOverview, type AdminCreditOverviewItem, type AdminCreditOverviewQuery,
@@ -11,6 +11,7 @@ import {
 } from '@/shared/billing';
 import { naiveTime, periodOf, periodRange } from './period';
 import { overdraftOf, purchaseWindowStart } from './ledger';
+import { nextPeriodOf, resolveQuotaPolicy } from './quota-policy';
 
 /**
  * Admin 全用户额度总览的只读读模型（C1）。
@@ -69,6 +70,11 @@ function factsCte(period: string): SQL {
       where entry.pool = 'balance'
       group by charge.user_id
     ),
+    issue_facts as (
+      select user_id, base_credits, status, policy_source, policy_version
+      from credit_quota_issue
+      where period = ${period}
+    ),
     account_snapshots as (
       select user_id,
         max(case when pool = 'quota' then balance end) as quota_snapshot,
@@ -81,19 +87,28 @@ function factsCte(period: string): SQL {
       select app_user.id as user_id,
         app_user.user_account,
         app_user.user_name,
-        coalesce(grant_facts.monthly_granted, 0)::bigint as base_credits,
+        case when issue_facts.status = 'granted' then issue_facts.base_credits
+          else coalesce(grant_facts.monthly_granted, 0) end::bigint as base_credits,
         0::bigint as adjustment_credits,
         coalesce(quota_used.used, 0)::bigint as used_credits,
-        greatest(0, coalesce(grant_facts.monthly_granted, 0) - coalesce(quota_used.used, 0))::bigint as remaining_credits,
+        greatest(0,
+          (case when issue_facts.status = 'granted' then issue_facts.base_credits
+            else coalesce(grant_facts.monthly_granted, 0) end) - coalesce(quota_used.used, 0)
+        )::bigint as remaining_credits,
         (coalesce(grant_facts.balance_granted, 0) - coalesce(balance_used.used, 0))::bigint as balance,
         coalesce(account_snapshots.quota_snapshot, 0)::bigint as quota_snapshot,
         coalesce(account_snapshots.balance_snapshot, 0)::bigint as balance_snapshot,
         account_snapshots.snapshot_update_time,
-        case when coalesce(grant_facts.monthly_granted, 0) > 0 then 'granted' else 'pending' end as issue_status,
-        case when coalesce(grant_facts.monthly_granted, 0) > 0 then 'legacy' else 'fallback' end as policy_source,
-        null::integer as policy_version,
+        coalesce(issue_facts.status,
+          case when coalesce(grant_facts.monthly_granted, 0) > 0 then 'granted' else 'pending' end) as issue_status,
+        coalesce(issue_facts.policy_source,
+          case when coalesce(grant_facts.monthly_granted, 0) > 0 then 'legacy' else 'fallback' end) as policy_source,
+        issue_facts.policy_version,
         (coalesce(grant_facts.balance_granted, 0) - coalesce(balance_used.used, 0)
-          + greatest(0, coalesce(grant_facts.monthly_granted, 0) - coalesce(quota_used.used, 0)))::bigint as total,
+          + greatest(0,
+            (case when issue_facts.status = 'granted' then issue_facts.base_credits
+              else coalesce(grant_facts.monthly_granted, 0) end) - coalesce(quota_used.used, 0)
+          ))::bigint as total,
         greatest(0, -(coalesce(grant_facts.balance_granted, 0) - coalesce(balance_used.used, 0)))::bigint as debt,
         coalesce(grant_facts.purchased_credits, 0)::bigint as purchased_credits,
         coalesce(grant_facts.purchased_credits_60d, 0)::bigint as purchased_credits_60d,
@@ -102,6 +117,7 @@ function factsCte(period: string): SQL {
       left join grant_facts on grant_facts.user_id = app_user.id
       left join quota_used on quota_used.user_id = app_user.id
       left join balance_used on balance_used.user_id = app_user.id
+      left join issue_facts on issue_facts.user_id = app_user.id
       left join account_snapshots on account_snapshots.user_id = app_user.id
       where app_user.is_delete = 0
     )
@@ -118,7 +134,7 @@ function filterWhere(input: { q?: string; filter: AdminCreditFilter }): SQL {
       ${id === null ? sql`` : sql`or user_id = ${id}`})`);
   }
   switch (input.filter) {
-    case 'pending': parts.push(sql`issue_status = ${pendingStatus}`); break;
+    case 'pending': parts.push(sql`issue_status <> ${grantedStatus}`); break;
     case 'debt': parts.push(sql`balance < 0`); break;
     case 'zero': parts.push(sql`remaining_credits + balance <= 0`); break;
     case 'all': break;
@@ -177,7 +193,7 @@ export async function adminCreditOverview(input: AdminCreditOverviewQuery): Prom
     db().execute(sql`with ${cte}
       select
         count(*)::integer as user_count,
-        count(*) filter (where issue_status = ${pendingStatus})::integer as pending_count,
+        count(*) filter (where issue_status <> ${grantedStatus})::integer as pending_count,
         coalesce(sum(remaining_credits), 0)::bigint as quota_remaining_total,
         coalesce(sum(balance), 0)::bigint as balance_net_total,
         count(*) filter (where balance < 0)::integer as debtor_count,
@@ -236,10 +252,14 @@ export async function adminUserCreditDetail(userId: string): Promise<AdminUserCr
   const row = result.rows[0] as RawRow | undefined;
   if (!row) throw new BusinessError(404, 40400, '用户不存在');
 
-  const [grants, accounts] = await Promise.all([
+  const [grants, accounts, issues, currentRule, nextRule] = await Promise.all([
     db().select().from(creditGrants).where(eq(creditGrants.userId, BigInt(userId)))
       .orderBy(desc(creditGrants.createTime)).limit(50),
     db().select().from(creditAccounts).where(eq(creditAccounts.userId, BigInt(userId))),
+    db().select().from(creditQuotaIssues).where(eq(creditQuotaIssues.userId, BigInt(userId)))
+      .orderBy(desc(creditQuotaIssues.period)).limit(24),
+    resolveQuotaPolicy(db(), BigInt(userId), period),
+    resolveQuotaPolicy(db(), BigInt(userId), nextPeriodOf(period)),
   ]);
   const item = itemOf(row, period);
   const snapshotQuota = accounts.find(account => account.pool === 'quota')?.balance ?? 0;
@@ -273,6 +293,21 @@ export async function adminUserCreditDetail(userId: string): Promise<AdminUserCr
     snapshot: { quota: snapshotQuota, balance: snapshotBalance, updateTime: snapshotUpdateTime },
     snapshotAnomaly: item.snapshotAnomaly,
     grants: grants.map(grantViewOf),
+    rule: { current: currentRule, next: nextRule },
+    issues: issues.map(issue => ({
+      id: issue.id,
+      userId: String(issue.userId),
+      period: issue.period,
+      baseCredits: issue.baseCredits,
+      status: issue.status,
+      policySource: issue.policySource,
+      policyVersion: issue.policyVersion,
+      policyId: issue.policyId,
+      grantId: issue.grantId,
+      reason: issue.reason,
+      createTime: issue.createTime,
+      updateTime: issue.updateTime,
+    })),
     asOf: now(),
   };
 }
