@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
-import { bigint, bigserial, char, index, integer, jsonb, numeric, pgTable, primaryKey, smallint, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
-import type { ChargeStatus, CreditPool, GrantSource, QuotaAdjustmentMode, QuotaPolicyMode, QuotaPolicyScope, QuotaPolicySource, RateCardView, UsageSnapshotStep } from '@/shared/billing';
+import { bigint, bigserial, boolean, char, index, integer, jsonb, numeric, pgTable, primaryKey, smallint, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
+import type { ChargeStatus, CreditPool, GrantSource, QuotaAdjustmentMode, QuotaBatchItemStatus, QuotaBatchScope, QuotaBatchStatus, QuotaPolicyMode, QuotaPolicyScope, QuotaPolicySource, RateCardView, UsageSnapshotStep } from '@/shared/billing';
 
 const times = { createTime: timestamp('create_time', { mode: 'string' }).notNull(), updateTime: timestamp('update_time', { mode: 'string' }).notNull() };
 export const users = pgTable('app_user', { id: bigint('id', { mode: 'bigint' }).primaryKey(), userAccount: varchar('user_account', { length: 256 }).notNull(), userPassword: varchar('user_password', { length: 512 }).notNull(), userName: varchar('user_name', { length: 256 }), userAvatar: varchar('user_avatar', { length: 1024 }), userProfile: varchar('user_profile', { length: 512 }), userRole: varchar('user_role', { length: 256 }).notNull().default('user'), ...times, isDelete: integer('is_delete').notNull().default(0) }, t => [uniqueIndex('uk_app_user_account').on(t.userAccount)]);
@@ -258,6 +258,47 @@ export const creditQuotaAdjustments = pgTable('credit_quota_adjustment', {
 }, t => [
   uniqueIndex('uk_credit_quota_adjust_request').on(t.userId, t.requestId),
   index('idx_credit_quota_adjust_period').on(t.period, t.userId),
+]);
+
+// 批量发放：预览时固定账期/范围/逐用户策略快照；item 是逐用户回执，重试只重跑 failed。
+export const creditQuotaBatches = pgTable('credit_quota_batch', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  period: varchar('period', { length: 7 }).notNull(),
+  scope: varchar('scope', { length: 16 }).$type<QuotaBatchScope>().notNull(),
+  selection: jsonb('selection').notNull(),
+  previewToken: varchar('preview_token', { length: 64 }).notNull(),
+  previewFingerprint: varchar('preview_fingerprint', { length: 64 }).notNull(),
+  status: varchar('status', { length: 16 }).$type<QuotaBatchStatus>().notNull(),
+  targetCount: integer('target_count').notNull().default(0),
+  pendingCount: integer('pending_count').notNull().default(0),
+  grantedCount: integer('granted_count').notNull().default(0),
+  zeroCount: integer('zero_count').notNull().default(0),
+  skippedCount: integer('skipped_count').notNull().default(0),
+  failedCount: integer('failed_count').notNull().default(0),
+  totalCredits: bigint('total_credits', { mode: 'number' }).notNull().default(0),
+  issuedCredits: bigint('issued_credits', { mode: 'number' }).notNull().default(0),
+  scopeTotal: integer('scope_total').notNull().default(0),
+  truncated: boolean('truncated').notNull().default(false),
+  createdBy: bigint('created_by', { mode: 'bigint' }).notNull(),
+  createTime: timestamp('create_time', { mode: 'string', precision: 3 }).notNull(),
+  startedTime: timestamp('started_time', { mode: 'string', precision: 3 }),
+  finishedTime: timestamp('finished_time', { mode: 'string', precision: 3 }),
+}, t => [index('idx_credit_quota_batch_time').on(t.createTime.desc())]);
+
+export const creditQuotaBatchItems = pgTable('credit_quota_batch_item', {
+  batchId: varchar('batch_id', { length: 36 }).notNull(),
+  userId: bigint('user_id', { mode: 'bigint' }).notNull(),
+  baseCredits: bigint('base_credits', { mode: 'number' }).notNull(),
+  policySource: varchar('policy_source', { length: 16 }).$type<QuotaPolicySource>().notNull(),
+  policyVersion: integer('policy_version'),
+  policyId: varchar('policy_id', { length: 36 }),
+  status: varchar('status', { length: 16 }).$type<QuotaBatchItemStatus>().notNull(),
+  issueId: varchar('issue_id', { length: 36 }),
+  reason: varchar('reason', { length: 500 }),
+  updateTime: timestamp('update_time', { mode: 'string', precision: 3 }).notNull(),
+}, t => [
+  primaryKey({ columns: [t.batchId, t.userId] }),
+  index('idx_credit_quota_batch_item_status').on(t.batchId, t.status),
 ]);
 
 // ---- 计费（migrations/012_credit_charge_entry.sql）----

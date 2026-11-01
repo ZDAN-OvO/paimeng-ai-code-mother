@@ -41,7 +41,7 @@ let snapshotsRoot = '';
 
 beforeAll(async () => {
   await applyBillingMigrations(
-    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '014_credit_entry_audit.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql',
+    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '014_credit_entry_audit.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql',
   );
   base = await realpath(await mkdtemp(join(tmpdir(), 'paimeng-settlement-')));
   runtimeRoot = join(base, 'runtime');

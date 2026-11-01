@@ -44,7 +44,7 @@ beforeAll(async () => {
   loadBillingDatabase();
   await applyBillingMigrations(
     '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql',
-    '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql',
+    '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql',
   );
   admin = await createBillingUser({ role: 'admin' });
 });

@@ -3,8 +3,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { Alert, App, Button, Descriptions, Form, Input, InputNumber, Modal, Select, Table, Tag } from 'antd';
 import { api } from '@/client/api';
 import {
-  adminQuotaStatusLabels, maxMonthlyQuotaCredits, quotaAdjustmentModeLabels, quotaPolicyModeLabels, quotaPolicySourceLabels,
+  adminQuotaStatusLabels, maxMonthlyQuotaCredits, quotaAdjustmentModeLabels, quotaBatchItemStatusLabels, quotaBatchScopeLabels,
+  quotaBatchStatusColors, quotaBatchStatusLabels, quotaPolicyModeLabels, quotaPolicySourceLabels,
   type AdminCreditOverview, type AdminCreditOverviewItem, type AdminCreditUser, type QuotaAdjustmentMode, type QuotaAdjustmentReceipt,
+  type QuotaBatchItemView, type QuotaBatchView,
   type QuotaPolicyAdminView, type QuotaPolicySaveReceipt, type QuotaPolicyView,
 } from '@/shared/billing';
 import { formatStoredTime } from '@/shared/display';
@@ -45,20 +47,25 @@ export function QuotaManagementPanel({ onSelect }: { onSelect: (user: AdminCredi
   const adjustMode = Form.useWatch('mode', adjustForm);
   const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const [adjustReceipt, setAdjustReceipt] = useState<QuotaAdjustmentReceipt | null>(null);
+  const [batch, setBatch] = useState<QuotaBatchView | null>(null);
+  const [batches, setBatches] = useState<QuotaBatchView[]>([]);
+  const [batchBusy, setBatchBusy] = useState<string | null>(null);
   const [pendingAdjust, setPendingAdjust] = useState<AdjustForm | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const suffix = userId ? `?userId=${encodeURIComponent(userId)}` : '';
-      const [allUsers, pendingUsers, policyView] = await Promise.all([
+      const [allUsers, pendingUsers, policyView, batchList] = await Promise.all([
         api<AdminCreditOverview>('admin/billing/overview?page=1&pageSize=1&filter=all&sort=id_desc'),
         api<AdminCreditOverview>('admin/billing/overview?page=1&pageSize=20&filter=pending&sort=id_desc'),
         api<QuotaPolicyAdminView>('admin/billing/quota/policy' + suffix),
+        api<{ batches: QuotaBatchView[] }>('admin/billing/quota/batches?limit=10'),
       ]);
       setOverview(allUsers);
       setPending(pendingUsers);
       setPolicy(policyView);
+      setBatches(batchList.batches);
       setError(null);
       globalForm.setFieldsValue({
         effectivePeriod: policyView.nextPeriod,
@@ -175,6 +182,56 @@ export function QuotaManagementPanel({ onSelect }: { onSelect: (user: AdminCredi
       message.error((problem as Error).message);
     } finally {
       setSaving(null);
+    }
+  }
+
+  async function previewBatch(payload: { scope: 'pending' | 'users'; userIds?: string[] }) {
+    setBatchBusy('preview');
+    try {
+      const next = await api<QuotaBatchView>('admin/billing/quota/batch/preview', payload);
+      setBatch(next);
+      setBatches(current => [next, ...current.filter(item => item.id !== next.id)].slice(0, 10));
+      message.success(`已生成预览：${next.pendingCount} 人待发，合计 ${next.totalCredits} Credit`);
+    } catch (problem) {
+      message.error((problem as Error).message);
+    } finally {
+      setBatchBusy(null);
+    }
+  }
+
+  async function executeBatch(target = batch) {
+    if (!target?.previewToken) return;
+    setBatchBusy('execute');
+    try {
+      const next = await api<QuotaBatchView>('admin/billing/quota/batch/execute', {
+        batchId: target.id,
+        previewToken: target.previewToken,
+        limit: 200,
+      });
+      setBatch(next);
+      message.success(next.pendingCount > 0
+        ? `已处理一批，还剩 ${next.pendingCount} 人待发`
+        : `批次完成：已发 ${next.grantedCount} 人，跳过 ${next.skippedCount} 人，失败 ${next.failedCount} 人`);
+      await load();
+    } catch (problem) {
+      message.error((problem as Error).message);
+    } finally {
+      setBatchBusy(null);
+    }
+  }
+
+  async function retryBatch() {
+    if (!batch) return;
+    setBatchBusy('retry');
+    try {
+      const retried = await api<QuotaBatchView>('admin/billing/quota/batch/retry', { batchId: batch.id });
+      setBatch(retried);
+      message.success('失败项已回到待发，正在重试');
+      await executeBatch(retried);
+    } catch (problem) {
+      message.error((problem as Error).message);
+    } finally {
+      setBatchBusy(null);
     }
   }
 
@@ -296,6 +353,77 @@ export function QuotaManagementPanel({ onSelect }: { onSelect: (user: AdminCredi
     {!policy.user && <p className={styles.statusHint}>先搜索并选中一个用户，才能查看或设置单用户覆盖。</p>}
 
     <PolicyVersions versions={policy.global.versions} title="全局未来策略版本" />
+
+    <div className={styles.sectionHeading}>
+      <h2>批量发放</h2>
+      <span className={styles.statusHint}>预览固定账期、范围与策略快照；确认后才发放，失败只重试失败项</span>
+      <div className={styles.headingActions}>
+        <Button loading={batchBusy === 'preview'} onClick={() => void previewBatch({ scope: 'pending' })}>预览全部待发</Button>
+        {policy.user && <Button loading={batchBusy === 'preview'} onClick={() => void previewBatch({ scope: 'users', userIds: [policy.user!.userId] })}>预览选中用户</Button>}
+      </div>
+    </div>
+    {batch && <>
+      <Descriptions bordered size="small" column={{ xs: 1, sm: 2 }} style={{ marginBottom: 12 }} items={[
+        { key: 'id', label: '批次 ID', children: batch.id },
+        { key: 'period', label: '账期', children: batch.period },
+        { key: 'status', label: '状态', children: <Tag color={quotaBatchStatusColors[batch.status]}>{quotaBatchStatusLabels[batch.status]}</Tag> },
+        { key: 'scope', label: '范围', children: quotaBatchScopeLabels[batch.scope] },
+        { key: 'target', label: '目标 / 待发 / 已发 / 跳过 / 失败', children: `${batch.targetCount} / ${batch.pendingCount} / ${batch.grantedCount} / ${batch.skippedCount} / ${batch.failedCount}` },
+        { key: 'zero', label: '其中 0 配额', children: String(batch.zeroCount) },
+        { key: 'credits', label: '预览合计 / 已发合计', children: `${batch.totalCredits} / ${batch.issuedCredits} Credit` },
+        { key: 'time', label: '创建 / 完成', children: `${formatStoredTime(batch.createTime)} / ${batch.finishedTime ? formatStoredTime(batch.finishedTime) : '未完成'}` },
+      ]} />
+      {batch.truncated && <Alert
+        type="warning"
+        showIcon
+        style={{ marginBottom: 12 }}
+        title={`本次只预览了前 ${batch.targetCount} 人；当前范围共 ${batch.scopeTotal} 人待发。处理完后请再预览剩余，不能把这一批当成全库已发。`}
+      />}
+      <div className={styles.headingActions} style={{ marginBottom: 12 }}>
+        {batch.status === 'previewed' && <Button type="primary" loading={batchBusy === 'execute'} onClick={() => void executeBatch()}>确认发放</Button>}
+        {batch.status === 'running' && <Button type="primary" loading={batchBusy === 'execute'} onClick={() => void executeBatch()}>继续执行（剩余 {batch.pendingCount}）</Button>}
+        {batch.failedCount > 0 && batch.pendingCount === 0 && <Button danger loading={batchBusy === 'retry'} onClick={() => void retryBatch()}>重试失败项（{batch.failedCount}）</Button>}
+      </div>
+      <Table<QuotaBatchItemView>
+        rowKey="userId"
+        size="small"
+        dataSource={batch.items ?? []}
+        pagination={false}
+        scroll={{ x: 980 }}
+        locale={{ emptyText: '这个批次没有逐用户回执' }}
+        columns={[
+          { title: '用户', key: 'user', width: 300, render: (_, row) => row.userAccount
+            ? <AdminUserIdentity user={{ userId: row.userId, userAccount: row.userAccount, userName: row.userName }} />
+            : <span className={styles.slotName}>{row.userId}</span> },
+          { title: '基础金额', dataIndex: 'baseCredits', width: 110, render: (value: number) => `${value} Credit` },
+          { title: '来源 / 版本', key: 'policy', width: 150, render: (_, row) => `${quotaPolicySourceLabels[row.policySource]}${row.policyVersion === null ? '' : ` · v${row.policyVersion}`}` },
+          { title: '结果', dataIndex: 'status', width: 100, render: (value: QuotaBatchItemView['status']) => <Tag color={value === 'granted' ? 'green' : value === 'failed' ? 'red' : value === 'skipped' ? 'default' : 'gold'}>{quotaBatchItemStatusLabels[value]}</Tag> },
+          { title: 'Issue', dataIndex: 'issueId', width: 220, render: (value: string | null) => value ? <span className={styles.slotName}>{value}</span> : '—' },
+          { title: '说明', dataIndex: 'reason', render: (value: string | null) => value ?? '—' },
+        ]}
+      />
+    </>}
+    <div className={styles.sectionHeading}>
+      <h2>批次记录</h2>
+      <span className={styles.statusHint}>最近 10 个批次；预览/执行/重试都留固定账期与逐用户回执</span>
+    </div>
+    <Table<QuotaBatchView>
+      rowKey="id"
+      size="small"
+      dataSource={batches}
+      pagination={false}
+      scroll={{ x: 980 }}
+      locale={{ emptyText: '还没有批量发放记录' }}
+      columns={[
+        { title: '批次', dataIndex: 'id', width: 260, render: (value: string) => <span className={styles.slotName}>{value}</span> },
+        { title: '账期', dataIndex: 'period', width: 90 },
+        { title: '范围', dataIndex: 'scope', width: 100, render: (value: QuotaBatchView['scope']) => quotaBatchScopeLabels[value] },
+        { title: '状态', dataIndex: 'status', width: 100, render: (value: QuotaBatchView['status']) => <Tag color={quotaBatchStatusColors[value]}>{quotaBatchStatusLabels[value]}</Tag> },
+        { title: '待发/已发/跳过/失败', key: 'counts', width: 150, render: (_, row) => `${row.pendingCount}/${row.grantedCount}/${row.skippedCount}/${row.failedCount}` },
+        { title: '已发 Credit', dataIndex: 'issuedCredits', width: 120, render: (value: number) => `${value} Credit` },
+        { title: '创建时间', dataIndex: 'createTime', width: 160, render: (value: string) => formatStoredTime(value) },
+      ]}
+    />
 
     <div className={styles.sectionHeading}>
       <h2>本月发放与待发</h2>

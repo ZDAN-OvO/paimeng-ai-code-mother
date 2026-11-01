@@ -9,6 +9,7 @@ import { grantCredits, reverseChargeByAdmin, userUsage } from '@/server/billing/
 import { adminCreditOverview, searchAdminUsers } from '@/server/billing/overview';
 import { readQuotaPolicyAdmin, saveQuotaPolicy } from '@/server/billing/quota-policy';
 import { adjustQuota } from '@/server/billing/quota-adjustment';
+import { executeQuotaBatch, listQuotaBatches, previewQuotaBatch, retryQuotaBatch } from '@/server/billing/quota-batch';
 import { chargesOf } from '@/server/billing/ledger';
 import { ensureCurrentPeriod } from '@/server/billing/quota';
 import { pendingSettlements, reconcileSettlements } from '@/server/billing/settlement';
@@ -17,7 +18,11 @@ import { appendRate, readRateCardList } from '@/server/billing/rate-card';
 import { transcribeEnabled, transcribeSpeech } from '@/server/generation/speech';
 import { readAttachmentOriginal } from '@/server/generation/attachment-store';
 import { idSchema } from '@/shared/contracts';
-import { adminCreditOverviewQuerySchema, grantRequestSchema, chargeReversalRequestSchema, poolOfSource, quotaAdjustmentRequestSchema, quotaPolicySaveSchema, reconcileRequestSchema } from '@/shared/billing';
+import {
+  adminCreditOverviewQuerySchema, grantRequestSchema, chargeReversalRequestSchema, poolOfSource,
+  quotaAdjustmentRequestSchema, quotaBatchExecuteSchema, quotaBatchPreviewSchema, quotaBatchRetrySchema,
+  quotaPolicySaveSchema, reconcileRequestSchema,
+} from '@/shared/billing';
 import { versionIdSchema } from '@/shared/versioning';
 export const runtime='nodejs';
 export const dynamic='force-dynamic';
@@ -52,6 +57,7 @@ async function dispatch(req:Request,context:{params:Promise<{path:string[]}>}){
    if(path==='admin/billing/overview'){await requireAdmin(req);return success(await adminCreditOverview(adminCreditOverviewQuerySchema.parse(Object.fromEntries(query))));}
    if(path==='admin/billing/users'){await requireAdmin(req);const limit=z.coerce.number().int().min(1).max(20).default(10).parse(query.get('limit')??undefined);return success({users:await searchAdminUsers({q:query.get('q')??undefined,limit})});}
    if(path==='admin/billing/quota/policy'){await requireAdmin(req);return success(await readQuotaPolicyAdmin({userId:query.get('userId')?idSchema.parse(query.get('userId')):undefined}));}
+   if(path==='admin/billing/quota/batches'){await requireAdmin(req);const limit=z.coerce.number().int().min(1).max(20).default(10).parse(query.get('limit')??undefined);return success({batches:await listQuotaBatches({limit})});}
    if(path==='admin/billing/reconcile'){await requireAdmin(req);const limit=z.coerce.number().int().min(1).max(200).default(50).parse(query.get('limit')??undefined);return success({items:await pendingSettlements({limit})});}
    if(path==='admin/billing/usage'){await requireAdmin(req);const limit=z.coerce.number().int().min(1).max(20).default(20).parse(query.get('limit')??undefined);return success(await userUsage({userId:idSchema.parse(query.get('userId')),limit}));}
    if(path==='billing/summary'){const user=await requireUser(req);return success(await ensureCurrentPeriod(user.id));}
@@ -96,6 +102,9 @@ async function dispatch(req:Request,context:{params:Promise<{path:string[]}>}){
    if(path==='admin/billing/grant'){const request=grantRequestSchema.parse(value);return success(await grantCredits({...request,pool:request.pool??poolOfSource(request.source),grantedBy:admin.id}));}
    if(path==='admin/billing/quota/policy'){const request=quotaPolicySaveSchema.parse(value);return success(await saveQuotaPolicy(request,admin.id));}
    if(path==='admin/billing/quota/adjust'){const request=quotaAdjustmentRequestSchema.parse(value);return success(await adjustQuota(request,admin.id));}
+   if(path==='admin/billing/quota/batch/preview'){const request=quotaBatchPreviewSchema.parse(value);return success(await previewQuotaBatch(request,admin.id));}
+   if(path==='admin/billing/quota/batch/execute'){const request=quotaBatchExecuteSchema.parse(value);return success(await executeQuotaBatch(request,admin.id));}
+   if(path==='admin/billing/quota/batch/retry'){const request=quotaBatchRetrySchema.parse(value);return success(await retryQuotaBatch(request.batchId,admin.id));}
    if(path==='admin/billing/reconcile')return success(await reconcileSettlements(reconcileRequestSchema.parse(value)));
    if(path.startsWith('admin/billing/charge/')&&path.endsWith('/reverse')){const chargeId=z.string().trim().min(1).max(36).parse(path.slice('admin/billing/charge/'.length,path.length-'/reverse'.length));const {reason}=chargeReversalRequestSchema.parse(value);return success(await reverseChargeByAdmin({chargeId,reason,operatorId:admin.id}));}
   }

@@ -78,6 +78,9 @@ export async function ensurePeriodQuota(userId: string, at: Date = new Date()): 
   const id = BigInt(userId);
   const period = periodOf(at);
   return db().transaction(async tx => {
+    const [active] = await tx.select({ id: users.id }).from(users)
+      .where(and(eq(users.id, id), eq(users.isDelete, 0))).limit(1);
+    if (!active) throw new BusinessError(404, 40400, '用户不存在');
     // 同一用户同一账期串行化：策略解析、grant 唯一键与 issue 插入之间不留并发窗口。
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`credit_quota_issue:${userId}:${period}`}))`);
     const [existing] = await tx.select().from(creditQuotaIssues)

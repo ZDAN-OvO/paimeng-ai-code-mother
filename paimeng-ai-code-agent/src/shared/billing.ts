@@ -397,6 +397,110 @@ export type QuotaAdjustmentReceipt = {
   afterCredits: number;
   expiresAt: string;
 };
+
+// ---- Admin 月度批量发放（migrations/022_credit_quota_batch.sql）----
+
+export const quotaBatchScopes = ['pending', 'users'] as const;
+export type QuotaBatchScope = (typeof quotaBatchScopes)[number];
+export const quotaBatchScopeLabels: Record<QuotaBatchScope, string> = {
+  pending: '全部待发',
+  users: '指定用户',
+};
+
+export const quotaBatchStatuses = ['previewed', 'running', 'completed', 'failed', 'superseded'] as const;
+export type QuotaBatchStatus = (typeof quotaBatchStatuses)[number];
+export const quotaBatchStatusLabels: Record<QuotaBatchStatus, string> = {
+  previewed: '待确认',
+  running: '执行中',
+  completed: '已完成',
+  failed: '失败',
+  superseded: '已过期',
+};
+export const quotaBatchStatusColors: Record<QuotaBatchStatus, string> = {
+  previewed: 'gold',
+  running: 'blue',
+  completed: 'green',
+  failed: 'red',
+  superseded: 'default',
+};
+
+export const quotaBatchItemStatuses = ['pending', 'granted', 'skipped', 'failed'] as const;
+export type QuotaBatchItemStatus = (typeof quotaBatchItemStatuses)[number];
+export const quotaBatchItemStatusLabels: Record<QuotaBatchItemStatus, string> = {
+  pending: '待发',
+  granted: '已发',
+  skipped: '跳过',
+  failed: '失败',
+};
+
+export const maxQuotaBatchUsers = 1000;
+export const maxQuotaBatchChunk = 500;
+
+export const quotaBatchPreviewSchema = z
+  .object({
+    period: z.string().trim().regex(/^\d{4}-(0[1-9]|1[0-2])$/u, '账期必须形如 2026-11').optional(),
+    scope: z.enum(quotaBatchScopes),
+    userIds: z.array(idSchema).min(1).max(maxQuotaBatchUsers).optional(),
+    limit: z.number().int().min(1).max(maxQuotaBatchUsers).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.scope === 'users' && (!value.userIds || value.userIds.length === 0)) {
+      ctx.addIssue({ code: 'custom', message: '指定用户批量发放必须给 userIds' });
+    }
+  });
+export type QuotaBatchPreviewRequest = z.infer<typeof quotaBatchPreviewSchema>;
+
+export const quotaBatchExecuteSchema = z.object({
+  batchId: z.string().trim().min(1).max(36),
+  previewToken: z.string().trim().min(1).max(64),
+  limit: z.number().int().min(1).max(maxQuotaBatchChunk).optional(),
+});
+export type QuotaBatchExecuteRequest = z.infer<typeof quotaBatchExecuteSchema>;
+
+export const quotaBatchRetrySchema = z.object({
+  batchId: z.string().trim().min(1).max(36),
+});
+export type QuotaBatchRetryRequest = z.infer<typeof quotaBatchRetrySchema>;
+
+/** 逐用户回执；userAccount/userName 为用户被删/预览时不存在时的可空展示。 */
+export type QuotaBatchItemView = {
+  userId: string;
+  userAccount: string | null;
+  userName: string | null;
+  baseCredits: number;
+  policySource: QuotaPolicySource;
+  policyVersion: number | null;
+  status: QuotaBatchItemStatus;
+  issueId: string | null;
+  reason: string | null;
+  updateTime: string;
+};
+
+/** 批次视图；`previewToken` 只在新建预览的响应里出现，列表/详情不返回。 */
+export type QuotaBatchView = {
+  id: string;
+  period: string;
+  scope: QuotaBatchScope;
+  status: QuotaBatchStatus;
+  previewToken?: string;
+  targetCount: number;
+  pendingCount: number;
+  grantedCount: number;
+  zeroCount: number;
+  skippedCount: number;
+  failedCount: number;
+  totalCredits: number;
+  issuedCredits: number;
+  scopeTotal: number;
+  truncated: boolean;
+  createdBy: string;
+  createTime: string;
+  startedTime: string | null;
+  finishedTime: string | null;
+  items?: QuotaBatchItemView[];
+};
+
+export type QuotaBatchList = { batches: QuotaBatchView[] };
 // ---- Credit Charge（migrations/012_credit_charge_entry.sql）----
 
 /**

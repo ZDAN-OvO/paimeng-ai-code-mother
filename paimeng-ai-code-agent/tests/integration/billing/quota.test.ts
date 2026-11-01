@@ -72,7 +72,7 @@ beforeAll(async () => {
   loadBillingDatabase();
   // 配额余额是「当期 grant − 当期 quota entry」的重算（`quotaUsageOfPeriod` 直接查 `credit_entry`，
   // 缺表就是部署没迁移到位），所以配额用例必须把结算表一起应用上。
-  await applyBillingMigrations('010_credit_grant_account.sql', chargeEntryMigration, '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql');
+  await applyBillingMigrations('010_credit_grant_account.sql', chargeEntryMigration, '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql');
 });
 
 afterAll(async () => {

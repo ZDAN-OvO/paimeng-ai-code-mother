@@ -58,6 +58,18 @@ npm run billing:quota-issue -- --apply --limit=200
 - 调整只属于该账期，月底随配额失效；下个月标准仍由策略决定。
 - 调整与结算使用同一对 `credit_account` 行锁；并发时先结算或先调整，最终都等于「基础 + 调整 − 消费」。
 
+### 批量发放
+
+Admin 的「配额管理 → 批量发放」提供预览 → 确认执行 → 失败重试，代码在 `src/server/billing/quota-batch.ts`。
+
+- `scope=pending` 选中当前账期所有没有 granted issue 的用户；`scope=users` 针对指定用户（已发项显示 skipped）。一次预览最多 1000 人，超出用 `scopeTotal` / `truncated` 明示，不能把第一批说成全库已发。
+- 预览只写 `credit_quota_batch` / `credit_quota_batch_item` 元数据，不发钱；每个 item 固定基础金额、策略来源与版本。
+- 确认执行需要预览返回的 `previewToken`。执行前重新解析所有待发项并比对快照；账期变化或策略变化会把批次标成 `superseded`，不写任何 issue/grant。
+- 每次执行最多 200 项（接口允许 1..500），剩余保持 `running`，Admin 可以点「继续执行」；部分失败逐项记录原因。
+- 失败重试只把 `failed` 改回 `pending`，`granted` / `skipped` 不动，所以成功项不会重复发。
+- 并发懒发放（注册、摘要、CLI）先落地时，批次项变成 `skipped`，最终仍只有一条 issue 与一笔 grant。
+- 没有常驻定时器；批量入口只是 Admin 主动操作，不会宣称月初自动全库发完。
+
 ### 核对
 
 配额余额是余额快照（`credit_account.pool = 'quota'`），真值在 `credit_quota_issue`（基础发放）、`credit_quota_adjustment`（调整）与 `credit_entry`（扣减，归属看父 Charge 的 `create_time`）。查某个用户：
