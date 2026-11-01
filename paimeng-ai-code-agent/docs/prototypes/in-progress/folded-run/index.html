@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>原型 · AI 输出的过程折叠（folded-run）</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!--
+  问题：一轮 AI 生成里的「过程」（思考 + 工具调用 + 构建阶段）应该怎么折叠？
+  三个结构不同的答案，用 ?variant=A|B|C 切换，底部浮动条或 ←/→ 键翻。
+  ?state=done|thinking|running|failed 切换这一轮的状态（方便一次看完四种状态）。
+  纯静态、无持久化、不连模型；数据是写死的演示数据。
+-->
+<div class="app" id="app" data-variant="A" data-state="done">
+
+  <header class="top">
+    <span class="brand">派蒙 AI 应用工坊</span>
+    <span class="apptitle"><b>田边儿合作社农机预约</b><i class="vchip">v4</i></span>
+    <span class="sp"></span>
+    <span class="proto-ctl" role="group" aria-label="原型状态切换">
+      <span class="proto-ctl-t">状态</span>
+      <button type="button" data-state-set="done">已完成</button>
+      <button type="button" data-state-set="thinking">思考中</button>
+      <button type="button" data-state-set="running">构建中</button>
+      <button type="button" data-state-set="failed">构建失败</button>
+    </span>
+  </header>
+
+  <div class="body">
+    <div class="chat">
+      <div class="chat-scroll" id="chat-scroll">
+        <div class="chat-inner" id="chat-inner"></div>
+      </div>
+      <div class="foot">
+        <div class="box">
+          <textarea rows="2" placeholder="继续描述要改的地方，例如：把主色换成更深的松绿。"></textarea>
+          <div class="box-foot"><span class="hint">Enter 发送 · Shift+Enter 换行</span><span class="sp"></span><button class="send" type="button">发送</button></div>
+        </div>
+      </div>
+    </div>
+    <aside class="ins" id="ins">
+      <div class="ins-bar"><b>预览</b><span class="sp"></span><span class="ins-tag">桌面</span><span class="ins-tag">手机</span></div>
+      <div class="mini">
+        <div class="mini-hero"><b>田边儿合作社农机预约</b><p>附近农户 · 就近安排 · 机器来帮忙</p><i class="mini-pill">看空闲机器</i></div>
+        <div class="mini-row"><div><b>久保田 · PRO 988Q</b><span>收割机 · 4.5 米割台</span></div><div><b>东方红 · LX 2204</b><span>拖拉机 · 220 马力</span></div></div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="proto-bar">
+    <button type="button" class="proto-arrow" data-step="-1" aria-label="上一个变体">‹</button>
+    <span class="proto-label" id="proto-label">A</span>
+    <button type="button" class="proto-arrow" data-step="1" aria-label="下一个变体">›</button>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
