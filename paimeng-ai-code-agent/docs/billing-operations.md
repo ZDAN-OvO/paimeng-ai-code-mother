@@ -5,7 +5,7 @@ Credit 有两个运维面：**月度配额**（发放、补发、查账）与**�
 
 ## 月度配额
 
-按 [ADR-0004](adr/0004-credit-billing.md) 的「Two pools, deducted quota first」与 [ADR-0005](adr/0005-configurable-monthly-quota.md) 的「versioned policy + issue fact」实现的月度配额。操作面仍是三件事：什么时候发、怎么补、怎么核对。代码在 `src/server/billing/quota.ts` 与 `src/server/billing/quota-policy.ts`。
+按 [ADR-0004](adr/0004-credit-billing.md) 的「Two pools, deducted quota first」与 [ADR-0005](adr/0005-configurable-monthly-quota.md) 的「versioned policy + issue fact」实现的月度配额。操作面仍是三件事：什么时候发、怎么补、怎么核对。代码在 `src/server/billing/quota.ts`、`quota-policy.ts`、`quota-adjustment.ts` 与 `quota-batch.ts`；原始设计与验收见[归档计划](plans/archive/admin-credit-quota.md)。
 
 ### 账期口径
 

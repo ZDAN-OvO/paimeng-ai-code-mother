@@ -4,6 +4,10 @@
 
 现行入口：[部署说明](../../pi-durable-deployment.md)、[模型配置](../../provider-convergence.md)、[数据库职责清单](../../database-inventory.md)。长期架构决策见[ADR](../../adr/0001-single-writer-authority.md)。
 
+## 2026-11 完成的计划
+
+- [admin-credit-quota.md](./admin-credit-quota.md) — 额度管理：全用户 Credit 总览、可配置月度配额、单用户调整与批量发放（2026-11-02 归档；ADR-0005）
+
 ## 2026-10 完成的计划
 
 - [harness-reliability.md](./harness-reliability.md) — Harness 可靠性重构与 pi-durable 1.4.0 升级（2026-10-29 归档）

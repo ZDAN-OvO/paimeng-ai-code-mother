@@ -72,29 +72,34 @@ export function QuotaManagementPanel({ onSelect }: { onSelect: (user: AdminCredi
         credits: policyView.global.next.credits,
         note: '',
       });
-      if (policyView.user) {
-        userForm.setFieldsValue({
-          effectivePeriod: policyView.nextPeriod,
-          mode: policyView.user.next.source === 'user' ? 'override' : 'inherit',
-          credits: policyView.user.next.source === 'user' ? policyView.user.next.credits : policyView.global.next.credits,
-          note: '',
-        });
-      }
     } catch (problem) {
       setError((problem as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [globalForm, userForm, userId]);
+  }, [globalForm, userId]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    // 用户表单只在选中用户后挂载；等 policy 更新到 DOM 再写初始值，避免 useForm 未连接告警。
+    if (!policy?.user) return;
+    userForm.setFieldsValue({
+      effectivePeriod: policy.nextPeriod,
+      mode: policy.user.next.source === 'user' ? 'override' : 'inherit',
+      credits: policy.user.next.source === 'user' ? policy.user.next.credits : policy.global.next.credits,
+      note: '',
+    });
+  }, [
+    userForm, policy?.user?.userId, policy?.user?.next.source, policy?.user?.next.credits,
+    policy?.global.next.credits, policy?.nextPeriod,
+  ]);
   useEffect(() => {
     // 换用户就换一次调整意图键，避免把上一个用户的 requestId 带进新载荷。
     setRequestId(crypto.randomUUID());
     setAdjustReceipt(null);
     setPendingAdjust(null);
-    adjustForm.resetFields();
-  }, [adjustForm, userId]);
+    if (policy?.user) adjustForm.resetFields();
+  }, [adjustForm, userId, policy?.user?.userId]);
 
   async function submitGlobal(values: PolicyForm) {
     if (!policy) return;
@@ -350,7 +355,12 @@ export function QuotaManagementPanel({ onSelect }: { onSelect: (user: AdminCredi
       ]} />}
       <PolicyVersions versions={policy.user.versions} title="这个用户的未来策略版本" />
     </>}
-    {!policy.user && <p className={styles.statusHint}>先搜索并选中一个用户，才能查看或设置单用户覆盖。</p>}
+    {!policy.user && <>
+      {/* 未选用户时保留空的 Form 连接，避免 Form.useForm/useWatch 在挂载前触发 antd 告警。 */}
+      <Form form={userForm} style={{ display: 'none' }} />
+      <Form form={adjustForm} style={{ display: 'none' }} />
+      <p className={styles.statusHint}>先搜索并选中一个用户，才能查看或设置单用户覆盖。</p>
+    </>}
 
     <PolicyVersions versions={policy.global.versions} title="全局未来策略版本" />
 
