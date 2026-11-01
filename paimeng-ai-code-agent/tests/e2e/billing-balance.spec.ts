@@ -62,15 +62,21 @@ test('管理员发放后 Owner 的额度条显示余额池与透支线', async (
   await adminLogin(page, uniqueAccount());
 
   await page.goto('/admin/billing');
-  await page.getByLabel('用户 ID').fill(ownerId);
+  // Credit 管理默认是全用户总览：先搜索用户，再从详情抽屉进入余额发放。
+  await page.getByLabel('搜索用户').fill(ownerAccount);
+  await page.getByLabel('搜索用户').press('Enter');
+  const ownerRow = page.getByRole('row').filter({ hasText: ownerId });
+  await expect(ownerRow).toBeVisible();
+  await ownerRow.getByRole('button', { name: '查看详情' }).click();
+  await page.getByRole('tab', { name: '发放余额' }).click();
   await page.getByLabel('发放金额').fill('300');
   await page.getByLabel('备注').fill('浏览器演示发放');
-  await page.locator('form').getByRole('button', { name: /^发\s*放$/ }).click();
+  await page.getByRole('button', { name: /^发\s*放$/ }).click();
 
-  const receipt = page.locator('.ant-descriptions');
-  await expect(receipt).toContainText(ownerId);
-  await expect(receipt).toContainText('300 Credit');
-  await expect(receipt).toContainText('浏览器演示发放');
+  const drawer = page.locator('.ant-drawer-section');
+  await expect(drawer).toContainText(ownerId);
+  await expect(drawer).toContainText('300 Credit');
+  await expect(drawer).toContainText('浏览器演示发放');
   await page.screenshot({ path: evidencePath('billing', 'admin-grant.png'), fullPage: true });
 
   // Owner 换一个浏览器上下文登录：余额只从自己的 billing/summary 读到，管理员的发放已经生效。

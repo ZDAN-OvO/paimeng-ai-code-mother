@@ -164,11 +164,15 @@ test('Admin 查用户用量并整笔冲正：成本未知可辨识、冲正后�
   await adminLogin(page, 'e2e_ledger_admin_' + randomUUID().slice(0, 8));
 
   await page.goto('/admin/billing');
-  await page.getByRole('tab', { name: '用户用量与冲正' }).click();
-  await page.getByLabel('用户用量用户 ID').fill(ownerId);
-  await page.getByRole('button', { name: '查询用量' }).click();
+  // 两个主页签里的 Credit 管理默认展示全用户总览；从行进入详情后再查账单与冲正。
+  await page.getByLabel('搜索用户').fill(ownerAccount);
+  await page.getByLabel('搜索用户').press('Enter');
+  const ownerRow = page.getByRole('row').filter({ hasText: ownerId });
+  await expect(ownerRow).toBeVisible();
+  await ownerRow.getByRole('button', { name: '查看详情' }).click();
+  await page.getByRole('tab', { name: '账单与冲正' }).click();
 
-  const row = page.getByRole('row').filter({ hasText: generationId });
+  const row = page.locator('.ant-drawer-section').getByRole('row').filter({ hasText: generationId });
   // 管理员看的是别人的账：应用名同样要能读出来，否则只能靠 ID 对
   await expect(row).toContainText(appName);
   await expect(row).toContainText('60 Credit');

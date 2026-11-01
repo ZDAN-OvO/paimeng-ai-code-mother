@@ -6,6 +6,7 @@ import { generationAccounts } from '@/server/generation/generation-accounting';
 import { chatRuntime, generationStatus, harnessCancelGeneration, harnessCancelInput, harnessChatResponse, harnessSteerGeneration, harnessSubmitInput, loadMessages } from '@/server/generation/durable-engine';
 import { applyModelConfigNow, deleteModelAlias, deleteModelProvider, probeProviderModels, readModelAdminConfig, upsertModelAlias, upsertModelProvider } from '@/server/models/admin';
 import { grantCredits, reverseChargeByAdmin, userUsage } from '@/server/billing/admin';
+import { adminCreditOverview, searchAdminUsers } from '@/server/billing/overview';
 import { chargesOf } from '@/server/billing/ledger';
 import { ensureCurrentPeriod } from '@/server/billing/quota';
 import { pendingSettlements, reconcileSettlements } from '@/server/billing/settlement';
@@ -14,7 +15,7 @@ import { appendRate, readRateCardList } from '@/server/billing/rate-card';
 import { transcribeEnabled, transcribeSpeech } from '@/server/generation/speech';
 import { readAttachmentOriginal } from '@/server/generation/attachment-store';
 import { idSchema } from '@/shared/contracts';
-import { grantRequestSchema, chargeReversalRequestSchema, poolOfSource, reconcileRequestSchema } from '@/shared/billing';
+import { adminCreditOverviewQuerySchema, grantRequestSchema, chargeReversalRequestSchema, poolOfSource, reconcileRequestSchema } from '@/shared/billing';
 import { versionIdSchema } from '@/shared/versioning';
 export const runtime='nodejs';
 export const dynamic='force-dynamic';
@@ -46,6 +47,8 @@ async function dispatch(req:Request,context:{params:Promise<{path:string[]}>}){
    if(path==='app/versions/thumbnail'){const user=await requireUser(req);const png=await business.readAppVersionThumbnail({appId:idSchema.parse(query.get('appId')),versionId:versionIdSchema.parse(query.get('versionId'))},user);if(!png)return new Response(null,{status:404});return new Response(new Uint8Array(png),{headers:{'content-type':'image/png','content-length':String(png.length),'cache-control':'private, max-age=3600','x-content-type-options':'nosniff'}});}
    if(path.startsWith('app/download/')){const user=await requireUser(req);const id=idSchema.parse(path.slice('app/download/'.length));return await business.download(id,user);}
    if(path==='admin/billing/rate-card'){await requireAdmin(req);return success(await readRateCardList());}
+   if(path==='admin/billing/overview'){await requireAdmin(req);return success(await adminCreditOverview(adminCreditOverviewQuerySchema.parse(Object.fromEntries(query))));}
+   if(path==='admin/billing/users'){await requireAdmin(req);const limit=z.coerce.number().int().min(1).max(20).default(10).parse(query.get('limit')??undefined);return success({users:await searchAdminUsers({q:query.get('q')??undefined,limit})});}
    if(path==='admin/billing/reconcile'){await requireAdmin(req);const limit=z.coerce.number().int().min(1).max(200).default(50).parse(query.get('limit')??undefined);return success({items:await pendingSettlements({limit})});}
    if(path==='admin/billing/usage'){await requireAdmin(req);const limit=z.coerce.number().int().min(1).max(20).default(20).parse(query.get('limit')??undefined);return success(await userUsage({userId:idSchema.parse(query.get('userId')),limit}));}
    if(path==='billing/summary'){const user=await requireUser(req);return success(await ensureCurrentPeriod(user.id));}

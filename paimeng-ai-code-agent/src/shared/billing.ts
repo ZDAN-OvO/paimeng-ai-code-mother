@@ -356,6 +356,8 @@ export type ChargeReversalReceipt = {
 export type AdminUserUsage = {
   userId: string;
   account: AccountSnapshot;
+  /** 身份、配额拆解、快照核对与流水；92 的旧字段保留，界面逐步迁到这一份。 */
+  credit: AdminUserCreditDetail;
   charges: BillingChargeView[];
   estimatedRatio: number;
   unpricedRatio: number;
@@ -431,3 +433,129 @@ export function insufficientCreditsMessage(available: { quota: number; balance: 
   return `当前可用 Credit 为 ${available.total}（${poolLabels.quota} ${available.quota} + ${poolLabels.balance} ${available.balance}），`
     + '不足以开始新的生成。请联系管理员补充 Credit 后再提交。';
 }
+
+// ---- Admin 全用户额度总览（admin-credit-quota C1）----
+
+/** 总览筛选：待发、欠款、零可用；`all` 不额外过滤。 */
+export const adminCreditFilters = ['all', 'pending', 'debt', 'zero'] as const;
+export type AdminCreditFilter = (typeof adminCreditFilters)[number];
+export const adminCreditFilterLabels: Record<AdminCreditFilter, string> = {
+  all: '全部用户',
+  pending: '配额待发',
+  debt: '余额欠款',
+  zero: '零可用',
+};
+
+/** 列表排序；金额字段是「合计可用」与「余额池」。 */
+export const adminCreditSorts = ['id_desc', 'total_desc', 'total_asc', 'balance_desc', 'balance_asc'] as const;
+export type AdminCreditSort = (typeof adminCreditSorts)[number];
+export const adminCreditSortLabels: Record<AdminCreditSort, string> = {
+  id_desc: '用户 ID（新到旧）',
+  total_desc: '合计可用（高到低）',
+  total_asc: '合计可用（低到高）',
+  balance_desc: '余额池（高到低）',
+  balance_asc: '余额池（低到高）',
+};
+
+export const adminCreditOverviewQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  q: z.string().trim().max(256).optional(),
+  filter: z.enum(adminCreditFilters).default('all'),
+  sort: z.enum(adminCreditSorts).default('id_desc'),
+});
+export type AdminCreditOverviewQuery = z.infer<typeof adminCreditOverviewQuerySchema>;
+
+/** 管理面识别一个用户的三个字段；用户名为空时界面必须给占位，不能显示成空白。 */
+export type AdminCreditUser = { userId: string; userAccount: string; userName: string | null };
+
+/** 当前账期的发放状态：没有记录或失败是待发，零配额发放成功也算已发。 */
+export const adminQuotaStatuses = ['pending', 'granted', 'failed'] as const;
+export type AdminQuotaStatus = (typeof adminQuotaStatuses)[number];
+export const adminQuotaStatusLabels: Record<AdminQuotaStatus, string> = {
+  pending: '待发',
+  granted: '已发',
+  failed: '发放失败',
+};
+
+/** 配额的来源：全局默认、用户覆盖、迁移前旧 grant、代码兜底。 */
+export const quotaPolicySources = ['global', 'user', 'legacy', 'fallback'] as const;
+export type QuotaPolicySource = (typeof quotaPolicySources)[number];
+export const quotaPolicySourceLabels: Record<QuotaPolicySource, string> = {
+  global: '全局默认',
+  user: '用户覆盖',
+  legacy: '历史发放',
+  fallback: '系统默认',
+};
+
+/** 总览一行：金额全部由服务端按账期事实算出，界面不重算。 */
+export type AdminCreditOverviewItem = AdminCreditUser & {
+  period: string;
+  quotaBase: number;
+  quotaAdjustments: number;
+  quotaUsed: number;
+  quotaRemaining: number;
+  balance: number;
+  total: number;
+  debt: number;
+  issueStatus: AdminQuotaStatus;
+  policySource: QuotaPolicySource;
+  policyVersion: number | null;
+  expiresAt: string;
+  /** 已发状态下快照与账本事实不一致；未发用户的旧快照不视为异常。 */
+  snapshotAnomaly: boolean;
+};
+
+/** 总览统计只覆盖当前筛选范围，不是当前页。 */
+export type AdminCreditOverviewStats = {
+  userCount: number;
+  pendingCount: number;
+  quotaRemainingTotal: number;
+  balanceNetTotal: number;
+  debtorCount: number;
+  debtTotal: number;
+};
+
+export type AdminCreditOverview = {
+  period: string;
+  asOf: string;
+  page: number;
+  pageSize: number;
+  total: number;
+  items: AdminCreditOverviewItem[];
+  stats: AdminCreditOverviewStats;
+};
+
+/** 用户搜索下拉的候选：服务端按账号/用户名 OR 匹配，完整 ID 精确命中。 */
+export type AdminUserSearchResult = { users: AdminCreditUser[] };
+
+/** 当前账期的配额拆解。`remainingCredits = max(0, base + adjustments - used)`。 */
+export type AdminQuotaDetail = {
+  period: string;
+  baseCredits: number;
+  adjustmentCredits: number;
+  usedCredits: number;
+  remainingCredits: number;
+  issueStatus: AdminQuotaStatus;
+  policySource: QuotaPolicySource;
+  policyVersion: number | null;
+  expiresAt: string;
+};
+
+/** 用户详情：身份、两池事实、快照核对与最近流水。 */
+export type AdminUserCreditDetail = {
+  user: AdminCreditUser;
+  period: string;
+  quota: AdminQuotaDetail;
+  balance: number;
+  purchasedCredits: number;
+  purchasedCredits60d: number;
+  adminGrantedCredits: number;
+  total: number;
+  debt: number;
+  overdraft: number;
+  snapshot: { quota: number; balance: number; updateTime: string | null };
+  snapshotAnomaly: boolean;
+  grants: CreditGrantView[];
+  asOf: string;
+};

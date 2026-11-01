@@ -1,17 +1,17 @@
 'use client';
-import { useState } from 'react';
-import { App, Button, Descriptions, Form, Input, Modal, Table, Tag } from 'antd';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, App, Button, Descriptions, Form, Input, Modal, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from '@/client/api';
 import { stopReasonLabels } from '@/components/chat/generation-usage';
 import {
   chargeStatusColors, chargeStatusLabels, creditDenominationLabel,
-  type AdminUserUsage, type BillingChargeView, type ChargeReversalReceipt, type ChargeStatus,
+  type AdminCreditUser, type AdminUserUsage, type BillingChargeView, type ChargeReversalReceipt, type ChargeStatus,
 } from '@/shared/billing';
 import { formatStoredTime } from '@/shared/display';
+import { AdminUserIdentity } from './admin-credit-overview';
 import styles from '@/components/admin-view.module.css';
 
-type UsageQuery = { userId: string };
 type ReversalForm = { reason: string };
 
 const percentOf = (ratio: number) => `${(ratio * 100).toFixed(1)}%`;
@@ -23,29 +23,32 @@ function reversalStateOf(charge: BillingChargeView): 'ready' | 'reversed' | 'emp
 }
 
 /**
- * Admin 查用量与手工冲正（92）：余额快照 + 最近账单（含售价、USD 成本、估算/未定价标记）。
- * 成本未知一律显示「成本未知」而不是 0；估算/未定价按账单质量显式标注，不从金额反推。
- * 冲正不是往前端算钱：请求只带理由，服务端复用 90 的 `reverseCharge` 追加反向分录。
+ * 选中用户的账单与手工冲正：余额快照 + 最近账单（含售价、USD 成本、估算/未定价标记）。
+ * 成本未知一律显示「成本未知」而不是 0；冲正只带理由，服务端复用 90 的 `reverseCharge`。
  */
-export function AdminUsagePanel() {
+export function AdminUsagePanel({ user }: { user: AdminCreditUser }) {
   const { message } = App.useApp();
   const [usage, setUsage] = useState<AdminUserUsage | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [target, setTarget] = useState<BillingChargeView | null>(null);
   const [reversing, setReversing] = useState(false);
   const [form] = Form.useForm<ReversalForm>();
 
-  async function load(userId: string) {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      setUsage(await api<AdminUserUsage>('admin/billing/usage?userId=' + encodeURIComponent(userId)));
-    } catch (error) {
+      setUsage(await api<AdminUserUsage>('admin/billing/usage?userId=' + encodeURIComponent(user.userId)));
+      setError(null);
+    } catch (problem) {
       setUsage(null);
-      message.error((error as Error).message);
+      setError((problem as Error).message);
     } finally {
       setLoading(false);
     }
-  }
+  }, [user.userId]);
+
+  useEffect(() => { void load(); }, [load]);
 
   async function submitReversal(values: ReversalForm) {
     if (!target) return;
@@ -58,9 +61,9 @@ export function AdminUsagePanel() {
       message.success(receipt.reversed ? '已冲正：反向分录已按原分池记入账本' : '这笔账单之前已经冲正过，没有重复退款');
       setTarget(null);
       form.resetFields();
-      if (usage) await load(usage.userId);
-    } catch (error) {
-      message.error((error as Error).message);
+      await load();
+    } catch (problem) {
+      message.error((problem as Error).message);
     } finally {
       setReversing(false);
     }
@@ -126,22 +129,17 @@ export function AdminUsagePanel() {
     },
   ];
 
-  return <>
+  return <section aria-label="账单与冲正">
     <div className={styles.sectionHeading}>
-      <h2>用户用量与冲正</h2>
-      <span className={styles.statusHint}>查看指定用户的 Credit 与逐笔成本；冲正需填写理由，复用自动冲正的幂等保护</span>
+      <h2>账单与冲正</h2>
+      <span className={styles.statusHint}>查看选中用户的逐笔成本；冲正需填写理由，复用自动冲正的幂等保护</span>
     </div>
-    <Form name="billing-usage" layout="inline" onFinish={(values: UsageQuery) => { void load(values.userId.trim()); }}>
-      <Form.Item label="用户 ID" name="userId" rules={[{ required: true, message: '请输入用户 ID' }]}>
-        <Input aria-label="用户用量用户 ID" placeholder="输入用户 ID" allowClear />
-      </Form.Item>
-      <Form.Item>
-        <Button type="primary" htmlType="submit" loading={loading}>查询用量</Button>
-      </Form.Item>
-    </Form>
+    <Descriptions bordered size="small" column={1} style={{ marginBottom: 16 }} items={[
+      { key: 'user', label: '用户', children: <AdminUserIdentity user={user} /> },
+    ]} />
+    {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 12 }} />}
     {usage && <>
-      <Descriptions bordered size="small" column={2} style={{ marginTop: 16 }} items={[
-        { key: 'userId', label: '用户 ID', children: usage.userId },
+      <Descriptions bordered size="small" column={{ xs: 1, sm: 2 }} items={[
         { key: 'total', label: '合计可用', children: `${usage.account.total} Credit` },
         { key: 'quota', label: '配额池', children: `${usage.account.quota} Credit` },
         { key: 'balance', label: '余额池', children: `${usage.account.balance} Credit` },
@@ -188,5 +186,5 @@ export function AdminUsagePanel() {
         </Form.Item>
       </Form>
     </Modal>
-  </>;
+  </section>;
 }
