@@ -10,8 +10,10 @@ loadEnvFile('.env');
 const password = 'password123';
 const origin = appOrigin();
 /** 每次运行用自己的提供商 + 模型，避免与库里已有版本或并发的其它用例互相干扰。 */
-const providerId = `e2e-rate-${randomUUID().slice(0, 8)}`;
-const modelName = 'e2e-rate-model';
+const suffix = randomUUID().slice(0, 8);
+const providerId = `e2e-rate-${suffix}`;
+const modelName = `e2e-rate-model-${suffix}`;
+const modelId = String(900000000000000000n + BigInt('0x' + suffix));
 /** 两个固定的过去时刻：第二个更晚，所以它是「现行」版本。 */
 const firstEffectiveFrom = '2020-01-01 00:00:00.000';
 const secondEffectiveFrom = '2021-01-01 00:00:00.000';
@@ -36,8 +38,8 @@ async function adminLogin(page: Page, account: string) {
 }
 
 async function appendVersion(page: Page, effectiveFrom: string, rates: { miss: number; hit: number; output: number }) {
-  await page.getByLabel('提供商 ID').fill(providerId);
-  await page.getByLabel('模型名').fill(modelName);
+  await page.getByLabel('费率模型').click();
+  await page.getByText(`${providerId} / ${modelName}`, { exact: false }).first().click();
   await page.getByLabel('生效时间').fill(effectiveFrom);
   await page.getByLabel('缓存未命中输入费率').fill(String(rates.miss));
   await page.getByLabel('缓存命中输入费率').fill(String(rates.hit));
@@ -50,10 +52,34 @@ function versionRow(page: Page, effectiveFrom: string) {
   return page.getByRole('row').filter({ hasText: modelName }).filter({ hasText: effectiveFrom.slice(0, 19) });
 }
 
+test.beforeAll(async () => {
+  const connection = await testConnection();
+  try {
+    await connection.query(
+      "INSERT INTO model_provider (id, display_name, api_format, base_url, api_key_env, options, enabled, create_time, update_time) VALUES ($1,$2,'openai-chat','https://e2e-rate.example.test/v1','AI_API_KEY','{}',1,timezone('UTC', now()),timezone('UTC', now()))",
+      [providerId, `费率测试提供商 ${suffix}`],
+    );
+    await connection.query(
+      `INSERT INTO provider_model (id, provider_id, upstream_model_name, display_name, capabilities, compatibility, enabled, create_time, update_time)
+       VALUES ($1,$2,$3,$4,$5,$6,1,timezone('UTC', now()),timezone('UTC', now()))`,
+      [modelId, providerId, modelName, `费率测试模型 ${suffix}`, JSON.stringify({ streaming: true, toolCalling: true, structuredOutput: false, imageInput: false }), JSON.stringify({})],
+    );
+    await connection.query(
+      `INSERT INTO credit_rate_card (provider_id, model_name, provider_model_id, effective_from, credit_input_miss, credit_input_hit, credit_output, cost_basis, create_time)
+       VALUES ($1, 'legacy-rate-model', NULL, '2020-01-01 00:00:00.000', 10, 1, 40, 'unknown', timezone('UTC', now()))`,
+      [providerId],
+    );
+  } finally {
+    await connection.end();
+  }
+});
+
 test.afterAll(async () => {
   const connection = await testConnection();
   try {
     await connection.query('DELETE FROM credit_rate_card WHERE provider_id = $1', [providerId]);
+    await connection.query('DELETE FROM provider_model WHERE provider_id = $1', [providerId]);
+    await connection.query('DELETE FROM model_provider WHERE id = $1', [providerId]);
   } finally {
     await connection.end();
   }
@@ -69,6 +95,7 @@ test('管理员追加费率版本，历史版本仍然在表里', async ({ page 
   await expect(page.getByRole('columnheader', { name: '缓存命中输入' })).toBeVisible();
   await expect(page.getByRole('columnheader', { name: '输出' })).toBeVisible();
   await expect(page.getByText('1 Credit = ¥0.01').first()).toBeVisible();
+  await expect(page.getByRole('row').filter({ hasText: 'legacy-rate-model' })).toContainText('历史费率，未关联模型');
 
   await appendVersion(page, firstEffectiveFrom, { miss: 100, hit: 10, output: 400 });
   const firstRow = versionRow(page, firstEffectiveFrom);

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   App,
-  AutoComplete,
   Button,
   Descriptions,
   Empty,
@@ -26,8 +25,8 @@ import { RateCardPanel } from './billing/rate-card-panel';
 import styles from './admin-view.module.css';
 import {
   baseModelApiKeyEnv,
-  capabilitiesForSlot,
   modelCapabilityLabels,
+  missingSlotCapabilities,
   modelAdminConfigViewSchema,
   modelConfigVersionSchema,
   modelProviderChoiceOptionKeys,
@@ -41,6 +40,7 @@ import {
   providerOptionsSchema,
   providerModelListLimit,
   providerModelsViewSchema,
+  providerModelWriteResultSchema,
   reasoningLevelLabels,
   reasoningLevels,
   type ModelProviderOptionKey,
@@ -55,6 +55,8 @@ import {
   type ModelProviderView,
   type ModelSlotView,
   type ModelProviderWriteInput,
+  type ProviderModelInput,
+  type ProviderModelView,
   type ProviderModelsView,
   type ProviderApiFormat,
   type ProviderKeySource,
@@ -84,20 +86,29 @@ type ProviderFormValues = {
 };
 
 type AliasFormValues = {
-  providerId: string;
-  modelName: string;
-  capabilities: ModelAliasCapabilities;
+  providerModelId?: string;
   settings: {
     temperature?: number | null;
     topP?: number | null;
     maxOutputTokens?: number | null;
     reasoning?: ReasoningLevel | null;
-    reasoningContentPassthrough?: boolean;
   };
   enabled: boolean;
 };
 
+type ProviderModelFormValues = {
+  providerId: string;
+  upstreamModelName: string;
+  displayName: string;
+  capabilities: ModelAliasCapabilities;
+  compatibility: { reasoningContentPassthrough: boolean };
+  enabled: boolean;
+};
+
 type ProviderEditor = { mode: 'create' } | { mode: 'edit'; original: ModelProviderView };
+type ProviderModelEditor =
+  | { mode: 'create'; providerId?: string }
+  | { mode: 'edit'; original: ProviderModelView };
 type AliasEditor = { slot: ModelSlotView; original: ModelAlias } | { slot: ModelSlotView };
 
 export function ModelManager() {
@@ -116,11 +127,16 @@ function ModelConfigManager() {
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
   const [providerEditor, setProviderEditor] = useState<ProviderEditor | null>(null);
+  const [providerModelEditor, setProviderModelEditor] = useState<ProviderModelEditor | null>(null);
   const [aliasEditor, setAliasEditor] = useState<AliasEditor | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeText, setProbeText] = useState<string | null>(null);
-  const [upstreamModels, setUpstreamModels] = useState<ProviderModelsView['models']>([]);
+  const [modelProbing, setModelProbing] = useState(false);
+  const [modelProbeText, setModelProbeText] = useState<string | null>(null);
+  const [modelProbeOk, setModelProbeOk] = useState(false);
+  const [modelCandidates, setModelCandidates] = useState<ProviderModelsView['models']>([]);
   const [providerForm] = Form.useForm<ProviderFormValues>();
+  const [providerModelForm] = Form.useForm<ProviderModelFormValues>();
   const [aliasForm] = Form.useForm<AliasFormValues>();
 
   const reload = useCallback(async () => {
@@ -140,8 +156,8 @@ function ModelConfigManager() {
     void reload();
   }, [reload]);
 
-  async function runOperation(
-    operation: () => Promise<AdminOutcome<ModelConfigVersion>>,
+  async function runOperation<T>(
+    operation: () => Promise<AdminOutcome<T>>,
     onSuccess: () => void,
     successText: string,
   ) {
@@ -175,6 +191,16 @@ function ModelConfigManager() {
     setProviderEditor({ mode: 'edit', original: row });
   }
 
+  function openCreateProviderModel(providerId?: string) {
+    setConflict(null);
+    setProviderModelEditor({ mode: 'create', providerId: providerId ?? config?.providers[0]?.id });
+  }
+
+  function openEditProviderModel(row: ProviderModelView) {
+    setConflict(null);
+    setProviderModelEditor({ mode: 'edit', original: row });
+  }
+
   function openAliasEditor(slot: ModelSlotView, original?: ModelAlias) {
     setConflict(null);
     setAliasEditor(original ? { slot, original } : { slot });
@@ -182,6 +208,11 @@ function ModelConfigManager() {
 
   function closeProviderEditor() {
     setProviderEditor(null);
+    setConflict(null);
+  }
+
+  function closeProviderModelEditor() {
+    setProviderModelEditor(null);
     setConflict(null);
   }
 
@@ -198,6 +229,18 @@ function ModelConfigManager() {
     );
   }, [providerEditor, providerForm]);
 
+  useEffect(() => {
+    if (!providerModelEditor) return;
+    setModelProbeText(null);
+    setModelProbeOk(false);
+    setModelCandidates([]);
+    providerModelForm.setFieldsValue(
+      providerModelEditor.mode === 'edit'
+        ? providerModelFormValues(providerModelEditor.original)
+        : emptyProviderModelValues(providerModelEditor.providerId),
+    );
+  }, [providerModelEditor, providerModelForm]);
+
   /** 用当前表单值测试上游连通性；直接输入的密钥留空时，服务端沿用库里已保存的密文。 */
   async function testProviderConnection() {
     try {
@@ -210,7 +253,6 @@ function ModelConfigManager() {
         (data) => providerModelsViewSchema.parse(data),
       );
       if (outcome.ok) {
-        setUpstreamModels(outcome.data.models);
         const ids = outcome.data.models.slice(0, 20).map((model) => model.id).join('、');
         const suffix = outcome.data.models.length > 20 ? ' 等' : '';
         setProbeText(`连接正常，共 ${outcome.data.models.length} 个模型${modelListLimitHint(outcome.data.models.length)}：${ids}${suffix}`);
@@ -223,38 +265,81 @@ function ModelConfigManager() {
     }
   }
 
-  /** 拉取所选提供商的上游模型名，供槽位分配的「上游模型名」下拉选择。 */
-  async function loadAliasModels() {
-    if (!config) return;
-    const selected: unknown = aliasForm.getFieldValue('providerId');
-    const provider = config.providers.find((candidate) => candidate.id === selected);
+  /** 拉取上游候选；只用于发现，已登记模型不会因为列表变化被清空或改写。 */
+  async function loadModelCandidates() {
+    if (!config || !providerModelEditor) return;
+    const providerId = providerModelEditor.mode === 'edit'
+      ? providerModelEditor.original.providerId
+      : providerModelForm.getFieldValue('providerId');
+    const provider = config.providers.find((candidate) => candidate.id === providerId);
     if (!provider) {
       message.warning('请先选择提供商');
       return;
     }
-    setProbing(true);
-    setProbeText(null);
+    setModelProbing(true);
+    setModelProbeText(null);
+    setModelProbeOk(false);
     const outcome = await adminPost(
       'model/admin/provider/models',
       { provider: providerWriteFromView(provider) },
       (data) => providerModelsViewSchema.parse(data),
     );
-    setProbing(false);
-    if (outcome.ok) {
-      setUpstreamModels(outcome.data.models);
-      message.success(`已获取 ${outcome.data.models.length} 个上游模型${modelListLimitHint(outcome.data.models.length)}`);
+    setModelProbing(false);
+    if (!outcome.ok) {
+      setModelProbeText(outcome.message);
       return;
     }
-    setProbeText(outcome.message);
-    message.error(outcome.message);
+    setModelCandidates(outcome.data.models);
+    setModelProbeOk(true);
+    setModelProbeText(`获取到 ${outcome.data.models.length} 个上游模型${modelListLimitHint(outcome.data.models.length)}`);
+  }
+
+  async function submitProviderModel(applyImmediately: boolean) {
+    try {
+      const values = await providerModelForm.validateFields();
+      await saveProviderModel(values, applyImmediately);
+    } catch {
+    }
+  }
+
+  async function saveProviderModel(values: ProviderModelFormValues, applyImmediately: boolean) {
+    if (!config || !providerModelEditor) return;
+    const model: ProviderModelInput = {
+      providerId: values.providerId,
+      upstreamModelName: values.upstreamModelName.trim(),
+      displayName: values.displayName.trim(),
+      capabilities: normalizeCapabilities(values.capabilities),
+      compatibility: { reasoningContentPassthrough: Boolean(values.compatibility?.reasoningContentPassthrough) },
+      enabled: Boolean(values.enabled),
+    };
+    const creating = providerModelEditor.mode === 'create';
+    await runOperation(
+      () => adminPost(
+        creating ? 'model/admin/provider-model/create' : 'model/admin/provider-model/update',
+        creating
+          ? { model, expectedRevision: config.revision, applyImmediately }
+          : {
+              id: providerModelEditor.original.id,
+              update: {
+                displayName: model.displayName,
+                capabilities: model.capabilities,
+                compatibility: model.compatibility,
+                enabled: model.enabled,
+              },
+              expectedRevision: config.revision,
+              applyImmediately,
+            },
+        (data) => providerModelWriteResultSchema.parse(data),
+      ),
+      () => setProviderModelEditor(null),
+      applyImmediately ? '提供商模型已保存并立即生效' : '提供商模型已保存',
+    );
   }
 
   useEffect(() => {
     if (!aliasEditor) return;
-    setProbeText(null);
-    setUpstreamModels([]);
     aliasForm.setFieldsValue(
-      'original' in aliasEditor ? aliasFormValues(aliasEditor.original) : emptyAliasValues(aliasEditor.slot),
+      'original' in aliasEditor ? aliasFormValues(aliasEditor.original) : emptyAliasValues(),
     );
   }, [aliasEditor, aliasForm]);
 
@@ -291,7 +376,13 @@ function ModelConfigManager() {
 
   async function saveAlias(values: AliasFormValues, applyImmediately: boolean) {
     if (!config || !aliasEditor) return;
-    const alias = toAliasInput(aliasEditor.slot.slot, values);
+    let alias: ModelAliasInput;
+    try {
+      alias = toAliasInput(aliasEditor.slot.slot, values, config.providerModels);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '请选择提供商模型');
+      return;
+    }
     await runOperation(
       () =>
         adminPost(
@@ -431,6 +522,83 @@ function ModelConfigManager() {
     },
   ];
 
+  const providerModelColumns: ColumnsType<ProviderModelView> = [
+    {
+      title: '提供商',
+      dataIndex: 'providerId',
+      width: 220,
+      render: (value: string) => (
+        <Space orientation="vertical" size={0}>
+          <span>{providerName(value)}</span>
+          <span className={styles.slotName}>{value}</span>
+        </Space>
+      ),
+    },
+    {
+      title: '请求 / 展示名',
+      key: 'name',
+      width: 260,
+      render: (_, row) => (
+        <Space orientation="vertical" size={0}>
+          <code>{row.upstreamModelName}</code>
+          <span className={styles.textGray}>{row.displayName}</span>
+        </Space>
+      ),
+    },
+    { title: '能力', dataIndex: 'capabilities', width: 240, render: (_, row) => capabilityTags(row.capabilities) },
+    {
+      title: '兼容',
+      dataIndex: 'compatibility',
+      width: 140,
+      render: (_, row) =>
+        row.compatibility.reasoningContentPassthrough ? <Tag>回传思考内容</Tag> : <span className={styles.textGray}>默认</span>,
+    },
+    {
+      title: '引用槽位',
+      dataIndex: 'slots',
+      width: 180,
+      render: (_, row) =>
+        row.slots.length === 0 ? <span className={styles.textGray}>未分配</span> : row.slots.map((slot) => <Tag key={slot}>{slot}</Tag>),
+    },
+    {
+      title: '费率',
+      dataIndex: 'rate',
+      width: 260,
+      render: (_, row) => (
+        <Space orientation="vertical" size={0}>
+          {row.rate.versions === 0 ? (
+            <Tag color="red">缺价</Tag>
+          ) : row.rate.effectiveFrom ? (
+            <span>
+              miss {row.rate.creditInputMiss} · hit {row.rate.creditInputHit} · out {row.rate.creditOutput}
+            </span>
+          ) : (
+            <Tag color="gold">只有未来价</Tag>
+          )}
+          <span className={styles.textGray}>
+            {row.rate.versions} 个版本{row.rate.future > 0 ? `，未来 ${row.rate.future} 版` : ''}
+          </span>
+        </Space>
+      ),
+    },
+    {
+      title: '启用',
+      dataIndex: 'enabled',
+      width: 90,
+      render: (value: boolean) => (value ? <Tag color="blue">启用</Tag> : <Tag>停用</Tag>),
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 100,
+      render: (_, row) => (
+        <Button size="small" onClick={() => openEditProviderModel(row)} disabled={saving}>
+          编辑
+        </Button>
+      ),
+    },
+  ];
+
   return (
     <main className={styles.adminPage}>
       <div className={styles.toolbar}>
@@ -551,11 +719,37 @@ function ModelConfigManager() {
           />
 
           <div className={styles.sectionHeading}>
+            <h2>提供商模型</h2>
+            <Space>
+              <span className={styles.statusHint}>同一请求名在不同提供商下是两条身份；能力与兼容声明属于模型</span>
+              <Button type="primary" onClick={() => openCreateProviderModel()} disabled={saving} aria-label="登记提供商模型">
+                登记模型
+              </Button>
+            </Space>
+          </div>
+          <Table<ProviderModelView>
+            rowKey="id"
+            size="small"
+            loading={loading}
+            dataSource={config.providerModels}
+            pagination={false}
+            scroll={{ x: 'max-content' }}
+            columns={providerModelColumns}
+            locale={{ emptyText: '还没有登记提供商模型；点击“登记模型”开始' }}
+          />
+
+          <div className={styles.sectionHeading}>
             <h2>模型分配</h2>
             <span className={styles.statusHint}>四个槽位由代码定义，这里只决定每个槽位用哪个模型</span>
           </div>
           <div className={styles.slotGrid}>
-            {slotCards.map(({ slot, alias }) => (
+            {slotCards.map(({ slot, alias }) => {
+              const linkedModel = alias?.providerModelId
+                ? config.providerModels.find((model) => model.id === alias.providerModelId)
+                : undefined;
+              const capabilities = linkedModel?.capabilities ?? alias?.capabilities;
+              const missingRate = linkedModel ? linkedModel.rate.versions === 0 : false;
+              return (
               <section key={slot.slot} className={styles.slotCard} aria-label={`${slot.label}槽位`}>
                 <div className={styles.slotCardHead}>
                   <strong>{slot.label}</strong>
@@ -563,12 +757,15 @@ function ModelConfigManager() {
                   <span className={styles.slotName}>{slot.slot}</span>
                 </div>
                 <div className={styles.slotPurpose}>{slot.purpose}</div>
-                {alias ? (
+                {alias && capabilities ? (
                   <>
                     <div>
-                      {providerName(alias.providerId)} / <code>{alias.modelName}</code>
+                      <span>{providerName(linkedModel?.providerId ?? alias.providerId)} / </span>
+                      <code>{linkedModel?.upstreamModelName ?? alias.modelName}</code>
                     </div>
-                    <div>{capabilityTags(alias.capabilities)}</div>
+                    <div>{capabilityTags(capabilities)}</div>
+                    {!linkedModel ? <div className={styles.slotImpact}>旧配置未关联提供商模型，请重新选择</div> : null}
+                    {missingRate ? <div className={styles.slotImpact}>该模型还没有费率，生成会计入待处理</div> : null}
                     {alias.enabled ? null : <div className={styles.slotImpact}>已停用，实际不会使用</div>}
                   </>
                 ) : (
@@ -583,13 +780,14 @@ function ModelConfigManager() {
                   </Button>
                 </div>
               </section>
-            ))}
+              );
+            })}
           </div>
         </>
       )}
 
       {/* 费率表与模型配置相互独立：模型配置没初始化时也照样要能看到与维护价格。 */}
-      <RateCardPanel />
+      <RateCardPanel providerModels={config.providerModels} onChanged={() => void reload()} />
 
       {providerEditor ? (
         <Modal
@@ -833,6 +1031,159 @@ function ModelConfigManager() {
         </Modal>
       ) : null}
 
+      {providerModelEditor ? (
+        <Modal
+          open
+          title={providerModelEditor.mode === 'create' ? '登记提供商模型' : '编辑提供商模型'}
+          destroyOnHidden
+          onCancel={() => {
+            if (!saving) closeProviderModelEditor();
+          }}
+          footer={
+            <Space>
+              <Button onClick={closeProviderModelEditor} disabled={saving}>
+                取消
+              </Button>
+              <Button onClick={() => void submitProviderModel(true)} loading={saving}>
+                保存并立即生效
+              </Button>
+              <Button type="primary" onClick={() => void submitProviderModel(false)} loading={saving}>
+                保存
+              </Button>
+            </Space>
+          }
+        >
+          {conflict ? <ConflictAlert message={conflict} onReload={() => void reload()} /> : null}
+          <Form
+            form={providerModelForm}
+            layout="vertical"
+            preserve={false}
+            initialValues={
+              providerModelEditor.mode === 'edit'
+                ? providerModelFormValues(providerModelEditor.original)
+                : emptyProviderModelValues(providerModelEditor.providerId)
+            }
+          >
+            <Form.Item
+              name="providerId"
+              label="提供商"
+              rules={[{ required: true, message: '请选择提供商' }]}
+              tooltip="模型身份归属于一个提供商；不同提供商可以登记同名请求模型"
+            >
+              <Select
+                aria-label="模型提供商"
+                disabled={providerModelEditor.mode === 'edit'}
+                options={config.providers.map((provider) => ({
+                  value: provider.id,
+                  label: `${provider.displayName}（${provider.id}）`,
+                }))}
+              />
+            </Form.Item>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 16 }}>
+              <Form.Item
+                name="upstreamModelName"
+                label="请求模型名"
+                tooltip="发往上游的实际 model 字段；创建后不可修改，改名请登记另一条模型"
+                rules={[{ required: true, message: '请输入请求模型名' }, { max: 256, message: '最多 256 个字符' }]}
+                style={{ flex: 1, minWidth: 0, marginBottom: 0 }}
+              >
+                <Input
+                  aria-label="请求模型名"
+                  disabled={providerModelEditor.mode === 'edit'}
+                  placeholder="例如 deepseek-flash"
+                  autoComplete="off"
+                  onChange={(event) => {
+                    if (!providerModelForm.getFieldValue('displayName')) {
+                      providerModelForm.setFieldValue('displayName', event.target.value);
+                    }
+                  }}
+                />
+              </Form.Item>
+              {providerModelEditor.mode === 'create' ? (
+                <Button onClick={() => void loadModelCandidates()} loading={modelProbing}>
+                  获取上游候选
+                </Button>
+              ) : null}
+            </div>
+            {modelProbeText ? <div className={styles.textGray}>{modelProbeText}</div> : null}
+            <Form.Item noStyle shouldUpdate={(previous, current) => previous.providerId !== current.providerId}>
+              {({ getFieldValue }) => {
+                if (!modelProbeOk) return null;
+                const providerId = getFieldValue('providerId') as string;
+                const candidateIds = new Set(modelCandidates.map((candidate) => candidate.id));
+                const missing = config.providerModels.filter(
+                  (model) => model.providerId === providerId && !candidateIds.has(model.upstreamModelName),
+                );
+                return (
+                  <Space orientation="vertical" size={8} style={{ marginBottom: 16 }}>
+                    <Space wrap>
+                      {modelCandidates.map((candidate) => {
+                        const registered = config.providerModels.some(
+                          (model) => model.providerId === providerId && model.upstreamModelName === candidate.id,
+                        );
+                        return (
+                          <Tag
+                            key={candidate.id}
+                            color={registered ? 'green' : undefined}
+                            style={{ cursor: providerModelEditor.mode === 'create' ? 'pointer' : 'default' }}
+                            onClick={() => {
+                              if (providerModelEditor.mode !== 'create') return;
+                              providerModelForm.setFieldValue('upstreamModelName', candidate.id);
+                              if (!providerModelForm.getFieldValue('displayName')) {
+                                providerModelForm.setFieldValue('displayName', candidate.label);
+                              }
+                            }}
+                          >
+                            {candidate.label}
+                            {registered ? ' · 已登记' : ''}
+                          </Tag>
+                        );
+                      })}
+                    </Space>
+                    {missing.length > 0 ? (
+                      <div className={styles.slotImpact}>
+                        本次列表未返回：{missing.map((model) => model.upstreamModelName).join('、')}（本地记录与价格保留，不自动停用）
+                      </div>
+                    ) : null}
+                    <span className={styles.statusHint}>上游列表只代表本次获取结果；未返回不等于已下架，登记仍需显式操作。</span>
+                  </Space>
+                );
+              }}
+            </Form.Item>
+            <Form.Item
+              name="displayName"
+              label="展示名"
+              rules={[{ required: true, message: '请输入展示名' }, { max: 128, message: '最多 128 个字符' }]}
+            >
+              <Input aria-label="模型展示名" autoComplete="off" />
+            </Form.Item>
+            <Form.Item label="能力" tooltip="登记时必须显式确认；不从槽位要求或同类模型自动推断">
+              <Space size={16} wrap>
+                {(['streaming', 'toolCalling', 'structuredOutput', 'imageInput'] as const).map((capability) => (
+                  <span key={capability}>
+                    <Form.Item name={['capabilities', capability]} valuePropName="checked" noStyle>
+                      <Switch aria-label={`模型能力${modelCapabilityLabels[capability]}`} />
+                    </Form.Item>
+                    <span>{modelCapabilityLabels[capability]}</span>
+                  </span>
+                ))}
+              </Space>
+            </Form.Item>
+            <Form.Item
+              name={['compatibility', 'reasoningContentPassthrough']}
+              label="回传思考内容"
+              valuePropName="checked"
+              tooltip="DeepSeek 类混合推理模型经第三方网关访问时打开：多轮回放历史消息会带上 reasoning_content"
+            >
+              <Switch aria-label="模型回传思考内容" />
+            </Form.Item>
+            <Form.Item name="enabled" label="启用" valuePropName="checked">
+              <Switch aria-label="模型启用" />
+            </Form.Item>
+          </Form>
+        </Modal>
+      ) : null}
+
       {aliasEditor ? (
         <Modal
           open
@@ -867,7 +1218,7 @@ function ModelConfigManager() {
             form={aliasForm}
             layout="vertical"
             preserve={false}
-            initialValues={'original' in aliasEditor ? aliasFormValues(aliasEditor.original) : emptyAliasValues(aliasEditor.slot)}
+            initialValues={'original' in aliasEditor ? aliasFormValues(aliasEditor.original) : emptyAliasValues()}
           >
             <Descriptions size="small" column={1} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="槽位">
@@ -878,57 +1229,79 @@ function ModelConfigManager() {
               </Descriptions.Item>
               <Descriptions.Item label="用途">{aliasEditor.slot.purpose}</Descriptions.Item>
             </Descriptions>
-            <Form.Item name="providerId" label="提供商" rules={[{ required: true, message: '请选择提供商' }]}>
+            <Form.Item
+              name="providerModelId"
+              label="提供商模型"
+              rules={[{ required: true, message: '请选择提供商模型' }]}
+            >
               <Select
-                aria-label="提供商"
-                options={config.providers.map((provider) => ({
-                  value: provider.id,
-                  label: `${provider.displayName}（${provider.id}）`,
-                }))}
+                aria-label="槽位模型"
+                showSearch
+                optionFilterProp="label"
+                placeholder="选择已登记的提供商模型"
+                options={config.providerModels.map((model) => {
+                  const missing = missingSlotCapabilities(aliasEditor.slot, model.capabilities);
+                  const missingText = missing.length
+                    ? `（缺${missing.map((requirement) => modelCapabilityLabels[requirement]).join('、')}）`
+                    : '';
+                  const priceText = model.rate.versions === 0 ? '（缺价）' : '';
+                  return {
+                    value: model.id,
+                    label: `${providerName(model.providerId)} / ${model.upstreamModelName}${model.enabled ? '' : '（停用）'}${missingText}${priceText}`,
+                    disabled: !model.enabled || missing.length > 0,
+                  };
+                })}
               />
             </Form.Item>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginBottom: 24 }}>
-              <Form.Item
-                name="modelName"
-                label="上游模型名"
-                tooltip="可以直接输入，也可以先点“获取模型”从上游 /models 拉取候选"
-                rules={[{ required: true, message: '请输入上游模型名' }, { max: 256, message: '最多 256 个字符' }]}
-                style={{ flex: 1, minWidth: 0, marginBottom: 0 }}
-              >
-                <AutoComplete
-                  style={{ width: '100%' }}
-                  placeholder="例如 deepseek-flash"
-                  options={upstreamModels.map((model) => ({ value: model.id, label: model.label }))}
-                  filterOption={(input, option) =>
-                    `${option?.value ?? ''} ${option?.label ?? ''}`.toLowerCase().includes(input.toLowerCase())
-                  }
-                />
-              </Form.Item>
-              <Button onClick={() => void loadAliasModels()} loading={probing}>
-                获取模型
-              </Button>
-            </div>
-            {probeText ? <div className={styles.textGray}>{probeText}</div> : null}
-            <Form.Item label="能力" tooltip="这些是给这家提供商的端点上声明能力，槽位要求的能力不能关闭">
-              <Space size={16} wrap>
-                {(['streaming', 'toolCalling', 'structuredOutput', 'imageInput'] as const).map((capability) => {
-                  const locked = aliasEditor.slot.requires.some((requirement) => requirement === capability);
+            <Form.Item noStyle shouldUpdate={(previous, current) => previous.providerModelId !== current.providerModelId}>
+              {({ getFieldValue }) => {
+                const model = config.providerModels.find((candidate) => candidate.id === getFieldValue('providerModelId'));
+                if (!model) {
                   return (
-                    <span key={capability}>
-                      <Form.Item name={['capabilities', capability]} valuePropName="checked" noStyle>
-                        <Switch aria-label={modelCapabilityLabels[capability]} disabled={locked} />
-                      </Form.Item>
-                      <span>{modelCapabilityLabels[capability]}</span>
-                    </span>
+                    <Alert
+                      type="info"
+                      showIcon
+                      title="请选择一个已登记的提供商模型"
+                      description="能力与兼容声明属于模型；槽位只保存采样与思考参数。"
+                      style={{ marginBottom: 16 }}
+                    />
                   );
-                })}
-              </Space>
-              {aliasEditor.slot.requires.length ? (
-                <div className={styles.statusHint}>
-                  该槽位需要{aliasEditor.slot.requires.map((requirement) => modelCapabilityLabels[requirement]).join('、')}能力，已锁定
-                </div>
-              ) : null}
+                }
+                return (
+                  <Descriptions size="small" column={1} bordered style={{ marginBottom: 16 }}>
+                    <Descriptions.Item label="提供商">
+                      {providerName(model.providerId)}（{model.providerId}）
+                    </Descriptions.Item>
+                    <Descriptions.Item label="请求模型名">
+                      <code>{model.upstreamModelName}</code>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="能力">{capabilityTags(model.capabilities)}</Descriptions.Item>
+                    <Descriptions.Item label="兼容">
+                      {model.compatibility.reasoningContentPassthrough ? (
+                        <Tag>回传思考内容</Tag>
+                      ) : (
+                        <span className={styles.textGray}>默认</span>
+                      )}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="费率">
+                      {model.rate.versions === 0 ? (
+                        <Tag color="red">缺价，生成会计入待处理</Tag>
+                      ) : model.rate.effectiveFrom ? (
+                        <span>
+                          现行 {model.rate.creditInputMiss} / {model.rate.creditInputHit} / {model.rate.creditOutput} Credit / 1M tokens
+                        </span>
+                      ) : (
+                        <Tag color="gold">只有未来价</Tag>
+                      )}
+                      {model.rate.future > 0 ? <Tag>未来 {model.rate.future} 版</Tag> : null}
+                    </Descriptions.Item>
+                  </Descriptions>
+                );
+              }}
             </Form.Item>
+            <div className={styles.statusHint} style={{ marginBottom: 16 }}>
+              能力与兼容声明由提供商模型决定；要改能力请编辑模型，不能在这里强行覆盖。
+            </div>
             <Space size={16} wrap>
               <Form.Item
                 name={['settings', 'temperature']}
@@ -963,14 +1336,6 @@ function ModelConfigManager() {
                   style={{ minWidth: 140 }}
                   options={reasoningLevels.map((level) => ({ value: level, label: reasoningLevelLabels[level] }))}
                 />
-              </Form.Item>
-              <Form.Item
-                name={['settings', 'reasoningContentPassthrough']}
-                label="回传思考内容"
-                valuePropName="checked"
-                tooltip="该槽位指向 DeepSeek 类混合推理模型时打开：多轮对话回放历史消息会带上 reasoning_content。经第三方网关访问 DeepSeek 时必须打开，否则上游报 400；只影响这一个槽位"
-              >
-                <Switch aria-label="回传思考内容" />
               </Form.Item>
             </Space>
             <Form.Item name="enabled" label="启用" valuePropName="checked">
@@ -1133,51 +1498,70 @@ function providerWriteFromView(provider: ModelProviderView): ModelProviderWriteI
     : { ...common, apiKeySource: 'inline', apiKey: '' };
 }
 
-function emptyAliasValues(slot: ModelSlotView): AliasFormValues {
-  return {
-    providerId: '',
-    modelName: '',
-    capabilities: capabilitiesForSlot(slot),
-    settings: {},
-    enabled: true,
-  };
+function emptyAliasValues(): AliasFormValues {
+  return { providerModelId: undefined, settings: {}, enabled: true };
 }
 
 function aliasFormValues(alias: ModelAlias): AliasFormValues {
   return {
-    providerId: alias.providerId,
-    modelName: alias.modelName,
-    capabilities: { ...alias.capabilities },
+    providerModelId: alias.providerModelId ?? undefined,
     settings: {
       temperature: alias.settings.temperature ?? null,
       topP: alias.settings.topP ?? null,
       maxOutputTokens: alias.settings.maxOutputTokens ?? null,
       reasoning: alias.settings.reasoning ?? null,
-      reasoningContentPassthrough: alias.settings.reasoningContentPassthrough ?? false,
     },
     enabled: alias.enabled,
   };
 }
 
-function toAliasInput(slot: string, values: AliasFormValues): ModelAliasInput {
+function toAliasInput(slot: string, values: AliasFormValues, models: readonly ProviderModelView[]): ModelAliasInput {
+  const model = models.find(candidate => candidate.id === values.providerModelId);
+  if (!model) throw new Error('请选择提供商模型');
   const settings: ModelAliasSettings = {};
   if (typeof values.settings?.temperature === 'number') settings.temperature = values.settings.temperature;
   if (typeof values.settings?.topP === 'number') settings.topP = values.settings.topP;
   if (typeof values.settings?.maxOutputTokens === 'number') settings.maxOutputTokens = values.settings.maxOutputTokens;
   if (values.settings?.reasoning) settings.reasoning = values.settings.reasoning;
-  if (values.settings?.reasoningContentPassthrough) settings.reasoningContentPassthrough = true;
   return {
     alias: slot,
-    providerId: values.providerId,
-    modelName: values.modelName.trim(),
-    capabilities: {
-      streaming: Boolean(values.capabilities.streaming),
-      toolCalling: Boolean(values.capabilities.toolCalling),
-      structuredOutput: Boolean(values.capabilities.structuredOutput),
-      imageInput: Boolean(values.capabilities.imageInput),
-    },
+    providerModelId: model.id,
+    providerId: model.providerId,
+    modelName: model.upstreamModelName,
+    capabilities: { ...model.capabilities },
     settings,
     enabled: Boolean(values.enabled),
+  };
+}
+
+function normalizeCapabilities(capabilities: ModelAliasCapabilities): ModelAliasCapabilities {
+  return {
+    streaming: Boolean(capabilities.streaming),
+    toolCalling: Boolean(capabilities.toolCalling),
+    structuredOutput: Boolean(capabilities.structuredOutput),
+    imageInput: Boolean(capabilities.imageInput),
+  };
+}
+
+function emptyProviderModelValues(providerId?: string): ProviderModelFormValues {
+  return {
+    providerId: providerId ?? '',
+    upstreamModelName: '',
+    displayName: '',
+    capabilities: { streaming: false, toolCalling: false, structuredOutput: false, imageInput: false },
+    compatibility: { reasoningContentPassthrough: false },
+    enabled: true,
+  };
+}
+
+function providerModelFormValues(model: ProviderModelView): ProviderModelFormValues {
+  return {
+    providerId: model.providerId,
+    upstreamModelName: model.upstreamModelName,
+    displayName: model.displayName,
+    capabilities: { ...model.capabilities },
+    compatibility: { ...model.compatibility },
+    enabled: model.enabled,
   };
 }
 

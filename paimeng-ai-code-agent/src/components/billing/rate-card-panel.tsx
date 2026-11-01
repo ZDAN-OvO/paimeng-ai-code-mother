@@ -5,7 +5,7 @@ import { Alert, App, Button, Form, Input, InputNumber, Select, Space, Table, Tag
 import type { ColumnsType } from 'antd/es/table';
 import { z } from 'zod';
 import { api, ApiResponseError } from '@/client/api';
-import { defaultModelProviderId } from '@/shared/model-config';
+import type { ProviderModelView } from '@/shared/model-config';
 import {
   costBases,
   costBasisLabels,
@@ -23,8 +23,7 @@ import styles from '../admin-view.module.css';
  */
 
 type FormValues = {
-  providerId: string;
-  modelName: string;
+  providerModelId: string;
   effectiveFrom: string;
   creditInputMiss: number;
   creditInputHit: number;
@@ -65,7 +64,7 @@ function blankToNull(value: string | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
-export function RateCardPanel() {
+export function RateCardPanel({ providerModels, onChanged }: { providerModels: readonly ProviderModelView[]; onChanged?: () => void }) {
   const { message } = App.useApp();
   const [list, setList] = useState<RateCardList | null>(null);
   const [loading, setLoading] = useState(true);
@@ -114,7 +113,9 @@ export function RateCardPanel() {
       }
       setRejected(null);
       message.success(`已追加 ${outcome.data.providerId} / ${outcome.data.modelName} 在 ${outcome.data.effectiveFrom} 生效的费率`);
+      form.setFieldValue('effectiveFrom', utcNow());
       await reload();
+      onChanged?.();
     } finally {
       setSaving(false);
     }
@@ -132,8 +133,17 @@ export function RateCardPanel() {
     {
       title: '模型',
       dataIndex: 'modelName',
-      width: 190,
-      render: (value: string) => <code>{value}</code>,
+      width: 240,
+      render: (value: string, row) => (
+        <Space orientation="vertical" size={0}>
+          <code>{value}</code>
+          {row.providerModelId ? (
+            <span className={styles.slotName}>ID {row.providerModelId}</span>
+          ) : (
+            <Tag>历史费率，未关联模型</Tag>
+          )}
+        </Space>
+      ),
     },
     {
       title: '生效时间（UTC）',
@@ -212,14 +222,20 @@ export function RateCardPanel() {
         form={form}
         layout="vertical"
         className={styles.rateCardForm}
-        initialValues={{ providerId: defaultModelProviderId, effectiveFrom: utcNow() }}
+        initialValues={{ effectiveFrom: utcNow() }}
         onFinish={(values) => void append(values)}
       >
-        <Form.Item label="提供商 ID" name="providerId" rules={[{ required: true, message: '请填写提供商 ID' }]}>
-          <Input aria-label="提供商 ID" placeholder={defaultModelProviderId} autoComplete="off" />
-        </Form.Item>
-        <Form.Item label="模型名" name="modelName" rules={[{ required: true, message: '请填写模型名' }]}>
-          <Input aria-label="模型名" placeholder="deepseek-flash" autoComplete="off" />
+        <Form.Item label="提供商模型" name="providerModelId" rules={[{ required: true, message: '请选择提供商模型' }]}>
+          <Select
+            aria-label="费率模型"
+            showSearch
+            optionFilterProp="label"
+            placeholder="选择已登记的提供商模型"
+            options={providerModels.map((model) => ({
+              value: model.id,
+              label: `${model.providerId} / ${model.upstreamModelName}${model.enabled ? '' : '（停用）'}`,
+            }))}
+          />
         </Form.Item>
         <Form.Item label="生效时间（UTC）" name="effectiveFrom" rules={[{ required: true, message: '请填写生效时间' }]}>
           <Input aria-label="生效时间" placeholder="2026-11-01 00:00:00.000" autoComplete="off" />

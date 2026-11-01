@@ -83,6 +83,15 @@ function openSlot(page: Page, label: string) {
   return slotCard(page, label).getByRole('button', { name: /^配\s*置$/ }).click();
 }
 
+function modelRow(page: Page, upstreamModelName: string) {
+  return page.getByRole('row').filter({ has: page.getByText(upstreamModelName, { exact: true }) });
+}
+
+async function chooseSelectOption(page: Page, field: Locator, text: string) {
+  await field.click();
+  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText(text, { exact: false }).first().click();
+}
+
 test.afterAll(async () => {
   const connection = await testConnection();
   try {
@@ -174,14 +183,15 @@ test('管理员可编辑提供商与槽位分配并普通保存', async ({ page 
   await openSlot(page, '代码生成');
   const aliasDialog = page.getByRole('dialog');
   await expect(aliasDialog).toContainText('codegen.default');
-  await expect(aliasDialog.getByLabel('上游模型名', { exact: true })).toHaveValue('test-codegen-model');
-  await aliasDialog.getByLabel('上游模型名', { exact: true }).fill('renamed-codegen-model');
+  await expect(aliasDialog.getByText(/\/ test-codegen-model/).first()).toBeVisible();
+  await expect(aliasDialog.getByText('工具调用', { exact: true })).toBeVisible();
+  await expect(aliasDialog.getByRole('switch', { name: '工具调用' })).toHaveCount(0);
   await aliasDialog.getByRole('button', { name: /保\s*存$/ }).click();
   await expect(page.getByText('模型分配已保存', { exact: true })).toBeVisible();
-  await expect(slotCard(page, '代码生成')).toContainText('renamed-codegen-model');
+  await expect(slotCard(page, '代码生成')).toContainText('test-codegen-model');
 });
 
-test('回传思考内容按槽位单独声明，语音转写未配置时可直接配置', async ({ page }) => {
+test('能力与回传思考内容属于提供商模型，槽位只选模型并保留自己的参数', async ({ page }) => {
   const connection = await testConnection();
   try {
     await seedModelConfig(connection);
@@ -191,59 +201,86 @@ test('回传思考内容按槽位单独声明，语音转写未配置时可直�
   await adminLogin(page, uniqueAccount());
   await page.goto('/admin/modelManage');
 
-  // 「回传思考内容」跟着槽位分配走：只影响这一个槽位，提供商下其它模型不受牵连。
-  await openSlot(page, '代码生成');
-  const aliasDialog = page.getByRole('dialog');
-  const passthrough = aliasDialog.getByRole('switch', { name: '回传思考内容' });
+  // 「回传思考内容」属于模型兼容声明，不再是槽位开关。
+  await modelRow(page, 'test-codegen-model').getByRole('button', { name: /^编\s*辑$/ }).click();
+  const modelDialog = page.getByRole('dialog');
+  const passthrough = modelDialog.getByRole('switch', { name: '模型回传思考内容' });
   await expect(passthrough).toHaveAttribute('aria-checked', 'false');
   await passthrough.click();
-  await aliasDialog.getByRole('button', { name: /保\s*存$/ }).click();
-  await expect(page.getByText('模型分配已保存', { exact: true })).toBeVisible();
+  await modelDialog.getByRole('button', { name: /保\s*存$/ }).click();
+  await expect(page.getByText('提供商模型已保存', { exact: true })).toBeVisible();
 
   const stored = await testConnection();
   try {
-    const { rows } = await stored.query("SELECT alias, settings FROM model_alias WHERE alias IN ('codegen.default','route.classify')");
-    const byAlias = new Map((rows as { alias: string; settings: unknown }[]).map(row => [row.alias, row.settings as Record<string, unknown>]));
-    expect(byAlias.get('codegen.default')).toMatchObject({ reasoningContentPassthrough: true });
-    expect(byAlias.get('route.classify')).not.toHaveProperty('reasoningContentPassthrough');
+    const { rows } = await stored.query("SELECT compatibility FROM provider_model WHERE provider_id='env-default' AND upstream_model_name='test-codegen-model'");
+    const compatibility = (rows as { compatibility: unknown }[])[0]?.compatibility;
+    const value = typeof compatibility === 'string' ? (JSON.parse(compatibility) as Record<string, unknown>) : (compatibility as Record<string, unknown>);
+    expect(value).toMatchObject({ reasoningContentPassthrough: true });
   } finally {
     await stored.end();
   }
-  // 提供商选项里不再出现这个开关：它不是提供商级配置。
-  await providerRow(page).getByRole('button', { name: /^编\s*辑$/ }).click();
-  const providerDialog = page.getByRole('dialog');
-  await expect(providerDialog.getByRole('switch', { name: '回传思考内容' })).toHaveCount(0);
-  await providerDialog.getByRole('button', { name: /取\s*消$/ }).click();
 
-  // 可选槽位未配置时也在页面上，直接配置即可，不需要先起名字。
+  // 槽位弹窗不再提供能力/回传开关，只显示模型的能力与费率。
+  await openSlot(page, '代码生成');
+  const aliasDialog = page.getByRole('dialog');
+  await expect(aliasDialog.getByRole('switch', { name: '回传思考内容' })).toHaveCount(0);
+  await expect(aliasDialog.getByText('能力与兼容声明由提供商模型决定', { exact: false })).toBeVisible();
+  await expect(aliasDialog.getByText('工具调用', { exact: true })).toBeVisible();
+  await aliasDialog.getByRole('button', { name: /取\s*消$/ }).click();
+
+  // 可选槽位从已登记模型里选，不能自建上游模型名。
   await expect(slotCard(page, '语音转写')).toContainText('麦克风按钮禁用');
   await openSlot(page, '语音转写');
   const audioDialog = page.getByRole('dialog');
-  await expect(audioDialog).toContainText('speech.transcribe');
-  await expect(audioDialog.getByLabel('别名', { exact: true })).toHaveCount(0);
-  await audioDialog.getByLabel('提供商', { exact: true }).click();
-  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('默认提供商', { exact: false }).first().click();
-  await audioDialog.getByLabel('上游模型名', { exact: true }).fill('whisper-1');
+  await chooseSelectOption(page, audioDialog.getByLabel('槽位模型'), 'test-route-model');
   await audioDialog.getByRole('button', { name: /保\s*存$/ }).click();
   await expect(page.getByText('模型分配已保存', { exact: true }).last()).toBeVisible();
-  await expect(slotCard(page, '语音转写')).toContainText('whisper-1');
-  await expect(slotCard(page, '语音转写')).not.toContainText('未配置');
-
-  // 必需槽位只有一个操作入口，且要求的能力不能关；可选槽位可以在弹窗里清除分配。
-  await expect(slotCard(page, '代码生成').getByRole('button')).toHaveCount(1);
-  await openSlot(page, '代码生成');
-  const requiredDialog = page.getByRole('dialog');
-  await expect(requiredDialog.getByRole('switch', { name: '工具调用' })).toBeDisabled();
-  await expect(requiredDialog.getByRole('switch', { name: '流式' })).toBeDisabled();
-  await expect(requiredDialog.getByRole('switch', { name: '结构化输出' })).toBeEnabled();
-  await expect(requiredDialog.getByRole('button', { name: '清除分配' })).toHaveCount(0);
-  await requiredDialog.getByRole('button', { name: /取\s*消$/ }).click();
+  await expect(slotCard(page, '语音转写')).toContainText('test-route-model');
 
   await openSlot(page, '语音转写');
   await page.getByRole('dialog').getByRole('button', { name: '清除分配' }).click();
   await page.getByRole('button', { name: 'OK', exact: true }).click();
   await expect(page.getByText('已清除语音转写槽位的模型分配', { exact: true })).toBeVisible();
   await expect(slotCard(page, '语音转写')).toContainText('未配置');
+});
+
+test('同一请求名在两家提供商下是两条身份，槽位按提供商选择', async ({ page }) => {
+  const connection = await testConnection();
+  try {
+    await seedModelConfig(connection);
+    await connection.query(
+      "INSERT INTO model_provider (id, display_name, api_format, base_url, api_key_env, options, enabled, create_time, update_time) VALUES ('env-secondary','第二提供商','openai-chat','https://secondary.example.test/v1','AI_API_KEY','{}',1,timezone('UTC', now()),timezone('UTC', now()))",
+    );
+    await connection.query(
+      `INSERT INTO provider_model (id, provider_id, upstream_model_name, display_name, capabilities, compatibility, enabled, create_time, update_time)
+       VALUES ('910000000000000001','env-secondary','test-codegen-model','第二提供商 / test-codegen-model',$1,$2,1,timezone('UTC', now()),timezone('UTC', now()))`,
+      [JSON.stringify({ streaming: true, toolCalling: true, structuredOutput: true, imageInput: false }), JSON.stringify({})],
+    );
+  } finally {
+    await connection.end();
+  }
+  await adminLogin(page, uniqueAccount());
+  await page.goto('/admin/modelManage');
+
+  await expect(page.getByRole('row').filter({ hasText: 'test-codegen-model' })).toHaveCount(2);
+  await expect(page.getByText('env-secondary', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('env-default', { exact: true }).first()).toBeVisible();
+
+  await openSlot(page, '代码生成');
+  const dialog = page.getByRole('dialog');
+  await chooseSelectOption(page, dialog.getByLabel('槽位模型'), '第二提供商 / test-codegen-model');
+  await dialog.getByRole('button', { name: /保\s*存$/ }).click();
+  await expect(page.getByText('模型分配已保存', { exact: true })).toBeVisible();
+  await expect(slotCard(page, '代码生成')).toContainText('第二提供商');
+  await expect(slotCard(page, '代码生成')).toContainText('test-codegen-model');
+
+  const stored = await testConnection();
+  try {
+    const { rows } = await stored.query("SELECT provider_id, provider_model_id FROM model_alias WHERE alias='codegen.default'");
+    expect(rows[0]).toMatchObject({ provider_id: 'env-secondary', provider_model_id: '910000000000000001' });
+  } finally {
+    await stored.end();
+  }
 });
 
 test('直接输入的密钥以密文入库，界面与接口都不回显明文', async ({ page }) => {
@@ -379,16 +416,15 @@ test('连通性检测与获取模型在界面上给出反馈', async ({ page }) 
   await expect(providerDialog.getByText(/无法连接上游/)).toBeVisible({ timeout: 30000 });
   await providerDialog.getByRole('button', { name: /取\s*消$/ }).click();
 
-  await openSlot(page, '代码生成');
-  const aliasDialog = page.getByRole('dialog');
-  const modelName = aliasDialog.getByLabel('上游模型名', { exact: true });
-  await modelName.fill('deepseek');
-  await expect(modelName).toHaveValue('deepseek');
-  await aliasDialog.getByRole('button', { name: '获取模型' }).click();
-  await expect(aliasDialog.getByText(/无法连接上游/)).toBeVisible({ timeout: 30000 });
+  await page.getByRole('button', { name: '登记提供商模型' }).click();
+  const modelDialog = page.getByRole('dialog');
+  await expect(modelDialog.getByLabel('模型提供商', { exact: true })).toBeVisible();
+  await modelDialog.getByRole('button', { name: '获取上游候选' }).click();
+  await expect(modelDialog.getByText(/无法连接上游/)).toBeVisible({ timeout: 30000 });
+  await modelDialog.getByRole('button', { name: /取\s*消$/ }).click();
 });
 
-test('从下拉里选中的上游模型名会写进数据库', async ({ page }) => {
+test('从上游候选登记模型并分配给槽位', async ({ page }) => {
   const upstream = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ data: [{ id: 'mimo-v2.6-flash' }, { id: 'deepseek-flash' }] }));
@@ -401,28 +437,40 @@ test('从下拉里选中的上游模型名会写进数据库', async ({ page }) 
     await adminLogin(page, uniqueAccount());
     await page.goto('/admin/modelManage');
 
-    await openSlot(page, '代码生成');
+    await page.getByRole('button', { name: '登记提供商模型' }).click();
     const dialog = page.getByRole('dialog');
-    const modelName = dialog.getByLabel('上游模型名', { exact: true });
-    await modelName.fill('mimo');
-    await dialog.getByRole('button', { name: '获取模型' }).click();
-    await expect(page.getByText('已获取 2 个上游模型', { exact: true })).toBeVisible({ timeout: 30000 });
-
-    await modelName.click();
-    await page
-      .locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')
-      .filter({ hasText: 'mimo-v2.6-flash' })
-      .click();
-    await expect(modelName).toHaveValue('mimo-v2.6-flash');
+    await dialog.getByRole('button', { name: '获取上游候选' }).click();
+    await expect(dialog.getByText(/获取到 2 个上游模型/)).toBeVisible({ timeout: 30000 });
+    await dialog.getByText('mimo-v2.6-flash', { exact: true }).click();
+    await expect(dialog.getByLabel('请求模型名', { exact: true })).toHaveValue('mimo-v2.6-flash');
+    await dialog.getByRole('switch', { name: '模型能力流式' }).click();
+    await dialog.getByRole('switch', { name: '模型能力工具调用' }).click();
     await dialog.getByRole('button', { name: /保\s*存$/ }).click();
-    await expect(page.getByText('模型分配已保存', { exact: true })).toBeVisible();
+    await expect(page.getByText('提供商模型已保存', { exact: true })).toBeVisible();
 
     const stored = await testConnection();
+    let modelId = '';
     try {
-      const { rows } = await stored.query("SELECT model_name FROM model_alias WHERE alias='codegen.default'");
-      expect((rows as { model_name: string }[])[0]?.model_name).toBe('mimo-v2.6-flash');
+      const { rows } = await stored.query("SELECT id FROM provider_model WHERE provider_id='env-default' AND upstream_model_name='mimo-v2.6-flash'");
+      modelId = String((rows as { id: string }[])[0]?.id ?? '');
+      expect(modelId).not.toBe('');
     } finally {
       await stored.end();
+    }
+
+    await openSlot(page, '代码生成');
+    const aliasDialog = page.getByRole('dialog');
+    await chooseSelectOption(page, aliasDialog.getByLabel('槽位模型'), 'mimo-v2.6-flash');
+    await aliasDialog.getByRole('button', { name: /保\s*存$/ }).click();
+    await expect(page.getByText('模型分配已保存', { exact: true })).toBeVisible();
+    await expect(slotCard(page, '代码生成')).toContainText('mimo-v2.6-flash');
+
+    const aliasDb = await testConnection();
+    try {
+      const { rows } = await aliasDb.query("SELECT provider_model_id FROM model_alias WHERE alias='codegen.default'");
+      expect(String((rows as { provider_model_id: string | null }[])[0]?.provider_model_id ?? '')).toBe(modelId);
+    } finally {
+      await aliasDb.end();
     }
   } finally {
     await connection.end();
@@ -487,14 +535,14 @@ test('自定义请求头可增删、保存后随探测请求发送', async ({ pa
     expect(formProbe?.xTitle).toBe('paimeng');
     await reopened.getByRole('button', { name: /取\s*消$/ }).click();
 
-    await openSlot(page, '代码生成');
-    const aliasDialog = page.getByRole('dialog');
-    await aliasDialog.getByRole('button', { name: '获取模型' }).click();
-    await expect(page.getByText('已获取 1 个上游模型', { exact: true })).toBeVisible({ timeout: 30000 });
+    await page.getByRole('button', { name: '登记提供商模型' }).click();
+    const modelDialog = page.getByRole('dialog');
+    await modelDialog.getByRole('button', { name: '获取上游候选' }).click();
+    await expect(page.getByText(/获取到 1 个上游模型/)).toBeVisible({ timeout: 30000 });
     const storedProbe = captured.at(-1);
     expect(storedProbe?.userAgent).toContain('paimeng-ai-code-mother/1.0');
     expect(storedProbe?.xTitle).toBe('paimeng');
-    await aliasDialog.getByRole('button', { name: /取\s*消$/ }).click();
+    await modelDialog.getByRole('button', { name: /取\s*消$/ }).click();
 
     await row.getByRole('button', { name: /^编\s*辑$/ }).click();
     const editDialog = page.getByRole('dialog');

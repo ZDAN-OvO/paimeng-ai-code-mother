@@ -15,6 +15,7 @@ export async function grantAdmin(client: pg.Client, account: string) {
 
 export async function emptyModelConfig(client: pg.Client) {
   await client.query('DELETE FROM model_alias');
+  await client.query('DELETE FROM credit_rate_card WHERE provider_model_id IS NOT NULL');
   await client.query('DELETE FROM provider_model');
   await client.query('DELETE FROM model_provider');
   await client.query(
@@ -24,6 +25,7 @@ export async function emptyModelConfig(client: pg.Client) {
 
 export async function seedModelConfig(client: pg.Client, baseUrl = 'https://api.example.test/v1') {
   await client.query('DELETE FROM model_alias');
+  await client.query('DELETE FROM credit_rate_card WHERE provider_model_id IS NOT NULL');
   await client.query('DELETE FROM provider_model');
   await client.query('DELETE FROM model_provider');
   await client.query(

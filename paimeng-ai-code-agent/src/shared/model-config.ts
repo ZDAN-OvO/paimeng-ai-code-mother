@@ -686,6 +686,9 @@ export const modelConfigVersionSchema = z.strictObject({
   refreshEpoch: decimalVersionSchema,
 });
 
+export const providerModelWriteResultSchema = modelConfigVersionSchema.extend({ id: providerModelIdSchema });
+export type ProviderModelWriteResult = z.infer<typeof providerModelWriteResultSchema>;
+
 export const modelProviderUpsertSchema = z.strictObject({
   provider: modelProviderWriteSchema,
   expectedRevision: decimalVersionSchema,
