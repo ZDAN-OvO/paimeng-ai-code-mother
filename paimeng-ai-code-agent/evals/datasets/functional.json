@@ -1,0 +1,590 @@
+{
+  "schemaVersion": 1,
+  "suite": "functional",
+  "title": "功能与交互：十个常见品类",
+  "description": "按「一次操作 + 可观察结果」检查功能，不检查实现方式。覆盖表单、计算、数据展示、筛选、多页、持久化、游戏状态、日期逻辑、标签内容与购物袋。",
+  "cases": [
+    {
+      "id": "func-01-form-signup",
+      "title": "婚礼报名：校验、成功态、手机端",
+      "difficulty": "medium",
+      "codeGenType": "html",
+      "templateId": "html",
+      "execution": "runner",
+      "tags": ["form", "validation", "mobile"],
+      "prompt": "做一个婚礼参加报名的单页：客人填姓名、参加人数（1-4）、饮食禁忌（可选），提交后在页面上显示「谢谢，XXX 等 N 位已报名」。空姓名或人数超出 1-4 时要提示。手机和电脑都要能填。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "打开页面",
+          "expect": "姓名、参加人数、饮食禁忌三个字段与提交按钮都存在，字段有可见标签"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "姓名留空，其余填好，点击提交",
+          "expect": "页面显示可见错误提示，且不出现「谢谢」成功文案"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "姓名填「陈默」，人数填 5，提交",
+          "expect": "被拒绝并提示人数范围；不出现成功文案"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "姓名填「陈默」，人数填 2，饮食禁忌填「不吃香菜」，提交",
+          "expect": "显示包含「陈默」和「2」的成功文案，文案读起来完整，不是模板占位"
+        },
+        {
+          "id": "R5",
+          "evidence": "visual",
+          "action": "390×844 视口重做一次提交",
+          "expect": "字段不重叠、无横向滚动，提交按钮可点且反馈可见"
+        },
+        {
+          "id": "R6",
+          "evidence": "dom",
+          "action": "观察错误提示的呈现",
+          "expect": "错误有文字说明，不是只把边框变红；错误能被读屏读到（role 或 aria-live 至少一种）"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 10
+      },
+      "notes": "WebGen-Bench 表单类。常见失败：只拦截空值不校验范围，或错误只靠颜色表达。"
+    },
+    {
+      "id": "func-02-loan-calculator",
+      "title": "房贷月供计算器与边界",
+      "difficulty": "medium",
+      "codeGenType": "html",
+      "templateId": "html",
+      "execution": "runner",
+      "tags": ["calculator", "math", "validation"],
+      "prompt": "做一个房贷计算器：输入贷款总额（万元）、年利率（%）、贷款年限（年），点「计算」显示每月还款和总利息，都保留两位小数。输入为空、为 0 或负数时提示。只做前端计算，不要联网。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "打开页面并输入 100 万、4.2%、30 年，点击计算",
+          "expect": "月供在 4885–4895 元之间（约 4890 元），总利息在 75.5–76.5 万元之间，均保留两位小数"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "把年限改为 20 年再计算",
+          "expect": "月供变为约 6166 元（6160–6170），明显高于 30 年结果；总利息下降"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "把贷款总额清空后计算",
+          "expect": "出现可见提示，不显示 0 元或 NaN 结果"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "把年利率填 0 后计算",
+          "expect": "给出提示，或按 0 利率把本金均摊到每个月，不出现 Infinity/NaN"
+        },
+        {
+          "id": "R5",
+          "evidence": "network",
+          "action": "查看点击计算期间的请求",
+          "expect": "没有网络请求，计算在本地完成"
+        },
+        {
+          "id": "R6",
+          "evidence": "visual",
+          "action": "查看结果区",
+          "expect": "结果数字有单位（元/万元）且与输入项视觉上分组清楚，不挤成一段"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 10
+      },
+      "notes": "公式口径用等额本息。常见失败：万元与元混用、除零产生 Infinity、结果不刷新。"
+    },
+    {
+      "id": "func-03-expense-dashboard",
+      "title": "月度开支看板：汇总与分类图",
+      "difficulty": "medium",
+      "codeGenType": "react_project",
+      "templateId": "react-ts",
+      "execution": "runner",
+      "tags": ["data", "dashboard", "chart", "filter"],
+      "prompt": "做一个个人月度开支看板：内置 10 条示例数据（日期、分类、金额），显示本月总支出、分类汇总，并用纯 CSS 或 SVG 画一个分类占比图。可以按分类筛选，图要跟着变。页面上标注这些是示例数据。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "打开看板",
+          "expect": "至少 8 条示例记录，每条有日期、分类、金额；页面明确标注「示例数据」"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "把可见记录的金额相加，与页面总额对比",
+          "expect": "总额等于可见记录之和（允许四舍五入到分），单位为元"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "核对分类汇总",
+          "expect": "各分类金额之和等于总额，分类名称与记录一致"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "选择「餐饮」分类筛选",
+          "expect": "列表只剩餐饮记录，总额与占比图同步更新，不是只过滤列表"
+        },
+        {
+          "id": "R5",
+          "evidence": "network",
+          "action": "查看加载请求",
+          "expect": "没有引入图表库或外部数据源，图形由 CSS/SVG 在本地绘制"
+        },
+        {
+          "id": "R6",
+          "evidence": "visual",
+          "action": "390×844 视口查看",
+          "expect": "占比图不溢出容器，图例文字可读，总额仍在首屏可见"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 12
+      },
+      "notes": "数据一致性是核心。常见失败：筛选只改列表不改汇总，或饼图比例写死。"
+    },
+    {
+      "id": "func-04-book-filter",
+      "title": "书单搜索、分类与空状态",
+      "difficulty": "medium",
+      "codeGenType": "multi_file",
+      "templateId": "multi-file",
+      "execution": "runner",
+      "tags": ["search", "filter", "empty-state"],
+      "prompt": "做一个读书会书单页：内置 12 本书（书名、作者、分类、一句推荐），顶部搜索框按书名或作者筛选，三个分类标签「小说 / 非虚构 / 技术」可切换，再加一个「全部」。没有结果时显示「没有找到这本书」。样式放 css/，逻辑放 js/。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "打开页面",
+          "expect": "显示 12 本书，每本有书名、作者、分类和一句推荐，字段没有空缺"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "在搜索框输入「三体」",
+          "expect": "只显示书名或作者匹配的书（至少包含《三体》），其他书被隐藏"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "清空搜索，点击「技术」分类",
+          "expect": "只显示技术类书籍，数量与数据中的技术类一致"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "在「技术」分类下搜索一个非技术书名",
+          "expect": "两个条件同时生效，结果为 0 并显示「没有找到这本书」"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "清空搜索并点击「全部」",
+          "expect": "恢复 12 本书，空状态消失"
+        },
+        {
+          "id": "R6",
+          "evidence": "source",
+          "action": "检查源码",
+          "expect": "书籍数据在 js/ 中维护，css/ 与 js/ 分离，没有把全部逻辑写进 index.html"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 10
+      },
+      "notes": "组合筛选容易只实现一个条件。空状态与恢复也是检查点。"
+    },
+    {
+      "id": "func-05-multi-page",
+      "title": "三页烘焙工作室站点",
+      "difficulty": "medium",
+      "codeGenType": "multi_file",
+      "templateId": "multi-file",
+      "execution": "runner",
+      "tags": ["multi-page", "navigation", "mobile"],
+      "prompt": "做一个烘焙工作室的小站，三个页面：首页（招牌和三个特色）、菜单（6 款产品与价格）、联系（地址、营业时间、电话）。三个页面能互相跳转，手机上的导航也能用。页面风格统一，不要外链图片。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "从首页依次进入菜单和联系页",
+          "expect": "三个页面都能打开，导航在所有页面都指向正确页面"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "数菜单页产品",
+          "expect": "6 款产品，每款有名称与价格，价格单位清楚"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "查看联系页",
+          "expect": "地址、营业时间、电话三项齐全；电话是可拨打的 tel: 链接"
+        },
+        {
+          "id": "R4",
+          "evidence": "visual",
+          "action": "390×844 视口打开三个页面",
+          "expect": "导航可用（折叠菜单能展开或链接直接可见），无横向滚动"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "在菜单页点击返回首页",
+          "expect": "回到首页且首页内容完整，不是 404 或空白"
+        },
+        {
+          "id": "R6",
+          "evidence": "runtime",
+          "action": "查看加载请求",
+          "expect": "没有图片或字体的外部请求，也没有 404"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 12
+      },
+      "notes": "多页站点的常见失败：复制页面后导航链接指向错误文件，或手机菜单按钮没有绑定事件。"
+    },
+    {
+      "id": "func-06-todo-persist",
+      "title": "待办清单：持久化与筛选",
+      "difficulty": "medium",
+      "codeGenType": "vue_project",
+      "templateId": "vue-ts",
+      "execution": "runner",
+      "tags": ["crud", "persistence", "filter"],
+      "prompt": "在现有任务清单上改：可以添加任务、勾选完成、删除；顶部显示未完成数量；加一个「全部 / 未完成 / 已完成」筛选；刷新页面后查看默认「全部」列表后任务和完成状态都还在。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "添加一项「交房租」",
+          "expect": "新任务出现在列表，未完成数量加 1，输入框清空"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "勾选「交房租」",
+          "expect": "任务呈现完成态，未完成数量减 1"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "切到「已完成」筛选",
+          "expect": "只显示已完成任务；切到「未完成」只显示未完成任务"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "删除一项已完成任务",
+          "expect": "任务从列表消失，数量同步更新，其他任务不受影响"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "刷新页面后查看默认「全部」列表",
+          "expect": "任务与完成状态保留，默认列表中的任务集合与刷新前一致"
+        },
+        {
+          "id": "R6",
+          "evidence": "network",
+          "action": "查看操作期间的请求",
+          "expect": "没有业务接口请求，数据保存在浏览器本地"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 10
+      },
+      "notes": "模板本身已有部分能力，考的是改动后的回归与筛选边界。"
+    },
+    {
+      "id": "func-07-memory-game",
+      "title": "4×4 记忆翻牌游戏",
+      "difficulty": "hard",
+      "codeGenType": "html",
+      "templateId": "html",
+      "execution": "runner",
+      "tags": ["game", "state", "timer"],
+      "prompt": "做一个 4×4 记忆翻牌小游戏：8 对图案（用文字或 emoji），点开两张，相同就保留，不同就等大约 1 秒后翻回；每翻开两张记 1 步；全部配对后显示「完成」和总步数；有重开按钮。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "打开游戏",
+          "expect": "16 张牌全部背面朝上，步数为 0，有重开按钮"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "翻开两张不同图案的牌并等待 1.5 秒",
+          "expect": "两张牌都翻回背面，步数变为 1"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "翻开一对相同图案的牌",
+          "expect": "两张保持翻开，不能被再次点击翻回，步数增加 1"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "快速连点同一张背面牌两次",
+          "expect": "第二次点击不重复计步，也不会把这张牌翻回或产生第三张选中"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "完成全部 8 对",
+          "expect": "出现「完成」提示，显示总步数（8 对至少 8 步）"
+        },
+        {
+          "id": "R6",
+          "evidence": "dom",
+          "action": "点击重开",
+          "expect": "所有牌翻回背面，步数归零，完成提示消失"
+        },
+        {
+          "id": "R7",
+          "evidence": "visual",
+          "action": "390×844 视口查看",
+          "expect": "4 列牌完整显示，无横向滚动，牌面文字可读"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 15
+      },
+      "notes": "状态机与定时器容易出错：翻回时把已配对牌也翻回、双击同一张计两步。"
+    },
+    {
+      "id": "func-08-booking",
+      "title": "理发店预约：日期与时段互斥",
+      "difficulty": "hard",
+      "codeGenType": "react_project",
+      "templateId": "react-ts",
+      "execution": "runner",
+      "tags": ["booking", "date", "validation"],
+      "prompt": "做一个理发店预约页：日期只显示从今天起的 7 天，时段为 10:00 到 19:00 每小时一个，服务项目为剪发 / 烫发 / 染发。10:00、14:00、18:00 标记为「已约满」且不能选。填手机号后提交，成功显示预约摘要（日期、时间、项目、手机号）。不要接后端。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "打开预约页",
+          "expect": "日期正好 7 个，最早的日期不早于今天；时间从 10:00 到 19:00 每小时一个"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "尝试选择 10:00、14:00、18:00",
+          "expect": "三个时段显示「已约满」且无法选中"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "不选服务、不填手机号直接提交",
+          "expect": "提交被阻止，出现具体提示（指出缺哪一项）"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "手机号填 12 位数字后提交",
+          "expect": "被拒绝并提示手机号格式，不出现预约摘要"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "选择明天 11:00、烫发，填 13800138000，提交",
+          "expect": "显示摘要，四项与实际选择一致；不出现「已支付」等未实现状态"
+        },
+        {
+          "id": "R6",
+          "evidence": "network",
+          "action": "查看操作期间的请求",
+          "expect": "没有业务接口请求，预约只保存在页面状态中"
+        },
+        {
+          "id": "R7",
+          "evidence": "dom",
+          "action": "用键盘 Tab 遍历表单",
+          "expect": "所有可选项和提交按钮都能通过键盘到达并操作"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 15
+      },
+      "notes": "日期与禁用状态最容易只做视觉不做逻辑。手机号校验用宽松规则即可，但不能接受 12 位。"
+    },
+    {
+      "id": "func-09-coffee-guide",
+      "title": "手冲指南：标签与步骤进度",
+      "difficulty": "medium",
+      "codeGenType": "html",
+      "templateId": "html",
+      "execution": "runner",
+      "tags": ["tabs", "content", "state"],
+      "prompt": "做一个手冲咖啡指南：三种冲法「V60 / 爱乐压 / 法压壶」用标签切换，每种显示步骤列表、粉水比和建议水温；步骤可以勾选完成，全部完成后显示「这杯完成了」。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "依次点击三个标签",
+          "expect": "每次只显示当前冲法的内容，三种内容彼此不同，没有叠在一起"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "查看每种冲法的内容",
+          "expect": "每种至少 4 个步骤，并明确写出粉水比与建议水温"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "在 V60 下勾选前两步",
+          "expect": "这两步呈现完成态，进度显示 2/总步骤或等价的可见进度"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "切到爱乐压再切回 V60",
+          "expect": "V60 的两步勾选仍保留，没有被重置"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "勾选 V60 的全部步骤",
+          "expect": "出现「这杯完成了」，且只属于 V60，切到其他冲法不显示"
+        },
+        {
+          "id": "R6",
+          "evidence": "visual",
+          "action": "390×844 视口查看",
+          "expect": "标签不换行挤压，步骤文字可读，勾选框可点"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 10
+      },
+      "notes": "考标签切换时的状态隔离。常见失败：所有标签共用一份勾选状态。"
+    },
+    {
+      "id": "func-10-ceramic-cart",
+      "title": "陶瓷小店购物袋与合计",
+      "difficulty": "medium",
+      "codeGenType": "vue_project",
+      "templateId": "vue-ts",
+      "execution": "runner",
+      "tags": ["commerce", "state", "format"],
+      "prompt": "做一个手作陶瓷小店的商品页：6 件商品（名称、价格、用 CSS 色块代替图片），可以加入购物袋、调整数量、删除；右上角显示总件数，底部显示合计；购物袋为空时显示「购物袋是空的」。价格统一显示为 ¥xx.00。",
+      "followUps": [],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "打开商品页",
+          "expect": "6 件商品都有名称与价格，价格格式为 ¥xx.00；初始购物袋为空"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "把第 1 件商品加入购物袋",
+          "expect": "右上角件数变为 1，合计等于该商品价格，空状态消失"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "把第 1 件数量调到 3",
+          "expect": "件数变为 3，合计等于单价 ×3，金额仍是两位小数"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "再加入第 2 件商品，然后删除第 1 件",
+          "expect": "件数只剩第 2 件的数量，合计同步减少，不残留已删除商品"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "删除全部商品",
+          "expect": "显示「购物袋是空的」，件数与合计归零"
+        },
+        {
+          "id": "R6",
+          "evidence": "visual",
+          "action": "390×844 视口查看",
+          "expect": "商品网格不溢出，购物袋摘要与操作按钮在可达位置"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 10
+      },
+      "notes": "考数量与合计的联动以及浮点格式化。常见失败：删除后合计不减、数量为 0 仍留在袋中。"
+    }
+  ]
+}

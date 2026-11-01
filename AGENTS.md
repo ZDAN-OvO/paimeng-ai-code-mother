@@ -17,6 +17,10 @@ AI web-app generator: users describe what they want in natural language; the pla
 
 This file covers the root level only. Layout, commands and code conventions for `paimeng-ai-code-agent/` live in its own `AGENTS.md` and in the `AGENTS.md` files below it, and must not be duplicated here.
 
+## Artifact locality
+
+Artifacts follow ownership: project-specific docs, specs, plans and prototypes belong under that project's `docs/`; root `docs/` is for repository-wide concerns. Follow the owning directory's `AGENTS.md` for placement and lifecycle; keep root instructions navigational, with detailed rules in the owning project.
+
 ## Agent skills
 
 ### Issue tracker

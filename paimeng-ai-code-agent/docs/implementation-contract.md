@@ -15,6 +15,8 @@
 
 ## 生成与写入租约
 
+- 输入护轨（`generation/prompt-safety.ts`）在创建 Generation 之前完成，敏感词与注入正则来自 `config/prompt-safety.json`（`PROMPT_SAFETY_RULES_PATH` 可覆盖）。规则文件缺失、JSON 或正则非法一律抛错，不允许退化成空规则放行；新增生成入口必须同样先过 `validatePrompt`。
+
 - harness 是唯一写者，Next 只是 attach 客户端与 SSE 转发：浏览器断连只停止转发，任务在 harness 里照常跑完（ADR-0001、ADR-0003）。
 - 平台没有自己的消息表：转录的权威存储在 harness，`GET app/messages` 读回后投影成 UI 消息。
 - 每个应用同时只有一个活动任务，状态 `generating` / `building` / `ready` / `failed` / `cancelled`。

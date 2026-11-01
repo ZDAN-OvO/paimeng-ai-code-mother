@@ -1,0 +1,317 @@
+{
+  "schemaVersion": 1,
+  "suite": "multiturn",
+  "title": "多轮：追加、改版、回退与插话",
+  "description": "测连续 Generation 之间的增量、回归与选择性回退，以及运行中的 steer、版本恢复后继续。runner 只能自动跑前三个；steer 与版本恢复标为 manual，按 README 的手工协议取证。",
+  "cases": [
+    {
+      "id": "multi-01-additive",
+      "title": "追加高优先级过滤且不破坏原功能",
+      "difficulty": "hard",
+      "codeGenType": "vue_project",
+      "templateId": "vue-ts",
+      "execution": "runner",
+      "tags": ["follow-up", "regression", "filter"],
+      "prompt": "把示例任务清单改成项目任务清单：每项加优先级（高/中/低），列表默认按高→低排序，能添加、勾选、删除。",
+      "followUps": [
+        {
+          "kind": "follow-up",
+          "text": "再加一个「只看高优先级」的开关，其他功能和已有数据都别动。"
+        }
+      ],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "查看第一步完成后的页面",
+          "expect": "任务带高/中/低优先级标签，列表按高→低排列，能添加、勾选、删除"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "第二步后打开「只看高优先级」",
+          "expect": "只显示高优先级任务，中/低被隐藏；关闭后恢复全部"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "在过滤开启时勾选一条高优先级任务",
+          "expect": "任务完成态更新，剩余数量正确，过滤条件仍保持"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "回归添加与删除",
+          "expect": "新增任务默认优先级合理、能出现在列表；删除后计数与排序仍正确"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "刷新页面",
+          "expect": "优先级、完成状态与第一步建立的数据都保留，没有因为第二轮被重置"
+        },
+        {
+          "id": "R6",
+          "evidence": "visual",
+          "action": "对比两步截图",
+          "expect": "第二轮只增加了过滤控件，首步的版式、配色与信息层级没有被无关改动"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 15
+      },
+      "notes": "最典型的回归场景：第二轮重写组件时丢掉 localStorage 或排序逻辑。"
+    },
+    {
+      "id": "multi-02-restyle",
+      "title": "整体换色换字体但保留内容",
+      "difficulty": "medium",
+      "codeGenType": "html",
+      "templateId": "html",
+      "execution": "runner",
+      "tags": ["follow-up", "visual", "regression"],
+      "prompt": "做一个山间民宿首页：标题「山间民宿」，三个房型带价格，一个预订按钮，风格清爽。",
+      "followUps": [
+        {
+          "kind": "follow-up",
+          "text": "整体换成墨绿配米色，标题用衬线字体，把预订按钮改成「查看空房」；三个房型和价格不变。"
+        }
+      ],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "查看第一步页面",
+          "expect": "标题「山间民宿」、三个房型与价格、预订按钮都存在"
+        },
+        {
+          "id": "R2",
+          "evidence": "visual",
+          "action": "对比第二步截图",
+          "expect": "主色变为墨绿系，背景为米色系，不是只改了一个按钮"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "检查标题计算字体",
+          "expect": "标题使用衬线字体栈（serif / Songti / Noto Serif 等）"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "查看按钮文字",
+          "expect": "按钮文字准确为「查看空房」，没有残留「立即预订」等旧文案"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "核对三个房型",
+          "expect": "三个房型名称与价格与第一步完全一致"
+        },
+        {
+          "id": "R6",
+          "evidence": "visual",
+          "action": "检查页面残留色",
+          "expect": "没有大面积的旧主色色块与新墨绿并存，视觉是一套配色而不是拼接"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 12
+      },
+      "notes": "改版最容易只改局部。要求「三个房型和价格不变」提供回归检查点。"
+    },
+    {
+      "id": "multi-03-selective-revert",
+      "title": "回到浅色主题但保留搜索",
+      "difficulty": "hard",
+      "codeGenType": "react_project",
+      "templateId": "react-ts",
+      "execution": "runner",
+      "tags": ["follow-up", "selective-revert", "search"],
+      "prompt": "在模板上做一个深色主题的摄影作品集：6 张作品卡片，顶部有一个按标题搜索的输入框。",
+      "followUps": [
+        {
+          "kind": "follow-up",
+          "text": "把主题改回浅色，其他都保留，尤其是搜索功能还要能用。"
+        }
+      ],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "visual",
+          "action": "查看第一步页面",
+          "expect": "页面是深色背景配浅色文字，6 张作品卡片可见"
+        },
+        {
+          "id": "R2",
+          "evidence": "visual",
+          "action": "查看第二步页面",
+          "expect": "背景变为浅色、文字为深色，整体不再是深色主题"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "在搜索框输入一个作品标题",
+          "expect": "列表按标题过滤到匹配项；清空后恢复 6 张"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "检查作品卡片",
+          "expect": "6 张卡片、标题与图片占位都在，没有因为换主题丢失"
+        },
+        {
+          "id": "R5",
+          "evidence": "visual",
+          "action": "检查浅色态对比度",
+          "expect": "文字与背景对比度达标，没有留下深色卡片配浅色文字之类的半成品"
+        },
+        {
+          "id": "R6",
+          "evidence": "runtime",
+          "action": "查看控制台",
+          "expect": "无 React 报错或未使用变量的明显警告"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 12
+      },
+      "notes": "选择性回退：只撤销主题，不撤销第二轮之外的功能。比整体重写更能暴露回归。"
+    },
+    {
+      "id": "multi-04-steer",
+      "title": "生成中插话改标题与主色",
+      "difficulty": "hard",
+      "codeGenType": "html",
+      "templateId": "html",
+      "execution": "manual",
+      "tags": ["steer", "single-generation", "visual"],
+      "prompt": "做一个民宿预订页，标题先叫「民宿预订」，包含三个房型、价格和一个预订按钮。",
+      "followUps": [
+        {
+          "kind": "steer",
+          "text": "标题改成「山间民宿」，主色用墨绿，不要动其他结构。",
+          "after": "出现第一次 buildPreview 之后、本轮结束之前"
+        }
+      ],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "dom",
+          "action": "查看最终页面标题",
+          "expect": "主标题准确为「山间民宿」"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "检查房型与按钮",
+          "expect": "三个房型、价格和预订按钮仍在，结构没有被插话推翻"
+        },
+        {
+          "id": "R3",
+          "evidence": "visual",
+          "action": "查看最终主色",
+          "expect": "主色为墨绿系，并且是整套页面生效，不是只改标题"
+        },
+        {
+          "id": "R4",
+          "evidence": "transcript",
+          "action": "查看本轮对话与插话标记",
+          "expect": "插话出现在同一次 Generation 内，没有开启新 Generation；插话落点在 buildPreview 之后"
+        },
+        {
+          "id": "R5",
+          "evidence": "dom",
+          "action": "搜索页面文字",
+          "expect": "没有残留「民宿预订」作为主标题"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 15
+      },
+      "notes": "runner 不做定时插话。手工协议：创建应用并发送 prompt，在第一次 buildPreview 出现后立刻点「插话」发送文本，其余按普通取证。"
+    },
+    {
+      "id": "multi-05-restore-continue",
+      "title": "恢复到旧版本后继续修改",
+      "difficulty": "hard",
+      "codeGenType": "react_project",
+      "templateId": "react-ts",
+      "execution": "manual",
+      "tags": ["version", "restore", "follow-up"],
+      "prompt": "在模板上做一个待办清单，带「全部 / 未完成 / 已完成」筛选，并记住完成状态。",
+      "followUps": [
+        {
+          "kind": "follow-up",
+          "text": "加一个深色模式开关。"
+        },
+        {
+          "kind": "follow-up",
+          "text": "在恢复的版本上加一个统计「今天完成了 N 项」，原来的筛选要保留。"
+        }
+      ],
+      "requirements": [
+        {
+          "id": "R1",
+          "evidence": "transcript",
+          "action": "查看版本历史",
+          "expect": "前两轮各产生一个版本，版本列表可打开或恢复"
+        },
+        {
+          "id": "R2",
+          "evidence": "dom",
+          "action": "恢复第 1 版后查看页面",
+          "expect": "页面回到没有深色开关的状态，筛选与任务数据仍在"
+        },
+        {
+          "id": "R3",
+          "evidence": "dom",
+          "action": "在恢复后的版本上完成第三轮",
+          "expect": "出现「今天完成了 N 项」，N 与实际勾选数一致"
+        },
+        {
+          "id": "R4",
+          "evidence": "dom",
+          "action": "回归筛选与勾选",
+          "expect": "全部/未完成/已完成切换正常，勾选后统计数字更新"
+        },
+        {
+          "id": "R5",
+          "evidence": "transcript",
+          "action": "查看恢复后的版本历史",
+          "expect": "第三轮产生新版本，旧版本记录没有被覆盖或删除"
+        },
+        {
+          "id": "R6",
+          "evidence": "visual",
+          "action": "对比恢复前后截图",
+          "expect": "恢复确实撤销了深色开关，而不是只在对话里说已恢复"
+        }
+      ],
+      "signals": {
+        "ask": "forbidden",
+        "web": "forbidden",
+        "earlyPreview": true,
+        "citations": false,
+        "maxMinutes": 20
+      },
+      "notes": "手工协议：跑完前两步后，在版本面板恢复第 1 版，再发送第三条 follow-up。恢复是平台动作，不是模型工具。"
+    }
+  ]
+}

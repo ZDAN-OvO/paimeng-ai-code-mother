@@ -16,7 +16,8 @@ const config: NextConfig = {
     }];
   },
   outputFileTracingRoot: process.cwd(),
-  outputFileTracingIncludes: { '/*': ['./templates/**/*'] },
+  // config/ 是运行期读取的策略文件（输入护轨规则），必须跟着产物一起打包，不能被 tree-shake 掉。
+  outputFileTracingIncludes: { '/*': ['./templates/**/*', './config/**/*'] },
   outputFileTracingExcludes: {
     '/*': ['./runtime/**/*', './.env', './.env.*'],
     'next-server': ['runtime/**/*', '.env', '.env.*'],
