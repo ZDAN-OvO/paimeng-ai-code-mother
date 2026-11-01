@@ -34,3 +34,7 @@ The five canonical triage roles use their own names as label strings. See `docs/
 ### Domain docs
 
 Single-context: root `GLOSSARY.md` plus ADRs in `paimeng-ai-code-agent/docs/adr/`. See `docs/agents/domain.md`.
+
+### Git identity
+
+The human pushes as the personal account; the agent pushes as the `zdan-coding-agent` GitHub App, and only from its own worktree. `main` accepts pull requests only. See `docs/agents/git-identity.md`.
