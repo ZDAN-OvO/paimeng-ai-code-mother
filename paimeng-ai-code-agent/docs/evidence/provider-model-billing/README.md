@@ -32,15 +32,15 @@ Test Files  52 passed (52)
 
 $ npx vitest run --project integration
 Test Files  60 passed | 1 skipped (61)
-     Tests  495 passed | 1 skipped (496)
+     Tests  520 passed | 1 skipped (521)
 
 $ npm run check:fast
 UI 写法检查通过（34 个 tsx）
-E2E 写法检查通过（25 个 spec）
+E2E 写法检查通过（29 个 spec）
 项目目录外的未提交改动与基线一致
 
 $ npm run test:e2e:isolated -- tests/e2e/model-manage.spec.ts tests/e2e/billing-rate-card.spec.ts
-13 passed (31.5s)
+13 passed (42.6s)
 ```
 
 ## 迁移演练
