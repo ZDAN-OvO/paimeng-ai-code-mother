@@ -153,6 +153,18 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
   const afterRestore = await versions(page);
   expect(afterRestore.current?.versionId).toBe(firstVersion.id);
   expect(afterRestore.versions).toHaveLength(2);
+  await page.screenshot({ path: join(evidence, '02-restored-first-version.png'), fullPage: true });
+
+  // 刷新之后仍在：恢复的是落库的当前版本与预览指针，不是这一次页面里的临时视图。
+  await page.reload();
+  await expect(page.frameLocator('iframe[title="应用预览"]').getByRole('heading', { name: firstPrompt, exact: true })).toBeVisible();
+  expect((await versions(page)).current?.versionId).toBe(firstVersion.id);
+  await page.getByRole('button', { name: /^版\s*本$/ }).click();
+  await expect(page.locator('.version-tree-row')).toHaveCount(2);
+  await expect(page.getByRole('dialog', { name: /版本历史/ })).toBeVisible();
+  await page.screenshot({ path: join(evidence, '03-after-reload.png'), fullPage: true, animations: 'disabled' });
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: /版本历史/ })).toBeHidden();
   const countsAfterRestore = await db.query<{
     versions: number; deliveries: number; running: number; pointer_version: string | null;
     pointer_delivery: string | null; pointer_revision: number | null;
@@ -183,7 +195,6 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
   expect(Number(countsAfterRestore.rows[0].pointer_revision)).toBeGreaterThanOrEqual(1);
   expect(Number(countsAfterRestore.rows[0].authority_revision)).toBe(Number(countsAfterRestore.rows[0].pointer_revision));
   expect(countsAfterRestore.rows[0].authority_draft).toBeNull();
-  await page.screenshot({ path: join(evidence, '02-restored-first-version.png'), fullPage: true });
 
   // 下载必须来自恢复后的交付源码，包含外部资源，而不是只给一个文件名。
   const downloadPromise = page.waitForEvent('download');
@@ -222,7 +233,7 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
     [appId],
   );
   expect(finalCounts.rows[0]).toEqual({ versions: 2, deliveries: 2, running: 0 });
-  await page.screenshot({ path: join(evidence, '03-deployed-restored-version.png'), fullPage: true });
+  await page.screenshot({ path: join(evidence, '04-deployed-restored-version.png'), fullPage: true });
 
   await writeFile(join(evidence, 'proof.json'), JSON.stringify({
     account: proofUser.userAccount,
