@@ -2,7 +2,7 @@ import { test, expect, type FrameLocator } from '@playwright/test';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadEnvFile } from 'node:process';
 import pg from 'pg';
@@ -15,7 +15,8 @@ import { evidenceDir } from './support/evidence';
  * 安装失败时把 shell 的可读原因交回模型。
  *
  * 链路：真实页面 → Next → harness（夹具模型）→ 真实 Docker runtime（pnpm + Vite dev server）→ 预览代理。
- * 夹具按提示词前缀决定脚本：`[install]` 执行 `pnpm add dayjs@1.11.13` 再把 dayjs 渲染进页面；
+ * 夹具按提示词前缀决定脚本：`[install]` 执行 `pnpm add date-fns@4.1.0` 再把 date-fns 渲染进页面；
+ * 用 system 用例没装过的包，保证这一轮真的从 registry 下载而不是命中共享 store 缓存。
  * `[install-fail]` 安装一个不存在的包，并把 shell 的失败原因写进页面。联网步骤必须真实执行，
  * 跳过时本 spec 不算通过。
  */
@@ -96,25 +97,34 @@ test('模型用 shell 真装 registry 包，Preview 显示包功能，锁文件�
   await page.screenshot({ path: join(evidence, '01-app-created.png'), fullPage: true });
 
   const frame = previewFrame(page);
-  // 页面导入 dayjs 并渲染固定日期：这段文字只能来自真实安装的包。
-  await expect(frame.getByText('dayjs 渲染 2020年1月2日', { exact: false })).toBeVisible({ timeout: 240_000 });
+  // 页面导入 date-fns 并渲染固定日期：这段文字只能来自真实安装的包。
+  await expect(frame.getByText('date-fns 渲染 2020年1月2日', { exact: false })).toBeVisible({ timeout: 240_000 });
   await page.screenshot({ path: join(evidence, '02-preview-package-feature.png'), fullPage: true });
   await waitForSettled(page, `依赖安装工作台_${suffix}`);
   await page.screenshot({ path: join(evidence, '03-generation-settled.png'), fullPage: true });
 
   const workspace = join(process.cwd(), 'runtime/code_output', 'react_project_' + appId);
   const manifest = JSON.parse(await readFile(join(workspace, 'package.json'), 'utf8')) as { dependencies?: Record<string, string> };
-  expect(manifest.dependencies?.dayjs).toBe('1.11.13');
+  expect(manifest.dependencies?.['date-fns']).toBe('4.1.0');
   const lock = await readFile(join(workspace, 'pnpm-lock.yaml'), 'utf8');
-  expect(lock).toContain('dayjs@1.11.13');
+  expect(lock).toContain('date-fns@4.1.0');
   const { rows } = await db.query('select status, workspace_root, container_name from app_runtime where app_id = $1', [appId]);
   expect(rows).toHaveLength(1);
   expect(rows[0].status).toBe('ready');
   expect(rows[0].workspace_root).toBe(workspace);
   // node_modules 的条目指向共享 store 挂载里的 virtual store：在容器里 follow 到真实文件。
-  const dayjsModule = await exec('docker', ['exec', rows[0].container_name, 'sh', '-lc',
-    'test -f node_modules/dayjs/package.json && readlink node_modules/dayjs'], { timeout: 60_000, encoding: 'utf8' });
-  expect(dayjsModule.stdout.trim()).toContain('/store/apps/');
+  const installedModule = await exec('docker', ['exec', rows[0].container_name, 'sh', '-lc',
+    'test -f node_modules/date-fns/package.json && readlink node_modules/date-fns && node -p "require(\'./node_modules/date-fns/package.json\').version"'],
+    { timeout: 60_000, encoding: 'utf8' });
+  expect(installedModule.stdout).toContain('/store/apps/');
+  expect(installedModule.stdout.trim().split('\n').at(-1)).toBe('4.1.0');
+
+  // pnpm 自己的输出留在运行时日志里：把 resolved/downloaded 行复制进证据包，证明是真实 registry 安装。
+  const shellLogDirectory = join(process.cwd(), 'runtime/app-runtime', `react_project_${appId}`, 'shell');
+  const shellLogs = (await readdir(shellLogDirectory)).map(name => join(shellLogDirectory, name));
+  const pnpmOutput = (await Promise.all(shellLogs.map(path => readFile(path, 'utf8')))).join('\n');
+  expect(pnpmOutput).toContain('date-fns');
+  await writeFile(join(evidence, 'pnpm-add-output.log'), pnpmOutput);
 
   // 轮末归一化会更新「镜像身份 + 锁文件哈希」安装标记；这里用独立计算的哈希核对。
   const digest = createHash('sha256').update(await readFile(join(workspace, 'pnpm-lock.yaml'))).digest('hex');
@@ -124,12 +134,12 @@ test('模型用 shell 真装 registry 包，Preview 显示包功能，锁文件�
 
   await writeFile(join(evidence, 'install-side-effects.json'), JSON.stringify({
     appId, dayjs: manifest.dependencies?.dayjs, lockHasDayjs: lock.includes('dayjs@1.11.13'), marker, runtime: rows[0],
-    lockDigest: digest, dayjsModule: dayjsModule.stdout.trim(),
+    lockDigest: digest, installedModule: installedModule.stdout.trim(),
   }, null, 2));
 
   // 刷新后 Preview 仍能展示这个包的功能。
   await page.reload();
-  await expect(previewFrame(page).getByText('dayjs 渲染 2020年1月2日', { exact: false })).toBeVisible({ timeout: 120_000 });
+  await expect(previewFrame(page).getByText('date-fns 渲染 2020年1月2日', { exact: false })).toBeVisible({ timeout: 120_000 });
   await page.screenshot({ path: join(evidence, '04-preview-after-refresh.png'), fullPage: true });
 });
 
