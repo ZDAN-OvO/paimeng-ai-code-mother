@@ -228,19 +228,32 @@ test('生成中创建的后一个应用排队、刷新保持、可取消；结�
   if (dIndex >= 0) appIds.splice(dIndex, 1);
 
   // 下一轮惰性唤醒：发一条新需求，runtime 从持久 Workspace 重建，依赖标记仍在。
+  // 不抓瞬时的 `生成中`：夹具写文件很快，页面轮询可能直接看到 `构建中`/`可预览`。
+  // 新轮次的证据用落库的 generation id + 最终 ready + 重建后的容器身份，而不是瞬时标签。
   const nextPrompt = `排队后自动启动的应用_${suffix} 第二轮`;
+  const previousGeneration = await generationRow(appC);
   await wakePage.getByLabel('对话消息').fill(nextPrompt);
   await wakePage.getByLabel('对话消息').press('Enter');
-  await expect(statusTag(wakePage)).toContainText('生成中', { timeout: 120_000 });
-  await expect(statusTag(wakePage)).toContainText('可预览', { timeout: 300_000 });
+  await waitFor(async () => {
+    const current = await generationRow(appC);
+    return current !== null && current.id !== previousGeneration?.id;
+  }, 120_000, '新一轮 Generation 落库');
+  const wakeGenerationId = (await generationRow(appC))?.id;
+  await waitFor(async () => (await generationRow(appC))?.status === 'ready', 300_000, '新一轮 Generation 完成');
   await waitFor(async () => (await runtimeRow(appC))?.status === 'ready', 120_000, '唤醒后的 runtime');
   const marker = await readFile(join(process.cwd(), workspacePath, 'node_modules/.paimeng-wake-marker'), 'utf8');
   expect(marker).toBe('persisted');
   const woken = await runtimeRow(appC);
   expect(woken?.container_id).not.toBe(readyC?.container_id);
   await expect(wakePage.frameLocator('iframe.preview-frame').getByText(nextPrompt, { exact: false }).first()).toBeVisible({ timeout: 120_000 });
+  await expect(statusTag(wakePage)).toContainText('可预览', { timeout: 60_000 });
   await wakePage.screenshot({ path: join(evidence, '09-woken-next-round.png'), fullPage: true });
   await writeFile(join(evidence, 'wake.json'), JSON.stringify({
-    runtime: woken, generation: await generationRow(appC), dependencyMarker: marker, previousContainerId: readyC?.container_id,
+    runtime: woken,
+    generation: await generationRow(appC),
+    generationIdAfterWake: wakeGenerationId,
+    previousGenerationId: previousGeneration?.id,
+    dependencyMarker: marker,
+    previousContainerId: readyC?.container_id,
   }, null, 2));
 });
