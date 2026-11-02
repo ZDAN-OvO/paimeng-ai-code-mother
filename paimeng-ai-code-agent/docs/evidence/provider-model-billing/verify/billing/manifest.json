@@ -45,19 +45,9 @@
       "height": 1993
     },
     {
-      "path": "playwright-report/index.html",
-      "bytes": 522139,
-      "sha256": "0a18b0badfd58c08c3d5e0a61c815c5419a0b627d8d6184db859304a017c65a3"
-    },
-    {
       "path": "run.log",
       "bytes": 2490,
       "sha256": "b02a6cc1c7d778f8f024d16839efbd7856c2377841517a7f3d65bff58c2f4348"
-    },
-    {
-      "path": "test-results/.last-run.json",
-      "bytes": 45,
-      "sha256": "91d1c43004802cd49950d78eb11c8fa7d05da8ffffe219a8b13b2f561bc00903"
     }
   ]
 }

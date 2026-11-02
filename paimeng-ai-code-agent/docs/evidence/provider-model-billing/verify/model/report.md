@@ -34,7 +34,7 @@
 - `artifacts/26-11-02/provider-model/slot-model-readonly.png` — 342698 B，1280×1892
 - `artifacts/26-11-02/provider-model/upstream-candidates.png` — 327445 B，1280×1892
 - `run.log` — 3739 B
-- 另有 2 个 Playwright 报告文件（`playwright-report/`、`test-results/`），失败时先看 `test-results` 里的 trace
+- 本机完整包另含 Playwright HTML/trace；docs 副本省略，保留截图、报告与 `run.log`。
 
 ## 结论与证据
 

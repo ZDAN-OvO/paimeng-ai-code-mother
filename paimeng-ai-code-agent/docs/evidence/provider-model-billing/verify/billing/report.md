@@ -23,7 +23,7 @@
 - `artifacts/26-11-02/billing/rate-card-legacy.png` — 277963 B，1280×1864
 - `artifacts/26-11-02/billing/rate-card-versions.png` — 301496 B，1280×1993
 - `run.log` — 2490 B
-- 另有 2 个 Playwright 报告文件（`playwright-report/`、`test-results/`），失败时先看 `test-results` 里的 trace
+- 本机完整包另含 Playwright HTML/trace；docs 副本省略，保留截图、报告与 `run.log`。
 
 ## 结论与证据
 
