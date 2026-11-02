@@ -24,10 +24,14 @@ import { evidenceDir } from './support/evidence';
 loadEnvFile('.env');
 
 const origin = appOrigin();
-const account = 'verify_install_' + randomUUID().slice(0, 8);
 const password = 'password123';
-const suffix = account.slice(-8);
 const evidence = evidenceDir('dependency-install');
+
+/** 每个用例独立账号：同一 spec 的两条用例不能共用模块级账号，否则第二条注册必然 409。 */
+function newRun() {
+  const account = 'verify_install_' + randomUUID().slice(0, 8);
+  return { account, suffix: account.slice(-8) };
+}
 const exec = promisify(execFile);
 let db: pg.Client;
 const createdApps: string[] = [];
@@ -59,11 +63,12 @@ function previewFrame(page: import('@playwright/test').Page): FrameLocator {
   return page.frameLocator('iframe.preview-frame');
 }
 
-async function login(page: import('@playwright/test').Page) {
+async function login(page: import('@playwright/test').Page, account: string) {
   const registered = await page.request.post('/api/user/register', {
     headers: { origin }, data: { userAccount: account, userPassword: password, checkPassword: password },
   });
-  expect(registered.ok()).toBe(true);
+  // 注册不是本用例的被测行为：账号已存在（409，例如重跑）时直接登录，其余失败仍然报错。
+  if (!registered.ok()) expect(registered.status()).toBe(409);
   await page.goto('/user/login');
   await page.getByLabel('账号', { exact: true }).fill(account);
   await page.getByLabel('密码', { exact: true }).fill(password);
@@ -91,8 +96,9 @@ async function waitForSettled(page: import('@playwright/test').Page, title: stri
 
 test('模型用 shell 真装 registry 包，Preview 显示包功能，锁文件与依赖标记来自轮末归一化', async ({ page }) => {
   test.setTimeout(480_000);
+  const { account, suffix } = newRun();
   const prompt = `[install] 依赖安装工作台_${suffix}`;
-  await login(page);
+  await login(page, account);
   const appId = await createThickApp(page, prompt);
   await page.screenshot({ path: join(evidence, '01-app-created.png'), fullPage: true });
 
@@ -123,8 +129,14 @@ test('模型用 shell 真装 registry 包，Preview 显示包功能，锁文件�
   const shellLogDirectory = join(process.cwd(), 'runtime/app-runtime', `react_project_${appId}`, 'shell');
   const shellLogs = (await readdir(shellLogDirectory)).map(name => join(shellLogDirectory, name));
   const pnpmOutput = (await Promise.all(shellLogs.map(path => readFile(path, 'utf8')))).join('\n');
-  expect(pnpmOutput).toContain('date-fns');
+  // pnpm 的原始输出（含 resolved/downloaded 与 + date-fns 行）整份留在证据包里。
+  expect(pnpmOutput).toContain('+ date-fns 4.1.0');
   await writeFile(join(evidence, 'pnpm-add-output.log'), pnpmOutput);
+
+  // 「本次新增」：新建应用用的模板锁里没有 date-fns，归一化后的 lock 的 direct importer 才出现它。
+  const templateLock = await readFile(join(process.cwd(), 'templates/react-ts/2.0.0/pnpm-lock.yaml'), 'utf8');
+  expect(templateLock).not.toContain('date-fns');
+  expect(lock).toContain('\n      date-fns:\n        specifier: 4.1.0');
 
   // 轮末归一化会更新「镜像身份 + 锁文件哈希」安装标记；这里用独立计算的哈希核对。
   const digest = createHash('sha256').update(await readFile(join(workspace, 'pnpm-lock.yaml'))).digest('hex');
@@ -145,8 +157,9 @@ test('模型用 shell 真装 registry 包，Preview 显示包功能，锁文件�
 
 test('安装不存在的包时 shell 返回可读原因，模型能把原因写进 Preview', async ({ page }) => {
   test.setTimeout(480_000);
+  const { account, suffix } = newRun();
   const prompt = `[install-fail] 安装失败反馈_${suffix}`;
-  await login(page);
+  await login(page, account);
   const appId = await createThickApp(page, prompt);
 
   const frame = previewFrame(page);
