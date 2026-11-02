@@ -118,33 +118,14 @@ export async function readTemplateIdentity(root: string): Promise<TemplateInfo |
   } finally { await handle.close(); }
 }
 
-type Manifest = { dependencies: Record<string, string>; devDependencies: Record<string, string> };
-
-function manifestSections(content: string): Manifest {
-  const manifest = z.object({ dependencies: z.record(z.string(), z.string()).optional(), devDependencies: z.record(z.string(), z.string()).optional() }).parse(JSON.parse(content));
-  return { dependencies: manifest.dependencies ?? {}, devDependencies: manifest.devDependencies ?? {} };
-}
-
-function sameDependencies(actual: Record<string, string>, expected: Record<string, string>) {
-  return Object.keys(actual).length === Object.keys(expected).length && Object.entries(expected).every(([name, version]) => actual[name] === version);
-}
-
 /**
- * 工程模板的依赖由模板版本固定。npm 模板继续按历史允许清单逐版本比对；
- * pnpm 模板与模板自己的 package.json 比对，锁文件另由调用方逐字节校验。
+ * 旧 npm 工程模板的依赖由模板版本固定：按历史允许清单逐版本比对。
+ * pnpm 模板（react-ts@2.0.0）不在这里校验——模型可以用 shell 装依赖，只由依赖来源策略守住 registry。
  */
 export async function validateTemplateManifest(template: TemplateIdentity, content: string) {
   const resolved = resolveTemplate(template.id, template.version);
   if (resolved.codeGenType !== 'vue_project' && resolved.codeGenType !== 'react_project') throw new Error('只有前端工程模板可以校验依赖');
-  if (templatePackageManager(resolved) === 'pnpm') {
-    // 逐段比对：往 dependencies 里塞一个同名包不能被 devDependencies 的同名锁定盖掉。
-    const allowed = manifestSections(await readTemplateFile(resolved, 'package.json'));
-    const actual = manifestSections(content);
-    if (!sameDependencies(actual.dependencies, allowed.dependencies) || !sameDependencies(actual.devDependencies, allowed.devDependencies)) {
-      throw new Error(`当前模板的依赖由模板版本固定，请恢复 ${resolved.id}@${resolved.version} 的全部依赖及版本。可用依赖 ${JSON.stringify({ ...allowed.dependencies, ...allowed.devDependencies })}`);
-    }
-    return { ...actual.dependencies, ...actual.devDependencies };
-  }
+  if (templatePackageManager(resolved) === 'pnpm') throw new Error('pnpm 模板不按模板版本锁定依赖，请改用依赖来源校验');
   const allowed = allowedDependencies(resolved.codeGenType);
   const dependencies = validateProjectManifest(resolved.codeGenType, content);
   if (Object.keys(dependencies).length !== Object.keys(allowed).length || Object.entries(allowed).some(([name, version]) => dependencies[name] !== version)) {

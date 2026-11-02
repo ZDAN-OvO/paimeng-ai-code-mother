@@ -31,6 +31,7 @@ import { validatePrompt } from './prompt-safety';
 import { harnessInstructions } from './prompts/harness-instructions';
 import { projectAt, workspace, writeProjectFileBytes } from '../workspace/workspace';
 import { prepareGenerationRuntime } from '../app-runtime/supervisor';
+import { finalizeRuntimeDependencies } from '../app-runtime/dependencies';
 
 const textBlockSchema = z.object({ type: z.literal('text'), text: z.string() });
 const thinkingBlockSchema = z.object({ type: z.literal('thinking'), thinking: z.string() });
@@ -598,6 +599,8 @@ async function observeHarnessRun(options: {
       completeAttempt({ attemptId: buildAttempt.id, status, result: { status, detail } })
         .catch(problem => console.warn(`平台构建 attempt 落账失败（生成 ${requestId}）：`, problem));
     try {
+      // 轮末先在 App runtime 内归一化依赖并校验来源；对不上就让这一轮失败，不产出不一致的产物。
+      await finalizeRuntimeDependencies({ app, workspaceRoot: execution.directory, signal: stop.signal });
       await buildApp(executionTarget, stop.signal, watch.onStage);
       await settleAttempt('succeeded', null);
       await recordBuildStep({ generationId: requestId, round, stepNumber, durationMs: Date.now() - startedAt, outcome: { status: 'ok' } });

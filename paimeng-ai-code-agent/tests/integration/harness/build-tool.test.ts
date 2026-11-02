@@ -23,7 +23,8 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M2b：harness 里的 b
       await waitHealthy(base, 60_000);
       const body = (await (await fetch(`${base}/tools`)).json()) as { tools: { name: string }[] };
       const names = body.tools.map((tool) => tool.name).sort();
-      expect(names).toEqual(['ask', 'buildPreview', 'edit', 'git', 'listFiles', 'read', 'write']);
+      // #140 起产品工具面多了 App runtime 里的 shell；这里仍要求精确列表，不宽泛放行。
+      expect(names).toEqual(['ask', 'buildPreview', 'edit', 'git', 'listFiles', 'read', 'shell', 'write']);
       expect(names).not.toContain('m1_wait');
       expect(names).not.toContain('bash');
     } finally {
@@ -46,9 +47,11 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M2b：harness 里的 b
       await waitHealthy(base, 60_000);
       const body = (await (await fetch(`${base}/tools`)).json()) as { tools: { name: string; replay: string }[] };
       const replay = Object.fromEntries(body.tools.map((tool) => [tool.name, tool.replay]));
-      expect(Object.keys(replay).sort()).toEqual(['ask', 'buildPreview', 'edit', 'git', 'listFiles', 'm1_wait', 'read', 'write']);
+      expect(Object.keys(replay).sort()).toEqual(['ask', 'buildPreview', 'edit', 'git', 'listFiles', 'm1_wait', 'read', 'shell', 'write']);
       expect(replay).toMatchObject({
         read: 'safe', listFiles: 'safe', write: 'safe', buildPreview: 'safe', edit: 'unsafe', m1_wait: 'unsafe', git: 'unsafe', ask: 'unsafe',
+        // shell 执行的命令不可安全重放。
+        shell: 'unsafe',
       });
 
       const created = await fetch(`${base}/conversations`, {

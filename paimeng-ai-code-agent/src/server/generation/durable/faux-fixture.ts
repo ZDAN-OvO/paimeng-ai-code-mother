@@ -1,7 +1,20 @@
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type AssistantMessage, type FauxResponseFactory, type Message, type ToolCall } from "@earendil-works/pi-ai";
 import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import type { CodeGenType } from "@/shared/contracts";
-import { fixtureLive, fixtureReadSteps, fixtureReplyText, fixtureWriteSteps, thickReactPage, THICK_REACT_PAGE } from "./fixture-content";
+import {
+	fixtureInstall,
+	fixtureLive,
+	fixtureReadSteps,
+	fixtureReplyText,
+	fixtureWriteSteps,
+	installFailedPage,
+	installedPage,
+	INSTALL_PACKAGE,
+	INSTALL_PACKAGE_VERSION,
+	missingPackageName,
+	thickReactPage,
+	THICK_REACT_PAGE,
+} from "./fixture-content";
 
 export const FAUX_FIXTURE_PROVIDER = "faux";
 export const FAUX_FIXTURE_MODEL_ID = "fixture-1";
@@ -39,6 +52,25 @@ function messageText(message: Message): string {
 
 type ScriptedTurn = { tool: string; args: ToolCall["arguments"] } | { tool: null };
 
+/** 夹具模型也能看到 toolResult：装包失败时把可读原因写进页面，E2E 才能证明反馈真的到了模型。 */
+function toolResultText(message: Message): string {
+	if (message.role !== "toolResult") return "";
+	const content = (message as { content?: unknown }).content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((block) => (typeof block === "string" ? block : typeof block === "object" && block !== null && "text" in block ? String((block as { text?: unknown }).text ?? "") : ""))
+		.join("\n");
+}
+
+function lastToolResultText(messages: readonly Message[]): string {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const text = toolResultText(messages[index]!);
+		if (text) return text;
+	}
+	return "";
+}
+
 /** 证据用例显式用 `[ask:问题]` 让可控夹具调用真实 ask 工具；普通提示词不会命中。 */
 const ASK_MARKER = /^\[ask:(.+?)\]\s*/;
 
@@ -59,6 +91,22 @@ function scriptedTurn(messages: readonly Message[]): ScriptedTurn {
 	const reads = templated ? fixtureReadSteps(type, thickReact) : [];
 	const read = reads[results];
 	if (read) return { tool: read.tool, args: read.path === undefined ? {} : { path: read.path } };
+	// `[install]` / `[install-fail]`：真的在 App runtime 里跑 pnpm，再写页面 / 写失败反馈。
+	const install = fixtureInstall(prompt);
+	if (install && templated && thickReact && type === "react_project") {
+		const steps: ScriptedTurn[] = install === "install"
+			? [
+				{ tool: "shell", args: { command: `pnpm add ${INSTALL_PACKAGE}@${INSTALL_PACKAGE_VERSION} --reporter=append-only` } },
+				{ tool: "write", args: { path: THICK_REACT_PAGE, content: installedPage(prompt).content } },
+				{ tool: "m1_wait", args: { ms: 4000 } },
+			]
+			: [
+				{ tool: "shell", args: { command: `pnpm add ${missingPackageName(prompt)} --reporter=append-only` } },
+				{ tool: "write", args: { path: THICK_REACT_PAGE, content: installFailedPage(prompt, lastToolResultText(messages)).content } },
+				{ tool: "m1_wait", args: { ms: 2000 } },
+			];
+		return steps[results - reads.length] ?? { tool: null };
+	}
 	// `[live]` 证据用例：同一轮里连续写两次同一页，中间用夹具工具等一会儿，
 	// 让实时 Preview 能先显示第一版、再显示第二版（HMR 不刷新页面）。
 	if (fixtureLive(prompt) && templated && thickReact && type === "react_project") {

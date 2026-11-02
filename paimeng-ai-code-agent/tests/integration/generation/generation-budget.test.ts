@@ -87,7 +87,7 @@ async function newContext(deadline = '2100-01-01 00:00:00.000'): Promise<BudgetC
   return { appId, generationId, executionId: execution.id, conversationId: syntheticConversation };
 }
 
-async function attemptCount(executionId: string, kind?: 'model' | 'tool' | 'build'): Promise<number> {
+async function attemptCount(executionId: string, kind?: 'model' | 'tool' | 'build' | 'shell'): Promise<number> {
   const rows = await db().select({ id: generationAttempts.id }).from(generationAttempts)
     .where(kind
       ? sql`${generationAttempts.executionId} = ${executionId} and ${generationAttempts.kind} = ${kind}`
@@ -101,6 +101,8 @@ describe('生成内环 attempt 账本与预算门', () => {
     process.env.GENERATION_MAX_CONCURRENT = '64';
     await applyMigration('006_harness_control.sql');
     await applyMigration('007_harness_attempt_tool.sql');
+    // 007 会把 attempt kind 的 CHECK 重建为 model/build/tool；schema shell 预算需要再追加上 shell。
+    await applyMigration('024_shell_attempt_kind.sql');
     actorId = await nextSnowflakeId();
     await db().insert(users).values({
       id: actorId, userAccount: 'budget_' + randomUUID(), userPassword: 'unused', userName: '预算测试',
@@ -163,6 +165,22 @@ describe('生成内环 attempt 账本与预算门', () => {
       executionId: context.executionId, kind: 'tool', scope: 'read', limit: 400, requestSummary: { tool: 'read' },
     })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('工具调用已达 400 次上限') });
     expect(await attemptCount(context.executionId, 'tool')).toBe(400);
+  });
+
+  it('shell 每轮 40 条是独立预算，第 41 条拒绝且不落账', async () => {
+    const context = await newContext();
+    for (let index = 1; index <= 40; index += 1) {
+      const attempt = await reserveAttempt({
+        executionId: context.executionId, kind: 'shell', scope: 'command', limit: 40, requestSummary: { tool: 'shell' },
+      });
+      expect(attempt).toMatchObject({ kind: 'shell', operationNo: index });
+    }
+    await expect(reserveAttempt({
+      executionId: context.executionId, kind: 'shell', scope: 'command', limit: 40, requestSummary: { tool: 'shell' },
+    })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('shell 命令已达 40 条上限') });
+    expect(await attemptCount(context.executionId, 'shell')).toBe(40);
+    // shell 的条数预算不占共享的工具 400 次预算。
+    expect(await attemptCount(context.executionId, 'tool')).toBe(0);
   });
 
   it('自检构建与平台构建各有独立上限，build 的 operation_no 仍连续', async () => {

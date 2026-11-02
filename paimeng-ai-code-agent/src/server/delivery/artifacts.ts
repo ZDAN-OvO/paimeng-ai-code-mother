@@ -9,6 +9,7 @@ import { getConfig } from '../infra/config';
 import { now } from '../infra/db';
 import { BusinessError } from '../infra/http';
 import { validateProjectManifest } from './build-contract';
+import { assertNoNpmrc, assertRegistryDependencies } from './dependency-policy';
 import { markBuildFailure, sourceFailure, type BuildStage } from './build-feedback';
 import { readTemplateFile, templateLockfile, templatePackageManager, templateTypecheck, validateTemplateManifest } from '../templates/templates';
 import { appTemplate } from '../workspace/template-workspace';
@@ -44,6 +45,12 @@ async function copySafeTree(source: string, destination: string, depth = 0, budg
 function buildFailureDetail(output: string) {
   const text = output.replace(/\s+/g, ' ').trim();
   return text.length > 400 ? '…' + text.slice(-400) : text;
+}
+
+/** 工程根是否有 .npmrc：它能把 registry 与认证指向平台之外，出现即拒绝。 */
+async function npmrcFiles(root: string): Promise<string[]> {
+  try { await lstat(join(root, '.npmrc')); return ['.npmrc']; }
+  catch { return []; }
 }
 
 function command(program: string, args: string[], signal?: AbortSignal, timeout = getConfig().buildTimeoutMs, stage: BuildStage = 'platform') {
@@ -168,17 +175,25 @@ export async function buildApp(target: ProjectTarget, signal?: AbortSignal, onSt
   }
   const template = await appTemplate(target) ?? await appTemplate(app);
   const projectCodeGenType = app.codeGenType;
-  const lockedManifest = template ? await readTemplateFile(template, 'package.json') : null;
-  // npm 模板校验 package-lock.json，pnpm 模板校验 pnpm-lock.yaml；两种锁都逐字节固定。
+  // npm 旧模板仍按模板版本锁定 package-lock.json；pnpm 模板（react-ts@2.0.0）只校验依赖来源。
   const lockfile = template ? templateLockfile(template) : null;
   const packageManager = template ? templatePackageManager(template) : null;
-  const lock = template && lockfile ? await readTemplateFile(template, lockfile) : null;
-  const dependencies = await stageRun('source', async () => {
+  const templateManifest = template ? await readTemplateFile(template, 'package.json') : null;
+  const templateLock = template && lockfile ? await readTemplateFile(template, lockfile) : null;
+  const source = await stageRun('source', async () => {
     try {
       const manifest = await readProjectFile(target, 'package.json');
+      const projectLock = lockfile ? await readProjectFile(target, lockfile).catch(() => null) : null;
+      if (packageManager === 'pnpm') {
+        // 依赖由模型用 shell 自己安装：白名单与模板锁逐字节校验退役，只守住来源。
+        assertNoNpmrc(await npmrcFiles(root));
+        assertRegistryDependencies({ manifest, lockfile: projectLock });
+        if (projectLock === null) throw new Error(`缺少 ${lockfile}：依赖还没有归一化，请重新让平台锁定依赖`);
+        return { manifest, lockfile: projectLock, dependencies: null };
+      }
+      if (lockfile && templateLock && projectLock !== templateLock) throw new Error(`模板依赖锁已改变，请恢复对应模板版本的 ${lockfile}`);
       const dependencies = template ? await validateTemplateManifest(template, manifest) : validateProjectManifest(projectCodeGenType, manifest);
-      if (lockfile && lock && await readProjectFile(target, lockfile) !== lock) throw new Error(`模板依赖锁已改变，请恢复对应模板版本的 ${lockfile}`);
-      return dependencies;
+      return { manifest: null, lockfile: null, dependencies };
     } catch (error) { throw sourceFailure(error); }
   });
   // 生成阶段已经构建过一次、之后源码没动过：直接复用那份产物，不再进容器。
@@ -192,13 +207,17 @@ export async function buildApp(target: ProjectTarget, signal?: AbortSignal, onSt
   const existing = join(root, 'dist');
   let backedUp = false;
   try {
-    await writeFile(join(stage, 'package.json'), lockedManifest ?? JSON.stringify({ name: 'isolated-generated-app', version: '1.0.0', private: true, type: 'module', dependencies }));
-    if (lock && lockfile) await writeFile(join(stage, lockfile), lock);
+    await writeFile(
+      join(stage, 'package.json'),
+      source.manifest ?? templateManifest ?? JSON.stringify({ name: 'isolated-generated-app', version: '1.0.0', private: true, type: 'module', dependencies: source.dependencies }),
+    );
+    const stagedLock = source.lockfile ?? templateLock;
+    if (stagedLock && lockfile) await writeFile(join(stage, lockfile), stagedLock);
     // Install has network access, but never sees generated executable code or npm configuration.
     // pnpm 走 corepack（版本由模板 package.json 的 packageManager 固定），store 与 node_modules 都落在 stage 目录。
     const install = packageManager === 'pnpm'
       ? ['corepack', 'pnpm', 'install', '--frozen-lockfile', '--ignore-scripts', '--reporter=append-only', '--store-dir=/work/.paimeng-store']
-      : ['npm', lock ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund'];
+      : ['npm', stagedLock ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund'];
     await stageRun('install', () => containerRun(stage, 'install', install, true, signal));
     for (const file of files) {
       if (file === 'package.json' || file === lockfile) continue;

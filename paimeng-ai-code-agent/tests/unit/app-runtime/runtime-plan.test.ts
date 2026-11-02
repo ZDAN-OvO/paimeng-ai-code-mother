@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  appNeedsRuntime, appRuntimeKey, devServerCommand, installCommand, lockfileDigest, runtimeContainerName,
+  appNeedsRuntime, appRuntimeKey, devServerCommand, installCommand, lockfileDigest, runtimeAppDataPath, runtimeContainerName,
   runtimeDockerfile, runtimeEnvironment, runtimeImageTag, runtimeMounts, runtimePaths, runtimePreviewBase,
-  runtimeRunArgs, runtimeStorePath, RUNTIME_DEV_PORT,
+  runtimeRunArgs, runtimeStorePath, runtimeVirtualStore, RUNTIME_DEV_PORT,
 } from '@/server/app-runtime/plan';
 
 const app = { id: '900000001', codeGenType: 'react_project' as const };
@@ -14,7 +14,13 @@ describe('App runtime 容器策略', () => {
       { source: '/host/code_output/react_project_900000001', target: '/work' },
       { source: '/host/app-runtime/store', target: '/store' },
     ]);
-    const args = runtimeRunArgs({ app, image: 'paimeng-app-runtime:abc', uid: 1234, gid: 5678, mounts, registry: 'https://registry.npmjs.org' });
+    const virtualStore = runtimeVirtualStore(app);
+    expect(virtualStore).toBe('/store/apps/react_project_900000001/.paimeng-virtual');
+    expect(runtimeAppDataPath('/host', app)).toBe('/host/app-runtime/store/apps/react_project_900000001');
+    const args = runtimeRunArgs({
+      app, image: 'paimeng-app-runtime:abc', uid: 1234, gid: 5678, mounts,
+      registry: 'https://registry.npmjs.org', virtualStore,
+    });
     expect(args.slice(0, 3)).toEqual(['run', '-d', '--name']);
     expect(args).toContain(runtimeContainerName(app));
     expect(args.slice(args.indexOf('--user'), args.indexOf('--user') + 2)).toEqual(['--user', '1234:5678']);
@@ -29,14 +35,16 @@ describe('App runtime 容器策略', () => {
     expect(mountArgs.join(' ')).not.toContain('docker.sock');
   });
 
-  it('不注入平台环境变量：只有 HOME、corepack 与 npm 的 store/registry', () => {
-    const env = runtimeEnvironment('https://registry.npmmirror.com');
+  it('不注入平台环境变量：只有 HOME、corepack 与 npm 的 store/virtual store/registry', () => {
+    const env = runtimeEnvironment({ registry: 'https://registry.npmmirror.com', virtualStore: runtimeVirtualStore(app) });
     expect(env).toEqual([
       'HOME=/tmp',
       'COREPACK_HOME=/store/corepack',
       'COREPACK_ENABLE_DOWNLOAD_PROMPT=0',
       'COREPACK_NPM_REGISTRY=https://registry.npmmirror.com',
       'npm_config_store_dir=/store',
+      // 模型自己执行的 pnpm 与平台安装必须共用同一个 virtual store，包文件才能硬链接进共享 store。
+      'npm_config_virtual_store_dir=/store/apps/react_project_900000001/.paimeng-virtual',
       'npm_config_registry=https://registry.npmmirror.com',
       'CI=1',
     ]);

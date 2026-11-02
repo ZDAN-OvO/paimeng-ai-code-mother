@@ -43,6 +43,7 @@ import { type AppRef, appRefFromWorkspace } from "../tools/app-ref";
 import { createBuildPreviewTool } from "../tools/build-preview-tool";
 import { fileTools, fileToolNames } from "../tools/file-tools";
 import { createGitTool } from "../tools/git-tool";
+import { createShellTool } from "../tools/shell-tool";
 import { listFilesTool } from "../tools/list-files-tool";
 import { createWaitTool } from "../tools/wait-tool";
 import { createWebTools } from "../tools/web-tools";
@@ -155,7 +156,7 @@ const workspacePathHook = hook(ToolTask, {
 /** 只读工具：执行还在就放行，执行结束（封存/失败）后不再读源码。 */
 const readOnlyEffectTools = new Set(["read", "listFiles", "git", "webSearch", "readWebPage", "searchImages"]);
 /** 改源码的工具：先过写门禁，成功后记 dirty。importImage 会把图片写进工作区，算源码修改。 */
-const sourceWriteEffectTools = new Set(["write", "edit", "importImage"]);
+const sourceWriteEffectTools = new Set(["write", "edit", "importImage", "shell"]);
 /** buildPreview 只刷新预览、不改源码：过写门禁但不记 dirty。 */
 const buildEffectTools = new Set(["buildPreview"]);
 
@@ -184,10 +185,12 @@ const effectGateHook = hook(ToolTask, {
 const modelCallLimit = 24;
 const toolCallLimit = 400;
 const selfCheckBuildLimit = 2;
+/** shell 每轮条数上限来自配置（默认 40），由 attempt 账本计数，重启/重挂不重置。 */
+const shellCommandLimit = getConfig().appRuntime.shell.maxCommands;
 
 /** 同一次调用跨 before/after 的关联只活在当前进程；重启后 attempt 保持 sent，不做不安全的补记。 */
 const modelAttempts = new Map<string, string>();
-const toolAttempts = new Map<string, { tool: string; build?: string }>();
+const toolAttempts = new Map<string, { tool: string; build?: string; shell?: string }>();
 
 function attemptKey(conversationId: number, localId: string | number): string {
 	return `${conversationId}:${String(localId)}`;
@@ -266,6 +269,7 @@ const toolBudgetHook = hook(ToolTask, {
 			requestSummary: { tool: call.name },
 		});
 		let buildAttemptId: string | undefined;
+		let shellAttemptId: string | undefined;
 		try {
 			if (call.name === "buildPreview") {
 				const buildAttempt = await reserveAttempt({
@@ -277,11 +281,26 @@ const toolBudgetHook = hook(ToolTask, {
 				});
 				buildAttemptId = buildAttempt.id;
 			}
+			// shell 有自己的每轮条数预算（默认 40）：和 buildPreview 一样，在共享工具预算之外另记一条。
+			if (call.name === "shell") {
+				const shellAttempt = await reserveAttempt({
+					executionId,
+					kind: "shell",
+					scope: "command",
+					limit: shellCommandLimit,
+					requestSummary: { tool: "shell" },
+				});
+				shellAttemptId = shellAttempt.id;
+			}
 		} catch (error) {
 			await completeAttempt({ attemptId: toolAttempt.id, status: "failed", result: { error: describeBudgetError(error) } }).catch(() => undefined);
 			throw error;
 		}
-		toolAttempts.set(attemptKey(api.conversationId, call.id), { tool: toolAttempt.id, ...(buildAttemptId ? { build: buildAttemptId } : {}) });
+		toolAttempts.set(attemptKey(api.conversationId, call.id), {
+			tool: toolAttempt.id,
+			...(buildAttemptId ? { build: buildAttemptId } : {}),
+			...(shellAttemptId ? { shell: shellAttemptId } : {}),
+		});
 		return undefined;
 	},
 	afterTool: async (call, result, api) => {
@@ -297,6 +316,15 @@ const toolBudgetHook = hook(ToolTask, {
 		}).catch((error) => {
 			log(`tool attempt complete failed attempt=${attempts.tool}: ${describeBudgetError(error)}`);
 		});
+		if (attempts.shell) {
+			await completeAttempt({
+				attemptId: attempts.shell,
+				status: toolFailed ? "failed" : "succeeded",
+				result: toolFailed ? { isError: true } : { ok: true },
+			}).catch((error) => {
+				log(`shell attempt complete failed attempt=${attempts.shell}: ${describeBudgetError(error)}`);
+			});
+		}
 		if (attempts.build) {
 			const buildFailed = toolFailed || buildPreviewFailed(result);
 			await completeAttempt({
@@ -424,6 +452,7 @@ const productTools = [
 	listFilesTool,
 	createBuildPreviewTool({ appRefFor, workspaceOf }),
 	createGitTool({ appRefFor, workspaceOf }),
+	createShellTool({ appRefFor }),
 	createAskTool(recordToolEvent),
 	...stubTools,
 	...createWebTools({ operationsFor: webOperationsFor, runtime: webRuntime }),

@@ -40,7 +40,7 @@ describe('按应用类型生成指令', () => {
     expect(value).toContain('必须包含 package.json');
     expect(value).toContain(JSON.stringify(type === 'vue_project' ? BUILD_DEPENDENCIES : REACT_DEPENDENCIES));
     expect(value).toContain('禁止 ^、~、latest');
-    expect(value).toContain('自动构建前端工程');
+    expect(value).toContain('构建前端工程');
     expect(value).not.toContain('只写 index.html');
     expect(typeRules[type]).toContain("base './'");
   });
@@ -58,14 +58,17 @@ describe('按应用类型生成指令', () => {
     expect(value).toContain('src/components/ui/button.tsx');
     expect(value).toContain('src/index.css');
     expect(value).toContain('优先复用');
-    expect(value).toContain('依赖与锁文件由模板版本固定');
     // 产品面的四套类型规则不再拼进模板应用提示词。
     expect(value).not.toContain('React 工程必须使用 React');
     expect(value).not.toContain(JSON.stringify(REACT_DEPENDENCIES));
     expect(value).not.toContain('禁止 ^、~、latest');
-    // 常驻 runtime 的 shell 尚未落地，提示词不能提前宣称。
-    expect(value).toContain('禁止安装脚本和任意 shell');
-    expect(value).not.toMatch(/shell 工具|用 shell 安装|通过 shell 安装|使用 shell 执行/);
+    // #140：模板应用可以在 App runtime 里用 shell 装 registry 依赖，提示词必须说清边界。
+    expect(value).toContain('用 shell 在 App runtime 里执行 `pnpm add');
+    expect(value).toContain('依赖只能来自 npm registry');
+    expect(value).toContain('shell 的网络是开放的');
+    expect(value).toContain('工作区和容器里都没有 .git');
+    expect(value).not.toContain('依赖与锁文件由模板版本固定');
+    expect(value).not.toContain('禁止安装脚本和任意 shell');
   });
 
   it('轻量静态模板同样以模板说明代替类型规则', () => {
@@ -79,6 +82,20 @@ describe('按应用类型生成指令', () => {
     expect(value).not.toContain('buildPreview');
     expect(value).toContain('本轮只有文件工具');
     expect(value).toContain('所有读写必须使用工具');
+  });
+
+  it('静态应用明确说明没有 App runtime、shell 不可用', () => {
+    const value = generationInstructions({ app: { codeGenType: 'html', initPrompt: '需求' }, template: { id: 'html', version: '1.0.0' }, entry: 'index.html', webInstruction: '' });
+    expect(value).toContain('没有 App runtime');
+    expect(value).toContain('shell 不可用');
+    expect(value).not.toContain('命令都在 App runtime 内执行');
+  });
+
+  it('工程模板提示词要求复用组件与令牌，并声明容器里没有 .git', () => {
+    const value = generationInstructions({ app: { codeGenType: 'react_project', initPrompt: '需求' }, template: { id: 'react-ts', version: '2.0.0' }, entry: 'src/main.tsx', webInstruction: '' });
+    expect(value).toContain('优先复用模板里的布局、设计令牌和已有组件');
+    expect(value).toContain('工作区和容器里都没有 .git');
+    expect(value).toContain('命令都在 App runtime 内执行');
   });
 
   it('静态模板与旧应用使用各自开场白，工程模板保留 TypeScript 入口', () => {
