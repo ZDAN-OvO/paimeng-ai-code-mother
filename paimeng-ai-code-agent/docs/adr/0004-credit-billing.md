@@ -1,6 +1,6 @@
 # Bill generations in Credits derived from real token usage
 
-- Status: accepted
+- Status: accepted; the “Two pools, deducted quota first” section is superseded by [ADR-0006](0006-single-credit-ledger.md).
 - Date: 2026-10-30
 
 ## Context

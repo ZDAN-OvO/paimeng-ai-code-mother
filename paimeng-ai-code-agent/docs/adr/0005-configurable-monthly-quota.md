@@ -1,6 +1,6 @@
 # Make the monthly quota a versioned policy, not a constant
 
-- Status: accepted
+- Status: accepted; the issue/grant fact model is superseded by [ADR-0006](0006-single-credit-ledger.md). The versioned policy itself still holds.
 - Date: 2026-11-02
 
 ## Context
