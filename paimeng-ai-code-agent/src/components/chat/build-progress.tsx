@@ -6,6 +6,7 @@ import { buildStageLabels, type ProgressStage, type ProgressState, type StageSta
 
 /** 生成/构建时间线：只渲染实际发生过的阶段，已完成显示耗时，失败阶段标红。 */
 const stageLabels: Record<ProgressStage['kind'], string> = {
+  queued: '排队等待运行时',
   generate: '生成',
   files: '写入文件',
   preview: '预览就绪',
@@ -20,13 +21,15 @@ function iconOf(status: StageStatus) {
 }
 
 function metaOf(stage: ProgressStage) {
+  // position 是 1 起的排队名次；这里显示的是「前面还有几个」，与状态提示的 position-1 保持一致。
+  if (stage.kind === 'queued') return stage.position > 0 ? `前面还有 ${Math.max(0, stage.position - 1)} 个` : '等待空闲槽位';
   if (stage.kind === 'files') return `${stage.count} 个文件${stage.lastPath ? ` · 最近 ${stage.lastPath}` : ''}`;
   if (stage.kind === 'preview') return `v${stage.version}`;
   return '';
 }
 
 function durationOf(stage: ProgressStage) {
-  if (stage.kind === 'files' || stage.kind === 'preview') return null;
+  if (stage.kind === 'files' || stage.kind === 'preview' || stage.kind === 'queued') return null;
   if (stage.ms === null) return null;
   // 运行中的阶段靠保活事件每秒刷新 ms：显式写「已用」，避免和已完成阶段的耗时混淆。
   return stage.status === 'running' ? `已用 ${formatDuration(stage.ms)}` : formatDuration(stage.ms);

@@ -199,6 +199,21 @@ describe('Preview 按 App 代理 dev server', () => {
     expect((await rawGet(`/preview/${appKey(appA)}/`, { method: 'POST' })).status).toBe(405);
   });
 
+  it('运行时睡眠时回落到已有静态产物；连产物都没有时明确说明状态', async () => {
+    targets.set(appKey(appB), null);
+    const empty = await rawGet(`/preview/${appKey(appB)}/`);
+    expect(empty.status).toBe(404);
+    expect(empty.body).toContain('data-paimeng-preview-state="empty"');
+    expect(empty.body).toContain('还没有可预览的页面');
+
+    await mkdir(join(root, 'code_output', appKey(appB), 'dist'), { recursive: true });
+    await writeFile(join(root, 'code_output', appKey(appB), 'dist', 'index.html'), '<!doctype html><html><body><h1>睡眠后的静态页</h1></body></html>');
+    const staticPage = await rawGet(`/preview/${appKey(appB)}/`);
+    expect(staticPage.status).toBe(200);
+    expect(staticPage.body).toContain('睡眠后的静态页');
+    expect(staticPage.body).toContain('data-paimeng-editor');
+  });
+
   it('HMR websocket 的升级请求与后续字节被转发给 dev server', async () => {
     targets.set(appKey(appA), { status: 'ready', port: wsPort });
     const { head, socket } = await upgrade(`/preview/${appKey(appA)}/`);

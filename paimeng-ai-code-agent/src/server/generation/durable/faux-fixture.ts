@@ -4,6 +4,7 @@ import type { CodeGenType } from "@/shared/contracts";
 import {
 	fixtureInstall,
 	fixtureLive,
+	fixtureLiveWindowMs,
 	fixtureReadSteps,
 	fixtureReplyText,
 	fixtureWriteSteps,
@@ -112,7 +113,7 @@ function scriptedTurn(messages: readonly Message[]): ScriptedTurn {
 	if (fixtureLive(prompt) && templated && thickReact && type === "react_project") {
 		const live: ScriptedTurn[] = [
 			{ tool: "write", args: { path: THICK_REACT_PAGE, content: thickReactPage(prompt, " · 第一版").content } },
-			{ tool: "m1_wait", args: { ms: 8000 } },
+			{ tool: "m1_wait", args: { ms: fixtureLiveWindowMs(prompt) } },
 			{ tool: "write", args: { path: THICK_REACT_PAGE, content: thickReactPage(prompt, " · 第二版").content } },
 		];
 		return live[results - reads.length] ?? { tool: null };

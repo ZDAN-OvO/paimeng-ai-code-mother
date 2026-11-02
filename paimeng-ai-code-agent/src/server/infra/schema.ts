@@ -21,6 +21,18 @@ export const appRuntimes = pgTable('app_runtime', {
   lastActivityAt: timestamp('last_activity_at', { mode: 'string', precision: 3 }).notNull(),
   ...times,
 }, t => [uniqueIndex('uk_app_runtime_container').on(t.containerName), index('idx_app_runtime_activity').on(t.lastActivityAt), index('idx_app_runtime_status').on(t.status)]);
+// 容量排队（migrations/025_app_runtime_queue.sql）：没有空闲槽位时的一条待启动记录，每 App 最多一条。
+export type AppRuntimeQueueState = 'waiting' | 'granted';
+export const appRuntimeQueue = pgTable('app_runtime_queue', {
+  appId: bigint('app_id', { mode: 'bigint' }).primaryKey().references(() => apps.id, { onDelete: 'cascade' }),
+  generationId: varchar('generation_id', { length: 36 }).notNull(),
+  state: varchar('state', { length: 16 }).$type<AppRuntimeQueueState>().notNull(),
+  holder: text('holder').notNull(),
+  enqueuedAt: timestamp('enqueued_at', { mode: 'string', precision: 3 }).notNull(),
+  heartbeatAt: timestamp('heartbeat_at', { mode: 'string', precision: 3 }).notNull(),
+  waitDeadline: timestamp('wait_deadline', { mode: 'string', precision: 3 }).notNull(),
+  updateTime: timestamp('update_time', { mode: 'string', precision: 3 }).notNull(),
+}, t => [index('idx_app_runtime_queue_state').on(t.state, t.enqueuedAt), index('idx_app_runtime_queue_heartbeat').on(t.heartbeatAt)]);
 export const sessions = pgTable('user_session', { tokenHash: varchar('token_hash', { length: 64 }).primaryKey(), userId: bigint('user_id', { mode: 'bigint' }).notNull(), expiresAt: timestamp('expires_at', { mode: 'string', precision: 3 }).notNull() }, t => [index('idx_user_session_expiry').on(t.expiresAt)]);
 export const generations = pgTable('generation', { id: varchar('id', { length: 36 }).primaryKey(), appId: bigint('app_id', { mode: 'bigint' }).notNull(), userId: bigint('user_id', { mode: 'bigint' }).notNull(), status: varchar('status', { length: 32 }).notNull(), error: text('error'), stopReason: varchar('stop_reason', { length: 32 }), messageId: varchar('message_id', { length: 64 }), ...times }, t => [index('idx_generation_app').on(t.appId, t.createTime)]);
 // 版本台账（docs/plans/archive/version-ledger.md）：清单只认这张表，Git 只当内容库。

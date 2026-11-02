@@ -101,12 +101,18 @@ export function HomePage() {
 
 /** 实时预览证据：`[live]` 前缀让夹具在同一轮里连续写两次同一页，第二次在等待之后。 */
 export const LIVE_MARKER = '[live]';
+/** 证据用例专用的长窗口版本：同一轮两次写入之间等 20 秒，用于在生成过程中操作排队/取消。 */
+export const LIVE_LONG_MARKER = '[live-long]';
 export function fixtureLive(prompt: string) {
-  return prompt.startsWith(LIVE_MARKER);
+  return prompt.startsWith(LIVE_MARKER) || prompt.startsWith(LIVE_LONG_MARKER);
+}
+/** 两次实时写入之间的等待：默认 8 秒；`[live-long]` 给需要更长确定窗口的用例。 */
+export function fixtureLiveWindowMs(prompt: string) {
+  return prompt.startsWith(LIVE_LONG_MARKER) ? 20_000 : 8_000;
 }
 
 export function thickReactPage(prompt: string, suffix = ''): FixtureFile {
-  const title = prompt.replace(/[<>&"']/g, '').replace(LIVE_MARKER, '').trim().slice(0, 80) + suffix;
+  const title = prompt.replace(/[<>&"']/g, '').replace(LIVE_LONG_MARKER, '').replace(LIVE_MARKER, '').trim().slice(0, 80) + suffix;
   return {
     path: THICK_REACT_PAGE,
     content: `import { ArrowUpRight } from 'lucide-react';

@@ -7,6 +7,7 @@ import { db, getPool, now } from '@/server/infra/db';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import { appAuthority, apps, users } from '@/server/infra/schema';
 import { appHasWriteAuthority, deleteAppRuntime, readAppRuntime, saveAppRuntime, touchAppRuntime, updateAppRuntime } from '@/server/app-runtime/store';
+import { runtimePreviewTarget } from '@/server/app-runtime/supervisor';
 
 loadEnvFile('.env');
 process.env.DATABASE_URL = testDatabaseUrl(process.env.DATABASE_URL ?? '');
@@ -60,6 +61,15 @@ describe('App runtime 台账', () => {
 
     await deleteAppRuntime(app());
     expect(await readAppRuntime(app())).toBeNull();
+  });
+
+  it('已回收（stopped）的 runtime 不再提供 dev server 目标：Preview 走静态回落，查看不会唤醒', async () => {
+    await newApp();
+    await saveAppRuntime(app(), record());
+    await updateAppRuntime(app(), { status: 'stopped', lastError: '空闲超时，已回收运行时' });
+    expect(await runtimePreviewTarget(app())).toBeNull();
+    // 仍保留台账行（管理员能看到最后活动与回收原因），但不再算作槽位占用。
+    expect(await readAppRuntime(app())).toMatchObject({ status: 'stopped', lastError: '空闲超时，已回收运行时' });
   });
 
   it('写权限活跃时预览必须只读，收束后恢复', async () => {

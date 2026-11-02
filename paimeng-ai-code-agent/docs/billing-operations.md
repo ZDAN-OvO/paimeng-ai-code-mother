@@ -100,7 +100,7 @@ docker exec -i zslm-postgres psql -U postgres -d paimeng_app -c \
 | 终态缺账 | `generation.status in ('ready','failed','cancelled')` 且没有 `credit_charge` 行 | 走首次结算：建账单、定价、分池扣款 |
 | 待补账单 | `credit_charge.status in ('unpriced','partial')`，或模型步骤的 id 还没进 `usage_snapshot` | 只给「没进过账」的步骤补记差额，追加 `credit_entry` 后重算投影 |
 
-- `generating` / `building` **永远不算终态**，扫描不碰。
+- `queued` / `generating` / `building` **永远不算终态**，扫描不碰：排队和唤醒等待没有执行步骤，也不产生 Credit。
 - `reversed`（平台故障已整笔退还）的账单不再补扣，即使之后又出现晚到步骤。
 - 补结算只追加 entry，不改写已计价步骤、不重排 `generation_id` 唯一的那张账单；金额为 0 的补记不写 entry。
 - 缺费率或缺估算样本时账单保持 `unpriced`/`partial`，原因写进 Admin 列表与扫描结果；补齐 Rate card 后下一次扫描会补上，不会永久跳过。
