@@ -971,7 +971,19 @@ function Chat({ id }: { id: string }) {
             <Space wrap>
               <Button size="small" icon={<PictureOutlined aria-hidden="true" />} aria-label="添加图片" disabled={!canAttachImages || imageDrafts.length >= imageLimits.maxImages} onClick={() => imageInput.current?.click()}>添加图片</Button>
               <VoiceInput editable={canEdit && loaded} serverEnabled={voiceEnabled} onTranscript={appendVoiceText} />
-              {generating ? (input.trim()
+              {generating ? (
+                queuedTask ? (
+                  /* 排队中：新应用的输入框会被初始需求预填，所以不能靠「清空输入才出现取消」；
+                     取消入口与提示里的「可以取消等待」保持一致，有文字时再并列一个 followUp 发送。 */
+                  <>
+                    {input.trim() && (
+                      <Tooltip title={imageBlockReason}>
+                        <span><Button type="primary" icon={<SendOutlined aria-hidden="true" />} disabled={!canEdit || !loaded || sealing || imageBlockReason !== null} onClick={() => { void sendInput('followUp'); }}>发送</Button></span>
+                      </Tooltip>
+                    )}
+                    <Button danger icon={<StopOutlined aria-hidden="true" />} loading={cancelling} disabled={!canEdit || !loaded} onClick={() => { void cancel(); }}>取消</Button>
+                  </>
+                ) : input.trim()
                 ? /* 有文字时的主按钮是 followUp：附件跟着一起进下一轮；附图状态挡住发送时原因走悬浮提示（常显的长文案会把按钮行撑出面板）。 */
                   <Tooltip title={imageBlockReason}>
                     <span><Button type="primary" icon={<SendOutlined aria-hidden="true" />} disabled={!canEdit || !loaded || sealing || imageBlockReason !== null} onClick={() => { void sendInput('followUp'); }}>发送</Button></span>

@@ -108,7 +108,7 @@ test('队列满与排队超时给出可读反馈；等待不改写 Deadline、�
   // 队列上限 1：第二个等待者的创建被明确拒绝，页面给出可读原因。
   const fullPage = await context.newPage();
   await createApp(fullPage, `队列已满的应用_${suffix}`);
-  await expect(fullPage.getByText(/排队已满/)).toBeVisible({ timeout: 60_000 });
+  await expect(fullPage.getByText(/排队已满/).first()).toBeVisible({ timeout: 60_000 });
   await fullPage.screenshot({ path: join(evidence, '02-queue-full.png'), fullPage: true });
   const fullId = appIds.at(-1)!;
   expect((await db.query('select app_id from app_runtime_queue where app_id = $1', [fullId])).rows).toHaveLength(0);
@@ -117,7 +117,7 @@ test('队列满与排队超时给出可读反馈；等待不改写 Deadline、�
 
   // B 的等待超时：落 failed/timeout，界面显示可读原因，排队记录消失。
   await expect(statusTag(waitPage)).toContainText('失败', { timeout: 120_000 });
-  await expect(waitPage.getByText(/排队等待超时/)).toBeVisible({ timeout: 30_000 });
+  await expect(waitPage.getByText(/排队等待超时/).first()).toBeVisible({ timeout: 30_000 });
   await waitPage.screenshot({ path: join(evidence, '03-queue-timeout.png'), fullPage: true });
   const generation = (await db.query('select id, status, stop_reason, error, deadline from generation where app_id = $1 order by create_time desc, id desc limit 1', [appB])).rows[0];
   expect(generation).toMatchObject({ status: 'failed', stop_reason: 'timeout' });
