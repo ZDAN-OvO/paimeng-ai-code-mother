@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   anonymousMemoryBytes, evictionVictim, idleRuntimes, queuePosition, type RuntimeCandidate,
 } from '@/server/app-runtime/capacity';
+import { getConfig } from '@/server/infra/config';
 
 const minute = 60_000;
 const at = Date.parse('2026-11-03T12:00:00.000Z');
@@ -42,6 +43,20 @@ describe('运行时容量策略', () => {
     expect(anonymousMemoryBytes('cache 104857600\ntotal_rss 5242880\n')).toBe(5242880);
     expect(anonymousMemoryBytes('file 123\n')).toBeNull();
     expect(anonymousMemoryBytes('')).toBeNull();
+  });
+
+  it('默认容量：全机 3 个 runtime、连续 15 分钟无活动回收', () => {
+    const previous = { max: process.env.RUNTIME_MAX_SLOTS, idle: process.env.RUNTIME_IDLE_TIMEOUT_MS };
+    delete process.env.RUNTIME_MAX_SLOTS;
+    delete process.env.RUNTIME_IDLE_TIMEOUT_MS;
+    try {
+      expect(getConfig().appRuntime).toMatchObject({ maxSlots: 3, idleTimeoutMs: 900_000 });
+    } finally {
+      if (previous.max === undefined) delete process.env.RUNTIME_MAX_SLOTS;
+      else process.env.RUNTIME_MAX_SLOTS = previous.max;
+      if (previous.idle === undefined) delete process.env.RUNTIME_IDLE_TIMEOUT_MS;
+      else process.env.RUNTIME_IDLE_TIMEOUT_MS = previous.idle;
+    }
   });
 
   it('排队位置按入队顺序编号，不在队列里返回 null', () => {

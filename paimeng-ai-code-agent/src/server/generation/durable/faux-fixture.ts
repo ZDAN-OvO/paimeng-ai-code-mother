@@ -1,7 +1,7 @@
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type AssistantMessage, type FauxResponseFactory, type Message, type ToolCall } from "@earendil-works/pi-ai";
 import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import type { CodeGenType } from "@/shared/contracts";
-import { fixtureLive, fixtureReadSteps, fixtureReplyText, fixtureWriteSteps, thickReactPage, THICK_REACT_PAGE } from "./fixture-content";
+import { fixtureLive, fixtureLiveWindowMs, fixtureReadSteps, fixtureReplyText, fixtureWriteSteps, thickReactPage, THICK_REACT_PAGE } from "./fixture-content";
 
 export const FAUX_FIXTURE_PROVIDER = "faux";
 export const FAUX_FIXTURE_MODEL_ID = "fixture-1";
@@ -64,7 +64,7 @@ function scriptedTurn(messages: readonly Message[]): ScriptedTurn {
 	if (fixtureLive(prompt) && templated && thickReact && type === "react_project") {
 		const live: ScriptedTurn[] = [
 			{ tool: "write", args: { path: THICK_REACT_PAGE, content: thickReactPage(prompt, " · 第一版").content } },
-			{ tool: "m1_wait", args: { ms: 8000 } },
+			{ tool: "m1_wait", args: { ms: fixtureLiveWindowMs(prompt) } },
 			{ tool: "write", args: { path: THICK_REACT_PAGE, content: thickReactPage(prompt, " · 第二版").content } },
 		];
 		return live[results - reads.length] ?? { tool: null };
