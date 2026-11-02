@@ -126,12 +126,15 @@ test('队列满与排队超时给出可读反馈；等待不改写 Deadline、�
   // 失败不改写绝对 Deadline：落库值与入队时完全相同（等待不延长时限）。
   expect(timeOf(generation.deadline)).toBe(timeOf(queued.deadline));
   expect((await db.query('select 1 from app_runtime_queue where app_id = $1', [appB])).rowCount).toBe(0);
-  // 排队等待不产生 Credit：后置账单为 0、没有消耗分录，账号级账本与入队前一致。
+  // 排队等待不产生 Credit：这一轮从来没有执行过（0 个 generation_step、0 条成交分录），
+  // 账号级账本与入队前完全一致。Charge 行即使存在也是 0 元待处理账单（faux 缺价），不拿它单独当证明。
+  const steps = (await db.query('select count(*)::int as count from generation_step where generation_id = $1', [generation.id])).rows[0].count;
+  expect(steps).toBe(0);
   const charge = (await db.query('select credits, status from credit_charge where generation_id = $1', [generation.id])).rows[0];
   expect(charge?.credits ?? 0).toBe(0);
   const ledgerAfter = await accountLedger(account);
   expect(ledgerAfter).toEqual(ledgerBefore);
   await writeFile(join(evidence, 'queue-limits.json'), JSON.stringify({
-    queued, generation, charge, ledgerBefore, ledgerAfter, fullAppGenerationRows: 0,
+    queued, generation, steps, charge, ledgerBefore, ledgerAfter, fullAppGenerationRows: 0,
   }, null, 2));
 });
