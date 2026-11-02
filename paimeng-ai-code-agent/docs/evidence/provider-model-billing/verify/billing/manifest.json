@@ -1,0 +1,63 @@
+{
+  "createdAt": "2026-11-02T07:03:43.870Z",
+  "spec": "/home/zdan/github/zdan/wt-paimeng/model-billing-p2b/paimeng-ai-code-agent/tests/e2e/billing-rate-card.spec.ts",
+  "exitCode": 0,
+  "node": "v24.20.0",
+  "git": {
+    "head": "e85a9e0",
+    "dirty": false
+  },
+  "run": {
+    "ports": {
+      "preview": "http://127.0.0.1:3021",
+      "app": "http://localhost:3020",
+      "harness": "http://127.0.0.1:39911"
+    },
+    "passed": 2,
+    "failed": null,
+    "duration": "3.1s",
+    "tests": [
+      {
+        "title": "tests/e2e/billing-rate-card.spec.ts:88:1 › 管理员追加费率版本，历史版本仍然在表里",
+        "duration": "2.6s",
+        "ok": true
+      },
+      {
+        "title": "tests/e2e/billing-rate-card.spec.ts:119:1 › 未登录访问费率表被拒绝",
+        "duration": "43ms",
+        "ok": true
+      }
+    ]
+  },
+  "artifacts": [
+    {
+      "path": "artifacts/26-11-02/billing/rate-card-legacy.png",
+      "bytes": 277963,
+      "sha256": "faff7e5cbf48815c30d4fe1ecbb8e1b3f6b90b060d2c54f0d91b380447db391b",
+      "width": 1280,
+      "height": 1864
+    },
+    {
+      "path": "artifacts/26-11-02/billing/rate-card-versions.png",
+      "bytes": 301496,
+      "sha256": "ee1df4e1bca2c745bd6185760dc657e9d402914e6b2a951ebce26d72155063f3",
+      "width": 1280,
+      "height": 1993
+    },
+    {
+      "path": "playwright-report/index.html",
+      "bytes": 522139,
+      "sha256": "0a18b0badfd58c08c3d5e0a61c815c5419a0b627d8d6184db859304a017c65a3"
+    },
+    {
+      "path": "run.log",
+      "bytes": 2490,
+      "sha256": "b02a6cc1c7d778f8f024d16839efbd7856c2377841517a7f3d65bff58c2f4348"
+    },
+    {
+      "path": "test-results/.last-run.json",
+      "bytes": 45,
+      "sha256": "91d1c43004802cd49950d78eb11c8fa7d05da8ffffe219a8b13b2f561bc00903"
+    }
+  ]
+}

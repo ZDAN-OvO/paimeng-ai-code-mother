@@ -1,0 +1,122 @@
+{
+  "createdAt": "2026-11-02T07:00:36.323Z",
+  "spec": "/home/zdan/github/zdan/wt-paimeng/model-billing-p2b/paimeng-ai-code-agent/tests/e2e/model-manage.spec.ts",
+  "exitCode": 0,
+  "node": "v24.20.0",
+  "git": {
+    "head": "e85a9e0",
+    "dirty": false
+  },
+  "run": {
+    "ports": {
+      "preview": "http://127.0.0.1:3021",
+      "app": "http://localhost:3020",
+      "harness": "http://127.0.0.1:34655"
+    },
+    "passed": 11,
+    "failed": null,
+    "duration": "34.1s",
+    "tests": [
+      {
+        "title": "tests/e2e/model-manage.spec.ts:105:1 › 未初始化时显示初始化提示，不提供编辑器也不要求密钥",
+        "duration": "1.8s",
+        "ok": true
+      },
+      {
+        "title": "tests/e2e/model-manage.spec.ts:144:1 › 管理员可编辑提供商与槽位分配并普通保存",
+        "duration": "2.7s",
+        "ok": true
+      },
+      {
+        "title": "tests/e2e/model-manage.spec.ts:195:1 › 能力与回传思考内容属于提供商模型，槽位只选模型并保留自己的参数",
+        "duration": "4.1s",
+        "ok": true
+      },
+      {
+        "title": "tests/e2e/model-manage.spec.ts:249:1 › 同一请求名在两家提供商下是两条身份，槽位按提供商选择",
+        "duration": "2.9s",
+        "ok": true
+      },
+      {
+        "title": "tests/e2e/model-manage.spec.ts:295:1 › 直接输入的密钥以密文入库，界面与接口都不回显明文",
+        "duration": "2.1s",
+        "ok": true
+      },
+      {
+        "title": "tests/e2e/model-manage.spec.ts:337:1 › 版本冲突时保留表单输入并可重新加载",
+        "duration": "2.0s",
+        "ok": true
+      },
+      {
+        "title": "tests/e2e/model-manage.spec.ts:371:1 › 保存并立即生效与立即生效递增刷新批次",
+        "duration": "1.9s",
+        "ok": true
+      },
+      {
+        "title": "tests/e2e/model-manage.spec.ts:401:1 › 普通用户不能打开模型管理页面",
+        "duration": "979ms",
+        "ok": true
+      },
+      {
+        "title": "tests/e2e/model-manage.spec.ts:412:1 › 连通性检测与获取模型在界面上给出反馈",
+        "duration": "3.9s",
+        "ok": true
+      },
+      {
+        "title": "tests/e2e/model-manage.spec.ts:436:1 › 从上游候选登记模型并分配给槽位",
+        "duration": "2.6s",
+        "ok": true
+      },
+      {
+        "title": "tests/e2e/model-manage.spec.ts:491:1 › 自定义请求头可增删、保存后随探测请求发送",
+        "duration": "8.3s",
+        "ok": true
+      }
+    ]
+  },
+  "artifacts": [
+    {
+      "path": "artifacts/26-11-02/provider-model/narrow-480.png",
+      "bytes": 251171,
+      "sha256": "7f6a393ddd6bce430e27c98f38f8ff472626568149da1e8cd3da178f4200898d",
+      "width": 480,
+      "height": 2718
+    },
+    {
+      "path": "artifacts/26-11-02/provider-model/same-name-two-providers.png",
+      "bytes": 312816,
+      "sha256": "62584b22d43833a1d4a492d780cc494de6cc090aa19a5b548394db861fcb6ac5",
+      "width": 1280,
+      "height": 1995
+    },
+    {
+      "path": "artifacts/26-11-02/provider-model/slot-model-readonly.png",
+      "bytes": 342698,
+      "sha256": "6a63d5b73eb4689cc7342eb6ec4feb7d8091dae0bea6cafee4774ed10da25564",
+      "width": 1280,
+      "height": 1892
+    },
+    {
+      "path": "artifacts/26-11-02/provider-model/upstream-candidates.png",
+      "bytes": 327445,
+      "sha256": "be0504ec69bc83c12f24f7e78ec8744faa8cb2114219dc8513bc127fabb5406b",
+      "width": 1280,
+      "height": 1892
+    },
+    {
+      "path": "playwright-report/index.html",
+      "bytes": 539039,
+      "sha256": "e3988eedbb9af1dc68d6bf96637231eea8860e138a3674e8b550cff6c46f82d0"
+    },
+    {
+      "path": "run.log",
+      "bytes": 3739,
+      "sha256": "89b7aa69635b7ca6cd919b27433986f626f3020e130ffe1ec096ac33d8254705"
+    },
+    {
+      "path": "test-results/.last-run.json",
+      "bytes": 45,
+      "sha256": "91d1c43004802cd49950d78eb11c8fa7d05da8ffffe219a8b13b2f561bc00903"
+    }
+  ]
+}

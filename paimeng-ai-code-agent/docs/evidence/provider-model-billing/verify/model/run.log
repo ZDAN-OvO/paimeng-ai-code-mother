@@ -1,0 +1,82 @@
+
+> paimeng-ai-code-agent@0.1.0 test:e2e:isolated
+> tsx scripts/verify/test-e2e.ts tests/e2e/model-manage.spec.ts
+
+隔离预览 http://127.0.0.1:3021，隔离应用 http://localhost:3020，夹具 harness http://127.0.0.1:34655，测试库强制指向 _test
+
+> paimeng-ai-code-agent@0.1.0 build
+> next build --webpack
+
+▲ Next.js 16.4.2 (webpack)
+- Environments: .env
+✓ Running next.config.ts took 73ms
+- Experiments (use with caution):
+  · cpus: 2
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 8.1s
+  Running TypeScript ...
+  Finished TypeScript in 3.8s ...
+  Collecting page data using 2 workers ...
+  Generating static pages using 2 workers (0/10) ...
+  Generating static pages using 2 workers (2/10) 
+  Generating static pages using 2 workers (4/10) 
+  Generating static pages using 2 workers (7/10) 
+✓ Generating static pages using 2 workers (10/10) in 613ms
+  Finalizing page optimization ...
+  Collecting build traces ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ○ /admin/appManage
+├ ○ /admin/billing
+├ ○ /admin/modelManage
+├ ○ /admin/userManage
+├ ƒ /api/[...path]
+├ ƒ /api/durable/[...path]
+├ ƒ /app/chat/[id]
+├ ƒ /app/edit/[id]
+├ ○ /billing
+├ ○ /user/login
+└ ○ /user/register
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+[2026-11-02T06:59:58.477Z] pid=876238 storage reset (DURABLE_HARNESS_RESET=1)
+[2026-11-02T06:59:58.560Z] pid=876238 orphan build sweep: no leftover paimeng-ts-build-* containers
+[2026-11-02T06:59:58.574Z] pid=876238 harness open conversation=1 workspace=runtime/e2e-harness-3020/workspace storage=postgres
+[2026-11-02T06:59:58.578Z] pid=876238 listening on http://127.0.0.1:34655
+
+> paimeng-ai-code-agent@0.1.0 start
+> next start --hostname 127.0.0.1 --port 3000 --port 3020
+
+
+> paimeng-ai-code-agent@0.1.0 preview
+> tsx --conditions=react-server --env-file=.env scripts/dev/preview.ts
+
+▲ Next.js 16.4.2
+- Local:         http://127.0.0.1:3020
+- Network:       http://127.0.0.1:3020
+✓ Ready in 113ms
+✓ Running next.config.ts took 24ms
+隔离预览 http://127.0.0.1:3021
+
+Running 11 tests using 1 worker
+
+  ✓   1 [chromium] › tests/e2e/model-manage.spec.ts:105:1 › 未初始化时显示初始化提示，不提供编辑器也不要求密钥 (1.8s)
+  ✓   2 [chromium] › tests/e2e/model-manage.spec.ts:144:1 › 管理员可编辑提供商与槽位分配并普通保存 (2.7s)
+  ✓   3 [chromium] › tests/e2e/model-manage.spec.ts:195:1 › 能力与回传思考内容属于提供商模型，槽位只选模型并保留自己的参数 (4.1s)
+  ✓   4 [chromium] › tests/e2e/model-manage.spec.ts:249:1 › 同一请求名在两家提供商下是两条身份，槽位按提供商选择 (2.9s)
+  ✓   5 [chromium] › tests/e2e/model-manage.spec.ts:295:1 › 直接输入的密钥以密文入库，界面与接口都不回显明文 (2.1s)
+  ✓   6 [chromium] › tests/e2e/model-manage.spec.ts:337:1 › 版本冲突时保留表单输入并可重新加载 (2.0s)
+  ✓   7 [chromium] › tests/e2e/model-manage.spec.ts:371:1 › 保存并立即生效与立即生效递增刷新批次 (1.9s)
+  ✓   8 [chromium] › tests/e2e/model-manage.spec.ts:401:1 › 普通用户不能打开模型管理页面 (979ms)
+  ✓   9 [chromium] › tests/e2e/model-manage.spec.ts:412:1 › 连通性检测与获取模型在界面上给出反馈 (3.9s)
+  ✓  10 [chromium] › tests/e2e/model-manage.spec.ts:436:1 › 从上游候选登记模型并分配给槽位 (2.6s)
+  ✓  11 [chromium] › tests/e2e/model-manage.spec.ts:491:1 › 自定义请求头可增删、保存后随探测请求发送 (8.3s)
+
+  11 passed (34.1s)
+[2026-11-02T07:00:34.168Z] pid=876238 SIGTERM — closing

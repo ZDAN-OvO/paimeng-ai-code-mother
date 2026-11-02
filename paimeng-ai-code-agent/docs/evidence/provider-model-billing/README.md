@@ -6,8 +6,16 @@
 
 - 隔离 E2E 启动器：`npm run test:e2e:isolated`，生产构建，应用 `127.0.0.1:3000`、预览 `127.0.0.1:3001`，强制 `_test` Postgres 与夹具 harness。
 - 管理端数据来自 E2E 夹具：两家提供商 `env-default` / `env-secondary`，请求名都为 `test-codegen-model`；模型、槽位和费率由测试直接准备。
-- 截图分辨率 1280 宽；窄屏图 480 宽。
+- 截图分辨率 1280 宽；窄屏图 480 宽。截图同时保存在 `images/` 与对应的 `verify/*/artifacts/` 包内。
 - 截图只证明界面与 PostgreSQL 中的真实读写，不证明上游模型质量或真实生产计费；这些由 integration 与后续切换演练负责。
+
+## verify-paimeng-agent 证据包
+
+这两包由仓库的隔离启动器 + `verify-paimeng-agent` 生成，原始包在本机 `.pi/skills/verify-paimeng-agent/evidences/26-11-02/`，下面是可提交的副本：
+
+- [model-manage 报告](verify/model/report.md)：管理员在 `/admin/modelManage` 看到两家提供商的同名模型、切换槽位、只读能力与 480 宽；11 passed，4 张截图。
+- [billing-rate-card 报告](verify/billing/report.md)：历史费率标记、追加两个版本与「现行」迁移；2 passed，2 张截图。
+- 两包均通过 `node .pi/skills/verify-paimeng-agent/lib/bundle.mjs check`。
 
 ## 结论与截图
 

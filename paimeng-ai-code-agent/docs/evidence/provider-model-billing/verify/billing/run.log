@@ -1,0 +1,73 @@
+
+> paimeng-ai-code-agent@0.1.0 test:e2e:isolated
+> tsx scripts/verify/test-e2e.ts tests/e2e/billing-rate-card.spec.ts
+
+隔离预览 http://127.0.0.1:3021，隔离应用 http://localhost:3020，夹具 harness http://127.0.0.1:39911，测试库强制指向 _test
+
+> paimeng-ai-code-agent@0.1.0 build
+> next build --webpack
+
+▲ Next.js 16.4.2 (webpack)
+- Environments: .env
+✓ Running next.config.ts took 18ms
+- Experiments (use with caution):
+  · cpus: 2
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 7.9s
+  Running TypeScript ...
+  Finished TypeScript in 3.5s ...
+  Collecting page data using 2 workers ...
+  Generating static pages using 2 workers (0/10) ...
+  Generating static pages using 2 workers (2/10) 
+  Generating static pages using 2 workers (4/10) 
+  Generating static pages using 2 workers (7/10) 
+✓ Generating static pages using 2 workers (10/10) in 670ms
+  Finalizing page optimization ...
+  Collecting build traces ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ○ /admin/appManage
+├ ○ /admin/billing
+├ ○ /admin/modelManage
+├ ○ /admin/userManage
+├ ƒ /api/[...path]
+├ ƒ /api/durable/[...path]
+├ ƒ /app/chat/[id]
+├ ƒ /app/edit/[id]
+├ ○ /billing
+├ ○ /user/login
+└ ○ /user/register
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+[2026-11-02T07:03:37.138Z] pid=885198 storage reset (DURABLE_HARNESS_RESET=1)
+[2026-11-02T07:03:37.239Z] pid=885198 orphan build sweep: no leftover paimeng-ts-build-* containers
+[2026-11-02T07:03:37.262Z] pid=885198 harness open conversation=1 workspace=runtime/e2e-harness-3020/workspace storage=postgres
+[2026-11-02T07:03:37.266Z] pid=885198 listening on http://127.0.0.1:39911
+
+> paimeng-ai-code-agent@0.1.0 start
+> next start --hostname 127.0.0.1 --port 3000 --port 3020
+
+
+> paimeng-ai-code-agent@0.1.0 preview
+> tsx --conditions=react-server --env-file=.env scripts/dev/preview.ts
+
+▲ Next.js 16.4.2
+- Local:         http://127.0.0.1:3020
+- Network:       http://127.0.0.1:3020
+✓ Ready in 102ms
+✓ Running next.config.ts took 23ms
+隔离预览 http://127.0.0.1:3021
+
+Running 2 tests using 1 worker
+
+  ✓  1 [chromium] › tests/e2e/billing-rate-card.spec.ts:88:1 › 管理员追加费率版本，历史版本仍然在表里 (2.6s)
+  ✓  2 [chromium] › tests/e2e/billing-rate-card.spec.ts:119:1 › 未登录访问费率表被拒绝 (43ms)
+
+  2 passed (3.1s)
+[2026-11-02T07:03:41.719Z] pid=885198 SIGTERM — closing
