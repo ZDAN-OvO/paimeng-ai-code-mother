@@ -4,11 +4,11 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 import { testDatabaseUrl } from '../../support/test-database-url';
-import { db, getPool, now } from '@/server/infra/db';
-import { modelAliases, modelConfigState, modelProviders } from '@/server/infra/schema';
-import { modelConfigStateId } from '@/shared/model-config';
+import { getPool } from '@/server/infra/db';
+
 import { initializeModelConfigFromEnv } from '@/server/models/store';
 import { modelRegistryTtlMs } from '@/server/models/registry';
+import { resetModelConfigRow } from '../../support/model-config';
 
 loadEnvFile('.env');
 process.env.DATABASE_URL = testDatabaseUrl(process.env.DATABASE_URL ?? '');
@@ -74,12 +74,7 @@ function startRegistryProcess(): RegistryProcess {
 }
 
 async function resetDatabase() {
-  await db().delete(modelAliases);
-  await db().delete(modelProviders);
-  await db()
-    .insert(modelConfigState)
-    .values({ id: modelConfigStateId, revision: 0n, refreshEpoch: 0n, updateTime: now() })
-    .onConflictDoUpdate({ target: modelConfigState.id, set: { revision: 0n, refreshEpoch: 0n } });
+  await resetModelConfigRow();
 }
 
 async function seedFromEnv(modelName: string) {

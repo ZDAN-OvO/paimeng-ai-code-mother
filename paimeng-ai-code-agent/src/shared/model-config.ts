@@ -449,7 +449,7 @@ export function modelConfigIssues(
     aliasNames.add(alias.alias);
     const provider = providersById.get(alias.providerId);
     if (!provider) issues.push(`别名 ${alias.alias} 指向不存在的提供商 ${alias.providerId}`);
-    else if (alias.enabled && !provider.enabled) issues.push(`启用中的别名 ${alias.alias} 不能指向已禁用的提供商 ${alias.providerId}`);
+    // 提供商停用不会让配置结构失效：运行期会跳过它，界面把已分配槽位标红要求重新配置。
   }
   for (const slot of modelSlots) {
     if (slot.optional) continue;

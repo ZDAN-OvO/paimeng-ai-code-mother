@@ -164,7 +164,8 @@ describe('模型管理 API（JSON 文档）', () => {
   it('未登录与普通用户都被拒绝', async () => {
     expect((await request('model/admin/config', {})).status).toBe(401);
     expect((await request('model/admin/config', {}, memberCookie)).status).toBe(403);
-    expect((await mutate({ kind: 'provider.delete', providerId: 'env-default' }, '1')).status).toBe(403);
+    const memberMutation = await request('model/admin/config/mutate', { expectedRevision: '1', mutation: { kind: 'provider.delete', providerId: 'env-default' } }, memberCookie);
+    expect(memberMutation.status).toBe(403);
     const anonymous = new Request('http://localhost:3000/api/model/admin/config/mutate', {
       method: 'POST',
       headers: { origin: 'http://localhost:3000', 'content-type': 'application/json' },

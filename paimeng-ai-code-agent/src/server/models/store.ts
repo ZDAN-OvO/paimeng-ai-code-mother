@@ -63,7 +63,10 @@ function parseDocument(raw: unknown): ModelConfigDocument {
     const issue = parsed.error.issues[0];
     throw new ModelConfigInvalidError(`模型配置文档不合法：${issue?.path.join('.') || ''} ${issue?.message ?? ''}`.trim());
   }
-  const issues = modelConfigDocumentIssues(parsed.data, policy());
+  const empty = parsed.data.providers.length === 0 && parsed.data.slots.length === 0 && parsed.data.legacyPrices.length === 0;
+  const issues = modelConfigDocumentIssues(parsed.data, policy())
+    // 空文档是合法引导状态：注册表会回退到环境变量，管理端显示未初始化；只有写入候选时才要求必需槽位。
+    .filter(issue => !(empty && issue.startsWith('缺少必需槽位')));
   if (issues.length) throw new ModelConfigInvalidError(issues.join('；'));
   return parsed.data;
 }

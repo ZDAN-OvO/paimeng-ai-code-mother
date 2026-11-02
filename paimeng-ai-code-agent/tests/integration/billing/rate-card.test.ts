@@ -70,6 +70,6 @@ describe('模型价格来自 JSON 文档', () => {
     }, admin.cookie);
     expect(write.status).toBe(404);
     expect((await envelopeOf(write)).code).toBe(40400);
-    expect((await billingRequest('admin/billing/rate-card', undefined, owner.cookie)).status).toBe(403);
+    expect((await billingRequest('admin/billing/rate-card', {}, owner.cookie)).status).toBe(403);
   });
 });

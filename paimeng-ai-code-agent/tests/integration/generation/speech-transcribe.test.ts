@@ -112,7 +112,7 @@ describe('语音转写接口', () => {
   });
 
   it('配置别名后可用，音频转发到 /audio/transcriptions', async () => {
-    await upsertTestAlias(speechAlias);
+    await upsertTestAlias(speechAlias, { applyImmediately: true });
     const upstream = vi.fn(async (_url: string, _init: RequestInit) => Response.json({ text: '你好，世界' }));
     vi.stubGlobal('fetch', upstream);
 

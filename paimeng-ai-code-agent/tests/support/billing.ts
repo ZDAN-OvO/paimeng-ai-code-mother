@@ -11,7 +11,8 @@ import {
 } from '@/server/infra/schema';
 import { rebuildAccount, recordGrant } from '@/server/billing/ledger';
 import type { CreditPool } from '@/shared/billing';
-import { modelConfigDocumentSchema, modelConfigKey, type ModelConfigDocument } from '@/shared/model-document';
+import { requiredModelAliases } from '@/shared/model-config';
+import { emptyModelConfigDocument, modelConfigDocumentSchema, modelConfigKey, type ModelConfigDocument } from '@/shared/model-document';
 import type { WorkspaceApp } from '@/server/workspace/workspace';
 
 /**
@@ -21,7 +22,7 @@ import type { WorkspaceApp } from '@/server/workspace/workspace';
  * 的「跨套件 helper 放 `tests/support/`」放在这里。
  */
 
-const duplicateCodes = new Set(['42P07', '42701', '42710', '42P06']);
+const duplicateCodes = new Set(['42P07', '42701', '42710', '42P06', '23505']);
 const appOrigin = 'http://localhost:3000';
 
 let loaded = false;
@@ -157,8 +158,21 @@ const billingDocumentTime = '2020-01-01 00:00:00.000';
 async function mutateBillingDocument(mutator: (document: ModelConfigDocument) => void): Promise<void> {
   const [row] = await db().select().from(appConfig).where(eq(appConfig.key, modelConfigKey)).limit(1);
   if (!row) throw new Error('app_config.model_config 缺失，请先执行 023 迁移');
-  const document = modelConfigDocumentSchema.parse(row.value);
+  // 其它套件可能留下损坏/空文档；计费夹具只需要价格树，无法解析时从空文档开始。
+  let document: ModelConfigDocument;
+  try {
+    document = modelConfigDocumentSchema.parse(row.value);
+  } catch {
+    document = emptyModelConfigDocument();
+  }
   mutator(document);
+  // 计费夹具只关心价格；模型配置读写仍要求两个必需槽位，补到第一个可用模型上。
+  if (document.slots.length === 0) {
+    const model = document.providers.flatMap(provider => provider.models)[0];
+    if (model) {
+      document.slots = requiredModelAliases.map(slot => ({ slot, modelId: model.id, settings: {} }));
+    }
+  }
   await db().update(appConfig).set({ value: document, revision: row.revision + 1n, updatedAt: now() }).where(eq(appConfig.key, modelConfigKey));
 }
 
@@ -190,7 +204,7 @@ export async function seedBillingRate(input: {
     let model = provider.models.find(candidate => candidate.upstream === input.modelName);
     if (!model) {
       model = {
-        id: `pm_billing_${document.providers.length}_${provider.models.length}`,
+        id: `pm_billing${document.providers.length}${provider.models.length}`,
         upstream: input.modelName,
         displayName: input.modelName,
         enabled: true,

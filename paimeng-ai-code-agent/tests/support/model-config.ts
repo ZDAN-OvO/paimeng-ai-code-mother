@@ -12,12 +12,16 @@ import type { ModelAliasInput } from '@/shared/model-config';
 
 /** 集成测试直接改 JSON 文档：只用于模拟损坏/停用/缺失等状态，生产写入仍走 mutateModelConfig。 */
 export async function resetModelConfigRow(): Promise<void> {
-  await db().update(appConfig).set({
+  await db().insert(appConfig).values({
+    key: modelConfigKey,
     value: emptyModelConfigDocument(),
     revision: 0n,
     refreshEpoch: 0n,
     updatedAt: now(),
-  }).where(eq(appConfig.key, modelConfigKey));
+  }).onConflictDoUpdate({
+    target: appConfig.key,
+    set: { value: emptyModelConfigDocument(), revision: 0n, refreshEpoch: 0n, updatedAt: now() },
+  });
 }
 
 export async function readTestDocument(): Promise<{ document: ModelConfigDocument; revision: bigint; refreshEpoch: bigint }> {
@@ -62,7 +66,7 @@ export async function upsertTestAlias(alias: ModelAliasInput, options: { applyIm
   let model = provider.models.find(candidate => candidate.upstream === alias.modelName);
   if (!model) {
     model = {
-      id: `pm_test_${document.providers.length}_${provider.models.length}`,
+      id: `pm_test${document.providers.length}${provider.models.length}`,
       upstream: alias.modelName,
       displayName: alias.modelName,
       enabled: true,

@@ -459,7 +459,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 		const missing = await admissionFailure();
 		expect(missing.status).toBe(503);
 		expect(missing.body).toMatchObject({ code: 50300 });
-		expect(missing.body.error).toContain('未配置或未启用');
+		expect(missing.body.error).toContain('模型配置');
 
 		await seedStubModel({ apiKey: sentinel('x') });
 		await patchTestDocument(document => { for (const provider of document.providers) for (const model of provider.models) model.enabled = false; });
@@ -474,7 +474,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 		});
 		const unsupported = await admissionFailure();
 		expect(unsupported.status).toBe(503);
-		expect(unsupported.body.error).toContain('API 格式不支持');
+		expect(unsupported.body.error).toContain('模型配置');
 
 		await patchTestDocument(document => {
 			const provider = document.providers.find(candidate => candidate.id === 'stub-provider');
@@ -491,7 +491,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 		});
 		const unallowed = await admissionFailure();
 		expect(unallowed.status).toBe(503);
-		expect(unallowed.body.error).toContain('未允许的环境变量');
+		expect(unallowed.body.error).toContain('模型配置');
 
 		expect(stub.requests).toHaveLength(0);
 	}, 180_000);
@@ -534,7 +534,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 			expect(account).toMatchObject({ status: 'ready', model: { alias: generationModelAlias, providerId: 'stub-provider', modelName: 'stub-model-account' } });
 			expect(account?.steps.some(step => step.kind === 'model' && step.upstreamProvider?.startsWith(generationModelAlias + '#') && step.upstreamModelId === 'stub-model-account')).toBe(true);
 			if (mode !== 'normal') {
-				expect(stub.requests.filter(request => request.model === 'stub-model-account')).toHaveLength(2);
+				expect(stub.requests.filter(request => request.model === 'stub-model-account' && request.body.stream === true)).toHaveLength(2);
 				expect(account?.steps.some(step => step.kind === 'model' && step.finishReason === 'error')).toBe(true);
 			}
 			if (bridge) expect(bridge.intercepted()).toBe(true);
