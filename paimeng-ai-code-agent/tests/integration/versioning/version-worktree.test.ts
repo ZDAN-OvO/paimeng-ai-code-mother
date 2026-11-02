@@ -287,6 +287,27 @@ describe('从隔离执行目录提交', () => {
     expect(await defaultIndex(app)).toBe(null);
   });
 
+  it('隔离目录提交同样受提交配额限制：失败不推 HEAD、不落台账、清理临时索引', async () => {
+    const app = await newApp();
+    const workTree = await newWorkTree();
+    await write(workTree, 'a.html', 'a');
+    await write(workTree, 'b.html', 'b');
+    await write(workTree, 'c.html', 'c');
+    const previous = process.env.COMMIT_MAX_FILES;
+    process.env.COMMIT_MAX_FILES = '2';
+    try {
+      await expect(commitVersionFrom({ app, workTree, title: '超限的隔离提交' })).rejects.toThrow(/3 个文件.*最多 2 个文件/);
+    } finally {
+      if (previous === undefined) delete process.env.COMMIT_MAX_FILES;
+      else process.env.COMMIT_MAX_FILES = previous;
+    }
+
+    expect((await git(app, ['rev-parse', '--verify', '--quiet', 'HEAD'], { allowFailure: true })).trim()).toBe('');
+    expect((await listVersions(app)).versions).toEqual([]);
+    expect(await defaultIndex(app)).toBe(null);
+    expect(await tempIndexFiles()).toEqual([]);
+  });
+
   it('拒绝软链接目录与不存在的目录，不读取应用目录之外的内容', async () => {
     const app = await newApp();
     const workTree = await newWorkTree();

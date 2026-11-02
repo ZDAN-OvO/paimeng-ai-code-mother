@@ -99,8 +99,8 @@ async function shoot(app: WorkspaceApp, sha: string): Promise<Buffer | null> {
  */
 export async function versionThumbnail(app: WorkspaceApp, versionId: string): Promise<Buffer | null> {
   // 后台截图绝不能把仓库重建出来：这是生成收尾后 fire-and-forget 的任务，
-  // 应用可能正在被删除——ensureVersionRepo 见到 .git 缺失会 git init 重建，
-  // 与工作区的 rm 并发会撞出 ENOTEMPTY 并留下孤儿 .git。仓库不在就放弃截图。
+  // 应用可能正在被删除——ensureVersionRepo 见到裸库缺失会 git init 重建，
+  // 与删除并发会留下孤儿仓库。仓库不在就放弃截图。
   const repoHead = await stat(join(versionRepo(app), 'HEAD')).catch(() => null);
   if (!repoHead) return null;
   const version = await getVersion(app, versionId);

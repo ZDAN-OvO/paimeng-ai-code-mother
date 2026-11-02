@@ -1,9 +1,8 @@
 import { execFile } from 'node:child_process';
-import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { Type } from '@earendil-works/pi-ai';
 import { defineTool, type ConversationId, type ToolRegistration } from '@earendil-works/pi-durable';
-import { ensureVersionRepo } from '../../versioning/version-store';
+import { ensureVersionRepo, versionRepo } from '../../versioning/version-store';
 import { workspace } from '../../workspace/workspace';
 import { assertGitSubcommand } from '../durable/git-args';
 import type { AppRef } from './app-ref';
@@ -52,7 +51,7 @@ export function createGitTool(deps: {
 }): ToolRegistration {
 	return defineTool({
 		name: "git",
-		description: "在应用工作区内执行只读 git 命令，用来理解项目历史和这一轮还没提交的改动。可用子命令：status log show diff rev-parse reflog tag describe blame shortlog ls-files cat-file。提交、切换、合并、恢复都由平台负责：一次生成成功结束后平台自动提交成一版，你不需要也不能 git add 或 git commit。没有远端，push/pull 不可用。",
+		description: "在应用工作区上执行只读 git 命令，用来理解项目历史和这一轮还没提交的改动。可用子命令：status log show diff rev-parse reflog tag describe blame shortlog ls-files cat-file。提交、切换、合并、恢复都由平台负责：一次生成成功结束后平台自动提交成一版，你不需要也不能 git add 或 git commit。版本库在平台侧，工作区里没有 .git；没有远端，push/pull 不可用。",
 		parameters: Type.Object({ args: Type.Array(Type.String({ maxLength: 200 }), { minItems: 1, maxItems: 16 }) }),
 		execute: async (args, api) => {
 			const app = await deps.appRefFor(api.conversationId);
@@ -61,7 +60,7 @@ export function createGitTool(deps: {
 			// 第一次显式使用 git 时才初始化仓库：此前的文件就是仓库的初始内容。
 			await ensureVersionRepo(app);
 			const tree = deps.workspaceOf(api.conversationId) ?? workspace(app);
-			const outcome = await runGit(tree, ["--git-dir", join(workspace(app), ".git"), "--work-tree", tree, ...args.args]);
+			const outcome = await runGit(tree, ["--git-dir", versionRepo(app), "--work-tree", tree, ...args.args]);
 			const text = outcome.exitCode === 0 ? outcome.text : `退出码 ${outcome.exitCode}\n${outcome.text}`;
 			return {
 				output: [{ type: "text", text }],
