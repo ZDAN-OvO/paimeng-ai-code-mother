@@ -29,6 +29,7 @@ const checkEvent = (stage: 'source' | 'install' | 'typecheck' | 'build') => z.ob
   at: z.number(),
 });
 const progressEventSchema = z.discriminatedUnion('stage', [
+  z.object({ stage: z.literal('queued'), position: z.number().int().min(0), at: z.number() }),
   z.object({ stage: z.literal('files'), paths: z.array(z.string()), at: z.number() }),
   z.object({ stage: z.literal('preview'), version: z.number(), at: z.number() }),
   checkEvent('source'), checkEvent('install'), checkEvent('typecheck'), checkEvent('build'),
@@ -63,6 +64,7 @@ export type StageStatus = 'running' | 'ok' | 'failed' | 'cancelled';
 export type ProgressOutcome = 'running' | 'ready' | 'failed' | 'cancelled';
 
 export type ProgressStage =
+  | { kind: 'queued'; status: StageStatus; position: number }
   | { kind: 'generate'; status: StageStatus; ms: number | null }
   | { kind: 'files'; status: StageStatus; count: number; lastPath: string | null }
   | { kind: 'source' | 'install' | 'typecheck' | 'build'; status: StageStatus; ms: number | null }
@@ -105,6 +107,10 @@ export function progressReducer(state: ProgressState, event: BuildProgressEvent)
   const startedAt = base.startedAt ?? event.at;
   const stages = withGenerate(base.stages);
 
+  if (event.stage === 'queued') {
+    // 排队是「还没有开始生成」的中间态：只更新排队位置，不算一次生成阶段的开始。
+    return { stages: upsert(stages, { kind: 'queued', status: 'running', position: event.position }), outcome: 'running', startedAt: base.startedAt };
+  }
   if (event.stage === 'files') {
     const previous = stages.find((stage): stage is Extract<ProgressStage, { kind: 'files' }> => stage.kind === 'files');
     const files: ProgressStage = {

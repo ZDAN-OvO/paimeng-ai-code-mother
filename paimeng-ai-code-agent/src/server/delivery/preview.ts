@@ -171,17 +171,26 @@ function injectBridge(html: string, parentOrigin: string, locked: boolean) {
   return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, script + '</body>') : html + script;
 }
 
-/** 运行时还没给出 dev server 时的明确状态；不把 Docker/代理的内部错误透给浏览器。 */
-function runtimeStatusPage(status: 'starting' | 'failed') {
+/**
+ * 运行时还没给出 dev server 时的明确状态；不把 Docker/代理的内部错误透给浏览器。
+ * `empty` 表示运行时已睡眠且没有可回落的构建产物：这时要说清楚「还没有可看的页面」，而不是假装加载中。
+ */
+function runtimeStatusPage(status: 'starting' | 'failed' | 'empty') {
   const text = status === 'starting'
     ? '应用运行时正在启动，页面稍后自动出现。生成中的改动会实时显示在这里。'
-    : '应用运行时暂时不可用，仍可查看上一次构建的页面。可以重新发送消息再试。';
-  return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>应用运行时</title></head><body data-paimeng-preview-state="${status}" style="font-family:system-ui;background:#fff6f1;color:#3d3d3d;margin:0"><main style="max-width:560px;margin:18vh auto;padding:32px;text-align:center"><h1 style="font-size:18px;font-weight:600">${status === 'starting' ? '正在准备应用运行时' : '应用运行时不可用'}</h1><p style="line-height:1.7;color:#7a6a62">${text}</p></main></body></html>`;
+    : status === 'empty'
+      ? '这个应用还没有可预览的构建产物。查看预览不会启动生成；发送需求开始一轮生成后才能看到页面。'
+      : '应用运行时暂时不可用，仍可查看上一次构建的页面。可以重新发送消息再试。';
+  const heading = status === 'starting' ? '正在准备应用运行时' : status === 'empty' ? '还没有可预览的页面' : '应用运行时不可用';
+  return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>应用运行时</title></head><body data-paimeng-preview-state="${status}" style="font-family:system-ui;background:#fff6f1;color:#3d3d3d;margin:0"><main style="max-width:560px;margin:18vh auto;padding:32px;text-align:center"><h1 style="font-size:18px;font-weight:600">${heading}</h1><p style="line-height:1.7;color:#7a6a62">${text}</p></main></body></html>`;
 }
 
-function sendStatusPage(res: import('node:http').ServerResponse, status: 'starting' | 'failed') {
+function sendStatusPage(res: import('node:http').ServerResponse, status: 'starting' | 'failed' | 'empty') {
   if (res.headersSent) { res.end(); return; }
-  res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '2' });
+  res.writeHead(status === 'empty' ? 404 : 503, {
+    'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+    ...(status === 'empty' ? {} : { 'Retry-After': '2' }),
+  });
   res.end(runtimeStatusPage(status));
 }
 
@@ -268,6 +277,14 @@ export async function createPreviewServer(options: PreviewServerOptions = {}) {
     return target;
   }
 
+  /** 睡眠中的 runtime 只能回落到已有构建产物：有交付指针看交付，没有才看 legacy 目录。 */
+  async function hasStaticArtifact(previewApp: PreviewApp): Promise<boolean> {
+    const pointer = await currentDelivery({ app: previewApp, runtimeRoot: root }).catch(() => null);
+    if (pointer) return (await resolveDelivery({ app: previewApp, deliveryId: pointer.deliveryId, runtimeRoot: root }).catch(() => null)) !== null;
+    const legacy = legacyDelivery(previewApp, root).directory;
+    return lstat(join(legacy, 'index.html')).then(info => info.isFile()).catch(() => false);
+  }
+
   async function serveStatic(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, path: string, locked: boolean) {
     let directory: string;
     let asset: string;
@@ -343,6 +360,8 @@ export async function createPreviewServer(options: PreviewServerOptions = {}) {
           return;
         }
         if (dev && dev.status !== 'ready') { sendStatusPage(res, dev.status); return; }
+        // 没有 runtime（睡眠/已回收）时走静态回落；连产物都没有就明确说清楚，而不是给一个空 404。
+        if (!await hasStaticArtifact(previewApp)) { sendStatusPage(res, 'empty'); return; }
       }
       // 静态回落只在预览入口需要判断只读；封面、部署与固定交付路由没有编辑桥接。
       const locked = previewApp ? await writeAuthorityOf(previewApp).catch(() => false) : false;

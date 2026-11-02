@@ -24,6 +24,10 @@ import { generationControl, lockGenerationControl, type GenerationControl } from
 // 它只用 generation/generation-accounting 的纯函数。
 import { settleGenerationBilling } from '../billing/settlement';
 import { assertCanStartGeneration } from '../billing/quota';
+import { appNeedsRuntime } from '../app-runtime/plan';
+import {
+  awaitRuntimeSlot, claimRuntimeSlot, releaseRuntimeSlot, reserveRuntimeSlot, type QueuedWaitInfo,
+} from '../app-runtime/scheduler';
 import {
   closeExecutionAndDrain, openExecution, prepareAppExecution, sealExecution,
   type ExecutionBaseline, type ExecutionRef,
@@ -472,6 +476,8 @@ async function startInputOf(appId: bigint, requestId: string) {
 async function insertGeneration(input: {
   appId: bigint; generationId: string; userId: bigint; requestId: string; prompt: string;
   parentVersionSha: string | null; deadline: SQL | string | null;
+  /** queued 表示没有运行时槽位、还在排队；有槽位时与旧行为一致，一开始就是 generating。 */
+  status: 'queued' | 'generating';
   /** 非空表示这次 start 是在回答该提问。 */
   questionId: string | null;
 }): Promise<{ input: InputRecord; answeredQuestionId: string | null }> {
@@ -492,7 +498,7 @@ async function insertGeneration(input: {
         throw new BusinessError(409, 40900, '当前没有等待回答的问题，可能已经被回答或关闭');
       }
       await tx.insert(generations).values({
-        id: input.generationId, appId: input.appId, userId: input.userId, status: 'generating',
+        id: input.generationId, appId: input.appId, userId: input.userId, status: input.status,
         createTime: now(), updateTime: now(),
       });
       // 006 的新列不进 schema.ts：phase/deadline/水位/父版本用原生列写。
@@ -512,8 +518,9 @@ async function insertGeneration(input: {
           .where(eq(generationQuestions.id, input.questionId));
       }
       await tx.insert(generationTransitions).values({
-        appId: input.appId, generationId: input.generationId, fromState: null, toState: 'generating',
-        reason: input.questionId === null ? '用户提交生成' : '用户回答问题', createTime: now(),
+        appId: input.appId, generationId: input.generationId, fromState: null, toState: input.status,
+        reason: input.status === 'queued' ? '运行时槽位不足，排队等待' : input.questionId === null ? '用户提交生成' : '用户回答问题',
+        createTime: now(),
       });
       return { input: inputView(row), answeredQuestionId: input.questionId };
     });
@@ -634,7 +641,43 @@ async function failInitialization(input: { appId: string; generationId: string; 
   }
 }
 
-export async function startGeneration(input: StartGenerationInput): Promise<StartGenerationResult> {
+export type QueuedGenerationPlan = {
+  app: WorkspaceApp;
+  generationId: string;
+  requestId: string;
+  userId: string;
+  holder: string;
+  prompt: string;
+  deadline: string | null;
+  parentVersionSha: string | null;
+  expectedQuestionId: string | null;
+  runtimeRoot?: string;
+  snapshotsRoot?: string;
+  template?: TemplateIdentity | null;
+  ttlMs?: number;
+  /** 等待期间的可读排队进度；调用方可接 SSE，状态读取不依赖它。 */
+  onQueued?: (info: QueuedWaitInfo) => void;
+};
+
+export type PreparedGenerationStart =
+  | { kind: 'replay'; result: StartGenerationResult }
+  | { kind: 'started'; result: StartGenerationResult }
+  | { kind: 'queued'; plan: QueuedGenerationPlan };
+
+async function databaseDeadline(ms: number): Promise<string> {
+  const result = await db().execute(sql`select (timezone('UTC', now()) + make_interval(secs => ${ms / 1000}))::timestamp as deadline`);
+  return String((result.rows[0] as { deadline?: string } | undefined)?.deadline ?? '');
+}
+
+/**
+ * 生成准入的第一段：权限/幂等/提问/额度，然后占运行时槽位或进队。
+ * 拿到槽位才抢写权限、建执行；没有槽位时只落一行 `queued` 和排队记录，写权限留给别人。
+ * 拆成 prepare/launch 是为了让排队期间的等待能通过 SSE 报进度，同时 `startGeneration` 的对外契约不变。
+ */
+export async function prepareGenerationStart(
+  input: StartGenerationInput,
+  hooks: { onQueued?: (info: QueuedWaitInfo) => void } = {},
+): Promise<PreparedGenerationStart> {
   const { app } = input;
   const appId = appKey(app.id);
   const requestId = requiredText(input.requestId, '缺少请求号', 128);
@@ -649,8 +692,9 @@ export async function startGeneration(input: StartGenerationInput): Promise<Star
   const answering = input.answer === true || expectedQuestionId !== null;
   if (input.answer === true && expectedQuestionId === null) throw new BusinessError(400, 40000, '回答提问时必须给出要回答的问题标识');
   const timeoutMs = getConfig().generationTimeoutMs;
-  const deadline: SQL | string | null = input.deadline === undefined
-    ? (timeoutMs > 0 ? sql`(timezone('UTC', now()) + make_interval(secs => ${timeoutMs / 1000}))` : null)
+  // deadline 用数据库时钟算一次，排队等待与执行共用同一个绝对时刻，不会因为排队被延长。
+  const deadline: string | null = input.deadline === undefined
+    ? (timeoutMs > 0 ? await databaseDeadline(timeoutMs) : null)
     : input.deadline === null ? null : naiveTime(input.deadline);
 
   // 先验鉴权再抢写权限：越权请求不能因为 acquire 成功而把正在生成的 owner 顶掉。
@@ -665,7 +709,7 @@ export async function startGeneration(input: StartGenerationInput): Promise<Star
     if ((replayInput.mode !== 'start' && replayInput.mode !== 'answer') || replayInput.message !== prompt) {
       throw new BusinessError(409, 40900, '同一请求号已用于其他输入');
     }
-    return replayStart(app, replayInput);
+    return { kind: 'replay', result: await replayStart(app, replayInput) };
   }
 
   // 提问与 start 互斥：有开放提问时只能回答（带 expectedQuestionId），回答则要求提问仍开放。
@@ -685,6 +729,30 @@ export async function startGeneration(input: StartGenerationInput): Promise<Star
   // 而且不占住写权限——额度不足的一方不能把正在生成的 holder 顶掉。重放已在上面返回，不走这里。
   await assertCanStartGeneration(String(userId));
 
+  const needsRuntime = appNeedsRuntime(app) && getConfig().appRuntime.enabled;
+  const reservation = needsRuntime
+    ? await reserveRuntimeSlot({ app, generationId, holder, deadline })
+    : { state: 'granted' as const, ticket: false };
+  const plan: QueuedGenerationPlan = {
+    app, generationId, requestId, userId: String(userId), holder, prompt, deadline,
+    parentVersionSha: explicitParentSha, expectedQuestionId: answering ? expectedQuestionId : null,
+    runtimeRoot: input.runtimeRoot, snapshotsRoot: input.snapshotsRoot, template: input.template,
+    ttlMs: input.ttlMs, onQueued: hooks.onQueued,
+  };
+
+  if (reservation.state === 'waiting') {
+    try {
+      const inserted = await insertGeneration({
+        appId, generationId, userId, requestId, prompt, parentVersionSha: explicitParentSha, deadline,
+        questionId: answering ? expectedQuestionId : null, status: 'queued',
+      });
+      return { kind: 'queued', plan };
+    } catch (error) {
+      await releaseRuntimeSlot(app, generationId);
+      throw error;
+    }
+  }
+
   let epoch: number | null = null;
   let created = false;
   try {
@@ -693,7 +761,7 @@ export async function startGeneration(input: StartGenerationInput): Promise<Star
     epoch = handle.epoch;
     const inserted = await insertGeneration({
       appId, generationId, userId, requestId, prompt, parentVersionSha: explicitParentSha, deadline,
-      questionId: answering ? expectedQuestionId : null,
+      questionId: answering ? expectedQuestionId : null, status: 'generating',
     });
     created = true;
     const resolved = await resolveBaseline({
@@ -715,9 +783,12 @@ export async function startGeneration(input: StartGenerationInput): Promise<Star
       baselineVersionSha: resolved.baseline.versionSha,
     });
     return {
-      generationId, epoch, executionId: execution.id, execution, input: inserted.input, status: 'generating',
-      baseline: resolved.baseline, previousDraftSnapshotId: handle.previousDraftSnapshotId, replay: false,
-      answeredQuestionId: inserted.answeredQuestionId,
+      kind: 'started',
+      result: {
+        generationId, epoch, executionId: execution.id, execution, input: inserted.input, status: 'generating',
+        baseline: resolved.baseline, previousDraftSnapshotId: handle.previousDraftSnapshotId, replay: false,
+        answeredQuestionId: inserted.answeredQuestionId,
+      },
     };
   } catch (error) {
     if (created) {
@@ -726,8 +797,76 @@ export async function startGeneration(input: StartGenerationInput): Promise<Star
       // 还没建行就把 epoch 交回去：不能留下「active 但没有 generation」的写权限。
       await releaseAuthority({ appId: app.id, epoch }).catch(() => false);
     }
+    if (reservation.ticket) await releaseRuntimeSlot(app, generationId);
     throw error;
   }
+}
+
+/**
+ * 第二段：等到槽位后把 queued 推进成 generating 并建执行。
+ * 「queued → generating」的条件更新是唯一入口：重复事件/并发调用只有一个能推进，不会启动两遍。
+ */
+export async function launchQueuedGeneration(plan: QueuedGenerationPlan): Promise<StartGenerationResult> {
+  const { app, generationId } = plan;
+  await awaitRuntimeSlot({ app, generationId, holder: plan.holder, waiting: true, onQueued: plan.onQueued });
+  await claimRuntimeSlot({ app, generationId });
+  const claimed = await db().transaction(async tx => {
+    const updated = await tx.execute(sql`update generation
+      set status = 'generating', error = null, update_time = ${now()}
+      where id = ${generationId} and status = 'queued'`);
+    if ((updated.rowCount ?? 0) === 0) return false;
+    await tx.insert(generationTransitions).values({
+      appId: appKey(app.id), generationId, fromState: 'queued', toState: 'generating', reason: '获得运行时槽位', createTime: now(),
+    });
+    return true;
+  });
+  if (!claimed) {
+    const control = await generationControl(generationId);
+    throw new BusinessError(409, 40900, control?.status === 'queued' ? '该请求正在启动' : '该请求已经处理，请读取生成状态');
+  }
+  const parentVersionSha = plan.parentVersionSha;
+  let epoch: number | null = null;
+  try {
+    const handle = await acquireAuthority({ appId: app.id, generationId, holder: plan.holder, ttlMs: plan.ttlMs });
+    epoch = handle.epoch;
+    const resolved = await resolveBaseline({
+      app, previousDraftSnapshotId: handle.previousDraftSnapshotId, explicitParentSha: parentVersionSha, template: plan.template,
+    });
+    await ensureSafeDirectory(join(await ensureSafeDirectory(getConfig().runtimeRoot), 'code_output'));
+    const ref = await prepareAppExecution({
+      app, generationId, epoch, baseline: resolved.execution, runtimeRoot: plan.runtimeRoot,
+      workspaceRoot: workspace(app),
+      protect: work => withWorkspaceWrite({ appId: app.id, generationId, epoch: epoch! }, work),
+    });
+    if (resolved.parentVersionSha !== (parentVersionSha ?? null)) {
+      await setParentVersion({ appId: app.id, generationId, epoch, parentVersionSha: resolved.parentVersionSha });
+    }
+    const execution = await createExecution({
+      appId: app.id, generationId, epoch, directory: ref.root,
+      baselineKind: resolved.baseline.kind,
+      baselineSnapshotId: resolved.baseline.snapshotId,
+      baselineVersionSha: resolved.baseline.versionSha,
+    });
+    const rows = await getInputs({ appId: app.id, generationId });
+    const startInput = rows.find(row => row.mode === 'start' || row.mode === 'answer');
+    if (!startInput) throw new BusinessError(409, 40900, '排队中的生成缺少输入记录');
+    return {
+      generationId, epoch, executionId: execution.id, execution, input: startInput, status: 'generating',
+      baseline: resolved.baseline, previousDraftSnapshotId: handle.previousDraftSnapshotId, replay: false,
+      answeredQuestionId: null,
+    };
+  } catch (error) {
+    await failInitialization({ appId: app.id, generationId, epoch, error });
+    await releaseRuntimeSlot(app, generationId);
+    throw error;
+  }
+}
+
+/** 对外契约：拿到槽位时同步启动；没有槽位就排队等（等待里不扣 Credit，也不延长 Deadline）。 */
+export async function startGeneration(input: StartGenerationInput): Promise<StartGenerationResult> {
+  const prepared = await prepareGenerationStart(input);
+  if (prepared.kind === 'queued') return launchQueuedGeneration(prepared.plan);
+  return prepared.result;
 }
 
 /** 幂等回放：原 generation 已有执行就按它的基线描述，不再新建任何东西。 */
@@ -987,6 +1126,7 @@ export async function settleGeneration(input: SettleGenerationInput): Promise<{ 
   });
   // 已终态的重复通知也要走一遍：进程崩在「终态已提交、结算未执行」时，靠这次重放补账；
   // 真已结算过的由 credit_charge.generation_id 唯一键挡下，不会重复扣费。
+  await releaseRuntimeSlot({ id: input.appId }, input.generationId);
   await settleGenerationBilling(input.generationId);
   return result;
 }
@@ -1091,6 +1231,7 @@ export async function publishReady(input: PublishReadyInput): Promise<PublishRea
     // 已发布的重放：返回既有事实，不重新封存/提交/建交付；已取消/失败则明确拒绝。
     const published = await publishedOutcome(null, appKey(app.id), generationId);
     if (published) {
+      await releaseRuntimeSlot(app, generationId);
       return {
         ...published,
         previewSynced: published.delivery
@@ -1156,6 +1297,7 @@ export async function publishReady(input: PublishReadyInput): Promise<PublishRea
       // 纯问答/只有构建：没有可版本化的源码改动，仍然正常收束，预览指针保持不变。
       const outcome = await publishGeneration({ app, generationId, epoch, version: null, messageId: input.messageId });
       await sealExecutionRecord(input.execution.id);
+      await releaseRuntimeSlot(app, generationId);
       return { ...outcome, previewSynced: true };
     }
 
@@ -1183,6 +1325,7 @@ export async function publishReady(input: PublishReadyInput): Promise<PublishRea
       await withWorkspaceFence({ appId: app.id, epoch }, () => syncVersionWorkspace({ app, versionId: published.version!.sha, sourceAlreadyCurrent: true }))
         .catch(error => console.warn(`版本工作区镜像失败（应用 ${app.id}）：`, error));
     }
+    await releaseRuntimeSlot(app, generationId);
     return {
       ...published,
       previewSynced: published.delivery
