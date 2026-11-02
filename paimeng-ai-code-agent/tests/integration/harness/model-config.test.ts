@@ -552,7 +552,11 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 				const newRequests = stub.requests.slice(baselineRequests);
 				const modeRequests = newRequests.filter(request => request.model === accountModel);
 				expect(modeRequests.length).toBeGreaterThanOrEqual(2);
-				expect(newRequests.every(request => request.model === accountModel)).toBe(true);
+				// HTTP 请求日志是文件级共享的：前一个用例的迟到请求也会落在切片里，不能用来证明「本轮只用了自己的模型」。
+				// 真正能归因的是该轮落库的 model steps——它们全部必须指向本 mode 的模型。
+				const modelSteps = (account?.steps ?? []).filter(step => step.kind === 'model');
+				expect(modelSteps.length).toBeGreaterThanOrEqual(2);
+				expect([...new Set(modelSteps.map(step => step.upstreamModelId))]).toEqual([accountModel]);
 				expect(account?.steps.some(step => step.kind === 'model' && step.finishReason === 'error')).toBe(true);
 			}
 			if (bridge) expect(bridge.intercepted()).toBe(true);
