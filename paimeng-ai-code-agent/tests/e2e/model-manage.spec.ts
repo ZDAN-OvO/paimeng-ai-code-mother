@@ -67,7 +67,7 @@ async function saveDialog(dialog: Locator) {
   const reloaded = dialog.page().waitForResponse(response =>
     response.url().endsWith('/api/model/admin/config') && response.request().method() === 'POST',
   );
-  await dialog.getByRole('button', { name: /^保\s*存$/ }).click();
+  await dialog.locator('button').filter({ hasText: '保' }).last().click();
   await expect(dialog).not.toBeVisible();
   expect((await reloaded).ok()).toBe(true);
 }
@@ -273,7 +273,7 @@ test('版本冲突保留表单输入，重新加载后可保存', async ({ page 
   const concurrent = await mutate(page, { kind: 'slot.assign', slot: 'version.summary', modelId: 'pm_e2e1', settings: {} }, before.revision);
   expect(concurrent.ok()).toBe(true);
 
-  await dialog.getByRole('button', { name: /^保\s*存$/ }).click();
+  await dialog.locator('button').filter({ hasText: '保' }).last().click();
   await expect(dialog.getByText('保存失败：模型配置已被其他操作修改', { exact: true })).toBeVisible();
   await expect(dialog.getByLabel('名称', { exact: true })).toHaveValue('冲突测试名称');
   expect((await readConfig(page)).providers[0]?.displayName).toBe('默认提供商');
