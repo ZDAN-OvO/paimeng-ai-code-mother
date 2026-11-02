@@ -131,7 +131,8 @@ test('队列满与排队超时给出可读反馈；等待不改写 Deadline、�
   const steps = (await db.query('select count(*)::int as count from generation_step where generation_id = $1', [generation.id])).rows[0].count;
   expect(steps).toBe(0);
   const charge = (await db.query('select credits, status from credit_charge where generation_id = $1', [generation.id])).rows[0];
-  expect(charge?.credits ?? 0).toBe(0);
+  // BIGINT 经 pg 返回字符串；显式转数字再比较，不放宽成 truthy。
+  expect(Number(charge?.credits ?? 0)).toBe(0);
   const ledgerAfter = await accountLedger(account);
   expect(ledgerAfter).toEqual(ledgerBefore);
   await writeFile(join(evidence, 'queue-limits.json'), JSON.stringify({
