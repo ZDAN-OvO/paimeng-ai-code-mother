@@ -144,8 +144,9 @@ describe('真实 pnpm 安装与轮末归一化', () => {
     const failure = await finalizeRuntimeDependencies({ app, workspaceRoot: workspace(app) })
       .then(() => null, error => error as Error);
     expect(failure).toBeInstanceOf(Error);
-    expect(failure!.message).toMatch(/依赖安装失败|依赖归一化失败/);
-    // 诊断要带出无法解析的包名与版本，模型才知道改哪里。
+    // 只钉稳定语义：依赖阶段明确失败 + pnpm 的具体原因 + 包名与版本，不钉产品中文措辞。
+    expect(failure!.message).toMatch(/依赖.*失败/);
+    expect(failure!.message).toMatch(/ERR_PNPM_NO_MATCHING_VERSION/);
     expect(failure!.message).toMatch(/left-pad/);
     expect(failure!.message).toMatch(/999\.999\.999/);
     expect(await lockOf(app)).toBe(before);
