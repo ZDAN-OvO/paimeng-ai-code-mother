@@ -9,7 +9,8 @@ import { getConfig } from '../../src/server/infra/config';
 import { planLegacyArtifacts, applyLegacyArtifactPlan, rollbackLegacyArtifacts } from '../../src/server/workspace/legacy-artifacts';
 
 const url = new URL(process.env.DATABASE_URL ?? '');
-if (!/^paimeng_app(?:_test)?$/.test(url.pathname.slice(1))) throw new Error('导入仅支持独立的 paimeng_app 库');
+// 独占测试库（paimeng_app_<run>_test）也允许：多 worktree 并发验证时用它隔离，生产库仍是 paimeng_app。
+if (!/^paimeng_app(?:_test|_[a-z][a-z0-9_]*_test)?$/.test(url.pathname.slice(1))) throw new Error('导入仅支持独立的 paimeng_app 库');
 
 function parseArguments(argv: string[]) {
   const options = { snapshot: '', artifacts: '', covers: '', strict: false };
