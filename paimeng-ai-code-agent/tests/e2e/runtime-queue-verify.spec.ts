@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadEnvFile } from 'node:process';
 import pg from 'pg';
@@ -174,16 +174,39 @@ test('生成中创建的后一个应用排队、刷新保持、可取消；结�
   const readyC = await runtimeRow(appC);
   expect(readyC?.status).toBe('ready');
 
-  // D 创建后排队：它的等待者会按 LRU 驱逐唯一的候选 C（这就是预览睡眠的原因，不是定时回收）。
+  // D 创建后，它的等待者在下一次轮询就按 LRU 驱逐唯一的候选 C（这就是预览睡眠的原因，不是定时回收）。
+  // 不再断言瞬时的「排队中」：D 的排队最多存在半个 poll tick，页面渲染完时通常已经自动启动；
+  // 排队 UX 由 A/B 的长窗口证明，这里断言驱逐与自动启动的可观察结果。
   const limitPage = await context.newPage();
   const appD = await createApp(limitPage, `触发驱逐的等待应用_${suffix}`);
-  await expect(statusTag(limitPage)).toContainText('排队中', { timeout: 60_000 });
   await waitFor(async () => (await runtimeRow(appC))?.status === 'stopped', 120_000, 'C 被 LRU 驱逐');
   const containerGone = await docker(['inspect', '--format', '{{.State.Running}}', `paimeng-app-runtime-react_project_${appC}`]).catch(() => 'missing');
   expect(containerGone).toBe('missing');
+  const dGeneration = await generationRow(appD);
+  const dTransitions = await db.query(
+    'select from_state, to_state, reason from generation_transition where generation_id = $1 order by create_time, id',
+    [dGeneration?.id],
+  );
+  // 排队事实由落库的转移记录证明（insert 时 null→queued，获得槽位时 queued→generating），不伪造瞬时 UI。
+  expect(dTransitions.rows.some(row => row.to_state === 'queued')).toBe(true);
+  expect(dTransitions.rows.some(row => row.from_state === 'queued' && row.to_state === 'generating')).toBe(true);
+  await writeFile(join(evidence, 'lru-eviction.json'), JSON.stringify({
+    runtimeC: await runtimeRow(appC), containerC: containerGone, generationD: dGeneration, transitionsD: dTransitions.rows,
+  }, null, 2));
   await limitPage.screenshot({ path: join(evidence, '07-evicted-by-waiter.png'), fullPage: true });
+  // 自动启动的可见结果：D 不刷新、不重发也走到可预览。
+  await expect(statusTag(limitPage)).toContainText('可预览', { timeout: 300_000 });
+  await expect(limitPage.locator('iframe.preview-frame')).toBeVisible({ timeout: 120_000 });
 
   // 刷新 C：Preview 用真实生成构建产物回落；查看不会唤醒 runtime，也不会开启新 Generation。
+  // 静态产物本身的证据：dist 里的构建结果包含本轮需求文案，证明回落读的是平台构建产物而不是空壳。
+  const distAssets = await readdir(join(process.cwd(), workspacePath, 'dist', 'assets'));
+  let buildContainsPrompt = false;
+  for (const asset of distAssets) {
+    if ((await readFile(join(process.cwd(), workspacePath, 'dist', 'assets', asset), 'utf8')).includes(`排队后自动启动的应用_${suffix}`)) buildContainsPrompt = true;
+  }
+  expect(buildContainsPrompt).toBe(true);
+  await writeFile(join(evidence, 'static-build.json'), JSON.stringify({ distAssets, buildContainsPrompt }, null, 2));
   await wakePage.reload();
   await expect(wakePage.locator('iframe.preview-frame')).toBeVisible({ timeout: 120_000 });
   await expect(wakePage.frameLocator('iframe.preview-frame').getByText(`排队后自动启动的应用_${suffix}`, { exact: false }).first()).toBeVisible({ timeout: 60_000 });
@@ -191,7 +214,7 @@ test('生成中创建的后一个应用排队、刷新保持、可取消；结�
   expect((await generationRow(appC))?.status).toBe('ready');
   await wakePage.screenshot({ path: join(evidence, '08-static-fallback.png'), fullPage: true });
   await writeFile(join(evidence, 'static-fallback.json'), JSON.stringify({
-    runtimeC: await runtimeRow(appC), generationC: await generationRow(appC), container: containerGone,
+    runtimeC: await runtimeRow(appC), generationC: await generationRow(appC), container: containerGone, buildContainsPrompt,
   }, null, 2));
 
   // 通过界面外接口清掉 D（应用删除入口的同一条业务链）：先取消它这一轮，再删除应用；
