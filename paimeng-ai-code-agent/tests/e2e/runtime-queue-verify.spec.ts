@@ -85,6 +85,17 @@ async function createApp(page: Page, prompt: string): Promise<string> {
 /** 工具栏里还有一个技术栈 Tag（React 厚架子）；状态 Tag 按文案过滤，避免 strict mode 命中两个。 */
 const statusTag = (page: Page) => page.locator('.chat-toolbar .ant-tag').filter({ hasText: /^(排队中|生成中|构建中|可预览|失败|已取消)$/ });
 
+/**
+ * 生成收束后有一小段「封存上一轮草稿」窗口：这段时间提交按钮禁用、Enter 会被静默忽略。
+ * 等提示消失且发送按钮真的可用再提交，避免把瞬时不可提交误判成功能失败。
+ */
+async function submitWhenComposerReady(page: Page, text: string) {
+  await expect(page.getByText('正在封存上一轮草稿，请稍候')).toHaveCount(0, { timeout: 60_000 });
+  await page.getByLabel('对话消息').fill(text);
+  await expect(page.getByRole('button', { name: /^发\s*送$/ })).toBeEnabled({ timeout: 60_000 });
+  await page.getByLabel('对话消息').press('Enter');
+}
+
 async function runtimeRow(appId: string) {
   const result = await db.query('select status, container_id, port, last_activity_at from app_runtime where app_id = $1', [appId]);
   return result.rows[0] ?? null;
@@ -143,9 +154,10 @@ test('生成中创建的后一个应用排队、刷新保持、可取消；结�
 
   // A 第一轮结束；再发一轮 [live-long]，为 C 的「排队 → 自动出队」制造确定窗口。
   await expect(statusTag(page)).toContainText('可预览', { timeout: 300_000 });
-  await page.getByLabel('对话消息').fill(`[live-long] 排队第一应用第二轮_${suffix}`);
-  await page.getByLabel('对话消息').press('Enter');
-  await expect(statusTag(page)).toContainText('生成中', { timeout: 60_000 });
+  const previousA = await generationRow(appA);
+  await submitWhenComposerReady(page, `[live-long] 排队第一应用第二轮_${suffix}`);
+  await waitFor(async () => (await generationRow(appA))?.id !== previousA?.id, 60_000, 'A 第二轮 Generation 落库');
+  await expect(statusTag(page)).toContainText(/生成中|构建中/, { timeout: 60_000 });
 
   const wakePage = await context.newPage();
   const appC = await createApp(wakePage, `排队后自动启动的应用_${suffix}`);
@@ -232,8 +244,7 @@ test('生成中创建的后一个应用排队、刷新保持、可取消；结�
   // 新轮次的证据用落库的 generation id + 最终 ready + 重建后的容器身份，而不是瞬时标签。
   const nextPrompt = `排队后自动启动的应用_${suffix} 第二轮`;
   const previousGeneration = await generationRow(appC);
-  await wakePage.getByLabel('对话消息').fill(nextPrompt);
-  await wakePage.getByLabel('对话消息').press('Enter');
+  await submitWhenComposerReady(wakePage, nextPrompt);
   await waitFor(async () => {
     const current = await generationRow(appC);
     return current !== null && current.id !== previousGeneration?.id;
