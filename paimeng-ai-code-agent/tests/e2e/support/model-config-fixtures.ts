@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { emptyModelConfigDocument, type ModelConfigDocument } from '../../../src/shared/model-document';
 import { testDatabaseUrl } from '../../support/test-database-url';
 
 export async function testConnection(): Promise<pg.Client> {
@@ -13,46 +14,83 @@ export async function grantAdmin(client: pg.Client, account: string) {
   await client.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [account]);
 }
 
-export async function emptyModelConfig(client: pg.Client) {
-  await client.query('DELETE FROM model_alias');
-  await client.query('DELETE FROM model_provider');
+async function writeModelConfig(client: pg.Client, document: ModelConfigDocument, revision: number) {
   await client.query(
-    "INSERT INTO model_config_state (id, revision, refresh_epoch, update_time) VALUES ('models', 0, 0, timezone('UTC', now())) ON CONFLICT (id) DO UPDATE SET revision=0, refresh_epoch=0, update_time=timezone('UTC', now())",
+    `INSERT INTO app_config (key, revision, refresh_epoch, value, updated_at)
+     VALUES ('model_config', $1, 0, $2::jsonb, timezone('UTC', now()))
+     ON CONFLICT (key) DO UPDATE SET revision=EXCLUDED.revision, refresh_epoch=0,
+       value=EXCLUDED.value, updated_at=EXCLUDED.updated_at`,
+    [revision, JSON.stringify(document)],
   );
+}
+
+export async function emptyModelConfig(client: pg.Client) {
+  await writeModelConfig(client, emptyModelConfigDocument(), 0);
 }
 
 export async function seedModelConfig(client: pg.Client, baseUrl = 'https://api.example.test/v1') {
-  await client.query('DELETE FROM model_alias');
-  await client.query('DELETE FROM model_provider');
-  await client.query(
-    "INSERT INTO model_provider (id, display_name, api_format, base_url, api_key_env, options, enabled, create_time, update_time) VALUES ($1,$2,$3,$4,$5,$6,$7,timezone('UTC', now()),timezone('UTC', now()))",
-    ['env-default', '默认提供商', 'openai-chat', baseUrl, 'AI_API_KEY', JSON.stringify({}), 1],
-  );
-  const aliasInsert =
-    "INSERT INTO model_alias (alias, provider_id, model_name, capabilities, settings, enabled, create_time, update_time) VALUES ($1,$2,$3,$4,$5,$6,timezone('UTC', now()),timezone('UTC', now()))";
-  await client.query(aliasInsert, [
-    'codegen.default',
-    'env-default',
-    'test-codegen-model',
-    JSON.stringify({ streaming: true, toolCalling: true, structuredOutput: false }),
-    JSON.stringify({}),
-    1,
-  ]);
-  await client.query(aliasInsert, [
-    'route.classify',
-    'env-default',
-    'test-route-model',
-    JSON.stringify({ streaming: false, toolCalling: false, structuredOutput: true }),
-    JSON.stringify({}),
-    1,
-  ]);
-  await client.query(
-    "INSERT INTO model_config_state (id, revision, refresh_epoch, update_time) VALUES ('models', 1, 0, timezone('UTC', now())) ON CONFLICT (id) DO UPDATE SET revision=1, refresh_epoch=0, update_time=timezone('UTC', now())",
-  );
+  const timestamp = '2020-01-01 00:00:00.000';
+  const price = {
+    version: 1,
+    effectiveAt: timestamp,
+    currency: 'CNY' as const,
+    inputMissFen: 600,
+    inputHitFen: 12,
+    outputFen: 2500,
+    upstreamUsd: null,
+    note: null,
+  };
+  await writeModelConfig(client, {
+    schemaVersion: 1,
+    providers: [{
+      id: 'env-default',
+      displayName: '默认提供商',
+      apiFormat: 'openai-chat',
+      baseUrl,
+      apiKey: { source: 'env', env: 'AI_API_KEY' },
+      options: {},
+      headers: {},
+      enabled: true,
+      models: [
+        {
+          id: 'pm_e2e1',
+          upstream: 'test-codegen-model',
+          displayName: 'test-codegen-model',
+          enabled: true,
+          capabilities: { streaming: true, toolCalling: true, structuredOutput: false, imageInput: false },
+          upstreamPrice: null,
+          prices: [{ ...price }],
+          createTime: timestamp,
+          updateTime: timestamp,
+        },
+        {
+          id: 'pm_e2e2',
+          upstream: 'test-route-model',
+          displayName: 'test-route-model',
+          enabled: true,
+          capabilities: { streaming: false, toolCalling: false, structuredOutput: true, imageInput: false },
+          upstreamPrice: null,
+          prices: [{ ...price }],
+          createTime: timestamp,
+          updateTime: timestamp,
+        },
+      ],
+      createTime: timestamp,
+      updateTime: timestamp,
+    }],
+    slots: [
+      { slot: 'codegen.default', modelId: 'pm_e2e1', settings: {} },
+      { slot: 'route.classify', modelId: 'pm_e2e2', settings: {} },
+    ],
+    legacyPrices: [],
+  }, 1);
 }
 
 export async function readProviderHeaders(client: pg.Client): Promise<Record<string, string>> {
-  const { rows } = await client.query("SELECT headers FROM model_provider WHERE id='env-default'");
-  const value = (rows as { headers: unknown }[])[0]?.headers;
-  return typeof value === 'string' ? (JSON.parse(value) as Record<string, string>) : (value as Record<string, string>);
+  const { rows } = await client.query<{ headers: Record<string, string> }>(
+    `SELECT provider->'headers' AS headers FROM app_config,
+       jsonb_array_elements(value->'providers') AS provider
+     WHERE key='model_config' AND provider->>'id'='env-default'`,
+  );
+  return rows[0]?.headers ?? {};
 }

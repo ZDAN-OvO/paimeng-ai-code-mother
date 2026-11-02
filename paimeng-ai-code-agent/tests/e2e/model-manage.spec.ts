@@ -2,26 +2,25 @@ import { test, expect, type Page, type Locator } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type pg from 'pg';
 import { loadEnvFile } from 'node:process';
+import { modelAdminConfigViewSchema, type ModelConfigMutation } from '../../src/shared/model-document';
 import { appOrigin } from './support/app-origin';
-import { emptyModelConfig, readProviderHeaders, seedModelConfig, testConnection } from './support/model-config-fixtures';
+import { emptyModelConfig, grantAdmin, readProviderHeaders, seedModelConfig, testConnection } from './support/model-config-fixtures';
 
 loadEnvFile('.env');
 
 const password = 'password123';
 const origin = appOrigin();
-const uniqueAccount = () => 'ts_model_' + randomUUID().slice(0, 8);
-
-type AdminConfig = { revision: string; refreshEpoch: string; initialized: boolean };
 
 async function login(page: Page, account: string) {
+  await page.goto('/user/login');
   await page.getByLabel('账号', { exact: true }).fill(account);
   await page.getByLabel('密码', { exact: true }).fill(password);
   await page.locator('form').getByRole('button', { name: /^登\s*录$/ }).click();
+  await expect(page).toHaveURL('/');
 }
 
-async function registerSample(page: Page, account: string) {
+async function register(page: Page, account: string) {
   const response = await page.request.post('/api/user/register', {
     headers: { origin },
     data: { userAccount: account, userPassword: password, checkPassword: password },
@@ -29,59 +28,69 @@ async function registerSample(page: Page, account: string) {
   expect(response.ok()).toBe(true);
 }
 
-async function adminLogin(page: Page, account: string) {
-  await registerSample(page, account);
+async function readConfig(page: Page) {
+  const response = await page.request.post('/api/model/admin/config', { headers: { origin }, data: {} });
+  expect(response.ok()).toBe(true);
+  return modelAdminConfigViewSchema.parse((await response.json()).data);
+}
+
+async function mutate(page: Page, mutation: ModelConfigMutation, expectedRevision?: string) {
+  const revision = expectedRevision ?? (await readConfig(page)).revision;
+  return page.request.post('/api/model/admin/config/mutate', {
+    headers: { origin },
+    data: { expectedRevision: revision, mutation },
+  });
+}
+
+function providerGroup(page: Page, id = 'env-default') {
+  return page.locator('.ant-collapse-item').filter({ has: page.getByText(id, { exact: true }) });
+}
+
+function modelRow(page: Page, name = 'test-codegen-model') {
+  return page.getByRole('region', { name: `模型 ${name}`, exact: true });
+}
+
+function slotRow(page: Page, slot: string) {
+  return page.getByRole('row').filter({ has: page.getByText(slot, { exact: true }) });
+}
+
+async function openSlot(page: Page, slot: string) {
+  await slotRow(page, slot).getByRole('button', { name: /^配\s*置$/ }).click();
+  return page.getByRole('dialog');
+}
+
+function visibleOptions(page: Page) {
+  return page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option');
+}
+
+async function saveDialog(dialog: Locator) {
+  const reloaded = dialog.page().waitForResponse(response =>
+    response.url().endsWith('/api/model/admin/config') && response.request().method() === 'POST',
+  );
+  await dialog.getByRole('button', { name: /^保\s*存$/ }).click();
+  await expect(dialog).not.toBeVisible();
+  expect((await reloaded).ok()).toBe(true);
+}
+
+async function openManager(page: Page) {
+  await page.goto('/admin/modelManage');
+  await expect(page.getByRole('heading', { name: '模型管理', exact: true })).toBeVisible();
+  await providerGroup(page).getByText('默认提供商', { exact: true }).click();
+  await expect(modelRow(page)).toBeVisible();
+}
+
+test.beforeEach(async ({ page }) => {
+  const account = 'ts_model_' + randomUUID().slice(0, 8);
+  await register(page, account);
   const connection = await testConnection();
   try {
-    await connection.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [account]);
+    await grantAdmin(connection, account);
+    await seedModelConfig(connection);
   } finally {
     await connection.end();
   }
-  await page.goto('/user/login');
   await login(page, account);
-  await expect(page).toHaveURL('/');
-}
-
-async function readConfig(page: Page): Promise<AdminConfig> {
-  const response = await page.request.post('/api/model/admin/config', { headers: { origin }, data: {} });
-  expect(response.ok()).toBe(true);
-  return (await response.json()).data as AdminConfig;
-}
-
-function providerRow(page: Page) {
-  return page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'https://api.example.test/v1', exact: true }) });
-}
-
-function providerRowByBaseUrl(page: Page, baseUrl: string) {
-  return page.getByRole('row').filter({ has: page.getByRole('cell', { name: baseUrl, exact: true }) });
-}
-
-// jsonb 不保证键顺序，断言请求头时按名值映射比较，不能依赖行顺序。
-async function dialogHeaders(dialog: Locator): Promise<Record<string, string>> {
-  const names = await dialog.getByLabel('请求头名称').evaluateAll(inputs => inputs.map(input => (input as HTMLInputElement).value));
-  const values = await dialog.getByLabel('请求头值').evaluateAll(inputs => inputs.map(input => (input as HTMLInputElement).value));
-  const headers: Record<string, string> = {};
-  names.forEach((name, index) => {
-    if (name.trim().length > 0) headers[name.trim()] = values[index] ?? '';
-  });
-  return headers;
-}
-
-async function deleteHeaderRow(dialog: Locator, name: string) {
-  const names = await dialog.getByLabel('请求头名称').evaluateAll(inputs => inputs.map(input => (input as HTMLInputElement).value));
-  const index = names.indexOf(name);
-  if (index < 0) throw new Error(`未找到名为 ${name} 的请求头`);
-  await dialog.getByLabel('删除请求头').nth(index).click();
-}
-
-// 模型分配是四张固定卡片，卡片按槽位中文名定位，不再有别名行。
-function slotCard(page: Page, label: string) {
-  return page.getByRole('region', { name: `${label}槽位` });
-}
-
-function openSlot(page: Page, label: string) {
-  return slotCard(page, label).getByRole('button', { name: /^配\s*置$/ }).click();
-}
+});
 
 test.afterAll(async () => {
   const connection = await testConnection();
@@ -92,438 +101,309 @@ test.afterAll(async () => {
   }
 });
 
-test('未初始化时显示初始化提示，不提供编辑器也不要求密钥', async ({ page }) => {
+test('未初始化时提示显式初始化，刷新后显示提供商与四个槽位', async ({ page }) => {
   const connection = await testConnection();
   try {
     await emptyModelConfig(connection);
+    await page.goto('/admin/modelManage');
+    await expect(page.getByText('模型配置尚未初始化', { exact: true })).toBeVisible();
+    await expect(page.getByText('npm run db:init-models', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '新增提供商' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '模型分配' })).toHaveCount(0);
+    await expect(page.locator('input[type="password"]')).toHaveCount(0);
+    expect((await readConfig(page)).initialized).toBe(false);
+
+    await seedModelConfig(connection);
+    await page.getByRole('button', { name: /^刷\s*新$/ }).click();
+    await expect(page.getByText('模型配置尚未初始化')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '模型分配' })).toBeVisible();
+    await expect(slotRow(page, 'codegen.default')).toContainText('test-codegen-model');
+    await expect(slotRow(page, 'route.classify')).toContainText('test-route-model');
+    await expect(slotRow(page, 'version.summary')).toContainText('可选未分配');
+    await expect(slotRow(page, 'speech.transcribe')).toContainText('可选未分配');
+    expect((await readConfig(page)).initialized).toBe(true);
   } finally {
     await connection.end();
   }
-  await adminLogin(page, uniqueAccount());
-  await page.goto('/admin/modelManage');
-  await expect(page.getByRole('heading', { name: '模型管理', exact: true })).toBeVisible();
-  await expect(page.getByText('模型配置尚未初始化', { exact: true })).toBeVisible();
-  await expect(page.getByText('npm run db:init-models', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: '新增提供商' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '新增别名' })).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: '模型分配' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '立即生效', exact: true })).toHaveCount(0);
-  await expect(page.locator('input[type="password"]')).toHaveCount(0);
-
-  const seed = await testConnection();
-  try {
-    await seedModelConfig(seed);
-  } finally {
-    await seed.end();
-  }
-  await page.getByRole('button', { name: /^刷\s*新$/ }).click();
-  await expect(page.getByText('模型配置尚未初始化')).toHaveCount(0);
-  await expect(page.getByText('数据库配置版本', { exact: true })).toBeVisible();
-  await expect(page.getByRole('cell', { name: 'https://api.example.test/v1', exact: true })).toBeVisible();
-  await expect(page.getByRole('cell', { name: '已配置', exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: '模型分配' })).toBeVisible();
-  await expect(page.getByRole('region', { name: /槽位$/ })).toHaveCount(4);
-  await expect(slotCard(page, '代码生成')).toContainText('codegen.default');
-  await expect(slotCard(page, '类型路由')).toContainText('route.classify');
-  await expect(slotCard(page, '版本标题')).toContainText('未配置');
-  await expect(slotCard(page, '语音转写')).toContainText('未配置');
-  await expect(page.getByText('必需', { exact: true })).toHaveCount(2);
-  await expect(page.getByText('可选', { exact: true })).toHaveCount(2);
 });
 
-test('管理员可编辑提供商与槽位分配并普通保存', async ({ page }) => {
-  const connection = await testConnection();
-  try {
-    await seedModelConfig(connection);
-  } finally {
-    await connection.end();
-  }
-  await adminLogin(page, uniqueAccount());
-  await page.getByRole('menuitem', { name: '模型管理' }).click();
-  await expect(page).toHaveURL(/\/admin\/modelManage$/);
-  await expect(page.getByRole('heading', { name: '模型管理', exact: true })).toBeVisible();
-
-  const row = providerRow(page);
-  await row.getByRole('button', { name: /^编\s*辑$/ }).click();
+test('新增提供商自动展开空模型组，提供添加第一个模型入口', async ({ page }) => {
+  await openManager(page);
+  await page.getByRole('button', { name: '新增提供商', exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByLabel('名称', { exact: true }).fill('默认提供商（改）');
-  const includeUsage = dialog.getByRole('switch', { name: '统计用量' });
-  await expect(includeUsage).toHaveAttribute('aria-checked', 'false');
-  await includeUsage.click();
-  await expect(includeUsage).toHaveAttribute('aria-checked', 'true');
-  await dialog.getByRole('button', { name: /保\s*存$/ }).click();
-  await expect(page.getByText('提供商已保存', { exact: true })).toBeVisible();
-  await expect(page.getByRole('cell', { name: '默认提供商（改）', exact: true })).toBeVisible();
+  await dialog.getByLabel('提供商 ID', { exact: true }).fill('e2e-empty');
+  await dialog.getByLabel('名称', { exact: true }).fill('空提供商');
+  await dialog.getByLabel('地址', { exact: true }).fill('https://empty.example.test/v1');
+  await saveDialog(dialog);
 
-  const stored = await testConnection();
-  try {
-    const { rows } = await stored.query("SELECT options FROM model_provider WHERE id='env-default'");
-    const value = (rows as { options: unknown }[])[0]?.options;
-    const options = typeof value === 'string' ? (JSON.parse(value) as Record<string, unknown>) : (value as Record<string, unknown>);
-    expect(options).toMatchObject({ includeUsage: true });
-  } finally {
-    await stored.end();
-  }
-
-  await page.getByRole('button', { name: '新增提供商' }).click();
-  const createDialog = page.getByRole('dialog');
-  await expect(createDialog.getByLabel('提供商 ID', { exact: true })).toHaveValue('');
-  await expect(createDialog.getByLabel('名称', { exact: true })).toHaveValue('');
-  await createDialog.getByRole('button', { name: /取\s*消$/ }).click();
-
-  await openSlot(page, '代码生成');
-  const aliasDialog = page.getByRole('dialog');
-  await expect(aliasDialog).toContainText('codegen.default');
-  await expect(aliasDialog.getByLabel('上游模型名', { exact: true })).toHaveValue('test-codegen-model');
-  await aliasDialog.getByLabel('上游模型名', { exact: true }).fill('renamed-codegen-model');
-  await aliasDialog.getByRole('button', { name: /保\s*存$/ }).click();
-  await expect(page.getByText('模型分配已保存', { exact: true })).toBeVisible();
-  await expect(slotCard(page, '代码生成')).toContainText('renamed-codegen-model');
+  const group = providerGroup(page, 'e2e-empty');
+  await expect(group.getByText('还没有配置模型', { exact: true })).toBeVisible();
+  await expect(group.getByRole('button', { name: '添加第一个模型' })).toBeVisible();
+  expect((await readConfig(page)).providers.find(provider => provider.id === 'e2e-empty')).toMatchObject({
+    displayName: '空提供商', models: [],
+  });
+  await group.getByRole('button', { name: '添加第一个模型' }).click();
+  await expect(page.getByRole('dialog', { name: '在 空提供商 下添加模型' })).toBeVisible();
+  await expect(page.getByRole('dialog').getByLabel('上游模型名', { exact: true })).toHaveValue('');
 });
 
-test('回传思考内容按槽位单独声明，语音转写未配置时可直接配置', async ({ page }) => {
-  const connection = await testConnection();
-  try {
-    await seedModelConfig(connection);
-  } finally {
-    await connection.end();
-  }
-  await adminLogin(page, uniqueAccount());
-  await page.goto('/admin/modelManage');
+test('未定价模型不能分配，Drawer 按人民币追加单价并保留两版历史，旧 Rate card 已移除', async ({ page }) => {
+  await openManager(page);
+  await expect(page.getByRole('heading', { name: 'Rate card', exact: true })).toHaveCount(0);
+  const removedRoute = await page.request.get('/api/admin/billing/rate-card');
+  expect(removedRoute.status()).toBe(404);
 
-  // 「回传思考内容」跟着槽位分配走：只影响这一个槽位，提供商下其它模型不受牵连。
-  await openSlot(page, '代码生成');
-  const aliasDialog = page.getByRole('dialog');
-  const passthrough = aliasDialog.getByRole('switch', { name: '回传思考内容' });
-  await expect(passthrough).toHaveAttribute('aria-checked', 'false');
-  await passthrough.click();
-  await aliasDialog.getByRole('button', { name: /保\s*存$/ }).click();
-  await expect(page.getByText('模型分配已保存', { exact: true })).toBeVisible();
+  await providerGroup(page).getByRole('button', { name: '添加模型', exact: true }).click();
+  const addDialog = page.getByRole('dialog');
+  await addDialog.getByLabel('上游模型名', { exact: true }).fill('unpriced-model');
+  await addDialog.getByLabel('显示名称', { exact: true }).fill('待定价模型');
+  await addDialog.getByRole('switch', { name: '流式', exact: true }).click();
+  await addDialog.getByRole('switch', { name: '工具调用', exact: true }).click();
+  await addDialog.getByRole('button', { name: '添加模型', exact: true }).click();
+  await expect(addDialog).not.toBeVisible();
+  const row = modelRow(page, '待定价模型');
+  await expect(row.getByText('未定价', { exact: true })).toBeVisible();
+  await expect(row.getByText('不可分配', { exact: true })).toBeVisible();
+  const unpriced = (await readConfig(page)).providers[0]!.models.find(model => model.upstream === 'unpriced-model')!;
+  expect(unpriced.prices).toEqual([]);
+  expect(unpriced.currentPrice).toBeNull();
 
-  const stored = await testConnection();
-  try {
-    const { rows } = await stored.query("SELECT alias, settings FROM model_alias WHERE alias IN ('codegen.default','route.classify')");
-    const byAlias = new Map((rows as { alias: string; settings: unknown }[]).map(row => [row.alias, row.settings as Record<string, unknown>]));
-    expect(byAlias.get('codegen.default')).toMatchObject({ reasoningContentPassthrough: true });
-    expect(byAlias.get('route.classify')).not.toHaveProperty('reasoningContentPassthrough');
-  } finally {
-    await stored.end();
-  }
-  // 提供商选项里不再出现这个开关：它不是提供商级配置。
-  await providerRow(page).getByRole('button', { name: /^编\s*辑$/ }).click();
-  const providerDialog = page.getByRole('dialog');
-  await expect(providerDialog.getByRole('switch', { name: '回传思考内容' })).toHaveCount(0);
-  await providerDialog.getByRole('button', { name: /取\s*消$/ }).click();
+  const slotDialog = await openSlot(page, 'codegen.default');
+  await slotDialog.getByLabel('模型', { exact: true }).click();
+  await expect(visibleOptions(page).filter({ hasText: 'test-codegen-model' })).toBeVisible();
+  await expect(visibleOptions(page).filter({ hasText: '待定价模型' })).toHaveCount(0);
+  await expect(visibleOptions(page).filter({ hasText: 'test-route-model' })).toHaveCount(0);
+  await slotDialog.getByLabel('模型', { exact: true }).press('Escape');
+  await slotDialog.getByRole('button', { name: /^取\s*消$/ }).click();
+  await expect(slotDialog).not.toBeVisible();
 
-  // 可选槽位未配置时也在页面上，直接配置即可，不需要先起名字。
-  await expect(slotCard(page, '语音转写')).toContainText('麦克风按钮禁用');
-  await openSlot(page, '语音转写');
-  const audioDialog = page.getByRole('dialog');
-  await expect(audioDialog).toContainText('speech.transcribe');
-  await expect(audioDialog.getByLabel('别名', { exact: true })).toHaveCount(0);
-  await audioDialog.getByLabel('提供商', { exact: true }).click();
-  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('默认提供商', { exact: false }).first().click();
-  await audioDialog.getByLabel('上游模型名', { exact: true }).fill('whisper-1');
-  await audioDialog.getByRole('button', { name: /保\s*存$/ }).click();
-  await expect(page.getByText('模型分配已保存', { exact: true }).last()).toBeVisible();
-  await expect(slotCard(page, '语音转写')).toContainText('whisper-1');
-  await expect(slotCard(page, '语音转写')).not.toContainText('未配置');
+  await row.getByRole('button', { name: /^配\s*置$/ }).click();
+  let drawer = page.getByRole('dialog', { name: '配置模型 · 待定价模型' });
+  await drawer.getByLabel('输入未命中单价', { exact: true }).fill('6');
+  await drawer.getByLabel('输入命中单价', { exact: true }).fill('0.12');
+  await drawer.getByLabel('输出单价', { exact: true }).fill('25');
+  await saveDialog(drawer);
+  await expect(row.getByText('可分配', { exact: true })).toBeVisible();
+  await expect(row).toContainText('¥6');
+  await expect(row).toContainText('¥0.12');
+  await expect(row).toContainText('¥25');
+  let priced = (await readConfig(page)).providers[0]!.models.find(model => model.id === unpriced.id)!;
+  expect(priced.prices).toEqual([expect.objectContaining({ version: 1, currency: 'CNY', inputMissFen: 600, inputHitFen: 12, outputFen: 2500 })]);
 
-  // 必需槽位只有一个操作入口，且要求的能力不能关；可选槽位可以在弹窗里清除分配。
-  await expect(slotCard(page, '代码生成').getByRole('button')).toHaveCount(1);
-  await openSlot(page, '代码生成');
-  const requiredDialog = page.getByRole('dialog');
-  await expect(requiredDialog.getByRole('switch', { name: '工具调用' })).toBeDisabled();
-  await expect(requiredDialog.getByRole('switch', { name: '流式' })).toBeDisabled();
-  await expect(requiredDialog.getByRole('switch', { name: '结构化输出' })).toBeEnabled();
+  const eligibleDialog = await openSlot(page, 'codegen.default');
+  await eligibleDialog.getByLabel('模型', { exact: true }).click();
+  await expect(visibleOptions(page).filter({ hasText: '待定价模型' })).toBeVisible();
+  await eligibleDialog.getByLabel('模型', { exact: true }).press('Escape');
+  await eligibleDialog.getByRole('button', { name: /^取\s*消$/ }).click();
+  await expect(eligibleDialog).not.toBeVisible();
+
+  await row.getByRole('button', { name: /^配\s*置$/ }).click();
+  drawer = page.getByRole('dialog', { name: '配置模型 · 待定价模型' });
+  await drawer.getByLabel('输入未命中单价', { exact: true }).fill('7');
+  await saveDialog(drawer);
+  await expect(row).toContainText('版本 2');
+  priced = (await readConfig(page)).providers[0]!.models.find(model => model.id === unpriced.id)!;
+  expect(priced.prices).toEqual([
+    expect.objectContaining({ version: 1, currency: 'CNY', inputMissFen: 600, inputHitFen: 12, outputFen: 2500 }),
+    expect.objectContaining({ version: 2, currency: 'CNY', inputMissFen: 700, inputHitFen: 12, outputFen: 2500 }),
+  ]);
+  expect(priced.currentPrice?.version).toBe(2);
+
+  await row.getByRole('button', { name: /^配\s*置$/ }).click();
+  drawer = page.getByRole('dialog', { name: '配置模型 · 待定价模型' });
+  await expect(drawer.getByRole('heading', { name: '价格版本', exact: true })).toBeVisible();
+  const history = drawer.getByRole('table');
+  await expect(history.getByRole('row').filter({ has: page.getByRole('cell', { name: '1', exact: true }) })).toContainText('¥6');
+  await expect(history.getByRole('row').filter({ has: page.getByRole('cell', { name: '2', exact: true }) })).toContainText('¥7');
+});
+
+test('必需槽位不能清除，可选槽位能分配与清除，调用参数按槽位保存', async ({ page }) => {
+  await openManager(page);
+  const requiredDialog = await openSlot(page, 'codegen.default');
   await expect(requiredDialog.getByRole('button', { name: '清除分配' })).toHaveCount(0);
-  await requiredDialog.getByRole('button', { name: /取\s*消$/ }).click();
+  await requiredDialog.getByRole('switch', { name: '回传思考内容' }).click();
+  await saveDialog(requiredDialog);
+  await expect(page.getByText('模型分配已保存', { exact: true })).toBeVisible();
+  const blocked = await mutate(page, { kind: 'slot.clear', slot: 'codegen.default' });
+  expect(blocked.status()).toBe(409);
+  expect((await blocked.json()).message).toContain('必需槽位代码生成（codegen.default）不能清除');
+  const requiredConfig = await readConfig(page);
+  expect(requiredConfig.assignments.find(item => item.slot === 'codegen.default')).toMatchObject({ modelId: 'pm_e2e1', settings: { reasoningContentPassthrough: true } });
+  expect(requiredConfig.assignments.find(item => item.slot === 'route.classify')?.settings).not.toHaveProperty('reasoningContentPassthrough');
 
-  await openSlot(page, '语音转写');
-  await page.getByRole('dialog').getByRole('button', { name: '清除分配' }).click();
+  const optionalDialog = await openSlot(page, 'version.summary');
+  await optionalDialog.getByLabel('模型', { exact: true }).click();
+  await visibleOptions(page).filter({ hasText: 'test-codegen-model' }).click();
+  await saveDialog(optionalDialog);
+  await expect(slotRow(page, 'version.summary')).toContainText('test-codegen-model');
+  expect((await readConfig(page)).assignments.find(item => item.slot === 'version.summary')?.modelId).toBe('pm_e2e1');
+
+  const clearDialog = await openSlot(page, 'version.summary');
+  await clearDialog.getByRole('button', { name: '清除分配' }).click();
   await page.getByRole('button', { name: 'OK', exact: true }).click();
-  await expect(page.getByText('已清除语音转写槽位的模型分配', { exact: true })).toBeVisible();
-  await expect(slotCard(page, '语音转写')).toContainText('未配置');
+  await expect(clearDialog).not.toBeVisible();
+  await expect(slotRow(page, 'version.summary')).toContainText('可选未分配');
+  expect((await readConfig(page)).assignments.some(item => item.slot === 'version.summary')).toBe(false);
 });
 
-test('直接输入的密钥以密文入库，界面与接口都不回显明文', async ({ page }) => {
-  const connection = await testConnection();
-  try {
-    await seedModelConfig(connection);
-  } finally {
-    await connection.end();
-  }
-  await adminLogin(page, uniqueAccount());
-  await page.goto('/admin/modelManage');
+test('停用被引用模型和删除含模型的提供商被阻止并解释引用', async ({ page }) => {
+  await openManager(page);
+  const before = await readConfig(page);
+  const toggle = modelRow(page).getByRole('switch', { name: '启用模型 test-codegen-model', exact: true });
+  await toggle.click();
+  await expect(page.getByText('模型 test-codegen-model 仍被槽位引用（codegen.default），不能停用', { exact: true })).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  expect((await readConfig(page)).revision).toBe(before.revision);
 
-  const secret = 'sk-inline-e2e-secret';
-  const row = providerRow(page);
-  await row.getByRole('button', { name: /^编\s*辑$/ }).click();
-  const dialog = page.getByRole('dialog');
-  await dialog.getByLabel('密钥来源', { exact: true }).click();
-  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('直接输入密钥', { exact: true }).click();
-  const keyInput = dialog.getByLabel('密钥', { exact: true });
-  await expect(keyInput).toBeVisible();
-  await keyInput.fill(secret);
-  await dialog.getByRole('button', { name: /保\s*存$/ }).click();
-  await expect(page.getByText('提供商已保存', { exact: true })).toBeVisible();
-
-  const stored = await testConnection();
-  try {
-    const { rows } = await stored.query("SELECT api_key_env, api_key_ciphertext FROM model_provider WHERE id='env-default'");
-    const provider = (rows as { api_key_env: string | null; api_key_ciphertext: string | null }[])[0];
-    expect(provider?.api_key_env).toBeNull();
-    expect(provider?.api_key_ciphertext).toMatch(/^v1:/);
-    expect(JSON.stringify(provider)).not.toContain(secret);
-  } finally {
-    await stored.end();
-  }
-
-  const config = await page.request.post('/api/model/admin/config', { headers: { origin }, data: {} });
-  const body = await config.text();
-  expect(body).not.toContain(secret);
-  expect(body).toContain('"apiKeySource":"inline"');
-
-  await row.getByRole('button', { name: /^编\s*辑$/ }).click();
-  await expect(page.getByRole('dialog').getByLabel('密钥', { exact: true })).toHaveValue('');
+  await providerGroup(page).getByRole('button', { name: /^删\s*除$/ }).click();
+  await page.getByRole('button', { name: 'OK', exact: true }).click();
+  await expect(page.getByText('提供商 env-default 下还有 2 个模型，不能删除；请先停用提供商或清理模型', { exact: true })).toBeVisible();
+  const after = await readConfig(page);
+  expect(after.revision).toBe(before.revision);
+  expect(after.providers).toEqual(before.providers);
+  await expect(modelRow(page, 'test-route-model')).toBeVisible();
 });
 
-test('版本冲突时保留表单输入并可重新加载', async ({ page }) => {
-  const connection = await testConnection();
-  try {
-    await seedModelConfig(connection);
-  } finally {
-    await connection.end();
-  }
-  await adminLogin(page, uniqueAccount());
-  await page.goto('/admin/modelManage');
-  await expect(page.getByRole('cell', { name: 'https://api.example.test/v1', exact: true })).toBeVisible();
-
-  const row = providerRow(page);
-  await row.getByRole('button', { name: /^编\s*辑$/ }).click();
+test('版本冲突保留表单输入，重新加载后可保存', async ({ page }) => {
+  await openManager(page);
+  await providerGroup(page).getByRole('button', { name: '编辑提供商', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('名称', { exact: true }).fill('冲突测试名称');
+  const before = await readConfig(page);
+  const concurrent = await mutate(page, { kind: 'slot.assign', slot: 'version.summary', modelId: 'pm_e2e1', settings: {} }, before.revision);
+  expect(concurrent.ok()).toBe(true);
 
-  const bump = await testConnection();
-  try {
-    await bump.query("UPDATE model_config_state SET revision = revision + 1 WHERE id='models'");
-  } finally {
-    await bump.end();
-  }
-
-  await dialog.getByRole('button', { name: /保\s*存$/ }).click();
-  await expect(page.getByText('保存失败：模型配置已被其他操作修改', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: /^保\s*存$/ }).click();
+  await expect(dialog.getByText('保存失败：模型配置已被其他操作修改', { exact: true })).toBeVisible();
   await expect(dialog.getByLabel('名称', { exact: true })).toHaveValue('冲突测试名称');
-
-  await dialog.getByRole('button', { name: '重新加载' }).click();
-  await expect(page.getByText('保存失败：模型配置已被其他操作修改')).toHaveCount(0);
-  await dialog.getByRole('button', { name: /保\s*存$/ }).click();
-  await expect(page.getByText('提供商已保存', { exact: true })).toBeVisible();
-  await expect(page.getByRole('cell', { name: '冲突测试名称', exact: true })).toBeVisible();
+  expect((await readConfig(page)).providers[0]?.displayName).toBe('默认提供商');
+  await dialog.getByRole('button', { name: '重新加载', exact: true }).click();
+  await expect(dialog.getByText('保存失败：模型配置已被其他操作修改')).toHaveCount(0);
+  await expect(dialog.getByLabel('名称', { exact: true })).toHaveValue('冲突测试名称');
+  await saveDialog(dialog);
+  await expect(providerGroup(page).getByText('冲突测试名称', { exact: true })).toBeVisible();
+  const after = await readConfig(page);
+  expect(after.providers[0]?.displayName).toBe('冲突测试名称');
+  expect(after.assignments.find(item => item.slot === 'version.summary')?.modelId).toBe('pm_e2e1');
 });
 
-test('保存并立即生效与立即生效递增刷新批次', async ({ page }) => {
+test('直接输入密钥仅以密文持久化，编辑时 DOM 与管理接口不回显', async ({ page }) => {
+  await openManager(page);
+  const secret = 'sk-inline-e2e-' + randomUUID();
+  await providerGroup(page).getByRole('button', { name: '编辑提供商', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('密钥来源', { exact: true }).click();
+  await visibleOptions(page).filter({ hasText: '直接输入密钥' }).click();
+  const key = dialog.getByLabel('密钥', { exact: true });
+  await expect(key).toHaveAttribute('type', 'password');
+  await key.fill(secret);
+  await saveDialog(dialog);
+  await expect(page.getByText('提供商已保存', { exact: true })).toBeVisible();
   const connection = await testConnection();
   try {
-    await seedModelConfig(connection);
+    const { rows } = await connection.query<{ apiKey: { source: string; ciphertext: string } }>(
+      `SELECT value->'providers'->0->'apiKey' AS "apiKey" FROM app_config WHERE key='model_config'`,
+    );
+    expect(rows[0]?.apiKey).toMatchObject({ source: 'inline', ciphertext: expect.stringMatching(/^v1:/) });
+    expect(JSON.stringify(rows)).not.toContain(secret);
   } finally {
     await connection.end();
   }
-  await adminLogin(page, uniqueAccount());
-  await page.goto('/admin/modelManage');
-  await expect(page.getByRole('cell', { name: 'https://api.example.test/v1', exact: true })).toBeVisible();
-  const before = await readConfig(page);
+  const config = await readConfig(page);
+  expect(config.providers[0]).toMatchObject({ apiKeySource: 'inline', apiKeyConfigured: true });
+  const response = await page.request.post('/api/model/admin/config', { headers: { origin }, data: {} });
+  const body = await response.text();
+  expect(body).not.toContain(secret);
+  expect(body).not.toContain('ciphertext');
+  expect(body).not.toContain('v1:');
 
-  const row = providerRow(page);
-  await row.getByRole('button', { name: /^编\s*辑$/ }).click();
-  const dialog = page.getByRole('dialog');
-  await dialog.getByLabel('名称', { exact: true }).fill('立即生效提供商');
-  await dialog.getByRole('button', { name: /保存并立即生效$/ }).click();
-  await expect(page.getByText('提供商已保存并立即生效', { exact: true })).toBeVisible();
-  const afterSave = await readConfig(page);
-  expect(Number(afterSave.revision)).toBe(Number(before.revision) + 1);
-  expect(Number(afterSave.refreshEpoch)).toBe(Number(before.refreshEpoch) + 1);
-
-  await page.getByRole('button', { name: /立即生效$/ }).click();
-  await page.getByRole('button', { name: 'OK', exact: true }).click();
-  await expect(page.getByText('已请求所有实例立即重新加载模型配置', { exact: true })).toBeVisible();
-  const afterApply = await readConfig(page);
-  expect(Number(afterApply.revision)).toBe(Number(afterSave.revision));
-  expect(Number(afterApply.refreshEpoch)).toBe(Number(afterSave.refreshEpoch) + 1);
+  await providerGroup(page).getByRole('button', { name: '编辑提供商', exact: true }).click();
+  const reopened = page.getByRole('dialog');
+  await expect(reopened.getByLabel('密钥', { exact: true })).toHaveValue('');
+  await expect(reopened.getByLabel('密钥', { exact: true })).toHaveAttribute('type', 'password');
+  expect(await page.content()).not.toContain(secret);
+  expect(await page.locator('input').evaluateAll(inputs => inputs.map(input => (input as HTMLInputElement).value))).not.toContain(secret);
+  await reopened.getByLabel('名称', { exact: true }).fill('密钥保持提供商');
+  await saveDialog(reopened);
+  expect((await readConfig(page)).providers[0]).toMatchObject({ displayName: '密钥保持提供商', apiKeyConfigured: true });
 });
 
-test('普通用户不能打开模型管理页面', async ({ page }) => {
-  const account = uniqueAccount();
-  await registerSample(page, account);
-  await page.goto('/user/login');
+test('480px 视口下提供商、模型抽屉和槽位表单不产生页面横向溢出', async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 900 });
+  await openManager(page);
+  async function expectNoPageOverflow() {
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+  }
+  await expect(slotRow(page, 'codegen.default')).toBeVisible();
+  await expectNoPageOverflow();
+  await modelRow(page).getByRole('button', { name: /^配\s*置$/ }).click();
+  const drawer = page.getByRole('dialog', { name: '配置模型 · test-codegen-model' });
+  await expect(drawer.getByLabel('输入未命中单价', { exact: true })).toBeVisible();
+  await expectNoPageOverflow();
+  await drawer.getByRole('button', { name: /^取\s*消$/ }).click();
+  await expect(drawer).not.toBeVisible();
+  const dialog = await openSlot(page, 'version.summary');
+  await expect(dialog.getByLabel('模型', { exact: true })).toBeVisible();
+  await expectNoPageOverflow();
+});
+
+test('提供商探测反馈、上游模型选择和自定义请求头通过真实本机上游验证', async ({ page }) => {
+  const captured: { path: string; title: string | string[] | undefined }[] = [];
+  let failProbe = false;
+  const upstream = createServer((request, response) => {
+    captured.push({ path: request.url ?? '', title: request.headers['x-title'] });
+    response.writeHead(failProbe ? 503 : 200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(failProbe ? { error: { message: 'fixture unavailable' } } : { data: [{ id: 'mimo-v2.6-flash' }] }));
+  });
+  await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
+  const connection = await testConnection();
+  try {
+    await seedModelConfig(connection, `http://127.0.0.1:${(upstream.address() as AddressInfo).port}/v1`);
+    await openManager(page);
+    await providerGroup(page).getByRole('button', { name: '编辑提供商', exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: '添加请求头' }).click();
+    await dialog.getByLabel('请求头名称', { exact: true }).fill('X-Title');
+    await dialog.getByLabel('请求头值', { exact: true }).fill('paimeng-e2e');
+    await dialog.getByRole('button', { name: '测试连接', exact: true }).click();
+    await expect(dialog.getByText('连接正常，共 1 个模型：mimo-v2.6-flash', { exact: true })).toBeVisible();
+    expect(captured.at(-1)).toEqual({ path: '/v1/models', title: 'paimeng-e2e' });
+    await saveDialog(dialog);
+    expect(await readProviderHeaders(connection)).toEqual({ 'X-Title': 'paimeng-e2e' });
+
+    await providerGroup(page).getByRole('button', { name: '添加模型', exact: true }).click();
+    const addDialog = page.getByRole('dialog');
+    await addDialog.getByRole('button', { name: '获取上游模型', exact: true }).click();
+    await expect(addDialog.getByText('已获取 1 个上游模型', { exact: true })).toBeVisible();
+    expect(captured.at(-1)).toEqual({ path: '/v1/models', title: 'paimeng-e2e' });
+    const upstreamName = addDialog.getByLabel('上游模型名', { exact: true });
+    await upstreamName.fill('mimo');
+    await visibleOptions(page).filter({ hasText: 'mimo-v2.6-flash' }).click();
+    await expect(upstreamName).toHaveValue('mimo-v2.6-flash');
+    await addDialog.getByLabel('显示名称', { exact: true }).fill('上游选择模型');
+    await addDialog.getByRole('button', { name: '添加模型', exact: true }).click();
+    await expect(addDialog).not.toBeVisible();
+    await expect(modelRow(page, '上游选择模型')).toBeVisible();
+    expect((await readConfig(page)).providers[0]?.models.find(model => model.displayName === '上游选择模型')?.upstream).toBe('mimo-v2.6-flash');
+
+    failProbe = true;
+    await providerGroup(page).getByRole('button', { name: '编辑提供商', exact: true }).click();
+    const failedDialog = page.getByRole('dialog');
+    await failedDialog.getByRole('button', { name: '测试连接', exact: true }).click();
+    await expect(failedDialog.getByText(/503/)).toBeVisible();
+    await expect(failedDialog.getByLabel('请求头值', { exact: true })).toHaveValue('paimeng-e2e');
+  } finally {
+    await connection.end();
+    await new Promise<void>((resolve, reject) => upstream.close(error => error ? reject(error) : resolve()));
+  }
+});
+
+test('普通用户不能进入模型管理', async ({ page }) => {
+  await page.request.post('/api/user/logout', { headers: { origin }, data: {} });
+  const account = 'ts_model_user_' + randomUUID().slice(0, 8);
+  await register(page, account);
   await login(page, account);
-  await expect(page).toHaveURL('/');
   await expect(page.getByRole('menuitem', { name: '模型管理' })).toHaveCount(0);
   await page.goto('/admin/modelManage');
   await expect(page).toHaveURL(/\/user\/login\?redirect=/);
 });
-
-test('连通性检测与获取模型在界面上给出反馈', async ({ page }) => {
-  const connection = await testConnection();
-  try {
-    await seedModelConfig(connection);
-  } finally {
-    await connection.end();
-  }
-  await adminLogin(page, uniqueAccount());
-  await page.goto('/admin/modelManage');
-
-  await providerRow(page).getByRole('button', { name: /^编\s*辑$/ }).click();
-  const providerDialog = page.getByRole('dialog');
-  await providerDialog.getByRole('button', { name: '测试连接' }).click();
-  await expect(providerDialog.getByText(/无法连接上游/)).toBeVisible({ timeout: 30000 });
-  await providerDialog.getByRole('button', { name: /取\s*消$/ }).click();
-
-  await openSlot(page, '代码生成');
-  const aliasDialog = page.getByRole('dialog');
-  const modelName = aliasDialog.getByLabel('上游模型名', { exact: true });
-  await modelName.fill('deepseek');
-  await expect(modelName).toHaveValue('deepseek');
-  await aliasDialog.getByRole('button', { name: '获取模型' }).click();
-  await expect(aliasDialog.getByText(/无法连接上游/)).toBeVisible({ timeout: 30000 });
-});
-
-test('从下拉里选中的上游模型名会写进数据库', async ({ page }) => {
-  const upstream = createServer((_request, response) => {
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ data: [{ id: 'mimo-v2.6-flash' }, { id: 'deepseek-flash' }] }));
-  });
-  await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
-  const upstreamBase = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}/v1`;
-  const connection = await testConnection();
-  try {
-    await seedModelConfig(connection, upstreamBase);
-    await adminLogin(page, uniqueAccount());
-    await page.goto('/admin/modelManage');
-
-    await openSlot(page, '代码生成');
-    const dialog = page.getByRole('dialog');
-    const modelName = dialog.getByLabel('上游模型名', { exact: true });
-    await modelName.fill('mimo');
-    await dialog.getByRole('button', { name: '获取模型' }).click();
-    await expect(page.getByText('已获取 2 个上游模型', { exact: true })).toBeVisible({ timeout: 30000 });
-
-    await modelName.click();
-    await page
-      .locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')
-      .filter({ hasText: 'mimo-v2.6-flash' })
-      .click();
-    await expect(modelName).toHaveValue('mimo-v2.6-flash');
-    await dialog.getByRole('button', { name: /保\s*存$/ }).click();
-    await expect(page.getByText('模型分配已保存', { exact: true })).toBeVisible();
-
-    const stored = await testConnection();
-    try {
-      const { rows } = await stored.query("SELECT model_name FROM model_alias WHERE alias='codegen.default'");
-      expect((rows as { model_name: string }[])[0]?.model_name).toBe('mimo-v2.6-flash');
-    } finally {
-      await stored.end();
-    }
-  } finally {
-    await connection.end();
-    await new Promise<void>(resolve => upstream.close(() => resolve()));
-  }
-});
-
-test('自定义请求头可增删、保存后随探测请求发送', async ({ page }) => {
-  const captured: { path: string; userAgent?: string; xTitle?: string }[] = [];
-  const upstream = createServer((request, response) => {
-    captured.push({
-      path: request.url ?? '',
-      userAgent: request.headers['user-agent'] as string | undefined,
-      xTitle: request.headers['x-title'] as string | undefined,
-    });
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ data: [{ id: 'mimo-v2.6-flash' }] }));
-  });
-  await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
-  const upstreamBase = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}/v1`;
-  const connection = await testConnection();
-  try {
-    await seedModelConfig(connection, upstreamBase);
-    await adminLogin(page, uniqueAccount());
-    await page.goto('/admin/modelManage');
-
-    const row = providerRowByBaseUrl(page, upstreamBase);
-    await row.getByRole('button', { name: /^编\s*辑$/ }).click();
-    const dialog = page.getByRole('dialog');
-    await dialog.getByRole('button', { name: '添加请求头' }).click();
-    await dialog.getByLabel('请求头名称').fill('User-Agent');
-    await dialog.getByLabel('请求头值').fill('paimeng-ai-code-mother/1.0');
-    await dialog.getByRole('button', { name: '添加请求头' }).click();
-    await dialog.getByLabel('请求头名称').nth(1).fill('X-Title');
-    await dialog.getByLabel('请求头值').nth(1).fill('paimeng');
-    await dialog.getByRole('button', { name: /保\s*存$/ }).click();
-    await expect(page.getByText('提供商已保存', { exact: true })).toBeVisible();
-    // 等第一条提示从 DOM 移除，否则第二次保存时两条同名提示同时存在会触发严格模式冲突。
-    await expect(page.getByText('提供商已保存', { exact: true })).toHaveCount(0);
-
-    const stored = await testConnection();
-    try {
-      expect(await readProviderHeaders(stored)).toEqual({
-        'User-Agent': 'paimeng-ai-code-mother/1.0',
-        'X-Title': 'paimeng',
-      });
-    } finally {
-      await stored.end();
-    }
-
-    await row.getByRole('button', { name: /^编\s*辑$/ }).click();
-    const reopened = page.getByRole('dialog');
-    await expect
-      .poll(() => dialogHeaders(reopened))
-      .toEqual({ 'User-Agent': 'paimeng-ai-code-mother/1.0', 'X-Title': 'paimeng' });
-
-    await reopened.getByRole('button', { name: '测试连接' }).click();
-    await expect(reopened.getByText(/连接正常/)).toBeVisible({ timeout: 30000 });
-    const formProbe = captured.at(-1);
-    expect(formProbe?.path).toContain('/models');
-    expect(formProbe?.userAgent).toContain('paimeng-ai-code-mother/1.0');
-    expect(formProbe?.xTitle).toBe('paimeng');
-    await reopened.getByRole('button', { name: /取\s*消$/ }).click();
-
-    await openSlot(page, '代码生成');
-    const aliasDialog = page.getByRole('dialog');
-    await aliasDialog.getByRole('button', { name: '获取模型' }).click();
-    await expect(page.getByText('已获取 1 个上游模型', { exact: true })).toBeVisible({ timeout: 30000 });
-    const storedProbe = captured.at(-1);
-    expect(storedProbe?.userAgent).toContain('paimeng-ai-code-mother/1.0');
-    expect(storedProbe?.xTitle).toBe('paimeng');
-    await aliasDialog.getByRole('button', { name: /取\s*消$/ }).click();
-
-    await row.getByRole('button', { name: /^编\s*辑$/ }).click();
-    const editDialog = page.getByRole('dialog');
-    await expect.poll(() => dialogHeaders(editDialog)).toEqual({ 'User-Agent': 'paimeng-ai-code-mother/1.0', 'X-Title': 'paimeng' });
-    await deleteHeaderRow(editDialog, 'User-Agent');
-    await editDialog.getByRole('button', { name: /保\s*存$/ }).click();
-    await expect(page.getByText('提供商已保存', { exact: true })).toBeVisible();
-
-    const afterDelete = await testConnection();
-    try {
-      expect(await readProviderHeaders(afterDelete)).toEqual({ 'X-Title': 'paimeng' });
-    } finally {
-      await afterDelete.end();
-    }
-
-    await row.getByRole('button', { name: /^编\s*辑$/ }).click();
-    const formatDialog = page.getByRole('dialog');
-    await formatDialog.getByLabel('API 格式').click();
-    await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText(/OpenAI Responses/).click();
-    await expect.poll(() => dialogHeaders(formatDialog)).toEqual({ 'X-Title': 'paimeng' });
-
-    await formatDialog.getByRole('button', { name: /取\s*消$/ }).click();
-    await page.getByRole('button', { name: '新增提供商' }).click();
-    const createDialog = page.getByRole('dialog');
-    await expect(createDialog.getByLabel('请求头名称')).toHaveCount(0);
-    await createDialog.getByRole('button', { name: /取\s*消$/ }).click();
-  } finally {
-    await connection.end();
-    await new Promise<void>(resolve => upstream.close(() => resolve()));
-  }
-});
-
