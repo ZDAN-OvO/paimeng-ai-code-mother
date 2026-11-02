@@ -14,7 +14,7 @@ import { BusinessError } from './infra/http';
 import { previewUrl, deployedUrl, deployApp, captureCover, downloadApp, hasPreview, buildApp, loadBuildState } from './delivery/artifacts';
 import { contentType } from './delivery/preview';
 import { listProjectFiles, projectAt, readProjectFileBytes, workspace, type ProjectTarget } from './workspace/workspace';
-import { routeCodeGenType } from './generation/model';
+import { routeStarter } from './generation/model';
 import { appTemplate, initializeTemplate } from './workspace/template-workspace';
 import { diffVersions, headVersionSha, listVersions, purgeVersions, restoreVersion } from './versioning/version-store';
 import { versionThumbnail } from './versioning/version-thumbnail';
@@ -23,6 +23,7 @@ import { appWriteBlocker } from './generation/control-store';
 import { SNAPSHOT_MANIFEST_FILE } from './workspace/execution-workspace';
 import { versionDiffSchema, versionTargetSchema } from '@/shared/versioning';
 import { defaultTemplateFor, resolveTemplate } from './templates/templates';
+import { templateForStarter } from '@/shared/templates';
 import { codeGenTypes, idSchema, isProjectCodeGenType, pageSchema, type User, type AppInfo, type PageQuery } from '@/shared/contracts';
 import type { TemplateInfo } from '@/shared/templates';
 
@@ -52,8 +53,9 @@ export async function createApp(raw:unknown,user:User){
  let selected: TemplateInfo | null = null;
  if(value.templateId){try{selected=resolveTemplate(value.templateId);}catch{throw new BusinessError(400,40000,`不支持的工程模板 ${value.templateId}`);}}
  if(selected&&value.codeGenType&&value.codeGenType!==selected.codeGenType)throw new BusinessError(400,40000,'模板与应用类型不匹配');
- const type=selected?.codeGenType??value.codeGenType??await routeCodeGenType(value.initPrompt);
- const template=selected??defaultTemplateFor(type);
+ // 自动选择只分两条路：轻量静态页或构建类应用；显式模板与旧 codeGenType 仍按各自模板解析。
+ const template=selected??(value.codeGenType?defaultTemplateFor(value.codeGenType):templateForStarter(await routeStarter(value.initPrompt)));
+ const type=template?.codeGenType??value.codeGenType??'html';
  const id=await nextSnowflakeId();
  const app={id:id.toString(),codeGenType:type};
  const initialized=template?await initializeTemplate(app,template):false;

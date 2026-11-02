@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateText } from 'ai';
-import { routeCodeGenType } from '@/server/generation/model';
+import { routeStarter, starterForPrompt } from '@/server/generation/model';
 import { createModelRegistry, modelRegistry } from '@/server/models/registry';
 import { BusinessError } from '@/server/infra/http';
 import type { ModelAlias, ModelConfigSnapshot, ModelProvider } from '@/shared/model-config';
@@ -14,7 +14,7 @@ const original = { mode: process.env.AI_MODE, key: process.env.AI_API_KEY, model
 function restore(name: string, value: string | undefined) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
 
 let captured: { url: string; body: Record<string, any> }[] = [];
-let content = '{"codeGenType":"html"}';
+let content = '{"starter":"build"}';
 let originalFetch: typeof globalThis.fetch;
 
 function structuredResponse(body: string) {
@@ -50,7 +50,7 @@ function configuredRegistry(codegenModel = 'codegen-model', routeModel = 'test-m
 }
 
 beforeEach(() => {
-  captured = []; content = '{"codeGenType":"html"}';
+  captured = []; content = '{"starter":"build"}';
   process.env.AI_MODE = 'fixture'; process.env.AI_API_KEY = 'test-key'; process.env.AI_MODEL = 'test-model';
   originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown, init?: { body?: string }) => {
@@ -65,39 +65,45 @@ afterEach(() => {
   restore('AI_MODE', original.mode); restore('AI_API_KEY', original.key); restore('AI_MODEL', original.model);
 });
 
-describe('应用类型路由（F01）', () => {
-  it('fixture 模式下使用确定性规则路由类型，不发起网络请求', async () => {
-    expect(await routeCodeGenType('购物商城前台')).toBe('vue_project');
-    expect(await routeCodeGenType('登录注册系统')).toBe('vue_project');
-    expect(await routeCodeGenType('复杂交互后台')).toBe('vue_project');
-    expect(await routeCodeGenType('多页面展示站')).toBe('multi_file');
-    expect(await routeCodeGenType('分离 CSS 与 JS 的多文件站')).toBe('multi_file');
-    expect(await routeCodeGenType('个人博客展示')).toBe('html');
-    expect(await routeCodeGenType('用 React 做一个后台数据管理系统')).toBe('react_project');
-    expect(await routeCodeGenType('react 组件文档站')).toBe('react_project');
+describe('应用起点路由（轻量静态页 / 构建类）', () => {
+  it('fixture 模式默认选构建类，只有需求确实简单时才选轻量静态页', async () => {
+    const prompts: [string, 'light' | 'build'][] = [
+      ['购物商城前台', 'build'],
+      ['用 React 做一个后台数据管理系统', 'build'],
+      ['多页面展示站', 'build'],
+      ['个人博客展示', 'build'],
+      ['做一个网站', 'build'],
+      ['登录注册系统', 'build'],
+      ['简单的个人简介静态页', 'light'],
+      ['单页产品介绍落地页', 'light'],
+      ['生成验证-静态页', 'light'],
+    ];
+    for (const [prompt, expected] of prompts) expect(starterForPrompt(prompt), prompt).toBe(expected);
+    await expect(routeStarter('简单的个人简介静态页')).resolves.toBe('light');
+    await expect(routeStarter('购物商城前台')).resolves.toBe('build');
     expect(captured).toHaveLength(0);
   });
 
-  it('provider 模式通过真实 generateText 请求结构化输出并解析 enum，且用 route.classify 绑定', async () => {
+  it('provider 模式只请求二分类起点并解析结构化结果', async () => {
     process.env.AI_MODE = 'provider';
     vi.mocked(modelRegistry).mockReturnValue(configuredRegistry());
-    content = '{"codeGenType":"vue_project"}';
-    await expect(routeCodeGenType('需要多个页面的网站')).resolves.toBe('vue_project');
+    content = '{"starter":"light"}';
+    await expect(routeStarter('简单介绍页')).resolves.toBe('light');
 
     expect(captured).toHaveLength(1);
     expect(captured[0].url).toContain('/chat/completions');
     expect(captured[0].body.model).toBe('test-model');
-    expect(JSON.stringify(captured[0].body.messages)).toContain('需要多个页面的网站');
+    expect(JSON.stringify(captured[0].body.messages)).toContain('简单介绍页');
     expect(captured[0].body.response_format).toMatchObject({ type: 'json_object' });
     const requestBody = JSON.stringify(captured[0].body);
     expect(requestBody).toMatch(/JSON/i);
-    expect(requestBody).toContain('codeGenType');
-    expect(requestBody).toContain('multi_file');
-    expect(requestBody).toContain('vue_project');
-    expect(requestBody).toContain('react_project');
+    expect(requestBody).toContain('starter');
+    expect(requestBody).toContain('light');
+    expect(requestBody).toContain('build');
+    expect(requestBody).not.toContain('vue_project');
 
-    content = '{"codeGenType":"react_project"}';
-    await expect(routeCodeGenType('用 React 实现数据仪表盘')).resolves.toBe('react_project');
+    content = '{"starter":"build"}';
+    await expect(routeStarter('数据仪表盘')).resolves.toBe('build');
     expect(captured).toHaveLength(2);
   });
 
@@ -109,16 +115,16 @@ describe('应用类型路由（F01）', () => {
       error: { type: 'FreeTierError', message: "OpenCode's free tier can only be used from within OpenCode. key=sk-abcdef1234567890" },
     }), { status: 403, headers: { 'content-type': 'application/json' } })) as typeof globalThis.fetch;
 
-    const failure = await routeCodeGenType('做一个博客').then(() => null, (error: unknown) => error as BusinessError);
+    const failure = await routeStarter('做一个博客').then(() => null, (error: unknown) => error as BusinessError);
     expect(failure).toBeInstanceOf(BusinessError);
     expect(failure?.status).toBe(502);
     expect(failure?.code).toBe(50200);
-    expect(failure?.message).toContain('类型路由');
+    expect(failure?.message).toContain('起点识别');
     expect(failure?.message).toContain('模型分配');
     expect(failure?.message).not.toContain('sk-abcdef1234567890');
   });
 
-  it('注册表解析 codegen.default，与类型分类的 route.classify 相互独立', async () => {
+  it('注册表解析 codegen.default，与起点路由的 route.classify 相互独立', async () => {
     process.env.AI_MODE = 'provider';
     vi.mocked(modelRegistry).mockReturnValue(configuredRegistry('codegen-model', 'route-model'));
     const model = await modelRegistry().resolveModel('codegen.default');
@@ -128,10 +134,10 @@ describe('应用类型路由（F01）', () => {
     expect(captured[0].body.model).toBe('codegen-model');
   });
 
-  it('provider 模式拒绝模型返回的越界类型', async () => {
+  it('provider 模式拒绝模型返回的越界起点', async () => {
     process.env.AI_MODE = 'provider';
     vi.mocked(modelRegistry).mockReturnValue(configuredRegistry());
-    content = '{"codeGenType":"bogus"}';
-    await expect(routeCodeGenType('越界类型')).rejects.toThrow();
+    content = '{"starter":"bogus"}';
+    await expect(routeStarter('越界起点')).rejects.toThrow();
   });
 });

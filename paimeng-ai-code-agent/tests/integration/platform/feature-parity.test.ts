@@ -71,10 +71,11 @@ describe('功能补齐的后端行为（独立 Postgres 测试库）', () => {
     const [explicitRow] = await db().select().from(apps).where(eq(apps.id, BigInt(explicit)));
     expect(explicitRow.codeGenType).toBe('vue_project');
 
+    // 自动选择是二分类：复杂需求一律构建类，模板固定为 React 厚架子，不再路由到 Vue。
     const routed = await createApp({ initPrompt: '购物商城管理后台' }, actor);
-    created.push({ id: routed, codeGenType: 'vue_project' });
+    created.push({ id: routed, codeGenType: 'react_project' });
     const [routedRow] = await db().select().from(apps).where(eq(apps.id, BigInt(routed)));
-    expect(routedRow.codeGenType).toBe('vue_project');
+    expect(routedRow.codeGenType).toBe('react_project');
 
     const plain = await createApp({ initPrompt: '个人作品静态展示' }, actor);
     created.push({ id: plain, codeGenType: 'html' });
@@ -83,7 +84,7 @@ describe('功能补齐的后端行为（独立 Postgres 测试库）', () => {
 
     const react = await createApp({ initPrompt: '用 React 做一个后台数据管理系统' }, actor);
     created.push({ id: react, codeGenType: 'react_project' });
-    expect(await getApp(react, actor)).toMatchObject({ codeGenType: 'react_project', template: { id: 'react-ts', version: '1.0.0' } });
+    expect(await getApp(react, actor)).toMatchObject({ codeGenType: 'react_project', template: { id: 'react-ts', version: '2.0.0' } });
 
     await expect(createApp({ initPrompt: 'x'.repeat(1001) }, actor)).rejects.toThrow();
   });

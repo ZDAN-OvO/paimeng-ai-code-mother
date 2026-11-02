@@ -22,7 +22,7 @@ async function mockChat(page:Page){
   await page.route('**/api/app/generation?*',route=>route.fulfill({json:{code:0,data:{id:'task-1',status:'cancelled'}}}));
 }
 
-test('默认自动选择保留 AI 路由，技术栈下拉展示自动选择与四种模板',async({page})=>{
+test('默认自动选择保留 AI 路由，技术栈下拉只展示轻量静态页与 React 厚架子',async({page})=>{
   await mockHome(page,{user:creator});
   await mockChat(page);
   let payload:Record<string,unknown>|undefined;
@@ -40,11 +40,12 @@ test('默认自动选择保留 AI 路由，技术栈下拉展示自动选择与�
   await expect(page.getByLabel('应用描述')).toHaveValue(blogTemplate);
   await expect(page.getByRole('button',{name:'创建应用'})).toBeEnabled();
   await expect(page.locator('.template-picker .ant-select')).toContainText('自动选择');
-  await expect(page.getByText('根据需求自动选择技术栈（AI 路由）',{exact:true})).toBeVisible();
+  await expect(page.getByText('根据需求自动选择：默认 React 厚架子，需求确实简单时用轻量静态页',{exact:true})).toBeVisible();
   await page.getByLabel('技术栈',{exact:true}).click();
   const dropdown=page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)');
-  await expect(dropdown.locator('.ant-select-item-option')).toHaveCount(5);
-  for(const name of ['自动选择','原生 HTML','原生多文件','Vue + TypeScript','React + TypeScript']) await expect(dropdown.getByText(name,{exact:true})).toBeVisible();
+  await expect(dropdown.locator('.ant-select-item-option')).toHaveCount(3);
+  for(const name of ['自动选择','轻量静态页','React 厚架子']) await expect(dropdown.getByText(name,{exact:true})).toBeVisible();
+  for(const name of ['原生多文件','Vue + TypeScript','React + TypeScript']) await expect(dropdown.getByText(name,{exact:true})).toHaveCount(0);
   await dropdown.getByText('自动选择',{exact:true}).click();
   await page.getByRole('button',{name:'创建应用'}).click();
   await expect(page).toHaveURL(/\/app\/chat\/999$/);
@@ -53,7 +54,7 @@ test('默认自动选择保留 AI 路由，技术栈下拉展示自动选择与�
   expect(payload).not.toHaveProperty('codeGenType');
 });
 
-test('显式选择原生 HTML 时提交 templateId',async({page})=>{
+test('显式选择轻量静态页时提交 templateId',async({page})=>{
   await mockHome(page,{user:creator});
   await mockChat(page);
   let payload:Record<string,unknown>|undefined;
@@ -61,8 +62,8 @@ test('显式选择原生 HTML 时提交 templateId',async({page})=>{
   await page.goto('/');
   await page.getByLabel('应用描述').fill(blogTemplate);
   await page.getByLabel('技术栈',{exact:true}).click();
-  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('原生 HTML',{exact:true}).click();
-  await expect(page.getByText('单文件静态页，样式与交互集中在 index.html')).toBeVisible();
+  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('轻量静态页',{exact:true}).click();
+  await expect(page.getByText('单文件静态页，无需构建，适合内容简单的单页站点')).toBeVisible();
   await page.getByRole('button',{name:'创建应用'}).click();
   await expect(page).toHaveURL(/\/app\/chat\/999$/);
   expect(payload).toEqual({initPrompt:blogTemplate,templateId:'html'});

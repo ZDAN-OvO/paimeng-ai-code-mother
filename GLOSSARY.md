@@ -43,11 +43,15 @@ Harness 内部控制面使用的阶段：editing、checking、publishing、finis
 _Avoid_: generation status, public state
 
 **Generation type**:
-App 的产物类型：HTML、多文件静态站、Vue 工程或 React 工程；它决定源码形态和构建路径。界面上的「技术栈」选项指向一个 Template；选择「自动选择」时，平台按需求挑选 Generation type 和默认 Template。
+App 在存储层的产物类型：HTML、多文件静态站、Vue 工程或 React 工程；它保留历史数据与旧代码路径，不再出现在新建界面。「轻量静态页」与「React 厚架子」是 Starter，不是 Generation type。
 _Avoid_: stack, code type, 技术栈
 
+**Starter**:
+新建 App 时在首页选择的起点，只有两个：轻量静态页（`html@1.0.0`，不需要构建）和 React 厚架子（`react-ts@2.0.0`，带布局、设计令牌、shadcn/ui 组件源码、路由与示例页面）。选择「自动选择」时平台先做轻量静态/构建类二分类，默认构建类，只有需求确实简单时才走轻量静态页。
+_Avoid_: 技术栈, stack, generation type
+
 **Template**:
-新建 App 时复制进去的带版本源码骨架。Template 有版本，Generation type 没有；两者不能混用。
+新建 App 时复制进去的带版本源码骨架。Template 有版本，Generation type 没有；两者不能混用。`react-ts@2.0.0` 用 pnpm 与 `pnpm-lock.yaml`，是构建类 App 的默认模板；`react-ts@1.0.0`、`vue-ts` 与 `multi-file` 只保留解析与代码路径。
 _Avoid_: stack, scaffold, preset
 
 **Input**:
