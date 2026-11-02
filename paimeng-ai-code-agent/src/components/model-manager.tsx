@@ -100,6 +100,13 @@ type AddModelFormValues = {
 };
 
 type PriceFormValues = {
+  displayName: string;
+  capabilities: {
+    streaming: boolean;
+    toolCalling: boolean;
+    structuredOutput: boolean;
+    imageInput: boolean;
+  };
   enabled: boolean;
   inputMissYuan?: number | null;
   inputHitYuan?: number | null;
@@ -394,20 +401,36 @@ function ModelConfigManager() {
       const values = await priceForm.validateFields();
       let revision = config.revision;
       let changed = false;
-      if (Boolean(values.enabled) !== modelEditor.enabled) {
+      const displayName = values.displayName.trim();
+      const modelChanged = displayName !== modelEditor.displayName
+        || Boolean(values.enabled) !== modelEditor.enabled
+        || JSON.stringify(values.capabilities) !== JSON.stringify(modelEditor.capabilities);
+      if (modelChanged) {
         setSaving(true);
-        const toggled = await adminPost(
+        const updated = await adminPost(
           'model/admin/config/mutate',
-          { expectedRevision: revision, mutation: { kind: 'model.enabled', modelId: modelEditor.id, enabled: Boolean(values.enabled) } },
+          {
+            expectedRevision: revision,
+            mutation: {
+              kind: 'model.upsert',
+              providerId: modelEditor.providerId,
+              modelId: modelEditor.id,
+              upstream: modelEditor.upstream,
+              displayName,
+              capabilities: values.capabilities,
+              enabled: Boolean(values.enabled),
+              upstreamPrice: modelEditor.upstreamPrice,
+            },
+          },
           data => modelConfigVersionViewSchema.parse(data),
         );
         setSaving(false);
-        if (!toggled.ok) {
-          if (toggled.status === 409) setConflict(toggled.message);
-          else message.error(toggled.message);
+        if (!updated.ok) {
+          if (updated.status === 409) setConflict(updated.message);
+          else message.error(updated.message);
           return;
         }
-        revision = toggled.data.revision;
+        revision = updated.data.revision;
         changed = true;
       }
       const price = priceInputOf(values.inputMissYuan, values.inputHitYuan, values.outputYuan);
@@ -963,6 +986,21 @@ function ModelConfigManager() {
               </Descriptions.Item>
             </Descriptions>
             <Form form={priceForm} layout="vertical" preserve={false}>
+              <Form.Item name="displayName" label="显示名称" rules={[{ required: true, message: '请输入显示名称' }, { max: 256, message: '最多 256 个字符' }]}>
+                <Input aria-label="显示名称" />
+              </Form.Item>
+              <Form.Item label="能力" tooltip="能力属于模型本身，所有引用它的槽位共用；修改后请检查槽位状态">
+                <Space size={16} wrap>
+                  {(['streaming', 'toolCalling', 'structuredOutput', 'imageInput'] as const).map(capability => (
+                    <span key={capability}>
+                      <Form.Item name={['capabilities', capability]} valuePropName="checked" noStyle>
+                        <Switch aria-label={modelCapabilityLabels[capability]} />
+                      </Form.Item>
+                      <span>{modelCapabilityLabels[capability]}</span>
+                    </span>
+                  ))}
+                </Space>
+              </Form.Item>
               <Form.Item name="enabled" label="启用" valuePropName="checked"><Switch aria-label="启用" /></Form.Item>
               <div className={styles.priceInputs}>
                 <Form.Item name="inputMissYuan" label="输入未命中（¥ / 1M）" rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}>
@@ -1173,6 +1211,8 @@ function upstreamUsdOf(model: ModelAdminModelView) {
 function priceFormValues(model: ModelAdminModelView): PriceFormValues {
   const current = model.currentPrice;
   return {
+    displayName: model.displayName,
+    capabilities: { ...model.capabilities },
     enabled: model.enabled,
     inputMissYuan: current ? fenToYuan(current.inputMissFen) : null,
     inputHitYuan: current ? fenToYuan(current.inputHitFen) : null,
