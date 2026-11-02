@@ -8,8 +8,8 @@ function instructions(type: CodeGenType, template = false) {
 }
 
 describe('按应用类型生成指令', () => {
-  it.each([false, true])('HTML 禁止工程脚手架并直接静态托管，模板=%s', template => {
-    const value = instructions('html', template);
+  it('HTML 旧应用（没有模板）禁止工程脚手架并直接静态托管', () => {
+    const value = instructions('html');
     expect(value).toContain('只写 index.html');
     expect(value).toMatch(/禁止[^。]*package\.json/);
     expect(value).toContain('assets/');
@@ -24,7 +24,7 @@ describe('按应用类型生成指令', () => {
   });
 
   it('多文件约定与工具描述不要求 Vue 工程', () => {
-    const value = instructions('multi_file', true);
+    const value = instructions('multi_file');
     for (const directory of ['css/', 'js/', 'assets/']) expect(value).toContain(directory);
     expect(value).toMatch(/禁止[^。]*package\.json/);
     expect(value).not.toContain('Vue 工程必须使用 Vue');
@@ -34,7 +34,7 @@ describe('按应用类型生成指令', () => {
     expect(staticPathHint('html')).not.toContain('Vue 或 React 工程使用');
   });
 
-  it.each(['vue_project', 'react_project'] as const)('%s 保留旧工程要求与依赖精确版本', type => {
+  it.each(['vue_project', 'react_project'] as const)('%s 的旧应用（没有模板）保留类型规则与依赖精确版本', type => {
     const value = instructions(type);
     expect(value).toContain(type === 'vue_project' ? 'Vue 工程必须使用 Vue' : 'React 工程必须使用 React');
     expect(value).toContain('必须包含 package.json');
@@ -43,6 +43,35 @@ describe('按应用类型生成指令', () => {
     expect(value).toContain('自动构建前端工程');
     expect(value).not.toContain('只写 index.html');
     expect(typeRules[type]).toContain("base './'");
+  });
+
+  it('模板应用用模板内容、入口和组件复用说明取代四套类型规则', () => {
+    const value = generationInstructions({
+      app: { codeGenType: 'react_project', initPrompt: '做一个后台' },
+      template: { id: 'react-ts', version: '2.0.0' },
+      entry: 'src/main.tsx',
+      files: ['package.json', 'src/main.tsx', 'src/App.tsx', 'src/components/ui/button.tsx', 'src/index.css'],
+      webInstruction: '',
+    });
+    expect(value).toContain('从 react-ts@2.0.0 模板初始化');
+    expect(value).toContain('入口 src/main.tsx');
+    expect(value).toContain('src/components/ui/button.tsx');
+    expect(value).toContain('src/index.css');
+    expect(value).toContain('优先复用');
+    expect(value).toContain('依赖与锁文件由模板版本固定');
+    // 产品面的四套类型规则不再拼进模板应用提示词。
+    expect(value).not.toContain('React 工程必须使用 React');
+    expect(value).not.toContain(JSON.stringify(REACT_DEPENDENCIES));
+    expect(value).not.toContain('禁止 ^、~、latest');
+    // 常驻 runtime 的 shell 尚未落地，提示词不能提前宣称。
+    expect(value).toContain('禁止安装脚本和任意 shell');
+    expect(value).not.toMatch(/shell 工具|用 shell 安装|通过 shell 安装|使用 shell 执行/);
+  });
+
+  it('轻量静态模板同样以模板说明代替类型规则', () => {
+    const value = instructions('html', true);
+    expect(value).toContain('从 html@1.0.0 模板初始化');
+    expect(value).not.toContain('只写 index.html');
   });
 
   it('harness 引擎（只有文件工具）不提 buildPreview', () => {

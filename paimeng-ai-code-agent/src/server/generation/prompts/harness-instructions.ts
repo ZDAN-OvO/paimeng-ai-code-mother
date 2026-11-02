@@ -1,6 +1,6 @@
 import type { AppInfo } from '@/shared/contracts';
 import { getConfig } from '../../infra/config';
-import { templateEntry } from '../../templates/templates';
+import { templateEntry, templateFiles } from '../../templates/templates';
 import { webAccessInstructions } from '../tools/web/instructions';
 import { generationInstructions } from './generation-instructions';
 
@@ -14,6 +14,7 @@ export function harnessInstructions(app: AppInfo, hasImages: boolean): string {
     app,
     template: app.template,
     entry: app.template ? templateEntry(app.template) : null,
+    files: app.template ? templateFiles(app.template) : [],
     webInstruction: webAccess.enabled ? ` ${webAccessInstructions({ images: webAccess.images, strictLicense: webAccess.strictLicense })}` : '',
     hasImages,
   });

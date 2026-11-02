@@ -10,7 +10,7 @@ import { now } from '../infra/db';
 import { BusinessError } from '../infra/http';
 import { validateProjectManifest } from './build-contract';
 import { markBuildFailure, sourceFailure, type BuildStage } from './build-feedback';
-import { readTemplateFile, templateTypecheck, validateTemplateManifest } from '../templates/templates';
+import { readTemplateFile, templateLockfile, templatePackageManager, templateTypecheck, validateTemplateManifest } from '../templates/templates';
 import { appTemplate } from '../workspace/template-workspace';
 import { workspace, ensureRuntime, ensureProjectRoot, projectRootPath, ensureSafeDirectory, listProjectFiles, readProjectFile, readProjectFileBytes, validateDeployKey, type ProjectTarget, type WorkspaceApp } from '../workspace/workspace';
 import { isProjectCodeGenType } from '@/shared/contracts';
@@ -80,6 +80,9 @@ async function containerRun(directory: string, step: Extract<BuildStage, 'instal
     '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=128', '--memory=768m', '--cpus=1',
     '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m', '--mount', `type=bind,src=${directory},dst=/work`, '--workdir', '/work',
     '--env', 'HOME=/tmp', '--env', 'npm_config_cache=/tmp/npm', '--env', 'npm_config_registry=' + config.buildNpmRegistry,
+    // pnpm 与 corepack 的缓存放在工作目录（bind mount 可执行），/tmp 是 noexec 的只读容器临时盘。
+    '--env', 'COREPACK_HOME=/work/.paimeng-corepack', '--env', 'COREPACK_NPM_REGISTRY=' + config.buildNpmRegistry,
+    '--env', 'COREPACK_ENABLE_DOWNLOAD_PROMPT=0',
     ...(!network ? ['--network=none'] : []), config.buildImage, ...executable,
   ];
   try { await command('docker', args, signal, config.buildTimeoutMs, step); }
@@ -166,12 +169,15 @@ export async function buildApp(target: ProjectTarget, signal?: AbortSignal, onSt
   const template = await appTemplate(target) ?? await appTemplate(app);
   const projectCodeGenType = app.codeGenType;
   const lockedManifest = template ? await readTemplateFile(template, 'package.json') : null;
-  const lock = template ? await readTemplateFile(template, 'package-lock.json') : null;
+  // npm 模板校验 package-lock.json，pnpm 模板校验 pnpm-lock.yaml；两种锁都逐字节固定。
+  const lockfile = template ? templateLockfile(template) : null;
+  const packageManager = template ? templatePackageManager(template) : null;
+  const lock = template && lockfile ? await readTemplateFile(template, lockfile) : null;
   const dependencies = await stageRun('source', async () => {
     try {
       const manifest = await readProjectFile(target, 'package.json');
-      const dependencies = template ? validateTemplateManifest(template, manifest) : validateProjectManifest(projectCodeGenType, manifest);
-      if (lock && await readProjectFile(target, 'package-lock.json') !== lock) throw new Error('模板依赖锁已改变，请恢复对应模板版本的 package-lock.json');
+      const dependencies = template ? await validateTemplateManifest(template, manifest) : validateProjectManifest(projectCodeGenType, manifest);
+      if (lockfile && lock && await readProjectFile(target, lockfile) !== lock) throw new Error(`模板依赖锁已改变，请恢复对应模板版本的 ${lockfile}`);
       return dependencies;
     } catch (error) { throw sourceFailure(error); }
   });
@@ -187,11 +193,15 @@ export async function buildApp(target: ProjectTarget, signal?: AbortSignal, onSt
   let backedUp = false;
   try {
     await writeFile(join(stage, 'package.json'), lockedManifest ?? JSON.stringify({ name: 'isolated-generated-app', version: '1.0.0', private: true, type: 'module', dependencies }));
-    if (lock) await writeFile(join(stage, 'package-lock.json'), lock);
+    if (lock && lockfile) await writeFile(join(stage, lockfile), lock);
     // Install has network access, but never sees generated executable code or npm configuration.
-    await stageRun('install', () => containerRun(stage, 'install', ['npm', lock ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund'], true, signal));
+    // pnpm 走 corepack（版本由模板 package.json 的 packageManager 固定），store 与 node_modules 都落在 stage 目录。
+    const install = packageManager === 'pnpm'
+      ? ['corepack', 'pnpm', 'install', '--frozen-lockfile', '--ignore-scripts', '--reporter=append-only', '--store-dir=/work/.paimeng-store']
+      : ['npm', lock ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund'];
+    await stageRun('install', () => containerRun(stage, 'install', install, true, signal));
     for (const file of files) {
-      if (file === 'package.json' || file === 'package-lock.json') continue;
+      if (file === 'package.json' || file === lockfile) continue;
       let parent = stage;
       for (const part of file.split('/').slice(0, -1)) parent = await ensureSafeDirectory(join(parent, part));
       await copyFile(join(root, file), join(stage, file));
