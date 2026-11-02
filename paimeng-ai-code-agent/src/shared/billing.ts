@@ -221,7 +221,286 @@ export const monthlyQuotaCredits = 500;
  * `period` 是北京自然月 `YYYY-MM`（`billing/period.ts`）；`quotaExpiresAt` 是账期半开区间的终点，
  * UTC 朴素时间戳，界面按北京时间显示。
  */
-export type AccountSummary = AccountSnapshot & { period: string; quotaExpiresAt: string };
+export type AccountSummary = AccountSnapshot & {
+  period: string;
+  quotaExpiresAt: string;
+  /** 当期基础发放、调整净额与已用，界面据此解释配额池余额，不再假设固定 500。 */
+  quotaBase: number;
+  quotaAdjustments: number;
+  quotaUsed: number;
+  quotaPolicySource: QuotaPolicySource;
+  quotaPolicyVersion: number | null;
+};
+
+// ---- 可配置月度配额策略（migrations/020_credit_quota_policy.sql）----
+
+/** 策略范围：global 是默认值，user 是单用户覆盖或显式恢复继承。 */
+export const quotaPolicyScopes = ['global', 'user'] as const;
+export type QuotaPolicyScope = (typeof quotaPolicyScopes)[number];
+
+/** `inherit` 只允许出现在用户范围；全局策略必须是 `override`。 */
+export const quotaPolicyModes = ['inherit', 'override'] as const;
+export type QuotaPolicyMode = (typeof quotaPolicyModes)[number];
+export const quotaPolicyModeLabels: Record<QuotaPolicyMode, string> = {
+  inherit: '继承全局默认',
+  override: '覆盖金额',
+};
+
+/** 月度标准与单次调整的上限；共享契约校验，前端表单与服务端都读这一处。 */
+export const maxMonthlyQuotaCredits = 1_000_000;
+export const maxQuotaAdjustmentCredits = 1_000_000;
+
+/** 策略版本的一行；只追加，不改旧行。 */
+export type QuotaPolicyView = {
+  id: string;
+  scope: QuotaPolicyScope;
+  userId: string | null;
+  effectivePeriod: string;
+  mode: QuotaPolicyMode;
+  credits: number | null;
+  revision: number;
+  note: string | null;
+  createdBy: string | null;
+  createTime: string;
+};
+
+/** 某一账期解析后的有效规则；没有保存过策略时是代码兜底 500。 */
+export type EffectiveQuotaPolicy = {
+  credits: number;
+  source: QuotaPolicySource;
+  version: number | null;
+  policyId: string | null;
+  effectivePeriod: string | null;
+};
+
+/** `GET admin/billing/quota/policy`：当前/下一账期的全局规则，可附带单个用户的覆盖。 */
+export type QuotaPolicyRange = {
+  current: EffectiveQuotaPolicy;
+  next: EffectiveQuotaPolicy;
+  versions: QuotaPolicyView[];
+};
+export type QuotaPolicyAdminView = {
+  period: string;
+  nextPeriod: string;
+  defaultCredits: number;
+  limits: { maxMonthlyQuotaCredits: number; maxQuotaAdjustmentCredits: number };
+  global: QuotaPolicyRange;
+  user: (QuotaPolicyRange & {
+    userId: string;
+    userAccount: string;
+    userName: string | null;
+    /** 当前账期的配额事实，供调整表单显示调整前剩余。 */
+    quota: AdminQuotaDetail;
+  }) | null;
+};
+
+const quotaPeriod = z.string().trim().regex(/^\d{4}-(0[1-9]|1[0-2])$/u, '账期必须形如 2026-12');
+
+/** 保存策略：expectedRevision 为 null 表示新建；带值表示替换该账期当前版本。 */
+export const quotaPolicySaveSchema = z
+  .object({
+    scope: z.enum(quotaPolicyScopes),
+    userId: idSchema.optional(),
+    effectivePeriod: quotaPeriod,
+    mode: z.enum(quotaPolicyModes),
+    credits: z.number().int('配额必须是整数 Credit').min(0, '配额不能是负数').max(maxMonthlyQuotaCredits, `单月配额不能超过 ${maxMonthlyQuotaCredits}`).nullish(),
+    expectedRevision: z.number().int().min(1).nullish(),
+    note: z.string().trim().max(500).nullish(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.scope === 'global' && (value.userId !== undefined || value.mode !== 'override')) {
+      ctx.addIssue({ code: 'custom', message: '全局策略必须是 override，且不能带 userId' });
+    }
+    if (value.scope === 'user' && value.userId === undefined) {
+      ctx.addIssue({ code: 'custom', message: '用户策略必须指定 userId' });
+    }
+    if (value.mode === 'override' && (value.credits === null || value.credits === undefined)) {
+      ctx.addIssue({ code: 'custom', message: '覆盖策略必须填写金额' });
+    }
+    if (value.mode === 'inherit' && value.credits !== null && value.credits !== undefined) {
+      ctx.addIssue({ code: 'custom', message: '继承策略不能带金额' });
+    }
+  });
+export type QuotaPolicySaveRequest = z.infer<typeof quotaPolicySaveSchema>;
+
+export type QuotaPolicySaveReceipt = {
+  policy: QuotaPolicyView;
+  /** 保存后按目标账期重新解析的结果，便于界面立即核对。 */
+  effective: EffectiveQuotaPolicy;
+};
+
+/** 每用户每账期一条基础发放事实；零配额也记一行。 */
+export type QuotaIssueView = {
+  id: string;
+  userId: string;
+  period: string;
+  baseCredits: number;
+  status: 'granted' | 'failed';
+  policySource: QuotaPolicySource;
+  policyVersion: number | null;
+  policyId: string | null;
+  grantId: string | null;
+  reason: string | null;
+  createTime: string;
+  updateTime: string;
+};
+
+// ---- 单用户当月配额调整（migrations/021_credit_quota_adjustment.sql）----
+
+export const quotaAdjustmentModes = ['increase', 'decrease', 'target'] as const;
+export type QuotaAdjustmentMode = (typeof quotaAdjustmentModes)[number];
+export const quotaAdjustmentModeLabels: Record<QuotaAdjustmentMode, string> = {
+  increase: '增加当月剩余',
+  decrease: '扣回当月剩余',
+  target: '设为目标剩余',
+};
+
+/** 调整请求：金额对 increase/decrease 是差额，对 target 是目标剩余。 */
+export const quotaAdjustmentRequestSchema = z
+  .object({
+    userId: idSchema,
+    /** 只允许当前账期；省略时由服务端取当前账期。 */
+    period: z.string().trim().regex(/^\d{4}-(0[1-9]|1[0-2])$/u, '账期必须形如 2026-11').optional(),
+    mode: z.enum(quotaAdjustmentModes),
+    amount: z.number().int('金额必须是整数 Credit').min(0, '金额不能是负数').max(maxQuotaAdjustmentCredits, `单次调整不能超过 ${maxQuotaAdjustmentCredits} Credit`),
+    reason: z.string().trim().min(1, '请填写调整理由').max(500, '调整理由最多 500 字'),
+    requestId: z.string().trim().min(1).max(128),
+  })
+  .superRefine((value, ctx) => {
+    if (value.mode !== 'target' && value.amount < 1) {
+      ctx.addIssue({ code: 'custom', message: '增加或扣回金额必须大于 0' });
+    }
+  });
+export type QuotaAdjustmentRequest = z.infer<typeof quotaAdjustmentRequestSchema>;
+
+export type QuotaAdjustmentView = {
+  id: string;
+  userId: string;
+  period: string;
+  mode: QuotaAdjustmentMode;
+  /** 有符号差额：增加为正，扣回为负；不会为 0。 */
+  credits: number;
+  reason: string;
+  operatorId: string;
+  requestId: string;
+  beforeCredits: number;
+  afterCredits: number;
+  createTime: string;
+};
+
+/** 调整回执：`created=false` 表示同键同载荷的重放，没有再改余额。 */
+export type QuotaAdjustmentReceipt = {
+  created: boolean;
+  adjustment: QuotaAdjustmentView;
+  period: string;
+  beforeCredits: number;
+  afterCredits: number;
+  expiresAt: string;
+};
+
+// ---- Admin 月度批量发放（migrations/022_credit_quota_batch.sql）----
+
+export const quotaBatchScopes = ['pending', 'users'] as const;
+export type QuotaBatchScope = (typeof quotaBatchScopes)[number];
+export const quotaBatchScopeLabels: Record<QuotaBatchScope, string> = {
+  pending: '全部待发',
+  users: '指定用户',
+};
+
+export const quotaBatchStatuses = ['previewed', 'running', 'completed', 'failed', 'superseded'] as const;
+export type QuotaBatchStatus = (typeof quotaBatchStatuses)[number];
+export const quotaBatchStatusLabels: Record<QuotaBatchStatus, string> = {
+  previewed: '待确认',
+  running: '执行中',
+  completed: '已完成',
+  failed: '失败',
+  superseded: '已过期',
+};
+export const quotaBatchStatusColors: Record<QuotaBatchStatus, string> = {
+  previewed: 'gold',
+  running: 'blue',
+  completed: 'green',
+  failed: 'red',
+  superseded: 'default',
+};
+
+export const quotaBatchItemStatuses = ['pending', 'granted', 'skipped', 'failed'] as const;
+export type QuotaBatchItemStatus = (typeof quotaBatchItemStatuses)[number];
+export const quotaBatchItemStatusLabels: Record<QuotaBatchItemStatus, string> = {
+  pending: '待发',
+  granted: '已发',
+  skipped: '跳过',
+  failed: '失败',
+};
+
+export const maxQuotaBatchUsers = 1000;
+export const maxQuotaBatchChunk = 500;
+
+export const quotaBatchPreviewSchema = z
+  .object({
+    period: z.string().trim().regex(/^\d{4}-(0[1-9]|1[0-2])$/u, '账期必须形如 2026-11').optional(),
+    scope: z.enum(quotaBatchScopes),
+    userIds: z.array(idSchema).min(1).max(maxQuotaBatchUsers).optional(),
+    limit: z.number().int().min(1).max(maxQuotaBatchUsers).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.scope === 'users' && (!value.userIds || value.userIds.length === 0)) {
+      ctx.addIssue({ code: 'custom', message: '指定用户批量发放必须给 userIds' });
+    }
+  });
+export type QuotaBatchPreviewRequest = z.infer<typeof quotaBatchPreviewSchema>;
+
+export const quotaBatchExecuteSchema = z.object({
+  batchId: z.string().trim().min(1).max(36),
+  previewToken: z.string().trim().min(1).max(64),
+  limit: z.number().int().min(1).max(maxQuotaBatchChunk).optional(),
+});
+export type QuotaBatchExecuteRequest = z.infer<typeof quotaBatchExecuteSchema>;
+
+export const quotaBatchRetrySchema = z.object({
+  batchId: z.string().trim().min(1).max(36),
+});
+export type QuotaBatchRetryRequest = z.infer<typeof quotaBatchRetrySchema>;
+
+/** 逐用户回执；userAccount/userName 为用户被删/预览时不存在时的可空展示。 */
+export type QuotaBatchItemView = {
+  userId: string;
+  userAccount: string | null;
+  userName: string | null;
+  baseCredits: number;
+  policySource: QuotaPolicySource;
+  policyVersion: number | null;
+  status: QuotaBatchItemStatus;
+  issueId: string | null;
+  reason: string | null;
+  updateTime: string;
+};
+
+/** 批次视图；`previewToken` 只在新建预览的响应里出现，列表/详情不返回。 */
+export type QuotaBatchView = {
+  id: string;
+  period: string;
+  scope: QuotaBatchScope;
+  status: QuotaBatchStatus;
+  previewToken?: string;
+  targetCount: number;
+  pendingCount: number;
+  grantedCount: number;
+  zeroCount: number;
+  skippedCount: number;
+  failedCount: number;
+  totalCredits: number;
+  issuedCredits: number;
+  scopeTotal: number;
+  truncated: boolean;
+  createdBy: string;
+  createTime: string;
+  startedTime: string | null;
+  finishedTime: string | null;
+  items?: QuotaBatchItemView[];
+};
+
+export type QuotaBatchList = { batches: QuotaBatchView[] };
 // ---- Credit Charge（migrations/012_credit_charge_entry.sql）----
 
 /**
@@ -356,6 +635,8 @@ export type ChargeReversalReceipt = {
 export type AdminUserUsage = {
   userId: string;
   account: AccountSnapshot;
+  /** 身份、配额拆解、快照核对与流水；92 的旧字段保留，界面逐步迁到这一份。 */
+  credit: AdminUserCreditDetail;
   charges: BillingChargeView[];
   estimatedRatio: number;
   unpricedRatio: number;
@@ -431,3 +712,135 @@ export function insufficientCreditsMessage(available: { quota: number; balance: 
   return `当前可用 Credit 为 ${available.total}（${poolLabels.quota} ${available.quota} + ${poolLabels.balance} ${available.balance}），`
     + '不足以开始新的生成。请联系管理员补充 Credit 后再提交。';
 }
+
+// ---- Admin 全用户额度总览（admin-credit-quota C1）----
+
+/** 总览筛选：待发、欠款、零可用；`all` 不额外过滤。 */
+export const adminCreditFilters = ['all', 'pending', 'debt', 'zero'] as const;
+export type AdminCreditFilter = (typeof adminCreditFilters)[number];
+export const adminCreditFilterLabels: Record<AdminCreditFilter, string> = {
+  all: '全部用户',
+  pending: '配额待发',
+  debt: '余额欠款',
+  zero: '零可用',
+};
+
+/** 列表排序；金额字段是「合计可用」与「余额池」。 */
+export const adminCreditSorts = ['id_desc', 'total_desc', 'total_asc', 'balance_desc', 'balance_asc'] as const;
+export type AdminCreditSort = (typeof adminCreditSorts)[number];
+export const adminCreditSortLabels: Record<AdminCreditSort, string> = {
+  id_desc: '用户 ID（新到旧）',
+  total_desc: '合计可用（高到低）',
+  total_asc: '合计可用（低到高）',
+  balance_desc: '余额池（高到低）',
+  balance_asc: '余额池（低到高）',
+};
+
+export const adminCreditOverviewQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  q: z.string().trim().max(256).optional(),
+  filter: z.enum(adminCreditFilters).default('all'),
+  sort: z.enum(adminCreditSorts).default('id_desc'),
+});
+export type AdminCreditOverviewQuery = z.infer<typeof adminCreditOverviewQuerySchema>;
+
+/** 管理面识别一个用户的三个字段；用户名为空时界面必须给占位，不能显示成空白。 */
+export type AdminCreditUser = { userId: string; userAccount: string; userName: string | null };
+
+/** 当前账期的发放状态：没有记录或失败是待发，零配额发放成功也算已发。 */
+export const adminQuotaStatuses = ['pending', 'granted', 'failed'] as const;
+export type AdminQuotaStatus = (typeof adminQuotaStatuses)[number];
+export const adminQuotaStatusLabels: Record<AdminQuotaStatus, string> = {
+  pending: '待发',
+  granted: '已发',
+  failed: '发放失败',
+};
+
+/** 配额的来源：全局默认、用户覆盖、迁移前旧 grant、代码兜底。 */
+export const quotaPolicySources = ['global', 'user', 'legacy', 'fallback'] as const;
+export type QuotaPolicySource = (typeof quotaPolicySources)[number];
+export const quotaPolicySourceLabels: Record<QuotaPolicySource, string> = {
+  global: '全局默认',
+  user: '用户覆盖',
+  legacy: '历史发放',
+  fallback: '系统默认',
+};
+
+/** 总览一行：金额全部由服务端按账期事实算出，界面不重算。 */
+export type AdminCreditOverviewItem = AdminCreditUser & {
+  period: string;
+  quotaBase: number;
+  quotaAdjustments: number;
+  quotaUsed: number;
+  quotaRemaining: number;
+  balance: number;
+  total: number;
+  debt: number;
+  issueStatus: AdminQuotaStatus;
+  policySource: QuotaPolicySource;
+  policyVersion: number | null;
+  expiresAt: string;
+  /** 已发状态下快照与账本事实不一致；未发用户的旧快照不视为异常。 */
+  snapshotAnomaly: boolean;
+};
+
+/** 总览统计只覆盖当前筛选范围，不是当前页。 */
+export type AdminCreditOverviewStats = {
+  userCount: number;
+  pendingCount: number;
+  quotaRemainingTotal: number;
+  balanceNetTotal: number;
+  debtorCount: number;
+  debtTotal: number;
+};
+
+export type AdminCreditOverview = {
+  period: string;
+  asOf: string;
+  page: number;
+  pageSize: number;
+  total: number;
+  items: AdminCreditOverviewItem[];
+  stats: AdminCreditOverviewStats;
+};
+
+/** 用户搜索下拉的候选：服务端按账号/用户名 OR 匹配，完整 ID 精确命中。 */
+export type AdminUserSearchResult = { users: AdminCreditUser[] };
+
+/** 当前账期的配额拆解。`remainingCredits = max(0, base + adjustments - used)`。 */
+export type AdminQuotaDetail = {
+  period: string;
+  baseCredits: number;
+  adjustmentCredits: number;
+  usedCredits: number;
+  remainingCredits: number;
+  issueStatus: AdminQuotaStatus;
+  policySource: QuotaPolicySource;
+  policyVersion: number | null;
+  expiresAt: string;
+};
+
+/** 用户详情：身份、两池事实、快照核对与最近流水。 */
+export type AdminUserCreditDetail = {
+  user: AdminCreditUser;
+  period: string;
+  quota: AdminQuotaDetail;
+  balance: number;
+  purchasedCredits: number;
+  purchasedCredits60d: number;
+  adminGrantedCredits: number;
+  total: number;
+  debt: number;
+  overdraft: number;
+  snapshot: { quota: number; balance: number; updateTime: string | null };
+  snapshotAnomaly: boolean;
+  grants: CreditGrantView[];
+  /** 当前/下一账期的有效规则；用户覆盖会改变 source 与金额。 */
+  rule: { current: EffectiveQuotaPolicy; next: EffectiveQuotaPolicy };
+  /** 最近的基础发放事实，含 0 配额；与 grant 流水分开。 */
+  issues: QuotaIssueView[];
+  /** 最近当月配额调整；金额是有符号差额。 */
+  adjustments: QuotaAdjustmentView[];
+  asOf: string;
+};

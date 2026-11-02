@@ -21,7 +21,7 @@ const outcomeColors: Record<ReconcileOutcome, string> = {
   failed: 'red',
 };
 
-export function ReconcilePanel() {
+export function ReconcilePanel({ embedded = false }: { embedded?: boolean }) {
   const { message } = App.useApp();
   const [items, setItems] = useState<PendingSettlementItem[]>([]);
   const [results, setResults] = useState<ReconcileItem[]>([]);
@@ -64,7 +64,7 @@ export function ReconcilePanel() {
     }
   }
 
-  return <section className={styles.adminPage}>
+  return <section className={embedded ? styles.embeddedPanel : styles.adminPage} aria-label="补结算与核对">
     <div className={styles.sectionHeading}>
       <h2>补结算与核对</h2>
       <span className={styles.statusHint}>终态但没有账单，或缺费率、有晚到用量的账单；重试不会重复扣费</span>

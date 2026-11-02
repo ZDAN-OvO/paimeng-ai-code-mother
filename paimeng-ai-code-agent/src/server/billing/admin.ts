@@ -12,6 +12,7 @@ import {
 import {
   accountSnapshot, chargesOf, effectiveCreditsOf, entriesOfCharge, recordGrant, reverseCharge, type CreditGrantRow,
 } from './ledger';
+import { adminUserCreditDetail } from './overview';
 
 export type GrantCreditsInput = {
   userId: string;
@@ -78,13 +79,15 @@ export async function userUsage(input: { userId: string; limit: number }): Promi
     .where(and(eq(users.id, BigInt(userId)), eq(users.isDelete, 0))).limit(1);
   if (!user) throw new BusinessError(404, 40400, '用户不存在');
 
-  const [account, charges] = await Promise.all([
+  const [account, charges, credit] = await Promise.all([
     accountSnapshot(userId),
     chargesOf({ userId, limit: input.limit, includeCost: true }),
+    adminUserCreditDetail(userId),
   ]);
   return {
     userId,
     account,
+    credit,
     charges,
     estimatedRatio: ratioOf(charges.filter(charge => charge.estimated).length, charges.length),
     unpricedRatio: ratioOf(charges.filter(charge => charge.unpriced).length, charges.length),

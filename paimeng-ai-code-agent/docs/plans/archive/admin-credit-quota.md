@@ -1,6 +1,10 @@
 # 额度管理：Credit 管理与配额管理
 
-状态：需求已记录，计划待实施。用户明确要求消除重复的补结算区域、支持管理员管理月度配额发放与单用户配额、查看所有用户的配额和 Credit。本轮只编写计划，不修改产品代码或业务数据。
+- 归档日期：2026-11-02
+- 实现入口：`/admin/billing`；运行约定见 [billing-operations](../../billing-operations.md)；决策见 [ADR-0005](../../adr/0005-configurable-monthly-quota.md)
+- 证据：[C1](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/blob/2b920c0b240e62eacdf33374703d4563b64ad086/paimeng-ai-code-agent/docs/evidence/admin-credit-quota/pr-c1/report.md)、[C2](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/blob/d2b62ab4a466ac87f11bf0b9266df6059adc5d17/paimeng-ai-code-agent/docs/evidence/admin-credit-quota/pr-c2/report.md)、[C3](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/blob/256f3c4a020462be62dffb6dbe278960acc834ad/paimeng-ai-code-agent/docs/evidence/admin-credit-quota/pr-c3/report.md)、[C4](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/blob/abc586bf9cdab74ee129765c9d943126ed0d6e1b/paimeng-ai-code-agent/docs/evidence/admin-credit-quota/pr-c4/report.md)
+
+状态：已实施并归档。实现拆成 C1（导航与全用户总览）、C2（可配置策略与统一发放）、C3（单用户调整）、C4（批量预览/执行/重试）四个 PR；本文保留原始设计与验收，当前运行规则以 `billing-operations.md`、ADR-0005 与代码/测试为准。
 
 ## 目标与范围
 
@@ -8,15 +12,15 @@ Admin 打开「额度管理」，在「Credit 管理」页签分页查看全用�
 
 配额池与余额池都以 Credit 计量。产品文案明确区分「每月配额」「配额池剩余」「余额池 Credit」「合计可用」，避免让人以为配额与 Credit 是两种不同货币。原有先扣配额、后扣余额、配额按北京自然月失效不结转、余额不随月重置的规则继续有效。
 
-本计划统一维护额度管理导航、Credit 管理/配额管理两个主页签、用户搜索选择和布局调整，以及全用户总览与管理员配额操作；原 TODO 清单已合并并废弃，不再单独维护。模型身份与费率管理另见 [provider-model-billing](provider-model-billing.md)，两项重构可独立推进；都改到 billing 共享契约和运维文档时顺序整合，避免互相覆盖。
+本计划统一维护额度管理导航、Credit 管理/配额管理两个主页签、用户搜索选择和布局调整，以及全用户总览与管理员配额操作；原 TODO 清单已合并并废弃，不再单独维护。模型身份与费率管理另见 [provider-model-billing](../provider-model-billing.md)，两项重构可独立推进；都改到 billing 共享契约和运维文档时顺序整合，避免互相覆盖。
 
 ## 已核实的现状
 
-- [billing/page.tsx](../../src/app/admin/billing/page.tsx) 在 `BillingManager` 后独立渲染 `ReconcilePanel`。Tabs 只切换前半部分，所以两张截图的「补结算与核对」实际是同一个页签外区域，不是两套后台逻辑。
-- [billing-manager.tsx](../../src/components/billing/billing-manager.tsx) 目前只有「发放 Credit」「用户用量与冲正」两个页签；发放表单明确排除了 `monthly_quota`。
-- [quota.ts](../../src/server/billing/quota.ts) 已有按北京自然月每用户 500 Credit 的惰性发放、并发幂等和批量补发；批量入口是 [billing-quota.ts](../../scripts/ops/billing-quota.ts)。目前没有常驻月度定时器。
-- [admin.ts](../../src/server/billing/admin.ts) 拒绝管理员通过普通余额发放入口手工发月度配额；用户用量查询仅支持指定用户，没有全用户资金总览。
-- [010 迁移](../../migrations/010_credit_grant_account.sql) 限制 grant 必须为正数、每用户每月只有一条基础月度 grant；当前配额重算仅识别月度 grant。因此不能直接复用「购买/补偿」入口补配额，也不能只改 `credit_account` 的余额来完成管理。
+- [billing/page.tsx](../../../src/app/admin/billing/page.tsx) 在 `BillingManager` 后独立渲染 `ReconcilePanel`。Tabs 只切换前半部分，所以两张截图的「补结算与核对」实际是同一个页签外区域，不是两套后台逻辑。
+- [billing-manager.tsx](../../../src/components/billing/billing-manager.tsx) 目前只有「发放 Credit」「用户用量与冲正」两个页签；发放表单明确排除了 `monthly_quota`。
+- [quota.ts](../../../src/server/billing/quota.ts) 已有按北京自然月每用户 500 Credit 的惰性发放、并发幂等和批量补发；批量入口是 [billing-quota.ts](../../../scripts/ops/billing-quota.ts)。目前没有常驻月度定时器。
+- [admin.ts](../../../src/server/billing/admin.ts) 拒绝管理员通过普通余额发放入口手工发月度配额；用户用量查询仅支持指定用户，没有全用户资金总览。
+- [010 迁移](../../../migrations/010_credit_grant_account.sql) 限制 grant 必须为正数、每用户每月只有一条基础月度 grant；当前配额重算仅识别月度 grant。因此不能直接复用「购买/补偿」入口补配额，也不能只改 `credit_account` 的余额来完成管理。
 
 ## 页面结构
 
@@ -68,7 +72,7 @@ Admin 打开「额度管理」，在「Credit 管理」页签分页查看全用�
 - 金额为非负整数，允许 0 表示该用户或策略生效范围不发基础配额。必须区分「没有覆盖，继承默认」与「覆盖为 0」。单笔/每月上限由共享契约校验，实施前确定，不默默沿用购买上限。
 - 策略带生效账期与版本记录，建议从下个月或指定未来月生效；不回改已结束月份，不因修改默认值覆盖已发放的当前月。
 - 页面显示当前与未来生效规则，保存前给出受影响范围及是否被用户覆盖。新增、替换尚未生效策略也留可追溯版本；并发保存使用版本校验，冲突返回 409。
-- 原固定 500/月属于 [ADR-0004](../adr/0004-credit-billing.md) 的现行决策。本计划实施后允许配置属于业务规则扩展，需记录新决策，不能只改常量并让旧文档继续声称固定 500。
+- 原固定 500/月属于 [ADR-0004](../../adr/0004-credit-billing.md) 的现行决策。本计划实施后允许配置属于业务规则扩展，需记录新决策，不能只改常量并让旧文档继续声称固定 500。
 
 ### 当月怎么发：基础配额发放
 
@@ -145,7 +149,7 @@ Admin 打开「额度管理」，在「Credit 管理」页签分页查看全用�
 7. 当月调整在下月失效；对旧账期退款不会恢复本月配额，余额池购买/补偿与透支线不受配额调整污染。
 8. 菜单显示「额度管理」，主页签仅「Credit 管理」「配额管理」；从总览选中用户进入余额发放、账单冲正，身份保持；补结算仅通过 Credit 管理工具入口打开一次，配额管理和页签外均不重复显示，保留原重试幂等逻辑。
 
-验证分层沿用 [tests/AGENTS.md](../../tests/AGENTS.md)：策略解析和账期计算用 unit；真库、并发、迁移和批次用 integration，严格使用 `_test`；可见行为用 Playwright 和本机 `verify-paimeng-agent` 技能。证据包含初始状态、提交、中间状态、回执、刷新复核与必要 SQL，不能用接口桩或通过总数替代。
+验证分层沿用 [tests/AGENTS.md](../../../tests/AGENTS.md)：策略解析和账期计算用 unit；真库、并发、迁移和批次用 integration，严格使用 `_test`；可见行为用 Playwright 和本机 `verify-paimeng-agent` 技能。证据包含初始状态、提交、中间状态、回执、刷新复核与必要 SQL，不能用接口桩或通过总数替代。
 
 运行门禁为类型检查、对应 unit/integration、完整 integration、UI/E2E 护栏和相关 E2E；开发模式检查 antd 警告。已有根目录未提交文档引起的 boundary 失败单独报告，不删除用户改动或放宽检查。
 
@@ -162,21 +166,21 @@ Admin 打开「额度管理」，在「Credit 管理」页签分页查看全用�
 
 以下清单承接原 TODO，具体规则与验收以本计划对应章节为准。所有任务尚未实施。
 
-- [ ] 顶部菜单改为「额度管理」，路由仍为 `/admin/billing`。
-- [ ] 两个主页签改为「Credit 管理」「配额管理」；旧查账与冲正归入 Credit 管理。
-- [ ] Credit 管理默认提供全用户配额池、余额池、合计可用与欠款总览，支持分页、搜索、筛选及用户详情操作。
-- [ ] 配额管理支持月度默认标准、单用户覆盖、当月单用户/批量发放、发放记录与配额调整。
-- [ ] 补结算仅在 Credit 管理保留一个按需打开的工具入口，不常驻 Tabs 外，不在两个页签重复显示。
-- [ ] 用户搜索选择展示账号 + 用户名 + ID，完整 ID 粘贴可用，提交仍为用户 ID。
-- [ ] 调整发放表单布局，为用户身份与备注留足空间，宽窄屏均可操作，不把五个控件强塞一行。
-- [ ] 发放和调整有幂等保护、操作者、原因/备注与回执；浏览总览不触发发放，余额变化有账本事实。
-- [ ] 完成月度切换、重复发放、配额调整、欠款、权限、宽窄屏回归与逐步功能证据。
-- [ ] 账本迁移保留旧事实，历史金额不变，不在结构迁移中执行批量发放或补扣。
-- [ ] 更新 [billing-operations](../billing-operations.md)、相关契约与配额可配置化的决策；不得把本计划当作已上线规则。
-- [ ] 按 [docs 生命周期](../AGENTS.md) 将完成计划归档并维护引用。
+- [x] 顶部菜单改为「额度管理」，路由仍为 `/admin/billing`。
+- [x] 两个主页签改为「Credit 管理」「配额管理」；旧查账与冲正归入 Credit 管理。
+- [x] Credit 管理默认提供全用户配额池、余额池、合计可用与欠款总览，支持分页、搜索、筛选及用户详情操作。
+- [x] 配额管理支持月度默认标准、单用户覆盖、当月单用户/批量发放、发放记录与配额调整。
+- [x] 补结算仅在 Credit 管理保留一个按需打开的工具入口，不常驻 Tabs 外，不在两个页签重复显示。
+- [x] 用户搜索选择展示账号 + 用户名 + ID，完整 ID 粘贴可用，提交仍为用户 ID。
+- [x] 调整发放表单布局，为用户身份与备注留足空间，宽窄屏均可操作，不把五个控件强塞一行。
+- [x] 发放和调整有幂等保护、操作者、原因/备注与回执；浏览总览不触发发放，余额变化有账本事实。
+- [x] 完成月度切换、重复发放、配额调整、欠款、权限、宽窄屏回归与逐步功能证据。
+- [x] 账本迁移保留旧事实，历史金额不变，不在结构迁移中执行批量发放或补扣。
+- [x] 更新 [billing-operations](../../billing-operations.md)、相关契约与配额可配置化的决策；不得把本计划当作已上线规则。
+- [x] 按 [docs 生命周期](../../AGENTS.md) 将完成计划归档并维护引用。
 
 ### 关联任务：模型配置与费率重构
 
-- [ ] 推进[提供商模型、槽位与费率关联重构计划](provider-model-billing.md)。
+- [ ] 推进[提供商模型、槽位与费率关联重构计划](../provider-model-billing.md)。
 
 此项保留原 TODO 的任务入口，详细设计仅在模型计划中维护。用户已认可由「提供商下的模型」统一关联槽位、费率和运行用量的方向；上游候选发现与本地配置分开，列表变化不自动停用模型、改指槽位或覆盖价格。

@@ -13,7 +13,7 @@ import {
 } from '../../support/billing';
 import { db, getPool } from '@/server/infra/db';
 import {
-  appAuthority, appPreviewPointers, apps, creditAccounts, creditCharges, creditEntries, creditGrants,
+  appAuthority, appPreviewPointers, apps, creditAccounts, creditCharges, creditEntries, creditGrants, creditQuotaAdjustments, creditQuotaIssues,
   generationDeliveries, generationExecutions, generationInputs, generationQuestions, generationSteps,
   generationTransitions, generations, sessions, sourceSnapshots, users, versionRecords,
 } from '@/server/infra/schema';
@@ -41,7 +41,7 @@ let snapshotsRoot = '';
 
 beforeAll(async () => {
   await applyBillingMigrations(
-    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '014_credit_entry_audit.sql',
+    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '014_credit_entry_audit.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql',
   );
   base = await realpath(await mkdtemp(join(tmpdir(), 'paimeng-settlement-')));
   runtimeRoot = join(base, 'runtime');
@@ -74,6 +74,8 @@ afterAll(async () => {
   }
   if (createdUsers.length) {
     const ids = createdUsers.map(id => BigInt(id));
+    await db().delete(creditQuotaAdjustments).where(inArray(creditQuotaAdjustments.userId, ids));
+    await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, ids));
     await db().delete(creditGrants).where(inArray(creditGrants.userId, ids));
     await db().delete(creditAccounts).where(inArray(creditAccounts.userId, ids));
     await db().delete(sessions).where(inArray(sessions.userId, ids));

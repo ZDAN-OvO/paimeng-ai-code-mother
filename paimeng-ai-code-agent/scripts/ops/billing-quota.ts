@@ -18,5 +18,6 @@ const url = new URL(process.env.DATABASE_URL ?? '');
 if (!/^paimeng_app(?:_test)?$/.test(url.pathname.slice(1))) throw new Error('仅允许对独立的 paimeng_app 库发放配额');
 
 const run = await issueMonthlyQuota({ dryRun: !apply, limit });
-console.log(`${apply ? '已发放' : '试运行（加 --apply 才写库）'}：账期 ${run.period}，待发放用户 ${run.scanned}，实际发放 ${run.granted}`);
+console.log(`${apply ? '已发放' : '试运行（加 --apply 才写库）'}：账期 ${run.period}，扫描 ${run.scanned} 人，`
+  + `新建发放事实 ${run.issued} 条（实际 grant ${run.granted}，0 配额 ${run.zero}），合计 ${run.credits} Credit`);
 await getPool().end();

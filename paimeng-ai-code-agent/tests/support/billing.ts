@@ -7,7 +7,7 @@ import { GET, POST } from '@/app/api/[...path]/route';
 import { db, getPool, now } from '@/server/infra/db';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import {
-  apps, creditAccounts, creditGrants, creditRateCard, generationSteps, generations, users,
+  apps, creditAccounts, creditGrants, creditQuotaAdjustments, creditQuotaIssues, creditRateCard, generationSteps, generations, users,
 } from '@/server/infra/schema';
 import { rebuildAccount, recordGrant } from '@/server/billing/ledger';
 import type { CreditPool } from '@/shared/billing';
@@ -198,6 +198,9 @@ export async function billingBalancesOf(userId: string): Promise<{ quota: number
 export async function withoutMonthlyQuota(owner: BillingTestUser): Promise<BillingTestUser> {
   await db().delete(creditGrants)
     .where(and(eq(creditGrants.userId, BigInt(owner.id)), eq(creditGrants.source, 'monthly_quota')));
+  // C2 起发放事实以 issue 为准：只删 grant 会让 fixture 看起来仍然「已发」。
+  await db().delete(creditQuotaAdjustments).where(eq(creditQuotaAdjustments.userId, BigInt(owner.id)));
+  await db().delete(creditQuotaIssues).where(eq(creditQuotaIssues.userId, BigInt(owner.id)));
   await rebuildAccount(owner.id);
   return owner;
 }

@@ -27,3 +27,25 @@
 .rateCardCost{display:flex;flex-direction:column;gap:4px}
 
 .usageLegend{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:12px 0 16px;color:#999;font-size:12px}
+
+/* 额度管理（admin-credit-quota）：总览、筛选与抽屉 */
+.headingActions{margin-left:auto;display:flex;flex-wrap:wrap;gap:8px}
+.ownBalance{display:flex;flex-direction:column;gap:4px;margin:0 0 12px;padding:12px;border:1px solid #f0f0f0;border-radius:8px}
+.overviewStats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:12px 0 16px}
+.statCard{display:flex;flex-direction:column;gap:2px;min-width:0;padding:12px;border:1px solid #f0f0f0;border-radius:8px}
+.statCard strong{font-size:18px;line-height:1.3;overflow-wrap:anywhere}
+.statLabel{color:#8c8c8c;font-size:12px}
+.identityCell{display:flex;flex-direction:column;gap:2px;min-width:0}
+.identityCell > span{overflow-wrap:anywhere}
+.filterBar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:12px 0 16px}
+.embeddedPanel{padding:0}
+
+@media (max-width:720px){
+ .adminPage{padding:12px}
+ .headingActions{margin-left:0;width:100%}
+ .overviewStats{grid-template-columns:1fr 1fr}
+}
+.userJump{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
+.policyForm{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 16px;border:1px solid #f0f0f0;border-radius:8px;padding:16px 16px 0}
+.policyForm :global(.ant-form-item:last-child){grid-column:1/-1;margin-bottom:16px}
+.policyUserPicker{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0 12px}
