@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { assertGitSubcommand } from '@/server/generation/durable/git-args';
+import { versionRepo } from '@/server/versioning/version-store';
 import { baseUrl, freePort, harnessAvailable, postgresReachable, postgresUrl, productRoot, startHarness, stopHarness, waitForState, waitHealthy, type HarnessProcess } from './support';
 
 const harnessReady = harnessAvailable();
@@ -12,6 +13,7 @@ if (!harnessReady) process.stderr.write('[durable-m1] 跳过 git 工具：找不
 else if (!postgresReady) process.stderr.write(`[durable-m1] 跳过 git 工具：Postgres 不可达（${postgresUrl}），先跑 npm run durable:pg -- start\n`);
 
 const appId = '901000000000000301';
+const appRef = { id: appId, codeGenType: 'html' as const };
 /** 工具的 git 命令跑在应用工作区里（workspace(app)），对话的 cwd 必须就是这里，否则测的不是同一棵树。 */
 const appWorkspace = join(productRoot, 'runtime', 'code_output', `html_${appId}`);
 const gitTestEnv = {
@@ -26,8 +28,12 @@ const gitTestEnv = {
 	GIT_COMMITTER_EMAIL: 'test@example.com',
 };
 
+function repo(): string {
+	return versionRepo(appRef);
+}
+
 function git(args: string[]): string {
-	return execFileSync('git', args, { cwd: appWorkspace, env: gitTestEnv, encoding: 'utf8' });
+	return execFileSync('git', ['--git-dir', repo(), '--work-tree', appWorkspace, ...args], { env: gitTestEnv, encoding: 'utf8' });
 }
 
 function commitCount(): number {
@@ -36,8 +42,10 @@ function commitCount(): number {
 
 function initRepo(): string {
 	rmSync(appWorkspace, { recursive: true, force: true });
+	rmSync(repo(), { recursive: true, force: true });
 	mkdirSync(appWorkspace, { recursive: true });
-	git(['init', '-b', 'main']);
+	mkdirSync(dirname(repo()), { recursive: true });
+	execFileSync('git', ['init', '--bare', '-q', '-b', 'main', repo()], { env: gitTestEnv, encoding: 'utf8' });
 	writeFileSync(join(appWorkspace, 'index.html'), '<!doctype html><html><body>v1</body></html>');
 	git(['add', '-A']);
 	git(['commit', '-m', '初始版本']);
@@ -147,14 +155,16 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M1：git 工具', () =
 			await stopHarness(harness);
 			rmSync(runDir, { recursive: true, force: true });
 			rmSync(appWorkspace, { recursive: true, force: true });
+			rmSync(repo(), { recursive: true, force: true });
 		}
 	}, 180_000);
 
-	it('第一次显式使用 git 时把工作区初始化成仓库', async () => {
+	it('第一次显式使用 git 时初始化平台裸库，工作区不出现 .git', async () => {
 		rmSync(appWorkspace, { recursive: true, force: true });
+		rmSync(repo(), { recursive: true, force: true });
 		mkdirSync(appWorkspace, { recursive: true });
 		writeFileSync(join(appWorkspace, 'index.html'), '<!doctype html><html><body>no repo yet</body></html>');
-		expect(existsSync(join(appWorkspace, '.git', 'HEAD'))).toBe(false);
+		expect(existsSync(join(repo(), 'HEAD'))).toBe(false);
 		const runDir = mkdtempSync(join(tmpdir(), 'durable-git-init-'));
 		const { base, harness } = await startGitHarness({ runDir, args: ['status'], finalText: 'GIT_INIT_DONE' });
 		try {
@@ -164,12 +174,14 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M1：git 工具', () =
 			expect(result.text).toContain('On branch main');
 			expect(result.exitCode).toBe(0);
 			expect(result.isError).toBe(false);
-			// 第一次使用就把这个工作区变成仓库，之后的提交才有地方落。
-			expect(existsSync(join(appWorkspace, '.git', 'HEAD'))).toBe(true);
+			// 第一次使用就建好平台裸库，之后的提交才有地方落；工作区保持普通文件。
+			expect(existsSync(join(repo(), 'HEAD'))).toBe(true);
+			expect(existsSync(join(appWorkspace, '.git'))).toBe(false);
 		} finally {
 			await stopHarness(harness);
 			rmSync(runDir, { recursive: true, force: true });
 			rmSync(appWorkspace, { recursive: true, force: true });
+			rmSync(repo(), { recursive: true, force: true });
 		}
 	}, 180_000);
 
@@ -190,6 +202,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M1：git 工具', () =
 			await stopHarness(harness);
 			rmSync(runDir, { recursive: true, force: true });
 			rmSync(appWorkspace, { recursive: true, force: true });
+			rmSync(repo(), { recursive: true, force: true });
 		}
 	}, 180_000);
 
@@ -211,6 +224,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M1：git 工具', () =
 			await stopHarness(harness);
 			rmSync(runDir, { recursive: true, force: true });
 			rmSync(appWorkspace, { recursive: true, force: true });
+			rmSync(repo(), { recursive: true, force: true });
 		}
 	}, 180_000);
 
@@ -230,6 +244,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M1：git 工具', () =
 			await stopHarness(harness);
 			rmSync(runDir, { recursive: true, force: true });
 			rmSync(appWorkspace, { recursive: true, force: true });
+			rmSync(repo(), { recursive: true, force: true });
 		}
 	}, 180_000);
 
@@ -247,6 +262,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M1：git 工具', () =
 			await stopHarness(harness);
 			rmSync(runDir, { recursive: true, force: true });
 			rmSync(appWorkspace, { recursive: true, force: true });
+			rmSync(repo(), { recursive: true, force: true });
 		}
 	}, 180_000);
 });

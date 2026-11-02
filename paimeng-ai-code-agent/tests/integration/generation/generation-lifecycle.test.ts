@@ -16,7 +16,7 @@ import {
 import {
   appendInput, beginChecking, markInputResolved, releaseAuthority, setDraft, setExecutionStatus,
 } from '@/server/generation/control-store';
-import { commitVersionFrom, prepareVersionCommit, purgeVersions } from '@/server/versioning/version-store';
+import { commitVersionFrom, prepareVersionCommit, purgeVersions, versionRepo } from '@/server/versioning/version-store';
 import { generationControl, generationFor } from '@/server/generation/generation-store';
 import { closeExecutionAndDrain, sealExecution, withExecutionWrite } from '@/server/workspace/execution-workspace';
 import { createDelivery, currentDelivery } from '@/server/delivery/delivery-store';
@@ -553,10 +553,9 @@ describe('publishReady：一次生成只落一版、一个交付、一个指针'
     const started = await startInput(app);
     await writeFileIn(started.execution!.directory, 'index.html', '<html><body>提交失败</body></html>');
     await markInputResolved({ appId: app.id, inputId: started.input.id });
-    // 让版本仓库不可用：应用工作区的 .git 被一个普通文件占住，ensureVersionRepo 会失败。
-    const appWorkspace = workspace(app);
-    await mkdir(appWorkspace, { recursive: true });
-    await writeFile(join(appWorkspace, '.git'), 'not a git dir');
+    // 让版本仓库不可用：平台裸库的位置被一个普通文件占住，ensureVersionRepo 会失败。
+    await mkdir(dirname(versionRepo(app)), { recursive: true });
+    await writeFile(versionRepo(app), 'not a git dir');
 
     await expect(publishReady({
       app, generationId: started.generationId, epoch: started.epoch!,

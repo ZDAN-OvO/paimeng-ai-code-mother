@@ -9,6 +9,7 @@ import { fallbackVersionTitle, versionIdSchema, type AppVersion, type AppVersion
 import { getConfig } from '../infra/config';
 import { installGitGuard } from './git-guard';
 import { insertVersionRow, listVersionRows, versionRowOf, type VersionRow } from './version-ledger';
+import { commitLimitViolation, type CommitEntry } from './commit-limits';
 import { workspace, type WorkspaceApp } from '../workspace/workspace';
 
 const run = promisify(execFile);
@@ -26,6 +27,14 @@ const maxTitleLength = 200;
 const lockTimeoutMs = 30_000;
 const lockStaleMs = 60_000;
 
+/** 提交内容超过平台配额：消息本身就是给用户看的中文原因。 */
+class CommitLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CommitLimitError';
+  }
+}
+
 export class GitCommandError extends Error {
   constructor(readonly args: string[], readonly stderr: string, readonly code: number | string | null) {
     // 把整串 argv 塞进错误只会淹没有用信息（工具调用面板里会变成几屏路径）。
@@ -36,17 +45,19 @@ export class GitCommandError extends Error {
   }
 }
 
-/** 平台数据根：只放跨应用的东西（版本截图、标题缓存、跨进程锁）。应用历史在工作区的 .git 里。 */
+/** 平台数据根：应用版本库、版本截图、标题缓存、跨进程锁与临时索引都在这里。 */
 export function versionRoot() {
   return join(getConfig().runtimeRoot, 'versionstore');
 }
 
 /**
- * 应用的 git 仓库就是工作区里的 .git（普通仓库），模型经 git 工具直接操作它；
- * 文件工具碰不到它（workspace 的 blocked 集合挡 .git）。
+ * 应用版本库是平台独占的裸库，Workspace 只是它的 worktree。
+ *
+ * 容器和模型都看不到这个路径，所以对象、引用和历史钩子都在 App runtime 的挂载范围之外；
+ * 平台用临时索引从 Workspace 或执行目录提交，绝不让容器进程写历史。
  */
 export function versionRepo(app: WorkspaceApp) {
-  return join(workspace(app), '.git');
+  return join(versionRoot(), 'repos', `${app.codeGenType}_${app.id}.git`);
 }
 
 /** 一阶段裸库的位置：只在惰性迁移时读取，迁移后原库保留。 */
@@ -211,33 +222,61 @@ async function withLock<T>(app: WorkspaceApp, work: () => Promise<T>): Promise<T
 }
 
 /**
- * 显式写入口：初始化/迁移工作区里的普通仓库。
- * 一阶段裸库只复制不搬走——它是唯一来源，迁移后原样保留；也不强制检出，工作区内容由后续操作决定。
+ * 显式写入口：确保平台裸库存在。
+ *
+ * 旧版本把仓库放在工作区的 .git 里：第一次走到这里时把整个仓库搬到平台裸库，
+ * 历史与引用原样保留，Workspace 从此只剩普通文件。一阶段裸库只复制不搬走，
+ * 它是旧数据的来源，迁移后原样保留。
  */
 export async function ensureVersionRepo(app: WorkspaceApp) {
   const repo = versionRepo(app);
   const tree = workspace(app);
   if (!await exists(join(repo, 'HEAD'))) {
-    await mkdir(versionRoot(), { recursive: true });
-    const legacy = legacyBareRepo(app);
-    if (await exists(join(legacy, 'HEAD'))) {
-      await cp(legacy, repo, { recursive: true, force: true });
-      await git(repo, null, ['config', 'core.bare', 'false']);
-      // 裸库没有索引：按 HEAD 建一份，让「工作区脏不脏」先有可比对的基线，且不覆盖任何工作区文件。
-      const head = (await gitRaw(repo, null, ['rev-parse', '--verify', '--quiet', 'HEAD'])).stdout.trim();
-      if (head) await git(repo, null, ['read-tree', head]);
-    } else {
-      await run('git', ['init', '--quiet', '-b', 'main', tree], { env: gitEnv });
+    await mkdir(dirname(repo), { recursive: true });
+    if (!await adoptLegacyWorkspaceRepo(repo, tree)) {
+      const legacy = legacyBareRepo(app);
+      if (await exists(join(legacy, 'HEAD'))) {
+        await cp(legacy, repo, { recursive: true, force: true });
+        // 工作区里的裸库副本没有索引：按 HEAD 建一份，脏检查先有可比对的基线。
+        const head = (await gitRaw(repo, null, ['rev-parse', '--verify', '--quiet', 'HEAD'])).stdout.trim();
+        if (head) await git(repo, null, ['read-tree', head]);
+      } else {
+        await run('git', ['init', '--bare', '--quiet', '-b', 'main', repo], { env: gitEnv });
+      }
     }
+  } else {
+    // 平台裸库已经是权威来源：工作区里遗留的 .git 不能再留，否则容器会看见历史元数据。
+    await rm(join(tree, '.git'), { recursive: true, force: true });
   }
-  await configureRepo(repo, tree);
+  await configureRepo(repo);
   return repo;
 }
 
-/** 仓库配置与安全闸：幂等，每次 ensure 都补一遍（hook 被删掉也会自动恢复）。 */
-async function configureRepo(repo: string, tree: string) {
+/**
+ * 旧平台把仓库放在 Workspace 的 .git 里（普通仓库）。搬到平台裸库后它就是同一份历史，
+ * 只是不再位于挂载范围内；返回 false 表示这里没有可搬的仓库，调用方走旧裸库或新建。
+ */
+async function adoptLegacyWorkspaceRepo(repo: string, tree: string) {
+  const local = join(tree, '.git');
+  const info = await lstat(local).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!info) return false;
+  if (info.isDirectory() && await exists(join(local, 'HEAD'))) {
+    await rm(repo, { recursive: true, force: true });
+    await rename(local, repo);
+    return true;
+  }
+  // 空目录、`.git` 文件或软链接都不是平台仓库，删掉即可；Workspace 不保留 Git 元数据。
+  await rm(local, { recursive: true, force: true });
+  return false;
+}
+
+/** 裸库配置与安全闸：幂等，每次 ensure 都补一遍（hook 被删掉也会自动恢复）。 */
+async function configureRepo(repo: string) {
   for (const [key, value] of [
-    ['core.bare', 'false'],
+    ['core.bare', 'true'],
     ['core.autocrlf', 'false'],
     ['core.fileMode', 'false'],
     ['core.quotepath', 'false'],
@@ -247,6 +286,8 @@ async function configureRepo(repo: string, tree: string) {
   ]) {
     await git(repo, null, ['config', key, value]);
   }
+  // 旧工作区仓库搬进来时可能留着 core.worktree，去掉它，避免 git 在 Workspace 里找索引。
+  await gitRaw(repo, null, ['config', '--unset-all', 'core.worktree']);
   // 忽略规则由平台补进 info/exclude：模板不一定自带 .gitignore，
   // 有它之后模型直接 git add -A 也不会把依赖、构建产物和密钥提交进历史。
   const exclude = [
@@ -256,8 +297,8 @@ async function configureRepo(repo: string, tree: string) {
   const excludeFile = join(repo, 'info', 'exclude');
   await mkdir(dirname(excludeFile), { recursive: true });
   await writeFile(excludeFile, `${exclude.join('\n')}\n`);
-  // 历史只增的强制闸：删除分支与非快进更新由 git 自己拒绝。
-  await installGitGuard(tree);
+  // 历史只增的强制闸：删除分支与非快进更新由 git 自己拒绝。钩子放在裸库里，模型看不到也删不掉。
+  await installGitGuard(repo);
 }
 
 /** 当前 HEAD 所在分支；游离 HEAD 或空仓库返回 null。 */
@@ -481,7 +522,7 @@ async function assertCleanSource(repo: string, tree: string, commit: string) {
 }
 
 /**
- * 临时索引：版本提交只写这里，应用仓库的默认 `.git/index` 一个字节都不碰。
+ * 临时索引：版本提交只写这里，平台裸库的默认索引一个字节都不碰。
  * 放在 runtime/tmp 下，每条路径唯一，退出（包括抛错）时连 `.lock` 一起清掉。
  */
 async function withTempIndex<T>(work: (index: string) => Promise<T>): Promise<T> {
@@ -582,6 +623,30 @@ function excludeSpecs(extra: readonly string[] | undefined) {
 }
 
 /**
+ * 整个 worktree 差异的提交配额：文件数、单文件体积、合计体积。
+ *
+ * 在提交对象落地之前检查，超限时只留下临时索引与 git 已经算过的 blob，
+ * 不会产生 commit、pin、HEAD 移动或台账行；Workspace 一个字节也不动。
+ */
+async function assertCommitWithinLimits(repo: string, hasParent: boolean, baseTree: string, tree: string) {
+  const sizes = new Map<string, number>();
+  const listing = await git(repo, null, ['ls-tree', '-r', '-l', '-z', tree]);
+  for (const token of listing.split('\0')) {
+    if (!token) continue;
+    const tab = token.indexOf('\t');
+    if (tab < 0) continue;
+    const size = Number(token.slice(0, tab).trim().split(/\s+/).at(-1)) || 0;
+    sizes.set(token.slice(tab + 1), size);
+  }
+  const paths = hasParent
+    ? (await git(repo, null, ['diff-tree', '-r', '--no-commit-id', '--name-only', '-z', baseTree, tree])).split('\0').filter(Boolean)
+    : [...sizes.keys()];
+  const entries: CommitEntry[] = paths.map(path => ({ path, bytes: sizes.get(path) ?? 0 }));
+  const violation = commitLimitViolation(entries, getConfig().commitLimits);
+  if (violation) throw new CommitLimitError(violation);
+}
+
+/**
  * 提交内容构造的唯一实现：调用方必须已经持有版本写锁、也已校验过 workTree。
  * 只用临时索引；提交对象与钉子在这里落地，台账与 HEAD 由调用方决定。
  */
@@ -603,6 +668,8 @@ async function prepareCommitLocked(input: {
       : emptyTree;
     // 与父提交同一棵树就说明没有需要版本化的改动（依赖、构建产物、平台元数据已被排除）。
     if (tree === baseTree) return null;
+    // 所有提交入口（工作区、执行目录、发布前构造）都经过这里，配额因此只有一处实现。
+    await assertCommitWithinLimits(repo, baseline !== null, baseTree, tree);
     // 标题要在提交之前定：提交信息与台账标题必须同一句话，否则面板与 git log 会各说一套。
     const changedFiles = (baseline
       ? await git(repo, null, ['diff-tree', '-r', '--no-commit-id', '--name-only', '-z', baseTree, tree], { env })

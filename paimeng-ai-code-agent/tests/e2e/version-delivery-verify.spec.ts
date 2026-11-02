@@ -59,6 +59,7 @@ test.afterAll(async () => {
   if (appId) {
     await rm(join(workspaceRoot, 'runtime/code_output', 'multi_file_' + appId), { recursive: true, force: true }).catch(() => undefined);
     await rm(join(workspaceRoot, 'runtime/versionstore/versions', 'multi_file_' + appId), { recursive: true, force: true }).catch(() => undefined);
+    await rm(join(workspaceRoot, 'runtime/versionstore/repos', 'multi_file_' + appId + '.git'), { recursive: true, force: true }).catch(() => undefined);
     await db.query('delete from app where id = $1', [appId]).catch(() => undefined);
   }
   await db?.end().catch(() => undefined);

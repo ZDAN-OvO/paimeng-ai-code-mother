@@ -67,9 +67,9 @@ async function readProject(path: string) {
   return readFile(join(workspace(appRef()), path), 'utf8');
 }
 
-/** 版本事实全在 Git 里：断言直接读工作区的真实 HEAD/refs，而不是任何镜像表。 */
+/** 版本事实全在平台裸库里：断言直接读真实 HEAD/refs，而不是任何镜像表。 */
 async function git(args: string[]) {
-  const { stdout } = await run('git', ['-C', workspace(appRef()), ...args], { env: gitEnv });
+  const { stdout } = await run('git', ['--git-dir', versionRepo(appRef()), '--work-tree', workspace(appRef()), ...args], { env: gitEnv });
   return stdout.trim();
 }
 

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,6 +11,7 @@ import {
   diffVersions,
   ensureVersionRepo,
   getVersion,
+  headVersionSha,
   listVersions,
   purgeVersions,
   restoreVersion,
@@ -424,6 +425,122 @@ describe('展示缓存', () => {
     const seconds = Number((await git(app, ['log', '-1', '--format=%ct', first.id])).trim());
     expect(parseStoredTime(version.createTime)?.getTime()).toBe(seconds * 1000);
     expect(formatStoredTime(version.createTime)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  });
+});
+
+describe('平台裸库', () => {
+  it('提交写进 Workspace 之外的裸库，工作区没有 .git，历史和详情仍可读', async () => {
+    const app = await newApp();
+    await write(app, 'index.html', '<html><body>平台裸库</body></html>');
+    const version = await commit(app, '平台裸库第一版', { 'index.html': '<html><body>平台裸库</body></html>' });
+
+    expect(versionRepo(app).startsWith(workspace(app))).toBe(false);
+    expect(await stat(join(workspace(app), '.git')).then(() => true, () => false)).toBe(false);
+    const bare = await run('git', ['--git-dir', versionRepo(app), 'config', '--bool', 'core.bare'], { env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } });
+    expect(bare.stdout.trim()).toBe('true');
+    // 钩子跟着仓库走：装在平台裸库的 hooks 下，不再依赖工作区的 .git。
+    expect(await stat(join(versionRepo(app), 'hooks', 'reference-transaction')).then(() => true, () => false)).toBe(true);
+    expect((await getVersion(app, version.id)).changedFiles).toEqual(['index.html']);
+    expect((await listVersions(app)).current).toEqual({ versionId: version.id });
+    expect((await diffVersions(app, version.id, version.id)).patch).toBe('');
+  });
+
+  it('工作区里不带 --git-dir 的 git 不会向上发现开发仓库', async () => {
+    const app = await newApp();
+    await write(app, 'index.html', '<html><body>没有 .git</body></html>');
+    await commit(app, '没有 .git 的第一版', { 'index.html': '<html><body>没有 .git</body></html>' });
+
+    // 工作区在平台仓库目录内部：没有 .git 之后，一次漏传 --git-dir 的调用会一路找到开发仓库自己的
+    // .git。集成测试统一把发现上限压到产品目录（tests/support/integration-resources.ts），这里验证它生效。
+    await expect(run('git', ['rev-parse', '--show-toplevel'], {
+      cwd: workspace(app), env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' },
+    })).rejects.toThrow(/not a git repository/i);
+  });
+
+  it('已有工作区仓库在首次使用时搬进平台裸库，历史保留且工作区不再有 .git', async () => {
+    const app = await newApp();
+    const tree = workspace(app);
+    await write(app, 'index.html', '<html><body>旧仓库</body></html>');
+    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C' };
+    await run('git', ['init', '--quiet', '-b', 'main', tree], { env });
+    await run('git', ['-C', tree, 'add', '-A'], { env });
+    await run('git', ['-C', tree, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--quiet', '-m', '旧版'], { env });
+    const legacyHead = (await run('git', ['-C', tree, 'rev-parse', 'HEAD'], { env })).stdout.trim();
+
+    await ensureVersionRepo(app);
+
+    expect(await stat(join(tree, '.git')).then(() => true, () => false)).toBe(false);
+    expect((await run('git', ['--git-dir', versionRepo(app), 'rev-parse', 'HEAD'], { env })).stdout.trim()).toBe(legacyHead);
+    expect(await headVersionSha(app)).toBe(legacyHead);
+  });
+});
+
+describe('提交配额', () => {
+  const names = ['COMMIT_MAX_FILES', 'COMMIT_MAX_BYTES', 'COMMIT_MAX_FILE_BYTES'] as const;
+  const saved = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  afterEach(() => {
+    for (const name of names) {
+      const value = saved[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  it('文件数超限时中文报错，不产生版本、不推进 HEAD、工作区源码原样保留', async () => {
+    const { app, second } = await twoVersions();
+    const commitsBefore = await commitSet(app);
+    process.env.COMMIT_MAX_FILES = '2';
+    await write(app, 'a.html', 'a');
+    await write(app, 'b.html', 'b');
+    await write(app, 'c.html', 'c');
+
+    await expect(commitVersion({ app, title: '超限的提交' })).rejects.toThrow(/3 个文件.*最多 2 个文件/);
+
+    expect(await headOf(app)).toBe(second.id);
+    expect(await commitSet(app)).toEqual(commitsBefore);
+    expect((await listVersions(app)).versions).toHaveLength(2);
+    expect(await read(app, 'a.html')).toBe('a');
+    expect(await read(app, 'b.html')).toBe('b');
+    expect(await read(app, 'c.html')).toBe('c');
+  });
+
+  it('单文件超限时点名文件，失败后不落任何半截版本', async () => {
+    const { app, second } = await twoVersions();
+    process.env.COMMIT_MAX_FILE_BYTES = '4';
+    await write(app, 'assets/hero.bin', '12345');
+
+    await expect(commitVersion({ app, title: '单文件超限' })).rejects.toThrow(/assets\/hero\.bin.*4 B/);
+
+    expect(await headOf(app)).toBe(second.id);
+    expect((await listVersions(app)).versions).toHaveLength(2);
+    expect(await read(app, 'assets/hero.bin')).toBe('12345');
+  });
+
+  it('总量超限时给出合计与上限，失败不改动工作区', async () => {
+    const { app, second } = await twoVersions();
+    process.env.COMMIT_MAX_BYTES = '8';
+    await write(app, 'a.bin', '12345');
+    await write(app, 'b.bin', '67890');
+
+    await expect(commitVersion({ app, title: '总量超限' })).rejects.toThrow(/10 B.*8 B/);
+
+    expect(await headOf(app)).toBe(second.id);
+    expect(await read(app, 'a.bin')).toBe('12345');
+    expect(await read(app, 'b.bin')).toBe('67890');
+  });
+
+  it('依赖、构建产物和平台元数据不计入配额', async () => {
+    const { app } = await twoVersions();
+    process.env.COMMIT_MAX_FILES = '1';
+    await write(app, 'index.html', '<html><body>只改一个源码文件</body></html>');
+    for (let index = 0; index < 3; index += 1) await write(app, `node_modules/pkg/${index}.js`, 'dependency');
+    await write(app, 'dist/bundle.js', 'generated');
+    await write(app, '.paimeng-template.json', '{}');
+
+    const version = await commitVersion({ app, title: '只提交源码改动' });
+
+    expect(version).not.toBe(null);
+    expect(version!.changedFiles).toEqual(['index.html']);
   });
 });
 
