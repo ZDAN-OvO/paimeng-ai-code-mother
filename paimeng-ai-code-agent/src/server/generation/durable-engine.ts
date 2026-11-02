@@ -30,6 +30,7 @@ import { appAuthority, apps, generationExecutions, generationInputs, generationS
 import { validatePrompt } from './prompt-safety';
 import { harnessInstructions } from './prompts/harness-instructions';
 import { projectAt, workspace, writeProjectFileBytes } from '../workspace/workspace';
+import { prepareGenerationRuntime } from '../app-runtime/supervisor';
 
 const textBlockSchema = z.object({ type: z.literal('text'), text: z.string() });
 const thinkingBlockSchema = z.object({ type: z.literal('thinking'), thinking: z.string() });
@@ -1611,6 +1612,9 @@ export async function harnessChatResponse(req: Request, raw: unknown, user: User
     throw new BusinessError(409, 40900, '该请求已经处理，请读取生成状态');
   }
   const execution = started.execution;
+  // 惰性唤醒：这一轮的文件工具与 dev server 面向同一份执行目录，模型一写文件 Preview 就能看到。
+  // 启动失败只降级 Preview（构建后仍可看），不让一次运行时装不起来挡掉整轮生成。
+  await prepareGenerationRuntime({ app, workspaceRoot: execution.directory });
   let conversationId: number;
   try {
     await uploadAttachmentImages(app, user, attachmentImages, projectAt(app, execution.directory));

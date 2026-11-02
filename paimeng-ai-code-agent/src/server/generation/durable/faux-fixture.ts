@@ -1,7 +1,7 @@
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type AssistantMessage, type FauxResponseFactory, type Message, type ToolCall } from "@earendil-works/pi-ai";
 import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import type { CodeGenType } from "@/shared/contracts";
-import { fixtureReadSteps, fixtureReplyText, fixtureWriteSteps } from "./fixture-content";
+import { fixtureLive, fixtureReadSteps, fixtureReplyText, fixtureWriteSteps, thickReactPage, THICK_REACT_PAGE } from "./fixture-content";
 
 export const FAUX_FIXTURE_PROVIDER = "faux";
 export const FAUX_FIXTURE_MODEL_ID = "fixture-1";
@@ -59,6 +59,16 @@ function scriptedTurn(messages: readonly Message[]): ScriptedTurn {
 	const reads = templated ? fixtureReadSteps(type, thickReact) : [];
 	const read = reads[results];
 	if (read) return { tool: read.tool, args: read.path === undefined ? {} : { path: read.path } };
+	// `[live]` 证据用例：同一轮里连续写两次同一页，中间用夹具工具等一会儿，
+	// 让实时 Preview 能先显示第一版、再显示第二版（HMR 不刷新页面）。
+	if (fixtureLive(prompt) && templated && thickReact && type === "react_project") {
+		const live: ScriptedTurn[] = [
+			{ tool: "write", args: { path: THICK_REACT_PAGE, content: thickReactPage(prompt, " · 第一版").content } },
+			{ tool: "m1_wait", args: { ms: 8000 } },
+			{ tool: "write", args: { path: THICK_REACT_PAGE, content: thickReactPage(prompt, " · 第二版").content } },
+		];
+		return live[results - reads.length] ?? { tool: null };
+	}
 	const file = fixtureWriteSteps(type, prompt, templated, thickReact)[results - reads.length];
 	return file === undefined ? { tool: null } : { tool: "write", args: { path: file.path, content: file.content } };
 }

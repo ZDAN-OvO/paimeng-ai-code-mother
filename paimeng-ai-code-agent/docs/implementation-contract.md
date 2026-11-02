@@ -37,3 +37,12 @@
 - `previewUrl` 以实际构建入口是否有效判断，不以任务 ready 为门槛：取消或失败后既有产物仍可预览。
 - `sourceAvailable` 独立表示可下载源码；Vue 每次发布都在写锁内重建源码，失败保留旧预览并拒绝本次发布。
 - 预览是独立进程、独立主机名（`src/server/delivery/preview.ts`、`scripts/dev/preview.ts`），与平台页面不同源，因此写请求的来源校验必须同时覆盖两侧。
+
+## App runtime 与实时预览
+
+- 运行时容器只能由 `runtime/supervisor` 启停；生成入口、业务层和预览进程都不直接调 Docker。
+- 运行时挂载的源码根就是 harness 文件工具写入的执行目录（`generation_execution.directory`）。换基线（新 generation/epoch）时 supervisor 重建容器，旧执行目录不再被任何容器挂载；文件工具的写入准入仍由执行门闩与 Write authority/epoch 决定。
+- 每个 App 的 `node_modules` 与全机共享的 pnpm store 是持久目录：容器停止或重建后文件与已安装依赖都还在，重建时按锁文件指纹决定是否重装。
+- 容器以 Workspace 属主的宿主 uid 运行，挂载只有自己的 Workspace、自己的 `node_modules` 与共享 store；不注入平台环境变量、凭证或 Docker socket。网络放开。
+- 预览：runtime ready 时 `/preview/<类型>_<id>/` 反向代理该 App 的 dev server（HTTP 与 HMR websocket，路径就是预览前缀）；否则回落交付/工作区的静态产物。运行时启动中或失败时返回明确状态页，不透出内部错误。
+- 编辑桥接的锁定跟随 Write authority：`app_authority` 处于 active/draining 时预览只读，收束后由宿主页解锁。

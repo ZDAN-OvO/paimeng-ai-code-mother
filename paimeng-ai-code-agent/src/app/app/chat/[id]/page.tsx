@@ -506,6 +506,9 @@ function Chat({ id }: { id: string }) {
   }, [followNewContent]);
 
   const previewOrigin = app?.previewUrl ? new URL(app.previewUrl).origin : null;
+  // 生成期间 Preview 只读：运行时的 Write authority 还在模型这一侧，元素选择与编辑必须关掉，
+  // 否则用户会在页面被持续改写时提交一份对不上的上下文。
+  const editingAllowed = canEdit && !generating;
   // iframe 加载完成前它的文档还是 about:blank（源继承自本页），此时向预览源发消息会被浏览器拒绝并报错。
   const previewLoaded = useRef(false);
   const editorMessage = useCallback((value: Record<string, unknown>) => {
@@ -514,11 +517,14 @@ function Chat({ id }: { id: string }) {
   }, [previewOrigin]);
   useEffect(() => { previewLoaded.current = false; setSelected([]); }, [app?.previewUrl, task?.id]);
   useEffect(() => {
-    editorMessage({ type: 'TOGGLE_EDIT_MODE', editMode: editing });
-    if (editing) return;
+    if (generating && editing) setEditing(false);
+  }, [generating, editing]);
+  useEffect(() => {
+    editorMessage({ type: 'TOGGLE_EDIT_MODE', editMode: editing && editingAllowed, locked: !editingAllowed });
+    if (editing && editingAllowed) return;
     setSelected([]);
     editorMessage({ type: 'CLEAR_ALL_EFFECTS' });
-  }, [editing, editorMessage]);
+  }, [editing, editingAllowed, editorMessage]);
   /** 移除单个选中元素：本地列表与预览里只剩的选中态要同时收起来，否则再点它会被桥接当成取消选择。 */
   const removeSelected = useCallback((selector: string) => {
     setSelected(current => current.filter(item => item.selector !== selector));
@@ -528,8 +534,8 @@ function Chat({ id }: { id: string }) {
     function receive(event: MessageEvent) {
       if (!previewOrigin || event.origin !== previewOrigin || event.source !== iframe.current?.contentWindow ||
           !event.data || typeof event.data !== 'object') return;
-      if (event.data.type === 'EDITOR_READY') { editorMessage({ type: 'TOGGLE_EDIT_MODE', editMode: editing }); return; }
-      if (!editing || !canEdit) return;
+      if (event.data.type === 'EDITOR_READY') { editorMessage({ type: 'TOGGLE_EDIT_MODE', editMode: editing && editingAllowed, locked: !editingAllowed }); return; }
+      if (!editing || !editingAllowed) return;
       if (event.data.type === 'ELEMENTS_SELECTED') {
         // 整份快照替换：预览里的点击（选中/取消/移除）都是权威状态，接收端不做增量合并。
         const parsed = selectedElementsSchema.safeParse((event.data as { elements?: unknown }).elements);
@@ -540,7 +546,7 @@ function Chat({ id }: { id: string }) {
     }
     window.addEventListener('message', receive);
     return () => window.removeEventListener('message', receive);
-  }, [previewOrigin, editing, canEdit, editorMessage, message]);
+  }, [previewOrigin, editing, editingAllowed, editorMessage, message]);
 
   // 粘贴附图：只要还能编辑就监听（生成中也要能附图，排队发送会带上它）；没有文件时不插手粘贴。
   useEffect(() => {
@@ -977,7 +983,7 @@ function Chat({ id }: { id: string }) {
       {previewShown && <div className="chat-divider" title="拖动调整两边宽度" onPointerDown={startResize} />}
       <section className="preview-panel" style={previewShown ? undefined : { display: 'none' }}>
         <div className="preview-bar"><h3>生成后的网页展示</h3><Space>
-          {canPreview && <Button size="small" type="link" danger={editing} disabled={!canEdit} onClick={() => setEditing(value => !value)}>{editing ? '退出编辑' : '可视化编辑'}</Button>}
+          {canPreview && <Button size="small" type="link" danger={editing} disabled={!editingAllowed} onClick={() => setEditing(value => !value)}>{editing ? '退出编辑' : '可视化编辑'}</Button>}
           {canPreview && <Button size="small" type="link" icon={<ExportOutlined aria-hidden="true" />} onClick={() => { if (app?.previewUrl) window.open(app.previewUrl, '_blank', 'noopener'); }}>新窗口打开</Button>}
           {app?.deployUrl && <a href={app.deployUrl} target="_blank" rel="noopener noreferrer">访问作品</a>}
           {/* 按钮文案永远是「切过去的那一端」：手机端时显示电脑端，反之亦然。 */}
@@ -988,7 +994,7 @@ function Chat({ id }: { id: string }) {
           {generating && <div className="preview-live-badge" role="status">生成中，内容会持续更新</div>}
           {/* 手机端与电脑端共用这一个 iframe：只换外层容器的类名，切换时不重载。 */}
           <div className="preview-screen">
-            <iframe ref={iframe} className="preview-frame" title="应用预览" src={previewSrc} sandbox="allow-scripts allow-same-origin" referrerPolicy="no-referrer" onLoad={() => { previewLoaded.current = true; setSelected([]); editorMessage({ type: 'TOGGLE_EDIT_MODE', editMode: editing }); }} />
+            <iframe ref={iframe} className="preview-frame" title="应用预览" src={previewSrc} sandbox="allow-scripts allow-same-origin" referrerPolicy="no-referrer" onLoad={() => { previewLoaded.current = true; setSelected([]); editorMessage({ type: 'TOGGLE_EDIT_MODE', editMode: editing && editingAllowed, locked: !editingAllowed }); }} />
           </div>
         </div> :
           generating || rebuilding ? <div className="preview-loading" role="status"><Spin size="large" /><p>{generating ? '正在生成网站...' : '正在重建预览...'}</p></div> :

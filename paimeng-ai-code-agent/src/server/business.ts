@@ -20,6 +20,7 @@ import { diffVersions, headVersionSha, listVersions, purgeVersions, restoreVersi
 import { versionThumbnail } from './versioning/version-thumbnail';
 import { createDelivery, setCurrentDelivery } from './delivery/delivery-store';
 import { appWriteBlocker } from './generation/control-store';
+import { runtimePreviewAvailable } from './app-runtime/supervisor';
 import { SNAPSHOT_MANIFEST_FILE } from './workspace/execution-workspace';
 import { versionDiffSchema, versionTargetSchema } from '@/shared/versioning';
 import { defaultTemplateFor, resolveTemplate } from './templates/templates';
@@ -41,7 +42,8 @@ async function appView(row:typeof apps.$inferSelect,connection:Pick<ReturnType<t
  const [creator]=await connection.select().from(users).where(and(eq(users.id,row.userId),eq(users.isDelete,0))).limit(1);
  const {conversationId:_conversationId,...rest}=row;
  const app:AppInfo={...rest,id:String(row.id),userId:String(row.userId),codeGenType:z.enum(codeGenTypes).parse(row.codeGenType),user:creator?publicUser(creator):undefined};
- app.previewUrl=await hasPreview(app)?previewUrl(app):null;
+ // 运行时的 dev server 在构建产物出现前就能提供实时 Preview；没有 runtime 时仍按静态产物判断。
+ app.previewUrl=await hasPreview(app)?previewUrl(app):(isProjectCodeGenType(app.codeGenType)&&await runtimePreviewAvailable(app).catch(()=>false)?previewUrl(app):null);
  app.builtAt=(await loadBuildState(app))?.builtAt??null;
  try{app.sourceAvailable=(await listProjectFiles(app)).length>0;}catch{app.sourceAvailable=false;}
  let template=null;try{template=await appTemplate(app);}catch(error){console.warn(`应用 ${app.id} 的模板标识无法识别，按无模板处理：`,error);}app.template=template?{id:template.id,version:template.version}:null;
