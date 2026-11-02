@@ -1,8 +1,8 @@
 # P6 迁移演练：全新 Postgres 从零执行全部迁移
 
 ```text
-$ docker run -d --name paimeng-p6-pg -e POSTGRES_PASSWORD=*** -e POSTGRES_DB=paimeng_app -p 55432:5432 postgres:16-alpine
-$ DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/paimeng_app node --import tsx scripts/db/migrate.ts
+$ docker run -d --name paimeng-p6-pg -e POSTGRES_PASSWORD=*** -e POSTGRES_DB=paimeng_app -p 55434:5432 postgres:16-alpine
+$ DATABASE_URL=postgres://postgres:***@127.0.0.1:55434/paimeng_app node --import tsx scripts/db/migrate.ts
 已执行 001_initial.sql
 已执行 002_drop_rate_limit.sql
 已执行 004_versioning.sql
@@ -14,10 +14,14 @@ $ DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/paimeng_app node --import
 已执行 012_credit_charge_entry.sql
 已执行 014_credit_entry_audit.sql
 已执行 018_credit_entry_reason_length.sql
-已执行 019_provider_model.sql
+已执行 019_credit_admin_overview_indexes.sql
+已执行 020_credit_quota_policy.sql
+已执行 021_credit_quota_adjustment.sql
+已执行 022_credit_quota_batch.sql
+已执行 023_provider_model.sql
 产品 Postgres 库迁移完成
 
-$ DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/paimeng_app npx tsx --env-file=.env --conditions=react-server scripts/db/backfill-provider-models.ts
+$ DATABASE_URL=postgres://postgres:***@127.0.0.1:55434/paimeng_app npx tsx --env-file=.env --conditions=react-server scripts/db/backfill-provider-models.ts
     "revision": "0",
     "refreshEpoch": "0"
   },

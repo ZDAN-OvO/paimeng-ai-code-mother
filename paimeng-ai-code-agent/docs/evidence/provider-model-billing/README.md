@@ -47,7 +47,7 @@ $ npm run test:e2e:isolated -- tests/e2e/model-manage.spec.ts tests/e2e/billing-
 
 [`migration-rehearsal.txt`](migration-rehearsal.txt) 记录了一次临时 Postgres 容器上的从零迁移：
 
-- `001` → `019_provider_model.sql` 全部执行成功；
+- `001` → `023_provider_model.sql` 全部执行成功（含额度管理的 019–022）；
 - 回填工具 dry-run 读取新库，报告 0 个模型/槽位/步骤、2 条 `env-default` 孤立费率，零写入。
 - 临时容器已删除；没有触碰开发库或共享测试库。
 

@@ -15,7 +15,7 @@ Rate card 的当前身份是 **提供商模型**（`provider_model_id`）+ 生�
 
 ### 历史数据回填
 
-新表与可空引用列由迁移 `019_provider_model.sql` 建立；历史槽位、费率和步骤的关联由一次性工具完成。工具默认 dry-run，整批在一个事务里，冲突不吞，不触碰账单、步骤或结算：
+新表与可空引用列由迁移 `023_provider_model.sql` 建立；历史槽位、费率和步骤的关联由一次性工具完成。工具默认 dry-run，整批在一个事务里，冲突不吞，不触碰账单、步骤或结算：
 
 ```bash
 cd paimeng-ai-code-agent
