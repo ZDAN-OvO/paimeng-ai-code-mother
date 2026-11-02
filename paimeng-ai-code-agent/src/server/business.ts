@@ -14,15 +14,17 @@ import { BusinessError } from './infra/http';
 import { previewUrl, deployedUrl, deployApp, captureCover, downloadApp, hasPreview, buildApp, loadBuildState } from './delivery/artifacts';
 import { contentType } from './delivery/preview';
 import { listProjectFiles, projectAt, readProjectFileBytes, workspace, type ProjectTarget } from './workspace/workspace';
-import { routeCodeGenType } from './generation/model';
+import { routeStarter } from './generation/model';
 import { appTemplate, initializeTemplate } from './workspace/template-workspace';
 import { diffVersions, headVersionSha, listVersions, purgeVersions, restoreVersion } from './versioning/version-store';
 import { versionThumbnail } from './versioning/version-thumbnail';
 import { createDelivery, setCurrentDelivery } from './delivery/delivery-store';
 import { appWriteBlocker } from './generation/control-store';
+import { runtimePreviewAvailable, stopAppRuntime } from './app-runtime/supervisor';
 import { SNAPSHOT_MANIFEST_FILE } from './workspace/execution-workspace';
 import { versionDiffSchema, versionTargetSchema } from '@/shared/versioning';
 import { defaultTemplateFor, resolveTemplate } from './templates/templates';
+import { templateForStarter } from '@/shared/templates';
 import { codeGenTypes, idSchema, isProjectCodeGenType, pageSchema, type User, type AppInfo, type PageQuery } from '@/shared/contracts';
 import type { TemplateInfo } from '@/shared/templates';
 
@@ -40,7 +42,8 @@ async function appView(row:typeof apps.$inferSelect,connection:Pick<ReturnType<t
  const [creator]=await connection.select().from(users).where(and(eq(users.id,row.userId),eq(users.isDelete,0))).limit(1);
  const {conversationId:_conversationId,...rest}=row;
  const app:AppInfo={...rest,id:String(row.id),userId:String(row.userId),codeGenType:z.enum(codeGenTypes).parse(row.codeGenType),user:creator?publicUser(creator):undefined};
- app.previewUrl=await hasPreview(app)?previewUrl(app):null;
+ // 运行时的 dev server 在构建产物出现前就能提供实时 Preview；没有 runtime 时仍按静态产物判断。
+ app.previewUrl=await hasPreview(app)?previewUrl(app):(isProjectCodeGenType(app.codeGenType)&&await runtimePreviewAvailable(app).catch(()=>false)?previewUrl(app):null);
  app.builtAt=(await loadBuildState(app))?.builtAt??null;
  try{app.sourceAvailable=(await listProjectFiles(app)).length>0;}catch{app.sourceAvailable=false;}
  let template=null;try{template=await appTemplate(app);}catch(error){console.warn(`应用 ${app.id} 的模板标识无法识别，按无模板处理：`,error);}app.template=template?{id:template.id,version:template.version}:null;
@@ -52,8 +55,9 @@ export async function createApp(raw:unknown,user:User){
  let selected: TemplateInfo | null = null;
  if(value.templateId){try{selected=resolveTemplate(value.templateId);}catch{throw new BusinessError(400,40000,`不支持的工程模板 ${value.templateId}`);}}
  if(selected&&value.codeGenType&&value.codeGenType!==selected.codeGenType)throw new BusinessError(400,40000,'模板与应用类型不匹配');
- const type=selected?.codeGenType??value.codeGenType??await routeCodeGenType(value.initPrompt);
- const template=selected??defaultTemplateFor(type);
+ // 自动选择只分两条路：轻量静态页或构建类应用；显式模板与旧 codeGenType 仍按各自模板解析。
+ const template=selected??(value.codeGenType?defaultTemplateFor(value.codeGenType):templateForStarter(await routeStarter(value.initPrompt)));
+ const type=template?.codeGenType??value.codeGenType??'html';
  const id=await nextSnowflakeId();
  const app={id:id.toString(),codeGenType:type};
  const initialized=template?await initializeTemplate(app,template):false;
@@ -86,6 +90,8 @@ export async function deleteApp(raw:unknown,user:User){
  await withAppWriter(id,async(tx,row)=>{if(String(row.userId)!==user.id&&user.userRole!=='admin')throw new BusinessError(403,40300,'无权限删除该应用');await tx.update(apps).set({isDelete:1,updateTime:now()}).where(eq(apps.id,row.id));await tx.delete(generations).where(eq(generations.appId,row.id));});
  // 版本历史随应用一起回收：裸库、缩略图与元数据表都不能留成孤儿。应用行已软删，codeGenType 取自删除前的快照。
  await purgeVersions({id:target.id,codeGenType:target.codeGenType}).catch(problem=>{console.error(`应用 ${target.id} 的版本历史回收失败：`,problem);});
+ // 运行时按 App 独占：删除应用时把容器一起停掉，不留孤儿容器；文件/交付/部署的完整清理在 #146。
+ await stopAppRuntime({id:target.id,codeGenType:target.codeGenType}).catch(problem=>{console.error(`应用 ${target.id} 的运行时回收失败：`,problem);});
  return true;
 }
 

@@ -2,7 +2,7 @@ import "server-only";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineDoc, type ConversationDocToken } from "@earendil-works/pi-durable";
 import { z } from "zod";
-import { activeExecution, assertAuthority, openQuestionOf, type ExecutionRecord } from "../control-store";
+import { activeExecution, assertAuthority, openQuestionOf, withWorkspaceWrite, type ExecutionRecord } from "../control-store";
 import type { ExecutionStatus } from "../../infra/schema";
 
 /**
@@ -209,6 +209,18 @@ export async function assertWritable(binding: EffectBinding): Promise<EffectAdmi
 	}
 	if (question) throw new EffectGateError("正在等待用户回答，本轮不能继续写源码。这次调用已拒绝，不要重试。");
 	return { legacy: false };
+}
+
+/** 实际落盘必须在持久 authority 锁里完成，beforeTool 的准入本身不保护文件写入。 */
+export async function withWritableEffect<T>(binding: EffectBinding, work: () => Promise<T>): Promise<T> {
+  if (!binding) return work();
+  const execution = await activeExecution(binding.appId);
+  if (!execution || execution.id !== binding.executionId || execution.generationId !== binding.generationId) {
+    throw new EffectGateError('本轮执行已结束，不能写入源码');
+  }
+  return withWorkspaceWrite({
+    appId: binding.appId, generationId: binding.generationId, epoch: execution.epoch, executionId: binding.executionId,
+  }, work);
 }
 
 /** 记一次源码修改。写工具执行成功后才调用，legacy 会话没有可记的执行。 */

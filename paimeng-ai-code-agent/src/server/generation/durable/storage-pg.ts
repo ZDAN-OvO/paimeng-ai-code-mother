@@ -31,6 +31,7 @@ import {
 	type TaskRecord,
 } from "@earendil-works/pi-durable";
 import pg from "pg";
+import { storageResetDatabaseUrl } from "./storage-reset-policy";
 
 // BIGINT arrives as a string by default; every ID and sequence here is small
 // enough to be an exact JS number. The parser is set on this backend's own
@@ -1058,10 +1059,10 @@ async function applyMigrations(client: pg.Client): Promise<void> {
 	}
 }
 
-/** Drop and recreate the whole durable schema; used to reset a spike database between runs. */
+/** 只清显式独占测试库的执行表；生产与共享测试库在建立连接前拒绝。 */
 export async function resetPostgresStorage(options: PostgresStorageOptions = {}): Promise<void> {
 	const client = new pg.Client({
-		connectionString: options.connectionString ?? defaultPgUrl(),
+		connectionString: storageResetDatabaseUrl(options.connectionString ?? defaultPgUrl()),
 		types: bigintAsNumber as never,
 	});
 	await client.connect();

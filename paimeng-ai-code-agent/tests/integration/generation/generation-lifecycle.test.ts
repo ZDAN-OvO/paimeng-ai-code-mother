@@ -4,6 +4,8 @@ import { readFile, mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } f
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { fork } from 'node:child_process';
+import { once } from 'node:events';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { testDatabaseUrl } from '../../support/test-database-url';
 import { db, getPool, now } from '@/server/infra/db';
@@ -14,13 +16,13 @@ import {
   generationQuestions, generationTransitions, generations, sourceSnapshots, users, versionRecords,
 } from '@/server/infra/schema';
 import {
-  appendInput, beginChecking, markInputResolved, releaseAuthority, setDraft, setExecutionStatus,
+  appendInput, beginChecking, markInputResolved, releaseAuthority, setDraft, setExecutionStatus, withWorkspaceWrite,
 } from '@/server/generation/control-store';
-import { commitVersionFrom, prepareVersionCommit, purgeVersions } from '@/server/versioning/version-store';
+import { commitVersionFrom, headVersionSha, prepareVersionCommit, purgeVersions, versionRepo } from '@/server/versioning/version-store';
 import { generationControl, generationFor } from '@/server/generation/generation-store';
 import { closeExecutionAndDrain, sealExecution, withExecutionWrite } from '@/server/workspace/execution-workspace';
 import { createDelivery, currentDelivery } from '@/server/delivery/delivery-store';
-import { ensureWorkspace, workspace, type WorkspaceApp } from '@/server/workspace/workspace';
+import { ensureWorkspace, listProjectFiles, readProjectFile, workspace, type WorkspaceApp } from '@/server/workspace/workspace';
 import {
   CandidateInvalidatedError, failOrCancel, findQuestion, getInputs, publishGeneration, publishReady,
   recoverExpiredAuthority, recoverGeneration, recoverStartup, settleGeneration, startGeneration,
@@ -124,6 +126,42 @@ async function sealForPublish(app: WorkspaceApp, start: Awaited<ReturnType<typeo
   return sealExecution({ app, ref, snapshotsRoot, generationId: start.generationId });
 }
 
+it('跨进程已准入的旧 epoch 写入排空后才接管持久 Workspace，迟到旧工具不能覆盖新基线', async () => {
+  const app = await newApp();
+  const first = await startInput(app, { template: htmlTemplate, ttlMs: 3000 });
+  await setExecutionStatus(first.executionId!, 'active');
+  const child = fork('tests/integration/generation/support/workspace-writer.ts', [JSON.stringify({
+    appId: app.id, generationId: first.generationId, epoch: first.epoch!, executionId: first.executionId!, root: first.execution!.directory,
+  })], { execArgv: ['--import', 'tsx', '--conditions=react-server'], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  let output = '';
+  child.stderr?.on('data', data => { output += String(data); });
+  try {
+    const admission = await Promise.race([once(child, 'message'), once(child, 'exit').then(() => { throw new Error(output); })]);
+    expect(admission[0]).toBe('admitted');
+    // 让旧 authority 在工具真正写完前自然到期，不能通过更新同一行绕开被测锁。
+    await new Promise(done => setTimeout(done, 3100));
+    let started = false;
+    const next = startInput(app, { template: htmlTemplate }).then(value => { started = true; return value; });
+    await new Promise(done => setTimeout(done, 100));
+    expect(started).toBe(false);
+    const exited = once(child, 'exit');
+    child.send('release');
+    expect((await exited)[0], output).toBe(0);
+    const second = await next;
+    expect(second.epoch).toBe(first.epoch! + 1);
+    expect(second.execution!.directory).toBe(workspace(app));
+    expect(second.execution!.directory).toBe(first.execution!.directory);
+    expect(await readFile(join(second.execution!.directory, 'index.html'), 'utf8')).not.toContain('late old writer');
+    await expect(withWorkspaceWrite({ appId: app.id, generationId: first.generationId, epoch: first.epoch!, executionId: first.executionId! }, async () => {
+      await writeFile(join(second.execution!.directory, 'index.html'), 'stale');
+    })).rejects.toMatchObject({ status: 409 });
+    await expect(publishReady({ app, generationId: first.generationId, epoch: first.epoch!, execution: first.execution!, title: 'stale', runtimeRoot, snapshotsRoot })).rejects.toMatchObject({ status: 409 });
+    expect(await readFile(join(second.execution!.directory, 'index.html'), 'utf8')).not.toContain('stale');
+  } finally {
+    if (child.exitCode === null) child.kill('SIGKILL');
+  }
+}, 15_000);
+
 const previousConcurrency = process.env.GENERATION_MAX_CONCURRENT;
 beforeAll(async () => {
   // 这组用例在一个进程里并列保留多个 active 执行来验证协议；不受生产默认并发上限 4 的约束。
@@ -181,10 +219,13 @@ describe('startGeneration：准入、幂等与执行目录', () => {
     });
     expect(started.execution).toMatchObject({
       appId: app.id, generationId: started.generationId, epoch: 1, status: 'preparing', baselineKind: 'empty',
-      directory: join(runtimeRoot, 'executions', started.generationId, '1'),
+      directory: workspace(app),
     });
     expect(started.input).toMatchObject({ seq: 1, mode: 'start', status: 'accepted', requestId: 'start-basic' });
-    expect(await readdir(started.execution!.directory)).toEqual([]);
+    expect(await readdir(started.execution!.directory)).toEqual(['.paimeng-execution.json']);
+    expect(JSON.parse(await readFile(join(workspace(app), '.paimeng-execution.json'), 'utf8'))).toEqual({ generationId: started.generationId, epoch: 1 });
+    expect(await listProjectFiles(app)).toEqual([]);
+    await expect(readProjectFile(app, '.paimeng-execution.json')).rejects.toThrow('文件路径不允许访问');
 
     expect(await generationControlRow(started.generationId)).toMatchObject({
       status: 'generating', phase: 'editing', deadline: null, input_watermark: 0, parent_version_sha: null,
@@ -315,7 +356,11 @@ describe('startGeneration：准入、幂等与执行目录', () => {
     const empty = await newApp();
     const fromEmpty = await startInput(empty);
     expect(fromEmpty.baseline).toEqual({ kind: 'empty' });
-    expect(await readdir(fromEmpty.execution!.directory)).toEqual([]);
+    expect(await readdir(fromEmpty.execution!.directory)).toEqual(['.paimeng-execution.json']);
+    expect(await listProjectFiles(empty)).toEqual([]);
+    const sealed = await sealForPublish(empty, fromEmpty);
+    expect(sealed.files).toBe(0);
+    expect(await prepareVersionCommit({ app: empty, workTree: fromEmpty.execution!.directory, title: 'metadata only' })).toBeNull();
   });
 
   it('显式父版本不存在或仓库缺失时初始化失败，authority 不留在 active', async () => {
@@ -446,6 +491,40 @@ describe('publishReady：一次生成只落一版、一个交付、一个指针'
     expect((await currentDelivery({ app, runtimeRoot }))?.deliveryId).toBe(secondParts.delivery.id);
   });
 
+  it('发布事务已提交而 Git HEAD 尚未同步时，下一轮承接数据库中已发布 Version', async () => {
+    const app = await newApp();
+    const first = await startInput(app);
+    await writeFileIn(first.execution!.directory, 'index.html', '<h1>v1</h1>');
+    await markInputResolved({ appId: app.id, inputId: first.input.id });
+    const firstResult = publishedParts(await publishReady({ app, generationId: first.generationId, epoch: first.epoch!, execution: first.execution!, title: 'v1', runtimeRoot, snapshotsRoot }));
+    const second = await startInput(app);
+    await writeFileIn(second.execution!.directory, 'index.html', '<h1>v2 committed</h1>');
+    await markInputResolved({ appId: app.id, inputId: second.input.id });
+    const snapshot = await sealForPublish(app, second);
+    const version = (await prepareVersionCommit({ app, workTree: snapshot.directory, title: 'v2', parentSha: firstResult.version.sha, headFallback: false, excludePaths: ['manifest.json'] }))!;
+    const deliverySource = await newTempTree('head-lag');
+    await writeFile(join(deliverySource, 'index.html'), '<h1>v2 committed</h1>');
+    const delivery = await createDelivery({ app, generationId: second.generationId, versionSha: version.sha, sourceDir: deliverySource, runtimeRoot });
+    await publishGeneration({ app, generationId: second.generationId, epoch: second.epoch!, version, snapshot: { ...snapshot, parentVersionSha: firstResult.version.sha }, delivery });
+    await setExecutionStatus(second.executionId!, 'sealed');
+    expect(await headVersionSha(app)).toBe(firstResult.version.sha);
+    const next = await startInput(app);
+    expect(next.baseline).toMatchObject({ kind: 'version', versionSha: version.sha });
+    expect(await readFile(join(next.execution!.directory, 'index.html'), 'utf8')).toBe('<h1>v2 committed</h1>');
+    expect((await generationControlRow(next.generationId))?.parent_version_sha).toBe(version.sha);
+  });
+
+  it('已发布指针引用的版本对象缺失时清楚失败，不静默回退旧 HEAD 或模板', async () => {
+    const app = await newApp();
+    const first = await startInput(app, { template: htmlTemplate });
+    await markInputResolved({ appId: app.id, inputId: first.input.id });
+    await publishReady({ app, generationId: first.generationId, epoch: first.epoch!, execution: first.execution!, title: 'published', runtimeRoot, snapshotsRoot });
+    await purgeVersions(app); // 模拟本 App 版本存储故障，保留已提交的台账与指针。
+    await expect(startInput(app, { template: htmlTemplate })).rejects.toThrow('当前已发布 Version 不完整');
+    expect((await authorityRow(app.id))?.state).toBe('idle');
+    expect(await readFile(join(workspace(app), 'index.html'), 'utf8')).toContain('<html');
+  });
+
   it('没有源码改动时正常收束为 ready，不新增版本/交付/指针', async () => {
     const app = await newApp();
     const started = await startInput(app);
@@ -553,10 +632,9 @@ describe('publishReady：一次生成只落一版、一个交付、一个指针'
     const started = await startInput(app);
     await writeFileIn(started.execution!.directory, 'index.html', '<html><body>提交失败</body></html>');
     await markInputResolved({ appId: app.id, inputId: started.input.id });
-    // 让版本仓库不可用：应用工作区的 .git 被一个普通文件占住，ensureVersionRepo 会失败。
-    const appWorkspace = workspace(app);
-    await mkdir(appWorkspace, { recursive: true });
-    await writeFile(join(appWorkspace, '.git'), 'not a git dir');
+    // 让版本仓库不可用：平台裸库的位置被一个普通文件占住，ensureVersionRepo 会失败。
+    await mkdir(dirname(versionRepo(app)), { recursive: true });
+    await writeFile(versionRepo(app), 'not a git dir');
 
     await expect(publishReady({
       app, generationId: started.generationId, epoch: started.epoch!,

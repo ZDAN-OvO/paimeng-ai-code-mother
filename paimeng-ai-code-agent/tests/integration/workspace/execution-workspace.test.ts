@@ -13,6 +13,7 @@ import {
   markExecutionFailed,
   openExecution,
   prepareExecution,
+  prepareAppExecution,
   sealExecution,
   withExecutionWrite,
 } from '@/server/workspace/execution-workspace';
@@ -151,6 +152,51 @@ describe('基线准备', () => {
     await expect(prepareExecution({ app, generationId: 'gen-version', epoch: 2, baseline: { kind: 'version', commitSha: 'not-a-sha', materialize: async () => {} }, runtimeRoot })).rejects.toThrow('非法的提交标识');
     await expect(prepareExecution({ app, generationId: 'gen-version', epoch: 3, baseline: { kind: 'version', commitSha: 'b'.repeat(40), materialize: async () => { throw new Error('物化失败'); } }, runtimeRoot })).rejects.toThrow('物化失败');
     expect(existsSync(join(runtimeRoot, 'executions', 'gen-version', '3'))).toBe(false);
+  });
+});
+
+describe('持久 App Workspace', () => {
+  it('替换源码保留根与依赖；新 owner 拒绝旧 ref 的 open/write/close/seal/cleanup', async () => {
+    const workspaceRoot = join(base, 'persistent-workspace');
+    const prepare = (generationId: string, epoch: number, baseline: Parameters<typeof prepareExecution>[0]['baseline']) => prepareAppExecution({
+      app, generationId, epoch, baseline, runtimeRoot, workspaceRoot, protect: work => work(),
+    });
+    const first = await prepare('persistent-first', 1, { kind: 'template', identity: { id: 'html', version: '1.0.0' } });
+    expect(JSON.parse(await readFile(join(first.root, '.paimeng-template.json'), 'utf8'))).toEqual({ id: 'html', version: '1.0.0' });
+    await mkdir(join(first.root, 'node_modules'));
+    await writeFile(join(first.root, 'node_modules/installed'), 'keep');
+    await writeFile(join(first.root, 'obsolete.txt'), 'remove');
+    const inode = (await import('node:fs/promises')).stat;
+    const before = await inode(first.root);
+    await openExecution(first);
+    await closeExecutionAndDrain(first);
+    const snapshot = await sealExecution({ app, ref: first, snapshotsRoot });
+    const source = join(base, 'persistent-new-baseline');
+    await mkdir(source);
+    await writeFile(join(source, 'index.html'), 'new owner');
+    const second = await prepare('persistent-second', 2, { kind: 'directory', directory: source });
+    expect(second.root).toBe(first.root);
+    expect((await inode(second.root)).ino).toBe(before.ino);
+    await openExecution(second);
+    await expect(openExecution(first)).rejects.toThrow('执行目录已被接管');
+    await expect(withExecutionWrite(first, async () => writeFile(join(first.root, 'index.html'), 'stale'))).rejects.toThrow();
+    await expect(closeExecutionAndDrain(first)).rejects.toThrow('执行目录已被接管');
+    await expect(sealExecution({ app, ref: first, snapshotsRoot })).rejects.toThrow('执行目录已被接管');
+    await expect(cleanupExecution(first)).rejects.toThrow('执行目录已被接管');
+    expect(await readFile(join(second.root, 'index.html'), 'utf8')).toBe('new owner');
+    expect(await readFile(join(second.root, 'node_modules/installed'), 'utf8')).toBe('keep');
+    expect(existsSync(join(second.root, 'obsolete.txt'))).toBe(false);
+    expect(await readFile(join(snapshot.directory, 'index.html'), 'utf8')).toContain('<html');
+    await closeExecutionAndDrain(second);
+    markExecutionFailed(second);
+    await cleanupExecution(second);
+    expect(existsSync(second.root)).toBe(true);
+
+    await expect(prepare('persistent-broken', 3, { kind: 'version', commitSha: 'a'.repeat(40), materialize: async target => {
+      await writeFile(join(target, 'index.html'), 'partial');
+      throw new Error('物化失败');
+    } })).rejects.toThrow('物化失败');
+    expect(await readFile(join(second.root, 'index.html'), 'utf8')).toBe('new owner');
   });
 });
 

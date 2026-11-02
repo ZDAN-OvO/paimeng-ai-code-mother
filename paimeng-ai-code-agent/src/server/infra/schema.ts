@@ -6,6 +6,21 @@ const times = { createTime: timestamp('create_time', { mode: 'string' }).notNull
 export const users = pgTable('app_user', { id: bigint('id', { mode: 'bigint' }).primaryKey(), userAccount: varchar('user_account', { length: 256 }).notNull(), userPassword: varchar('user_password', { length: 512 }).notNull(), userName: varchar('user_name', { length: 256 }), userAvatar: varchar('user_avatar', { length: 1024 }), userProfile: varchar('user_profile', { length: 512 }), userRole: varchar('user_role', { length: 256 }).notNull().default('user'), ...times, isDelete: integer('is_delete').notNull().default(0) }, t => [uniqueIndex('uk_app_user_account').on(t.userAccount)]);
 export const apps = pgTable('app', { id: bigint('id', { mode: 'bigint' }).primaryKey(), appName: varchar('app_name', { length: 256 }), cover: varchar('cover', { length: 512 }), initPrompt: text('init_prompt').notNull(), codeGenType: varchar('code_gen_type', { length: 64 }).notNull(), deployKey: varchar('deploy_key', { length: 64 }), deployedTime: timestamp('deployed_time', { mode: 'string' }), editTime: timestamp('edit_time', { mode: 'string', precision: 3 }), priority: integer('priority').notNull().default(0), userId: bigint('user_id', { mode: 'bigint' }).notNull(), conversationId: bigint('conversation_id', { mode: 'number' }), ...times, isDelete: integer('is_delete').notNull().default(0) }, t => [uniqueIndex('uk_app_deploy_key').on(t.deployKey), index('idx_app_user').on(t.userId)]);
 export const snowflakeState = pgTable('id_sequence', { nodeId: smallint('node_id').primaryKey(), lastId: bigint('last_id', { mode: 'bigint' }).notNull() });
+// App runtime（migrations/023_app_runtime.sql）：一个 App 一行，容器由 runtime supervisor 启停。
+export type AppRuntimeStatus = 'starting' | 'ready' | 'failed' | 'stopped';
+export const appRuntimes = pgTable('app_runtime', {
+  appId: bigint('app_id', { mode: 'bigint' }).primaryKey().references(() => apps.id, { onDelete: 'cascade' }),
+  containerId: varchar('container_id', { length: 64 }).notNull(),
+  containerName: varchar('container_name', { length: 128 }).notNull(),
+  port: integer('port').notNull(),
+  imageIdentity: varchar('image_identity', { length: 256 }).notNull(),
+  workspaceRoot: text('workspace_root').notNull(),
+  status: varchar('status', { length: 16 }).$type<AppRuntimeStatus>().notNull(),
+  lockDigest: char('lock_digest', { length: 64 }),
+  lastError: varchar('last_error', { length: 1000 }),
+  lastActivityAt: timestamp('last_activity_at', { mode: 'string', precision: 3 }).notNull(),
+  ...times,
+}, t => [uniqueIndex('uk_app_runtime_container').on(t.containerName), index('idx_app_runtime_activity').on(t.lastActivityAt), index('idx_app_runtime_status').on(t.status)]);
 export const sessions = pgTable('user_session', { tokenHash: varchar('token_hash', { length: 64 }).primaryKey(), userId: bigint('user_id', { mode: 'bigint' }).notNull(), expiresAt: timestamp('expires_at', { mode: 'string', precision: 3 }).notNull() }, t => [index('idx_user_session_expiry').on(t.expiresAt)]);
 export const generations = pgTable('generation', { id: varchar('id', { length: 36 }).primaryKey(), appId: bigint('app_id', { mode: 'bigint' }).notNull(), userId: bigint('user_id', { mode: 'bigint' }).notNull(), status: varchar('status', { length: 32 }).notNull(), error: text('error'), stopReason: varchar('stop_reason', { length: 32 }), messageId: varchar('message_id', { length: 64 }), ...times }, t => [index('idx_generation_app').on(t.appId, t.createTime)]);
 // 版本台账（docs/plans/archive/version-ledger.md）：清单只认这张表，Git 只当内容库。

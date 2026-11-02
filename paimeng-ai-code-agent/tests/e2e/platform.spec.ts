@@ -52,7 +52,7 @@ test('浏览器完成注册、登录、生成、编辑、预览、发布和下�
   await expect(page.locator('.site-header')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
   await expect(page.locator('.site-layout')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
   await page.getByLabel('技术栈', { exact: true }).click();
-  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('原生 HTML', { exact: true }).click();
+  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('轻量静态页', { exact: true }).click();
   await page.getByLabel('应用描述').fill('浏览器测试首页');
   await page.getByRole('button', { name: '创建应用', exact: true }).click();
   await expect(page).toHaveURL(/\/app\/chat\/\d+/);
@@ -209,9 +209,14 @@ for (const type of ['multi_file', 'vue_project', 'react_project'] as const) {
     if (type === 'multi_file') {
       await preview.getByRole('button', { name: '开始体验' }).click();
       await expect(preview.getByText('交互成功', { exact: true })).toBeVisible();
-    } else {
+    } else if (type === 'vue_project') {
       await preview.getByRole('button', { name: '点击 0' }).click();
       await expect(preview.getByRole('button', { name: '点击 1' })).toBeVisible();
+    } else {
+      // React 厚架子：夹具改写 src/pages/home.tsx，模板的侧栏布局与路由保留。
+      await expect(preview.getByRole('navigation', { name: '主导航' })).toBeVisible();
+      await preview.getByRole('link', { name: '关于骨架' }).click();
+      await expect(preview.getByRole('heading', { name: '关于这个骨架', exact: true })).toBeVisible();
     }
   });
 }

@@ -1,3 +1,5 @@
+import { storageResetDatabaseUrl } from '../../src/server/generation/durable/storage-reset-policy';
+
 export function testDatabaseUrl(raw: string) {
   const url = new URL(raw);
   if (url.protocol !== 'postgres:') throw new Error('Integration tests require a Postgres URL');
@@ -10,7 +12,7 @@ export function testDatabaseUrl(raw: string) {
 export function storageTestDatabaseUrl(raw: string) {
   const url = new URL(raw);
   if (url.protocol !== 'postgres:') throw new Error('The harness storage requires a Postgres URL');
-  if (!['/paimeng_agent', '/paimeng_agent_test'].includes(url.pathname)) throw new Error('The harness storage must use the dedicated storage database');
+  if (!['/paimeng_agent', '/paimeng_agent_test'].includes(url.pathname)) return storageResetDatabaseUrl(raw);
   for (const key of url.searchParams.keys()) throw new Error(`Harness storage URL does not permit query options (${key})`);
   url.pathname = '/paimeng_agent_test';
   return url.href;

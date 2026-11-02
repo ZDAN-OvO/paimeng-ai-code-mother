@@ -8,8 +8,11 @@ export function fixtureSourcePath(type: CodeGenType) {
   return type === 'react_project' ? 'src/App.tsx' : type === 'vue_project' ? 'src/App.vue' : 'index.html';
 }
 
-export function fixtureReadSteps(type: CodeGenType): { tool: 'listFiles' | 'read'; path?: string }[] {
-  return [{ tool: 'listFiles' }, { tool: 'read', path: 'AGENTS.md' }, { tool: 'read', path: fixtureSourcePath(type) }];
+/** React 厚架子（react-ts@2.0.0）的示例页面；夹具改这一页，保留模板的布局、令牌与路由。 */
+export const THICK_REACT_PAGE = 'src/pages/home.tsx';
+
+export function fixtureReadSteps(type: CodeGenType, thickReact = false): { tool: 'listFiles' | 'read'; path?: string }[] {
+  return [{ tool: 'listFiles' }, { tool: 'read', path: 'AGENTS.md' }, { tool: 'read', path: thickReact && type === 'react_project' ? THICK_REACT_PAGE : fixtureSourcePath(type) }];
 }
 
 function fixtureTypedSource(type: CodeGenType, prompt: string): FixtureFile | undefined {
@@ -22,7 +25,57 @@ function fixtureTypedSource(type: CodeGenType, prompt: string): FixtureFile | un
   return { ...source, content };
 }
 
-export function fixtureWriteSteps(type: CodeGenType, prompt: string, templated: boolean): FixtureFile[] {
+/** 实时预览证据：`[live]` 前缀让夹具在同一轮里连续写两次同一页，第二次在等待之后。 */
+export const LIVE_MARKER = '[live]';
+export function fixtureLive(prompt: string) {
+  return prompt.startsWith(LIVE_MARKER);
+}
+
+export function thickReactPage(prompt: string, suffix = ''): FixtureFile {
+  const title = prompt.replace(/[<>&"']/g, '').replace(LIVE_MARKER, '').trim().slice(0, 80) + suffix;
+  return {
+    path: THICK_REACT_PAGE,
+    content: `import { ArrowUpRight } from 'lucide-react';
+import { Link } from 'react-router';
+import { PageHeader } from '@/components/layout/page-header';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+
+export function HomePage() {
+  return (
+    <div className="space-y-8">
+      <PageHeader
+        title="${title}"
+        description="可控测试模型生成的示例页面：保留模板的布局、设计令牌与组件。"
+        actions={
+          <Button asChild>
+            <Link to="/about">
+              查看组件说明
+              <ArrowUpRight className="size-4" aria-hidden />
+            </Link>
+          </Button>
+        }
+      />
+      <Card>
+        <CardHeader>
+          <CardTitle>生成结果</CardTitle>
+          <CardDescription>这一页来自本次生成的写入。</CardDescription>
+        </CardHeader>
+        <CardContent className="flex items-center gap-2 text-sm text-ink-muted">
+          <Badge>来自夹具</Badge>
+          <span>布局、令牌与卡片组件都来自 react-ts@2.0.0 模板。</span>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+`,
+  };
+}
+
+export function fixtureWriteSteps(type: CodeGenType, prompt: string, templated: boolean, thickReact = false): FixtureFile[] {
+  if (type === 'react_project' && templated && thickReact) return [thickReactPage(prompt)];
   const project = type === 'react_project' || type === 'vue_project';
   const typed = templated && project ? fixtureTypedSource(type, prompt) : undefined;
   return typed ? [typed] : fixtureFiles(type, prompt);

@@ -1,6 +1,6 @@
 import 'server-only';
 import { constants } from 'node:fs';
-import { lstat, open, readdir, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises';
+import { lstat, open, readFile, readdir, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
@@ -9,13 +9,14 @@ import { initializeTemplate } from './template-workspace';
 import { ensureSafeDirectory, MAX_PROJECT_BYTES, MAX_PROJECT_FILES, projectAt, type ProjectRoot, type WorkspaceApp } from './workspace';
 import { codeGenTypes, idSchema } from '@/shared/contracts';
 import type { TemplateIdentity } from '@/shared/templates';
+import { TEMPLATE_MARKER } from '../templates/templates';
 
 /**
- * 一次生成使用的隔离执行目录与草稿封存。
+ * 执行基线、持久 Workspace 的写入准入与草稿封存。
  *
- * 目录固定为 `<runtimeRoot>/executions/<generationId>/<epoch>/`：不同 generation/epoch 之间不共享
- * 任何文件，交接靠「旧目录封存 → 新目录复制快照」，不靠改共享工作区的 cwd。
- * 本模块只提供目录、基线、写入准入与封存能力，不接入现有生成流程。
+ * prepareExecution 在 executions/<generationId>/<epoch> 物化隔离基线；prepareAppExecution
+ * 将完整基线装入同一 App 的持久根。根、generationId、epoch 一起标识写入门闩，
+ * 控制面的跨进程锁负责工具落盘与 owner 接管互斥。
  */
 
 /** 执行目录在 runtimeRoot 下的子目录名。 */
@@ -246,23 +247,94 @@ export async function prepareExecution(input: {
   return { root, generationId, epoch: input.epoch };
 }
 
+/** 持久根的 owner 随目录保存；不同进程不能用旧 ref 重新打开同一根。 */
+const EXECUTION_OWNER_FILE = '.paimeng-execution.json';
+
+async function assertCurrentOwner(ref: ExecutionRef) {
+  const owner = await readFile(join(ref.root, EXECUTION_OWNER_FILE), 'utf8').catch(error => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  });
+  if (owner === null) return false;
+  const parsed = JSON.parse(owner) as { generationId: string; epoch: number };
+  if (parsed.generationId !== ref.generationId || parsed.epoch !== ref.epoch) throw new Error('执行目录已被接管');
+  return true;
+}
+
+/**
+ * 先在隔离目录完整物化，再原地替换 App 源码。protect 必须持有控制面的跨进程写锁，
+ * 排空已准入工具并阻止 epoch 接管。不能 rename 根：bind mount 必须保留同一 inode。
+ */
+export async function prepareAppExecution(input: Parameters<typeof prepareExecution>[0] & {
+  workspaceRoot: string;
+  protect: <T>(work: () => Promise<T>) => Promise<T>;
+}): Promise<ExecutionRef> {
+  const staged = await prepareExecution(input);
+  const ref = { root: resolve(input.workspaceRoot), generationId: staged.generationId, epoch: staged.epoch };
+  try {
+    await walkTree(staged.root, async () => undefined);
+    await input.protect(async () => {
+      const root = await ensureSafeDirectory(ref.root);
+      const previous = await readFile(join(root, EXECUTION_OWNER_FILE), 'utf8').catch(error => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+      });
+      if (previous) {
+        const owner = JSON.parse(previous) as { generationId: string; epoch: number };
+        if (owner.epoch >= ref.epoch) throw new Error('执行目录已被接管');
+        await closeExecutionAndDrain({ root, ...owner });
+      }
+      // 暂存旧源码，逐项失败还原；依赖、产物与平台标记一直留在根内。
+      const backup = await ensureSafeDirectory(join(staged.root, '.paimeng-previous'));
+      const moved: string[] = [];
+      const installed: string[] = [];
+      try {
+        for (const name of await readdir(root)) {
+          if (isSkipped(name) && !(name === TEMPLATE_MARKER && input.baseline.kind === 'template')) continue;
+          await rename(join(root, name), join(backup, name));
+          moved.push(name);
+        }
+        for (const name of await readdir(staged.root)) {
+          if (isSkipped(name) && !(name === TEMPLATE_MARKER && input.baseline.kind === 'template')) continue;
+          await rename(join(staged.root, name), join(root, name));
+          installed.push(name);
+        }
+        const marker = join(root, '.paimeng-next-owner');
+        await writeFile(marker, JSON.stringify({ generationId: ref.generationId, epoch: ref.epoch }));
+        await rename(marker, join(root, EXECUTION_OWNER_FILE));
+      } catch (error) {
+        for (const name of installed) await rm(join(root, name), { recursive: true, force: true });
+        for (const name of moved) await rename(join(backup, name), join(root, name));
+        throw error;
+      }
+    });
+    return ref;
+  } finally {
+    await rm(staged.root, { recursive: true, force: true });
+  }
+}
+
 type Gate = { open: boolean; writers: number; sealed: boolean; failed: boolean; drained: Promise<void>; release: () => void };
 const gates = new Map<string, Gate>();
 
-function gateOf(root: string) {
-  const existing = gates.get(root);
+function gateKey(ref: ExecutionRef) { return JSON.stringify([ref.root, ref.generationId, ref.epoch]); }
+
+function gateOf(ref: ExecutionRef) {
+  const key = gateKey(ref);
+  const existing = gates.get(key);
   if (existing) return existing;
   let release = () => {};
   const drained = new Promise<void>(resolveDrained => { release = resolveDrained; });
   const gate: Gate = { open: false, writers: 0, sealed: false, failed: false, drained, release };
-  gates.set(root, gate);
+  gates.set(key, gate);
   return gate;
 }
 
 /** 打开一次执行的写入门闩：只有开着的门允许写入，重复打开是幂等的。 */
 export async function openExecution(ref: ExecutionRef) {
   await assertExecution(ref);
-  const gate = gateOf(ref.root);
+  await assertCurrentOwner(ref);
+  const gate = gateOf(ref);
   if (gate.open) return;
   if (gate.writers > 0) throw new Error('执行目录正在停止写入，不能重新打开');
   gate.open = true;
@@ -272,7 +344,8 @@ export async function openExecution(ref: ExecutionRef) {
 
 /** 一次写入：进门先登记 writer，取出后归还；关门或 draining 期间一律拒绝。 */
 export async function withExecutionWrite<T>(ref: ExecutionRef, work: () => Promise<T>): Promise<T> {
-  const gate = gates.get(ref.root);
+  await assertCurrentOwner(ref);
+  const gate = gates.get(gateKey(ref));
   if (!gate?.open) throw new Error('执行目录已停止写入');
   gate.writers++;
   try { return await work(); }
@@ -288,7 +361,8 @@ export async function withExecutionWrite<T>(ref: ExecutionRef, work: () => Promi
  */
 export async function closeExecutionAndDrain(ref: ExecutionRef, timeoutMs = DEFAULT_DRAIN_TIMEOUT_MS) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 0) throw new Error('排空等待时间必须是非负整数');
-  const gate = gates.get(ref.root);
+  await assertCurrentOwner(ref);
+  const gate = gates.get(gateKey(ref));
   if (!gate) return;
   gate.open = false;
   if (gate.writers === 0) { gate.release(); return; }
@@ -307,7 +381,7 @@ export async function closeExecutionAndDrain(ref: ExecutionRef, timeoutMs = DEFA
 
 /** 标记这次执行失败：允许在关闸后清理，但本身不解除阻塞。 */
 export function markExecutionFailed(ref: ExecutionRef) {
-  gateOf(ref.root).failed = true;
+  gateOf(ref).failed = true;
 }
 
 /**
@@ -324,7 +398,8 @@ export async function sealExecution(input: {
   assertApp(app);
   if (input.generationId !== undefined && input.generationId !== ref.generationId) throw new Error('执行目录与 generation 不匹配');
   await assertExecution(ref);
-  const gate = gateOf(ref.root);
+  await assertCurrentOwner(ref);
+  const gate = gateOf(ref);
   if (gate.open || gate.writers > 0) throw new Error('执行目录仍在写入，不能封存');
   const base = await ensureSafeDirectory(resolve(input.snapshotsRoot ?? join(getConfig().runtimeRoot, SNAPSHOT_DIRECTORY_NAME)));
   const appDirectory = await ensureSafeDirectory(join(base, `${app.codeGenType}_${app.id}`));
@@ -362,9 +437,10 @@ export async function sealExecution(input: {
 
 /** 只回收已经封存（或明确失败）且已关闸的执行目录；其余一律保留。 */
 export async function cleanupExecution(ref: ExecutionRef) {
-  const gate = gates.get(ref.root);
+  await assertCurrentOwner(ref);
+  const gate = gates.get(gateKey(ref));
   if (gate && (gate.open || gate.writers > 0)) throw new Error('执行目录仍在写入，不能清理');
   if (!gate?.sealed && !gate?.failed) throw new Error('只有已封存或已失败的执行目录可以清理');
-  await rm(ref.root, { recursive: true, force: true });
-  gates.delete(ref.root);
+  if (!await assertCurrentOwner(ref)) await rm(ref.root, { recursive: true, force: true });
+  gates.delete(gateKey(ref));
 }

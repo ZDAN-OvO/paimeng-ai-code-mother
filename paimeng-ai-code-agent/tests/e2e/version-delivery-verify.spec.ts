@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadEnvFile } from 'node:process';
@@ -22,6 +23,9 @@ loadEnvFile('.env');
 const origin = appOrigin();
 const workspaceRoot = process.cwd();
 const evidence = evidenceDir('account-proof', 'version-delivery');
+/** 真实生成的应用：工作区是它的源码目录，版本历史在平台独占的裸库里（路径与 versionRepo() 一致）。 */
+const appWorkspace = () => join(workspaceRoot, 'runtime/code_output', 'multi_file_' + appId);
+const appRepo = () => join(workspaceRoot, 'runtime/versionstore/repos', 'multi_file_' + appId + '.git');
 
 const firstPrompt = '版本切换第一版_' + proofAccount;
 const secondPrompt = '版本切换第二版_' + proofAccount;
@@ -57,8 +61,9 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   if (appId) {
-    await rm(join(workspaceRoot, 'runtime/code_output', 'multi_file_' + appId), { recursive: true, force: true }).catch(() => undefined);
+    await rm(appWorkspace(), { recursive: true, force: true }).catch(() => undefined);
     await rm(join(workspaceRoot, 'runtime/versionstore/versions', 'multi_file_' + appId), { recursive: true, force: true }).catch(() => undefined);
+    await rm(appRepo(), { recursive: true, force: true }).catch(() => undefined);
     await db.query('delete from app where id = $1', [appId]).catch(() => undefined);
   }
   await db?.end().catch(() => undefined);
@@ -85,6 +90,12 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
   const firstVersions = await versions(page);
   expect(firstVersions.versions).toHaveLength(1);
   const firstVersion = firstVersions.versions[0];
+
+  // 版本库在平台侧：生成出来的应用工作区里没有 .git，历史在 runtime/versionstore/repos 的裸库里，
+  // 而且裸库的 HEAD 就是台账列出的那一版——版本身份仍是完整 commit SHA。
+  expect(existsSync(join(appWorkspace(), '.git'))).toBe(false);
+  expect(existsSync(join(appRepo(), 'HEAD'))).toBe(true);
+  expect(execFileSync('git', ['--git-dir', appRepo(), 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(firstVersion.id);
 
   const firstPreview = page.frameLocator('iframe[title="应用预览"]');
   await expect(firstPreview.getByRole('heading', { name: firstPrompt, exact: true })).toBeVisible();
@@ -142,6 +153,18 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
   const afterRestore = await versions(page);
   expect(afterRestore.current?.versionId).toBe(firstVersion.id);
   expect(afterRestore.versions).toHaveLength(2);
+  await page.screenshot({ path: join(evidence, '02-restored-first-version.png'), fullPage: true });
+
+  // 刷新之后仍在：恢复的是落库的当前版本与预览指针，不是这一次页面里的临时视图。
+  await page.reload();
+  await expect(page.frameLocator('iframe[title="应用预览"]').getByRole('heading', { name: firstPrompt, exact: true })).toBeVisible();
+  expect((await versions(page)).current?.versionId).toBe(firstVersion.id);
+  await page.getByRole('button', { name: /^版\s*本$/ }).click();
+  await expect(page.locator('.version-tree-row')).toHaveCount(2);
+  await expect(page.getByRole('dialog', { name: /版本历史/ })).toBeVisible();
+  await page.screenshot({ path: join(evidence, '03-after-reload.png'), fullPage: true, animations: 'disabled' });
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: /版本历史/ })).toBeHidden();
   const countsAfterRestore = await db.query<{
     versions: number; deliveries: number; running: number; pointer_version: string | null;
     pointer_delivery: string | null; pointer_revision: number | null;
@@ -172,7 +195,6 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
   expect(Number(countsAfterRestore.rows[0].pointer_revision)).toBeGreaterThanOrEqual(1);
   expect(Number(countsAfterRestore.rows[0].authority_revision)).toBe(Number(countsAfterRestore.rows[0].pointer_revision));
   expect(countsAfterRestore.rows[0].authority_draft).toBeNull();
-  await page.screenshot({ path: join(evidence, '02-restored-first-version.png'), fullPage: true });
 
   // 下载必须来自恢复后的交付源码，包含外部资源，而不是只给一个文件名。
   const downloadPromise = page.waitForEvent('download');
@@ -211,7 +233,7 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
     [appId],
   );
   expect(finalCounts.rows[0]).toEqual({ versions: 2, deliveries: 2, running: 0 });
-  await page.screenshot({ path: join(evidence, '03-deployed-restored-version.png'), fullPage: true });
+  await page.screenshot({ path: join(evidence, '04-deployed-restored-version.png'), fullPage: true });
 
   await writeFile(join(evidence, 'proof.json'), JSON.stringify({
     account: proofUser.userAccount,
@@ -220,6 +242,11 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
     firstVersion: firstVersion.id,
     secondVersionId: secondVersion!.id,
     firstDeliveryId,
+    versionStore: {
+      repo: appRepo(),
+      workspaceHasGit: existsSync(join(appWorkspace(), '.git')),
+      headSha: firstVersion.id,
+    },
     beforeRestore: beforeRestore.rows[0],
     afterRestore: countsAfterRestore.rows[0],
     final: finalCounts.rows[0],

@@ -318,6 +318,48 @@ export async function assertAuthority(check: { appId: string; epoch: number; hol
 }
 
 /**
+ * 持久 Workspace 的文件临界区。App → authority 行锁一直持有到文件操作完成，
+ * 因此另一进程 acquire/beginDrain 必须等待已准入写入退出，消除 assert→FS 的窗口。
+ * 仅用于短文件操作/封存；安装、模型调用和构建不能放在这个事务里。
+ */
+export async function withWorkspaceFence<T>(check: { appId: string; epoch: number }, work: () => Promise<T>): Promise<T> {
+  return db().transaction(async tx => {
+    const app = await lockApp(tx, check.appId);
+    const authority = await lockAuthority(tx, app.id);
+    if (authority.ownerEpoch !== check.epoch) throw new BusinessError(409, 40900, '应用写权限已失效');
+    return work();
+  });
+}
+
+/** 写准入与写入共用同一临界区；带 executionId 时还必须是当前 active Execution。 */
+export async function withWorkspaceWrite<T>(check: {
+  appId: string; epoch: number; generationId: string; executionId?: string;
+}, work: () => Promise<T>): Promise<T> {
+  return db().transaction(async tx => {
+    const app = await lockApp(tx, check.appId);
+    const authority = await lockAuthority(tx, app.id);
+    const [live] = await tx.select({ ok: sql<boolean>`${appAuthority.expiresAt} > timezone('UTC', clock_timestamp())` })
+      .from(appAuthority).where(eq(appAuthority.appId, app.id));
+    if (authority.ownerEpoch !== check.epoch || authority.state !== 'active' || !live?.ok) {
+      throw new BusinessError(409, 40900, '应用写权限已失效');
+    }
+    const [generation] = await tx.select().from(generations)
+      .where(and(eq(generations.id, check.generationId), eq(generations.appId, app.id))).for('update');
+    if (!generation || !activeGenerationStatuses.includes(generation.status)) throw new BusinessError(409, 40900, '生成已结束，不能写入');
+    if (check.executionId) {
+      const [execution] = await tx.select().from(generationExecutions).where(eq(generationExecutions.id, check.executionId)).for('update');
+      if (!execution || execution.appId !== app.id || execution.generationId !== check.generationId || execution.epoch !== check.epoch || execution.status !== 'active') {
+        throw new BusinessError(409, 40900, '执行已停止写入');
+      }
+    }
+    const [question] = await tx.select({ id: generationQuestions.id }).from(generationQuestions)
+      .where(and(eq(generationQuestions.appId, app.id), eq(generationQuestions.status, 'open'))).limit(1);
+    if (question) throw new BusinessError(409, 40900, '正在等待用户回答，本轮不能继续写源码');
+    return work();
+  });
+}
+
+/**
  * 进入交接：关闭新 effect 准入，等草稿封存完成；epoch 不变，旧 token 不能再 assert。
  * 这里只记一条 to_state='draining' 的转移流水（交接事实，不是公开 generation 状态），
  * 公开终态仍由调用方按取消/失败各自写入。

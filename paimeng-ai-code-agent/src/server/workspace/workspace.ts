@@ -8,7 +8,7 @@ import { getConfig } from '../infra/config';
 import { idSchema, codeGenTypes, type AppInfo } from '@/shared/contracts';
 
 export type WorkspaceApp = Pick<AppInfo, 'id' | 'codeGenType'>;
-/** 一个应用源码目录的显式根：默认是应用工作区，生成期间是本次执行的隔离目录。 */
+/** 一个应用源码目录的显式根：默认是持久 App Workspace；封存与物化也可显式绑定隔离目录。 */
 export type ProjectRoot = { readonly app: WorkspaceApp; readonly root: string };
 export type ProjectTarget = WorkspaceApp | ProjectRoot;
 export const MAX_FILE_BYTES = 256 * 1024;

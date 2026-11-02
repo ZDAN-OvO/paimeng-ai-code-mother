@@ -15,25 +15,49 @@ type TemplateDefinition = {
   entry: string;
   /** 在隔离容器中执行的类型检查命令，参数接在约定镜像的入口之后。 */
   typecheck: readonly string[] | null;
+  /** 工程模板的包管理器；静态模板没有依赖安装步骤。 */
+  packageManager: 'npm' | 'pnpm' | null;
 };
 
 const definitions: Record<string, TemplateDefinition> = {
-  'html@1.0.0': { files: ['AGENTS.md', 'index.html'], entry: 'index.html', typecheck: null },
-  'multi-file@1.0.0': { files: ['AGENTS.md', 'index.html', 'css/style.css', 'js/main.js'], entry: 'index.html', typecheck: null },
+  'html@1.0.0': { files: ['AGENTS.md', 'index.html'], entry: 'index.html', typecheck: null, packageManager: null },
+  'multi-file@1.0.0': { files: ['AGENTS.md', 'index.html', 'css/style.css', 'js/main.js'], entry: 'index.html', typecheck: null, packageManager: null },
   'vue-ts@1.0.0': {
     files: ['package.json', 'package-lock.json', 'index.html', 'vite.config.ts', 'tsconfig.json', '.gitignore', 'README.md', 'AGENTS.md', 'src/main.ts', 'src/App.vue', 'src/style.css', 'src/types/task.ts', 'src/composables/useTasks.ts', 'src/components/TaskItem.vue'],
     entry: 'src/main.ts',
     typecheck: ['node', 'node_modules/vue-tsc/bin/vue-tsc.js', '--noEmit'],
+    packageManager: 'npm',
   },
   'react-ts@1.0.0': {
     files: ['package.json', 'package-lock.json', 'index.html', 'vite.config.ts', 'tsconfig.json', '.gitignore', 'README.md', 'AGENTS.md', 'src/main.tsx', 'src/App.tsx', 'src/style.css', 'src/types/task.ts', 'src/hooks/useTasks.ts', 'src/components/TaskItem.tsx'],
     entry: 'src/main.tsx',
     typecheck: ['node', 'node_modules/typescript/bin/tsc', '--noEmit'],
+    packageManager: 'npm',
+  },
+  'react-ts@2.0.0': {
+    files: ['package.json', 'pnpm-lock.yaml', 'index.html', 'vite.config.ts', 'tsconfig.json', '.gitignore', 'README.md', 'AGENTS.md', 'src/main.tsx', 'src/App.tsx', 'src/index.css', 'src/lib/utils.ts', 'src/components/ui/button.tsx', 'src/components/ui/card.tsx', 'src/components/ui/badge.tsx', 'src/components/layout/app-shell.tsx', 'src/components/layout/page-header.tsx', 'src/pages/home.tsx', 'src/pages/about.tsx', 'src/pages/not-found.tsx', 'src/data/dashboard.ts'],
+    entry: 'src/main.tsx',
+    typecheck: ['node', 'node_modules/typescript/bin/tsc', '--noEmit'],
+    packageManager: 'pnpm',
   },
 };
 
+const lockfiles = { npm: 'package-lock.json', pnpm: 'pnpm-lock.yaml' } as const;
+
+function compareVersions(left: string, right: string) {
+  const parts = (version: string) => version.split('.').map(part => Number.parseInt(part, 10) || 0);
+  const a = parts(left), b = parts(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index++) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+/** 没有指定版本时取同 id 的最新版本：新建应用默认拿最新模板。 */
 export function resolveTemplate(id: string, version?: string): TemplateInfo {
-  const template = codeGenTemplates.find(value => value.id === id && (!version || value.version === version));
+  const matches = codeGenTemplates.filter(value => value.id === id);
+  const template = version ? matches.find(value => value.version === version) : matches.sort((a, b) => compareVersions(b.version, a.version))[0];
   if (!template) throw new Error(`不支持的工程模板 ${id}${version ? `@${version}` : ''}`);
   return template;
 }
@@ -59,9 +83,19 @@ export function templateEntry(template: TemplateIdentity) {
   return definition(template).entry;
 }
 
-/** 按类型取第一个注册的模板；没有匹配时返回 null（显式选择由调用方处理）。 */
+export function templatePackageManager(template: TemplateIdentity) {
+  const manager = definition(template).packageManager;
+  if (!manager) throw new Error('静态模板没有依赖安装方式');
+  return manager;
+}
+
+export function templateLockfile(template: TemplateIdentity) {
+  return lockfiles[templatePackageManager(template)];
+}
+
+/** 按类型取最新的模板；没有匹配时返回 null（显式选择由调用方处理）。 */
 export function defaultTemplateFor(type: string) {
-  return codeGenTemplates.find(value => value.codeGenType === type) ?? null;
+  return codeGenTemplates.filter(value => value.codeGenType === type).sort((a, b) => compareVersions(b.version, a.version))[0] ?? null;
 }
 
 export async function readTemplateFile(template: TemplateIdentity, path: string) {
@@ -84,11 +118,35 @@ export async function readTemplateIdentity(root: string): Promise<TemplateInfo |
   } finally { await handle.close(); }
 }
 
-export function validateTemplateManifest(template: TemplateIdentity, content: string) {
-  const { codeGenType } = resolveTemplate(template.id, template.version);
-  if (codeGenType !== 'vue_project' && codeGenType !== 'react_project') throw new Error('只有前端工程模板可以校验依赖');
-  const allowed = allowedDependencies(codeGenType);
-  const dependencies = validateProjectManifest(codeGenType, content);
+type Manifest = { dependencies: Record<string, string>; devDependencies: Record<string, string> };
+
+function manifestSections(content: string): Manifest {
+  const manifest = z.object({ dependencies: z.record(z.string(), z.string()).optional(), devDependencies: z.record(z.string(), z.string()).optional() }).parse(JSON.parse(content));
+  return { dependencies: manifest.dependencies ?? {}, devDependencies: manifest.devDependencies ?? {} };
+}
+
+function sameDependencies(actual: Record<string, string>, expected: Record<string, string>) {
+  return Object.keys(actual).length === Object.keys(expected).length && Object.entries(expected).every(([name, version]) => actual[name] === version);
+}
+
+/**
+ * 工程模板的依赖由模板版本固定。npm 模板继续按历史允许清单逐版本比对；
+ * pnpm 模板与模板自己的 package.json 比对，锁文件另由调用方逐字节校验。
+ */
+export async function validateTemplateManifest(template: TemplateIdentity, content: string) {
+  const resolved = resolveTemplate(template.id, template.version);
+  if (resolved.codeGenType !== 'vue_project' && resolved.codeGenType !== 'react_project') throw new Error('只有前端工程模板可以校验依赖');
+  if (templatePackageManager(resolved) === 'pnpm') {
+    // 逐段比对：往 dependencies 里塞一个同名包不能被 devDependencies 的同名锁定盖掉。
+    const allowed = manifestSections(await readTemplateFile(resolved, 'package.json'));
+    const actual = manifestSections(content);
+    if (!sameDependencies(actual.dependencies, allowed.dependencies) || !sameDependencies(actual.devDependencies, allowed.devDependencies)) {
+      throw new Error(`当前模板的依赖由模板版本固定，请恢复 ${resolved.id}@${resolved.version} 的全部依赖及版本。可用依赖 ${JSON.stringify({ ...allowed.dependencies, ...allowed.devDependencies })}`);
+    }
+    return { ...actual.dependencies, ...actual.devDependencies };
+  }
+  const allowed = allowedDependencies(resolved.codeGenType);
+  const dependencies = validateProjectManifest(resolved.codeGenType, content);
   if (Object.keys(dependencies).length !== Object.keys(allowed).length || Object.entries(allowed).some(([name, version]) => dependencies[name] !== version)) {
     throw new Error(`当前模板的依赖由模板版本固定，请保留全部依赖及版本。可用依赖 ${JSON.stringify(allowed)}`);
   }

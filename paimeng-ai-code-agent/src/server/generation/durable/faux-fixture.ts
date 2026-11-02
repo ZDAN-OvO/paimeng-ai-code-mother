@@ -1,7 +1,7 @@
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type AssistantMessage, type FauxResponseFactory, type Message, type ToolCall } from "@earendil-works/pi-ai";
 import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
 import type { CodeGenType } from "@/shared/contracts";
-import { fixtureReadSteps, fixtureReplyText, fixtureWriteSteps } from "./fixture-content";
+import { fixtureLive, fixtureReadSteps, fixtureReplyText, fixtureWriteSteps, thickReactPage, THICK_REACT_PAGE } from "./fixture-content";
 
 export const FAUX_FIXTURE_PROVIDER = "faux";
 export const FAUX_FIXTURE_MODEL_ID = "fixture-1";
@@ -23,6 +23,7 @@ export function fauxFixtureRef() {
 
 const APP_TYPE = /当前应用类型 (html|multi_file|vue_project|react_project)/;
 const TEMPLATED = /当前工程已从 \S+@\S+ 模板初始化/;
+const THICK_REACT = /当前工程已从 react-ts@2\.0\.0 模板初始化/;
 
 function messageText(message: Message): string {
 	if (message.role === "system") {
@@ -54,10 +55,21 @@ function scriptedTurn(messages: readonly Message[]): ScriptedTurn {
 	if (asked) return { tool: "ask", args: { question: asked[1] } };
 	const results = messages.slice(lastUser + 1).filter((message) => message.role === "toolResult").length;
 	const templated = TEMPLATED.test(instructions) && (type === "react_project" || type === "vue_project");
-	const reads = templated ? fixtureReadSteps(type) : [];
+	const thickReact = THICK_REACT.test(instructions);
+	const reads = templated ? fixtureReadSteps(type, thickReact) : [];
 	const read = reads[results];
 	if (read) return { tool: read.tool, args: read.path === undefined ? {} : { path: read.path } };
-	const file = fixtureWriteSteps(type, prompt, templated)[results - reads.length];
+	// `[live]` 证据用例：同一轮里连续写两次同一页，中间用夹具工具等一会儿，
+	// 让实时 Preview 能先显示第一版、再显示第二版（HMR 不刷新页面）。
+	if (fixtureLive(prompt) && templated && thickReact && type === "react_project") {
+		const live: ScriptedTurn[] = [
+			{ tool: "write", args: { path: THICK_REACT_PAGE, content: thickReactPage(prompt, " · 第一版").content } },
+			{ tool: "m1_wait", args: { ms: 8000 } },
+			{ tool: "write", args: { path: THICK_REACT_PAGE, content: thickReactPage(prompt, " · 第二版").content } },
+		];
+		return live[results - reads.length] ?? { tool: null };
+	}
+	const file = fixtureWriteSteps(type, prompt, templated, thickReact)[results - reads.length];
 	return file === undefined ? { tool: null } : { tool: "write", args: { path: file.path, content: file.content } };
 }
 

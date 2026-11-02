@@ -132,6 +132,25 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M1：原生文件工�
 		}
 	}, 120_000);
 
+	it('原生 write 不能覆盖持久 Workspace 的平台 owner 标记', async () => {
+		const runDir = mkdtempSync(join(tmpdir(), 'durable-files-owner-'));
+		const workspace = join(runDir, 'app');
+		mkdirSync(workspace);
+		const owner = JSON.stringify({ generationId: 'current', epoch: 2 });
+		writeFileSync(join(workspace, '.paimeng-execution.json'), owner);
+		const started = await startHarnessFor({ runDir, workspace, tool: 'write', args: { path: '.paimeng-execution.json', content: 'stale' }, finalText: 'FILES_OWNER_DONE' });
+		try {
+			const conversationId = await createConversation(started.base, workspace, '只用文件工具。');
+			await submit(started.base, conversationId, '覆盖平台标记', 'files-owner');
+			const results = (await settledToolResults(started.base, conversationId, 'FILES_OWNER_DONE')).join('\n');
+			expect(results).toContain('文件路径不允许访问');
+			expect(readFileSync(join(workspace, '.paimeng-execution.json'), 'utf8')).toBe(owner);
+		} finally {
+			await stopHarness(started.harness);
+			rmSync(runDir, { recursive: true, force: true });
+		}
+	}, 120_000);
+
 	it('夹具模型写多文件应用：每个文件一次 write 调用', async () => {
 		const runDir = mkdtempSync(join(tmpdir(), 'durable-files-fixture-'));
 		const workspace = join(runDir, 'app');

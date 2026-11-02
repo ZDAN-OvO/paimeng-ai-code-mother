@@ -43,11 +43,15 @@ Harness 内部控制面使用的阶段：editing、checking、publishing、finis
 _Avoid_: generation status, public state
 
 **Generation type**:
-App 的产物类型：HTML、多文件静态站、Vue 工程或 React 工程；它决定源码形态和构建路径。界面上的「技术栈」选项指向一个 Template；选择「自动选择」时，平台按需求挑选 Generation type 和默认 Template。
+App 在存储层的产物类型：HTML、多文件静态站、Vue 工程或 React 工程；它保留历史数据与旧代码路径，不再出现在新建界面。「轻量静态页」与「React 厚架子」是 Starter，不是 Generation type。
 _Avoid_: stack, code type, 技术栈
 
+**Starter**:
+新建 App 时在首页选择的起点，只有两个：轻量静态页（`html@1.0.0`，不需要构建）和 React 厚架子（`react-ts@2.0.0`，带布局、设计令牌、shadcn/ui 组件源码、路由与示例页面）。选择「自动选择」时平台先做轻量静态/构建类二分类，默认构建类，只有需求确实简单时才走轻量静态页。
+_Avoid_: 技术栈, stack, generation type
+
 **Template**:
-新建 App 时复制进去的带版本源码骨架。Template 有版本，Generation type 没有；两者不能混用。
+新建 App 时复制进去的带版本源码骨架。Template 有版本，Generation type 没有；两者不能混用。`react-ts@2.0.0` 用 pnpm 与 `pnpm-lock.yaml`，是构建类 App 的默认模板；`react-ts@1.0.0`、`vue-ts` 与 `multi-file` 只保留解析与代码路径。
 _Avoid_: stack, scaffold, preset
 
 **Input**:
@@ -71,7 +75,7 @@ Generation 在验证和发布前产出的源码与构建结果；尚未成为当
 _Avoid_: draft, delivery, result
 
 **Execution**:
-承载一次 Generation 的隔离运行，拥有自己的 Execution conversation、Workspace 和 Write authority。
+承载一次 Generation 的执行，拥有独立的 Execution conversation 和 Write authority，并在该 App 的持久 Workspace 中工作。
 _Avoid_: generation, run, task
 
 **Attempt**:
@@ -115,8 +119,12 @@ _Avoid_: lease, lock, ownership
 ## 源码与产物
 
 **Workspace**:
-App 的源码工作区。App workspace 是 App 的持久源码目录；Execution workspace 是单次 Execution 的隔离副本，legacy 应用可能直接以 App workspace 作为回退基线。
+App 的持久源码工作区，由该 App 的连续 Execution 共用；轮次交接以封存的 Source snapshot 确定下一轮基线。
 _Avoid_: sandbox, checkout
+
+**App runtime**:
+按 App 分配、在 Generation 之间保留的隔离运行环境，包含该 App 的 Workspace、依赖和 dev server。
+_Avoid_: sandbox, Execution runtime
 
 **Draft**:
 未发布 Generation 留下的已封存源码状态，供下一轮继续；它不是 Version，也不是当前预览。
@@ -139,7 +147,7 @@ _Avoid_: deployment, build artifact, bundle
 _Avoid_: deploy, release, save
 
 **Preview**:
-平台内展示当前 Delivery 的页面；它不是公网 Deployment。
+平台内查看 App 的页面；App runtime 可用时展示正在更新的源码，否则展示最近的 Delivery。它不是公网 Deployment。
 _Avoid_: deploy preview, staging
 
 **Deployment**:
