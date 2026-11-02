@@ -66,6 +66,8 @@ export const modelPriceVersionSchema = z
     inputHitFen: cnyFen,
     outputFen: cnyFen,
     upstreamUsd: usdReferenceSchema.nullish().transform(value => value ?? null),
+    costBasis: z.enum(['peak', 'off-peak', 'unknown']).nullable().optional(),
+    costSource: z.string().nullable().optional(),
     note: z.string().max(2000).nullish().transform(value => value ?? null),
   })
   .refine(value => value.inputMissFen > 0 || value.inputHitFen > 0 || value.outputFen > 0, '三个单价不能同时为 0');
