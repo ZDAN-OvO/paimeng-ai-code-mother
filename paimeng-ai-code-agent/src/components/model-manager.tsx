@@ -68,7 +68,7 @@ import {
   type ModelPriceVersion,
 } from '@/shared/model-document';
 
-type AdminOutcome<T> = { ok: true; data: T } | { ok: false; status: number; message: string };
+type AdminOutcome<T> = { ok: true; data: T } | { ok: false; status: number; code: number; message: string };
 type ProviderHeaderRow = { name: string; value: string };
 
 type ProviderFormValues = {
@@ -213,7 +213,7 @@ function ModelConfigManager() {
         data => modelConfigVersionViewSchema.parse(data),
       );
       if (!outcome.ok) {
-        if (outcome.status === 409) setConflict(outcome.message);
+        if (outcome.status === 409 && outcome.code === 40901) setConflict(outcome.message);
         else message.error(outcome.message);
         return null;
       }
@@ -346,7 +346,7 @@ function ModelConfigManager() {
         data => modelConfigVersionViewSchema.parse(data),
       );
       if (!created.ok) {
-        if (created.status === 409) setConflict(created.message);
+        if (created.status === 409 && created.code === 40901) setConflict(created.message);
         else message.error(created.message);
         setSaving(false);
         return;
@@ -426,7 +426,7 @@ function ModelConfigManager() {
         );
         setSaving(false);
         if (!updated.ok) {
-          if (updated.status === 409) setConflict(updated.message);
+          if (updated.status === 409 && updated.code === 40901) setConflict(updated.message);
           else message.error(updated.message);
           return;
         }
@@ -452,7 +452,7 @@ function ModelConfigManager() {
         );
         setSaving(false);
         if (!priced.ok) {
-          if (priced.status === 409) setConflict(priced.message);
+          if (priced.status === 409 && priced.code === 40901) setConflict(priced.message);
           else message.error(priced.message);
           return;
         }
@@ -509,7 +509,7 @@ function ModelConfigManager() {
     );
     setSaving(false);
     if (!outcome.ok) {
-      if (outcome.status === 409) setConflict(outcome.message);
+      if (outcome.status === 409 && outcome.code === 40901) setConflict(outcome.message);
       else message.error(outcome.message);
       return;
     }
@@ -1257,11 +1257,11 @@ async function adminPost<T>(path: string, payload: unknown, parse: (data: unknow
     try {
       return { ok: true, data: parse(data) };
     } catch {
-      return { ok: false, status: response.status, message: '响应格式不正确' };
+      return { ok: false, status: response.status, code: 0, message: '响应格式不正确' };
     }
   } catch (error) {
-    if (error instanceof ApiResponseError) return { ok: false, status: error.status, message: error.message };
-    return { ok: false, status: 0, message: '网络请求失败，请稍后重试' };
+    if (error instanceof ApiResponseError) return { ok: false, status: error.status, code: error.code, message: error.message };
+    return { ok: false, status: 0, code: 0, message: '网络请求失败，请稍后重试' };
   }
 }
 
