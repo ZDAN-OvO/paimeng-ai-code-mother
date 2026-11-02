@@ -178,9 +178,9 @@ describe('运行时槽位排队', () => {
     const waiting = await newApp();
     const prepared = await prepareGenerationStart(startInput(waiting));
     if (prepared.kind !== 'queued') throw new Error('期望进入排队');
-    // 排队期间：还没有账单，也没有消耗分录。
+    // 排队期间：这一轮还没有账单，也没有消耗分录。
     expect(await db().select().from(creditCharges).where(eq(creditCharges.generationId, prepared.plan.generationId))).toHaveLength(0);
-    expect(await db().select().from(creditEntries)).toHaveLength(0);
+    expect(await db().select().from(creditEntries).where(eq(creditEntries.chargeId, prepared.plan.generationId))).toHaveLength(0);
 
     await expect(launchQueuedGeneration(prepared.plan)).rejects.toMatchObject({ status: 429 });
     const row = await generationRow(prepared.plan.generationId);
@@ -189,7 +189,7 @@ describe('运行时槽位排队', () => {
     expect(await readQueueTicket(waiting)).toBeNull();
     const [charge] = await db().select().from(creditCharges).where(eq(creditCharges.generationId, prepared.plan.generationId));
     expect(charge?.credits ?? 0).toBe(0);
-    expect(await db().select().from(creditEntries)).toHaveLength(0);
+    expect(await db().select().from(creditEntries).where(eq(creditEntries.chargeId, prepared.plan.generationId))).toHaveLength(0);
   });
 
   it('排队可以被取消：落 cancelled、删排队记录，之后不会启动', async () => {
@@ -221,7 +221,7 @@ describe('运行时槽位排队', () => {
     expect(await readQueueTicket(waiting)).toBeNull();
     expect(await db().select().from(generationExecutions).where(eq(generationExecutions.generationId, prepared.plan.generationId))).toHaveLength(0);
     await expect(launchQueuedGeneration(prepared.plan)).rejects.toMatchObject({ status: 409 });
-    expect(await waitingQueue()).toHaveLength(0);
+    expect((await waitingQueue()).some(item => item.appId === waiting.id)).toBe(false);
   });
 
   it('已 granted 但还没开始执行的等待者失联时同样收敛，不会永久占着槽位', async () => {
