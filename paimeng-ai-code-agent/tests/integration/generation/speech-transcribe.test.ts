@@ -4,9 +4,10 @@ import { testDatabaseUrl } from '../../support/test-database-url';
 import { eq } from 'drizzle-orm';
 import { GET, POST } from '@/app/api/[...path]/route';
 import { db, getPool, now } from '@/server/infra/db';
-import { modelAliases, modelConfigState, modelProviders, sessions, users } from '@/server/infra/schema';
-import { defaultModelProviderId, modelConfigStateId, type ModelAliasInput } from '@/shared/model-config';
-import { initializeModelConfigFromEnv, readConfigSnapshot, upsertAlias } from '@/server/models/store';
+import { sessions, users } from '@/server/infra/schema';
+import { defaultModelProviderId, type ModelAliasInput } from '@/shared/model-config';
+import { initializeModelConfigFromEnv } from '@/server/models/store';
+import { resetModelConfigRow, upsertTestAlias } from '../../support/model-config';
 
 const prefix = `ts_speech_${Date.now()}`;
 const origin = 'http://localhost:3000';
@@ -68,12 +69,7 @@ function recordingForm(audio: Blob, filename = 'recording.webm') {
 const audioBlob = (bytes: number, type = 'audio/webm') => new Blob([new Uint8Array(bytes)], { type });
 
 async function resetModelConfig() {
-  await db().delete(modelAliases);
-  await db().delete(modelProviders);
-  await db()
-    .insert(modelConfigState)
-    .values({ id: modelConfigStateId, revision: 0n, refreshEpoch: 0n, updateTime: now() })
-    .onConflictDoUpdate({ target: modelConfigState.id, set: { revision: 0n, refreshEpoch: 0n } });
+  await resetModelConfigRow();
 }
 
 describe('语音转写接口', () => {
@@ -116,8 +112,7 @@ describe('语音转写接口', () => {
   });
 
   it('配置别名后可用，音频转发到 /audio/transcriptions', async () => {
-    const snapshot = await readConfigSnapshot();
-    await upsertAlias(speechAlias, { expectedRevision: snapshot.revision, applyImmediately: true });
+    await upsertTestAlias(speechAlias);
     const upstream = vi.fn(async (_url: string, _init: RequestInit) => Response.json({ text: '你好，世界' }));
     vi.stubGlobal('fetch', upstream);
 

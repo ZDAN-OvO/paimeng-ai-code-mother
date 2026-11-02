@@ -397,7 +397,7 @@ describe('故障回退与不可掩盖的错误', () => {
     await registry.resolveBinding('codegen.default');
 
     const broken = snapshot('2', '1', 'model-b');
-    broken.aliases = broken.aliases.map(alias => (alias.alias === 'codegen.default' ? { ...alias, enabled: false } : alias));
+    broken.aliases = broken.aliases.filter(alias => alias.alias !== 'codegen.default');
     state.snapshot = broken;
     state.currentEpoch = '1';
     time.advance(modelRegistryTtlMs);
@@ -429,7 +429,7 @@ describe('故障回退与不可掩盖的错误', () => {
     await registry.resolveBinding('codegen.default');
 
     const broken = snapshot('2', '1', 'model-b');
-    broken.aliases = broken.aliases.map(alias => (alias.alias === 'codegen.default' ? { ...alias, enabled: false } : alias));
+    broken.aliases = broken.aliases.filter(alias => alias.alias !== 'codegen.default');
     state.snapshot = broken;
     state.currentEpoch = '1';
     time.advance(modelRegistryTtlMs);
@@ -456,7 +456,7 @@ describe('故障回退与不可掩盖的错误', () => {
     expect((await registry.resolveBinding('codegen.default')).modelName).toBe('model-b');
 
     const broken = snapshot('3', '1', 'model-c');
-    broken.aliases = broken.aliases.map(alias => (alias.alias === 'codegen.default' ? { ...alias, enabled: false } : alias));
+    broken.aliases = broken.aliases.filter(alias => alias.alias !== 'codegen.default');
     state.snapshot = broken;
     state.currentEpoch = '1';
     time.advance(modelRegistryTtlMs);

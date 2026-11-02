@@ -7,10 +7,11 @@ import { GET, POST } from '@/app/api/[...path]/route';
 import { db, getPool, now } from '@/server/infra/db';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import {
-  apps, creditAccounts, creditGrants, creditQuotaAdjustments, creditQuotaIssues, creditRateCard, generationSteps, generations, users,
+  appConfig, apps, creditAccounts, creditGrants, creditQuotaAdjustments, creditQuotaIssues, generationSteps, generations, users,
 } from '@/server/infra/schema';
 import { rebuildAccount, recordGrant } from '@/server/billing/ledger';
 import type { CreditPool } from '@/shared/billing';
+import { modelConfigDocumentSchema, modelConfigKey, type ModelConfigDocument } from '@/shared/model-document';
 import type { WorkspaceApp } from '@/server/workspace/workspace';
 
 /**
@@ -151,25 +152,71 @@ export async function seedBillingStep(generationId: string, input: {
   });
 }
 
+const billingDocumentTime = '2020-01-01 00:00:00.000';
+
+async function mutateBillingDocument(mutator: (document: ModelConfigDocument) => void): Promise<void> {
+  const [row] = await db().select().from(appConfig).where(eq(appConfig.key, modelConfigKey)).limit(1);
+  if (!row) throw new Error('app_config.model_config 缺失，请先执行 023 迁移');
+  const document = modelConfigDocumentSchema.parse(row.value);
+  mutator(document);
+  await db().update(appConfig).set({ value: document, revision: row.revision + 1n, updatedAt: now() }).where(eq(appConfig.key, modelConfigKey));
+}
+
 /** 费率版本按 modelName 区分用例，避免相互影响；生效时间固定在 2020，早于任何步骤。 */
 export async function seedBillingRate(input: {
   modelName: string; providerId?: string; creditInputMiss?: number; creditInputHit?: number; creditOutput?: number;
-  usdInputMiss?: string | null; usdInputHit?: string | null; usdOutput?: string | null;
+  usdInputMiss?: string | null; usdInputHit?: string | null; usdOutput?: string | null; effectiveAt?: string;
 }): Promise<void> {
   const providerId = input.providerId ?? billingRateProvider;
   seededRateProviders.add(providerId);
-  await db().insert(creditRateCard).values({
-    providerId,
-    modelName: input.modelName,
-    effectiveFrom: '2020-01-01 00:00:00.000',
-    creditInputMiss: input.creditInputMiss ?? 600,
-    creditInputHit: input.creditInputHit ?? 12,
-    creditOutput: input.creditOutput ?? 2500,
-    usdInputMiss: input.usdInputMiss ?? null,
-    usdInputHit: input.usdInputHit ?? null,
-    usdOutput: input.usdOutput ?? null,
-    costBasis: input.usdInputMiss ? 'peak' : 'unknown',
-    createTime: now(),
+  await mutateBillingDocument(document => {
+    let provider = document.providers.find(candidate => candidate.id === providerId);
+    if (!provider) {
+      provider = {
+        id: providerId,
+        displayName: providerId,
+        apiFormat: 'openai-chat',
+        baseUrl: 'https://billing.example.test/v1',
+        apiKey: { source: 'env', env: 'AI_API_KEY' },
+        options: {},
+        headers: {},
+        enabled: true,
+        models: [],
+        createTime: billingDocumentTime,
+        updateTime: billingDocumentTime,
+      };
+      document.providers.push(provider);
+    }
+    let model = provider.models.find(candidate => candidate.upstream === input.modelName);
+    if (!model) {
+      model = {
+        id: `pm_billing_${document.providers.length}_${provider.models.length}`,
+        upstream: input.modelName,
+        displayName: input.modelName,
+        enabled: true,
+        capabilities: { streaming: true, toolCalling: true, structuredOutput: true, imageInput: false },
+        upstreamPrice: null,
+        prices: [],
+        createTime: billingDocumentTime,
+        updateTime: billingDocumentTime,
+      };
+      provider.models.push(model);
+    }
+    const version = model.prices.reduce((max, price) => Math.max(max, price.version), 0) + 1;
+    model.prices.push({
+      version,
+      effectiveAt: input.effectiveAt ?? billingDocumentTime,
+      currency: 'CNY',
+      inputMissFen: input.creditInputMiss ?? 600,
+      inputHitFen: input.creditInputHit ?? 12,
+      outputFen: input.creditOutput ?? 2500,
+      upstreamUsd: {
+        inputMiss: input.usdInputMiss ?? null,
+        inputHit: input.usdInputHit ?? null,
+        output: input.usdOutput ?? null,
+      },
+      note: null,
+    });
   });
 }
 
@@ -205,8 +252,11 @@ export async function withoutMonthlyQuota(owner: BillingTestUser): Promise<Billi
   return owner;
 }
 
-/** 删除本进程插入过的全部费率版本：`_test` 库跨文件共享，费率行会互相影响。 */
+/** 删除本进程插入过的提供商与价格版本：`_test` 库跨文件共享，价格会互相影响。 */
 export async function purgeBillingRateCards(): Promise<void> {
   const providers = [...seededRateProviders];
-  await db().delete(creditRateCard).where(inArray(creditRateCard.providerId, providers));
+  await mutateBillingDocument(document => {
+    document.providers = document.providers.filter(provider => !providers.includes(provider.id));
+    document.legacyPrices = document.legacyPrices.filter(price => !providers.includes(price.providerId));
+  });
 }

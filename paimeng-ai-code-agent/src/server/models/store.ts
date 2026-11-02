@@ -3,56 +3,133 @@ import { eq } from 'drizzle-orm';
 import { getConfig } from '../infra/config';
 import { db, now, type Transaction } from '../infra/db';
 import { BusinessError } from '../infra/http';
-import { modelAliases, modelConfigState, modelProviders } from '../infra/schema';
+import { appConfig } from '../infra/schema';
+import { nextSnowflakeId } from '../infra/snowflake';
 import {
   baseModelApiKeyEnv,
-  capabilitiesForSlot,
+  decimalVersionSchema,
   defaultModelProviderId,
-  modelAliasInputSchema,
-  modelConfigIssues,
-  modelConfigStateId,
   modelProviderInputSchema,
+  modelProviderWriteSchema,
   modelSlotOf,
   modelSlots,
-  requiredModelAliases,
   type ModelAlias,
-  type ModelAliasInput,
-  type ModelConfigPolicy,
   type ModelConfigSnapshot,
   type ModelConfigVersion,
   type ModelProvider,
   type ModelProviderInput,
   type ModelProviderWriteInput,
 } from '@/shared/model-config';
+import {
+  findDocumentModel,
+  modelConfigDocumentIssues,
+  modelConfigDocumentSchema,
+  modelConfigKey,
+  modelConfigMutatePayloadSchema,
+  modelEligibilityIssue,
+  providerInputFromDocument,
+  snapshotFromDocument,
+  utcTimestamp,
+  type ModelConfigDocument,
+  type ModelConfigMutation,
+  type ModelConfigProvider,
+  type ModelPriceVersion,
+  type ProviderModel,
+} from '@/shared/model-document';
+import { ModelConfigInvalidError } from './errors';
 import { encryptModelSecret } from './secrets';
 
 /**
- * 配置存储层的对外接口（供热加载与管理 API 使用）：
- * - readConfigSnapshot：一个显式 REPEATABLE READ 只读事务内加载状态行、提供商与别名。
- * - readRefreshEpoch：轻量读取共享刷新序号，供每次模型解析前检查。
- * - upsertProvider / deleteProvider / upsertAlias / deleteAlias / applyModelConfig：
- *   锁定状态行、检查 expectedRevision、校验完整候选配置后写入并递增版本。
- * - initializeModelConfigFromEnv：仅当配置为空且版本为零时从环境变量建立提供商与两个必需别名。
+ * 模型配置存储层：一行 `app_config.value` JSON 文档。
+ *
+ * - 读：`readConfigSnapshot` 在 REPEATABLE READ 事务里读同一行，再映射成注册表沿用的
+ *   providers/aliases 快照；`readModelConfigDocument` 给 billing 等模块在同一事务里读原文。
+ * - 写：锁定唯一行、校验 expectedRevision、校验完整候选文档，再递增 revision；
+ *   `applyImmediately` 额外递增 refresh_epoch。
+ * - 初始化：仅当文档为空且版本为零时从环境变量建立默认提供商、一个模型和两个必需槽位。
  */
 
+type ConfigRow = typeof appConfig.$inferSelect;
 type ModelConfigWrite = { expectedRevision: string; applyImmediately?: boolean };
-export type ModelConfigMutation =
-  | { kind: 'upsertProvider'; provider: ModelProviderWriteInput }
-  | { kind: 'deleteProvider'; id: string }
-  | { kind: 'upsertAlias'; alias: ModelAliasInput }
-  | { kind: 'deleteAlias'; alias: string };
 
-/** 存储口径的变更：直接输入的密钥已换成密文，其余与写入口径一致。 */
-type StoredModelConfigMutation =
-  | { kind: 'upsertProvider'; provider: ModelProviderInput }
-  | { kind: 'deleteProvider'; id: string }
-  | { kind: 'upsertAlias'; alias: ModelAliasInput }
-  | { kind: 'deleteAlias'; alias: string };
+function policy() {
+  const config = getConfig();
+  return { allowedApiKeyEnvs: config.modelApiKeyEnvAllowlist, internalOrigins: config.modelInternalBaseUrlOrigins };
+}
 
-/**
- * 写入口径转存储口径：直接输入的密钥在这里加密。
- * 提交空密钥表示保持已保存的密钥（仅当原来就是直接输入时有效），避免管理端必须回填明文。
- */
+function parseDocument(raw: unknown): ModelConfigDocument {
+  const parsed = modelConfigDocumentSchema.safeParse(raw);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new ModelConfigInvalidError(`模型配置文档不合法：${issue?.path.join('.') || ''} ${issue?.message ?? ''}`.trim());
+  }
+  const issues = modelConfigDocumentIssues(parsed.data, policy());
+  if (issues.length) throw new ModelConfigInvalidError(issues.join('；'));
+  return parsed.data;
+}
+
+function versionOf(row: Pick<ConfigRow, 'revision' | 'refreshEpoch'>): ModelConfigVersion {
+  return { revision: row.revision.toString(), refreshEpoch: row.refreshEpoch.toString() };
+}
+
+function smallVersion(value: bigint): string {
+  return value.toString();
+}
+
+function assertRevision(revision: bigint, expectedRevision: string) {
+  if (revision.toString() !== expectedRevision) {
+    throw new BusinessError(409, 40901, `模型配置版本冲突，当前版本 ${revision.toString()}，请重新加载后再保存`);
+  }
+}
+
+async function requireRow(tx: Transaction): Promise<ConfigRow> {
+  const [row] = await tx.select().from(appConfig).where(eq(appConfig.key, modelConfigKey)).limit(1);
+  if (!row) throw new BusinessError(503, 50300, '模型配置行缺失，请先执行数据库迁移');
+  return row;
+}
+
+async function lockRow(tx: Transaction): Promise<ConfigRow> {
+  const [row] = await tx.select().from(appConfig).where(eq(appConfig.key, modelConfigKey)).for('update');
+  if (!row) throw new BusinessError(503, 50300, '模型配置行缺失，请先执行数据库迁移');
+  return row;
+}
+
+export type ModelConfigDocumentState = {
+  document: ModelConfigDocument;
+  revision: string;
+  refreshEpoch: string;
+};
+
+/** 文档原文 + 版本（解析 + 语义校验后）。传事务句柄时跟随调用方的可见性快照。 */
+export async function readModelConfigDocumentState(tx?: Transaction): Promise<ModelConfigDocumentState> {
+  const [row] = await (tx ?? db()).select().from(appConfig).where(eq(appConfig.key, modelConfigKey)).limit(1);
+  if (!row) throw new BusinessError(503, 50300, '模型配置行缺失，请先执行数据库迁移');
+  return { document: parseDocument(row.value), revision: row.revision.toString(), refreshEpoch: row.refreshEpoch.toString() };
+}
+
+/** 只读文档原文；billing 在结算事务里只需要价格树。 */
+export async function readModelConfigDocument(tx?: Transaction): Promise<ModelConfigDocument> {
+  return (await readModelConfigDocumentState(tx)).document;
+}
+
+export async function readConfigSnapshot(): Promise<ModelConfigSnapshot> {
+  return db().transaction(
+    async tx => {
+      const row = await requireRow(tx);
+      const document = parseDocument(row.value);
+      return snapshotFromDocument(document, smallVersion(row.revision), smallVersion(row.refreshEpoch));
+    },
+    { isolationLevel: 'repeatable read', accessMode: 'read only' },
+  );
+}
+
+export async function readRefreshEpoch(): Promise<string> {
+  const [row] = await db().select({ refreshEpoch: appConfig.refreshEpoch }).from(appConfig).where(eq(appConfig.key, modelConfigKey)).limit(1);
+  if (!row) throw new BusinessError(503, 50300, '模型配置行缺失，请先执行数据库迁移');
+  return row.refreshEpoch.toString();
+}
+
+/** 写入口径转存储口径：直接输入的密钥在这里加密；留空表示保持已保存的密文。 */
 export function toStoredProvider(write: ModelProviderWriteInput, existing: ModelProvider | undefined): ModelProviderInput {
   const fields = {
     id: write.id,
@@ -74,220 +151,230 @@ export function toStoredProvider(write: ModelProviderWriteInput, existing: Model
   return modelProviderInputSchema.parse({ ...fields, apiKeySource: 'inline', apiKeyCiphertext: encryptModelSecret(apiKey) });
 }
 
-function storageMutation(mutation: ModelConfigMutation, providers: readonly ModelProvider[]): StoredModelConfigMutation {
-  if (mutation.kind !== 'upsertProvider') return mutation;
-  return { kind: 'upsertProvider', provider: toStoredProvider(mutation.provider, providers.find(provider => provider.id === mutation.provider.id)) };
-}
-
-function modelConfigPolicy(): ModelConfigPolicy {
-  const config = getConfig();
-  return { allowedApiKeyEnvs: config.modelApiKeyEnvAllowlist, internalOrigins: config.modelInternalBaseUrlOrigins };
-}
-
-function providerFromRow(row: typeof modelProviders.$inferSelect): ModelProvider {
-  const fields = {
-    id: row.id,
-    displayName: row.displayName,
-    apiFormat: row.apiFormat,
-    baseUrl: row.baseUrl,
-    options: row.options,
-    headers: row.headers ?? {},
-    enabled: row.enabled === 1,
-  };
+function providerFromDocument(provider: ModelConfigProvider): ModelProvider {
   return {
-    ...modelProviderInputSchema.parse(
-      row.apiKeyCiphertext
-        ? { ...fields, apiKeySource: 'inline' as const, apiKeyCiphertext: row.apiKeyCiphertext }
-        : { ...fields, apiKeySource: 'env' as const, apiKeyEnv: row.apiKeyEnv },
-    ),
-    createTime: row.createTime,
-    updateTime: row.updateTime,
+    ...providerInputFromDocument(provider),
+    createTime: provider.createTime,
+    updateTime: provider.updateTime,
   };
 }
 
-function aliasFromRow(row: typeof modelAliases.$inferSelect): ModelAlias {
+function providerDocumentOf(input: ModelProviderInput, existing: ModelConfigProvider | null): ModelConfigProvider {
+  const time = now();
   return {
-    ...modelAliasInputSchema.parse({
-      alias: row.alias,
-      providerId: row.providerId,
-      modelName: row.modelName,
-      capabilities: row.capabilities,
-      settings: row.settings,
-      enabled: row.enabled === 1,
-    }),
-    createTime: row.createTime,
-    updateTime: row.updateTime,
+    id: input.id,
+    displayName: input.displayName,
+    apiFormat: input.apiFormat,
+    baseUrl: input.baseUrl,
+    apiKey: input.apiKeySource === 'env'
+      ? { source: 'env', env: input.apiKeyEnv }
+      : { source: 'inline', ciphertext: input.apiKeyCiphertext },
+    options: input.options,
+    headers: input.headers ?? {},
+    enabled: input.enabled,
+    models: existing?.models ?? [],
+    createTime: existing?.createTime ?? time,
+    updateTime: time,
   };
 }
 
-async function requireState(tx: Transaction) {
-  const [state] = await tx.select().from(modelConfigState).where(eq(modelConfigState.id, modelConfigStateId)).limit(1);
-  if (!state) throw new BusinessError(503, 50300, '模型配置状态行缺失，请先执行数据库迁移');
-  return state;
+function referencedSlots(document: ModelConfigDocument, modelId: string): string[] {
+  return document.slots.filter(assignment => assignment.modelId === modelId).map(assignment => assignment.slot);
 }
 
-async function lockState(tx: Transaction) {
-  const [state] = await tx.select().from(modelConfigState).where(eq(modelConfigState.id, modelConfigStateId)).for('update');
-  if (!state) throw new BusinessError(503, 50300, '模型配置状态行缺失，请先执行数据库迁移');
-  return state;
+/** 让追加价格不会和同一毫秒的旧版本撞时间：取当前时刻与最新版本 + 1ms 的较大值。 */
+function nextEffectiveAt(prices: readonly ModelPriceVersion[]): string {
+  const at = now();
+  const atMs = Date.parse(`${at.replace(' ', 'T')}Z`);
+  const latest = prices.reduce((max, price) => {
+    const ms = Date.parse(`${price.effectiveAt.replace(' ', 'T')}Z`);
+    return Number.isNaN(ms) ? max : Math.max(max, ms);
+  }, Number.NEGATIVE_INFINITY);
+  if (Number.isFinite(latest) && atMs <= latest) return utcTimestamp(new Date(latest + 1).toISOString());
+  return at;
 }
 
-async function readProviderRows(tx: Transaction) {
-  return (await tx.select().from(modelProviders)).map(providerFromRow);
+function nextPriceVersion(prices: readonly ModelPriceVersion[]): number {
+  return prices.reduce((max, price) => Math.max(max, price.version), 0) + 1;
 }
 
-async function readAliasRows(tx: Transaction) {
-  return (await tx.select().from(modelAliases)).map(aliasFromRow);
-}
+type MutationContext = { document: ModelConfigDocument; mutation: ModelConfigMutation };
 
-function assertRevision(revision: bigint, expectedRevision: string) {
-  if (revision.toString() !== expectedRevision) {
-    throw new BusinessError(409, 40901, `模型配置版本冲突，当前版本 ${revision.toString()}，请重新加载后再保存`);
+async function applyMutation({ document, mutation }: MutationContext): Promise<ModelConfigDocument> {
+  const next: ModelConfigDocument = {
+    schemaVersion: document.schemaVersion,
+    providers: document.providers,
+    slots: document.slots,
+    legacyPrices: document.legacyPrices,
+  };
+  switch (mutation.kind) {
+    case 'provider.upsert': {
+      const write = modelProviderWriteSchema.parse(mutation.provider);
+      const index = next.providers.findIndex(provider => provider.id === write.id);
+      const existing = index >= 0 ? next.providers[index] : null;
+      const stored = toStoredProvider(write, existing ? providerFromDocument(existing) : undefined);
+      const provider = providerDocumentOf(stored, existing);
+      next.providers = index >= 0
+        ? next.providers.map((candidate, replace) => replace === index ? provider : candidate)
+        : [...next.providers, provider];
+      return next;
+    }
+    case 'provider.delete': {
+      const provider = next.providers.find(candidate => candidate.id === mutation.providerId);
+      if (!provider) throw new BusinessError(404, 40400, '提供商不存在');
+      if (provider.models.length) throw new BusinessError(409, 40902, `提供商 ${provider.id} 下还有 ${provider.models.length} 个模型，不能删除；请先停用提供商或清理模型`);
+      next.providers = next.providers.filter(candidate => candidate.id !== provider.id);
+      return next;
+    }
+    case 'model.upsert': {
+      const providerIndex = next.providers.findIndex(provider => provider.id === mutation.providerId);
+      const provider = next.providers[providerIndex];
+      if (!provider) throw new BusinessError(404, 40400, '提供商不存在');
+      const existing = mutation.modelId
+        ? provider.models.find(model => model.id === mutation.modelId)
+        : provider.models.find(model => model.upstream === mutation.upstream);
+      if (mutation.modelId && !existing) throw new BusinessError(404, 40400, '模型不存在');
+      if (existing) {
+        if (existing.upstream !== mutation.upstream) throw new BusinessError(400, 40000, '上游模型名创建后不能修改；请新建模型并重新分配槽位');
+        if (referencedSlots(document, existing.id).length && existing.enabled && !mutation.enabled) {
+          throw new BusinessError(409, 40902, `模型 ${existing.upstream} 仍被槽位引用（${referencedSlots(document, existing.id).join('、')}），不能停用`);
+        }
+        const updated: ProviderModel = {
+          ...existing,
+          displayName: mutation.displayName,
+          capabilities: mutation.capabilities,
+          enabled: mutation.enabled,
+          upstreamPrice: mutation.upstreamPrice,
+          updateTime: now(),
+        };
+        next.providers = next.providers.map((candidate, index) => index === providerIndex
+          ? { ...candidate, models: candidate.models.map(model => model.id === existing.id ? updated : model) }
+          : candidate);
+        return next;
+      }
+      if (provider.models.some(model => model.upstream === mutation.upstream)) {
+        throw new BusinessError(409, 40900, `提供商 ${provider.id} 下已经有上游模型名 ${mutation.upstream}`);
+      }
+      const time = now();
+      const model: ProviderModel = {
+        id: `pm_${(await nextSnowflakeId()).toString()}`,
+        upstream: mutation.upstream,
+        displayName: mutation.displayName,
+        enabled: mutation.enabled,
+        capabilities: mutation.capabilities,
+        upstreamPrice: mutation.upstreamPrice,
+        prices: [],
+        createTime: time,
+        updateTime: time,
+      };
+      next.providers = next.providers.map((candidate, index) => index === providerIndex
+        ? { ...candidate, models: [...candidate.models, model] }
+        : candidate);
+      return next;
+    }
+    case 'model.price': {
+      const found = findDocumentModel(next, mutation.modelId);
+      if (!found) throw new BusinessError(404, 40400, '模型不存在');
+      const price: ModelPriceVersion = {
+        version: nextPriceVersion(found.model.prices),
+        effectiveAt: nextEffectiveAt(found.model.prices),
+        currency: 'CNY',
+        inputMissFen: mutation.inputMissFen,
+        inputHitFen: mutation.inputHitFen,
+        outputFen: mutation.outputFen,
+        upstreamUsd: mutation.upstreamUsd,
+        note: mutation.note,
+      };
+      next.providers = next.providers.map(provider => provider.id === found.provider.id
+        ? {
+          ...provider,
+          models: provider.models.map(model => model.id === found.model.id
+            ? { ...model, prices: [...model.prices, price], updateTime: now() }
+            : model),
+        }
+        : provider);
+      return next;
+    }
+    case 'model.enabled': {
+      const found = findDocumentModel(next, mutation.modelId);
+      if (!found) throw new BusinessError(404, 40400, '模型不存在');
+      if (!mutation.enabled) {
+        const slots = referencedSlots(document, found.model.id);
+        if (slots.length) throw new BusinessError(409, 40902, `模型 ${found.model.upstream} 仍被槽位引用（${slots.join('、')}），不能停用`);
+      }
+      next.providers = next.providers.map(provider => provider.id === found.provider.id
+        ? {
+          ...provider,
+          models: provider.models.map(model => model.id === found.model.id
+            ? { ...model, enabled: mutation.enabled, updateTime: now() }
+            : model),
+        }
+        : provider);
+      return next;
+    }
+    case 'slot.assign': {
+      const slot = modelSlotOf(mutation.slot);
+      if (!slot) throw new BusinessError(400, 40000, `未知槽位：${mutation.slot}`);
+      const found = findDocumentModel(next, mutation.modelId);
+      if (!found) throw new BusinessError(404, 40400, '模型不存在');
+      const issue = modelEligibilityIssue(found.provider, found.model, slot);
+      if (issue) throw new BusinessError(400, 40000, issue);
+      const assignment = { slot: mutation.slot, modelId: mutation.modelId, settings: mutation.settings };
+      next.slots = next.slots.some(candidate => candidate.slot === mutation.slot)
+        ? next.slots.map(candidate => candidate.slot === mutation.slot ? assignment : candidate)
+        : [...next.slots, assignment];
+      return next;
+    }
+    case 'slot.clear': {
+      const slot = modelSlotOf(mutation.slot);
+      if (!slot) throw new BusinessError(400, 40000, `未知槽位：${mutation.slot}`);
+      if (!next.slots.some(assignment => assignment.slot === mutation.slot)) throw new BusinessError(404, 40400, '该槽位还没有分配模型');
+      if (!slot.optional) throw new BusinessError(409, 40902, `必需槽位${slot.label}（${mutation.slot}）不能清除，请改为分配另一个可用模型`);
+      next.slots = next.slots.filter(assignment => assignment.slot !== mutation.slot);
+      return next;
+    }
+    default: {
+      const exhaustive: never = mutation;
+      throw new Error(`未知模型配置操作 ${String(exhaustive)}`);
+    }
   }
 }
 
-function assertValid(providers: readonly ModelProviderInput[], aliases: readonly ModelAliasInput[]) {
-  const issues = modelConfigIssues(providers, aliases, modelConfigPolicy());
+function assertDocumentValid(document: ModelConfigDocument) {
+  const issues = modelConfigDocumentIssues(document, policy());
   if (issues.length) throw new BusinessError(400, 40000, issues.join('；'));
 }
 
-function applyMutation(mutation: StoredModelConfigMutation, providers: readonly ModelProvider[], aliases: readonly ModelAlias[]) {
-  switch (mutation.kind) {
-    case 'upsertProvider': {
-      const next: ModelProviderInput[] = providers.filter(provider => provider.id !== mutation.provider.id);
-      next.push(mutation.provider);
-      return { providers: next, aliases: [...aliases] };
-    }
-    case 'deleteProvider': {
-      if (!providers.some(provider => provider.id === mutation.id)) throw new BusinessError(404, 40400, '提供商不存在');
-      if (aliases.some(alias => alias.providerId === mutation.id)) throw new BusinessError(409, 40902, '提供商仍被别名引用，不能删除');
-      return { providers: providers.filter(provider => provider.id !== mutation.id), aliases: [...aliases] };
-    }
-    case 'upsertAlias': {
-      const slot = modelSlotOf(mutation.alias.alias);
-      if (!slot) {
-        const names = modelSlots.map(candidate => `${candidate.label}（${candidate.slot}）`).join('、');
-        throw new BusinessError(400, 40000, `模型分配只有四个固定槽位：${names}，不能自建 ${mutation.alias.alias}`);
-      }
-      const next: ModelAliasInput[] = aliases.filter(alias => alias.alias !== mutation.alias.alias);
-      next.push(mutation.alias);
-      return { providers: [...providers], aliases: next };
-    }
-    case 'deleteAlias': {
-      if (!aliases.some(alias => alias.alias === mutation.alias)) throw new BusinessError(404, 40400, '别名不存在');
-      if ((requiredModelAliases as readonly string[]).includes(mutation.alias)) throw new BusinessError(409, 40902, `必需别名 ${mutation.alias} 不能删除`);
-      return { providers: [...providers], aliases: aliases.filter(alias => alias.alias !== mutation.alias) };
-    }
-    default: {
-      const _exhaustive: never = mutation;
-      throw new Error(`未知模型配置操作 ${String(_exhaustive)}`);
-    }
-  }
-}
-
-async function upsertProviderRow(tx: Transaction, provider: ModelProviderInput, existing: ModelProvider | undefined) {
-  const set = {
-    displayName: provider.displayName,
-    apiFormat: provider.apiFormat,
-    baseUrl: provider.baseUrl,
-    apiKeyEnv: provider.apiKeySource === 'env' ? provider.apiKeyEnv : null,
-    apiKeyCiphertext: provider.apiKeySource === 'inline' ? provider.apiKeyCiphertext : null,
-    options: provider.options,
-    headers: provider.headers ?? {},
-    enabled: provider.enabled ? 1 : 0,
-    updateTime: now(),
-  };
-  await tx.insert(modelProviders).values({ id: provider.id, ...set, createTime: existing?.createTime ?? now() }).onConflictDoUpdate({ target: modelProviders.id, set });
-}
-
-async function upsertAliasRow(tx: Transaction, alias: ModelAliasInput, existing: ModelAlias | undefined) {
-  const set = {
-    providerId: alias.providerId,
-    modelName: alias.modelName,
-    capabilities: alias.capabilities,
-    settings: alias.settings,
-    enabled: alias.enabled ? 1 : 0,
-    updateTime: now(),
-  };
-  await tx.insert(modelAliases).values({ alias: alias.alias, ...set, createTime: existing?.createTime ?? now() }).onConflictDoUpdate({ target: modelAliases.alias, set });
-}
-
-async function persistMutation(tx: Transaction, mutation: StoredModelConfigMutation, providers: readonly ModelProvider[], aliases: readonly ModelAlias[]) {
-  switch (mutation.kind) {
-    case 'upsertProvider':
-      await upsertProviderRow(tx, mutation.provider, providers.find(provider => provider.id === mutation.provider.id));
-      return;
-    case 'deleteProvider':
-      await tx.delete(modelProviders).where(eq(modelProviders.id, mutation.id));
-      return;
-    case 'upsertAlias':
-      await upsertAliasRow(tx, mutation.alias, aliases.find(alias => alias.alias === mutation.alias.alias));
-      return;
-    case 'deleteAlias':
-      await tx.delete(modelAliases).where(eq(modelAliases.alias, mutation.alias));
-      return;
-  }
-}
-
-export async function readConfigSnapshot(): Promise<ModelConfigSnapshot> {
-  return db().transaction(
-    async tx => {
-      const state = await requireState(tx);
-      const providers = await readProviderRows(tx);
-      const aliases = await readAliasRows(tx);
-      return { revision: state.revision.toString(), refreshEpoch: state.refreshEpoch.toString(), providers, aliases };
-    },
-    { isolationLevel: 'repeatable read', accessMode: 'read only' },
-  );
-}
-
-export async function readRefreshEpoch(): Promise<string> {
-  const [state] = await db().select({ refreshEpoch: modelConfigState.refreshEpoch }).from(modelConfigState).where(eq(modelConfigState.id, modelConfigStateId)).limit(1);
-  if (!state) throw new BusinessError(503, 50300, '模型配置状态行缺失，请先执行数据库迁移');
-  return state.refreshEpoch.toString();
-}
-
-export async function writeModelConfig(write: ModelConfigWrite, mutation: ModelConfigMutation): Promise<ModelConfigVersion> {
+export async function mutateModelConfig(raw: unknown): Promise<ModelConfigVersion> {
+  const payload = modelConfigMutatePayloadSchema.parse(raw);
+  const parsedRevision = decimalVersionSchema.safeParse(payload.expectedRevision);
+  if (!parsedRevision.success) throw new BusinessError(400, 40000, '模型配置版本号不合法');
   return db().transaction(async tx => {
-    const state = await lockState(tx);
-    assertRevision(state.revision, write.expectedRevision);
-    const providers = await readProviderRows(tx);
-    const aliases = await readAliasRows(tx);
-    const stored = storageMutation(mutation, providers);
-    const next = applyMutation(stored, providers, aliases);
-    assertValid(next.providers, next.aliases);
-    await persistMutation(tx, stored, providers, aliases);
-    const revision = state.revision + 1n;
-    const refreshEpoch = write.applyImmediately ? state.refreshEpoch + 1n : state.refreshEpoch;
-    await tx.update(modelConfigState).set({ revision, refreshEpoch, updateTime: now() }).where(eq(modelConfigState.id, modelConfigStateId));
+    const row = await lockRow(tx);
+    assertRevision(row.revision, payload.expectedRevision);
+    const document = parseDocument(row.value);
+    const candidate = await applyMutation({ document, mutation: payload.mutation });
+    assertDocumentValid(candidate);
+    const revision = row.revision + 1n;
+    const refreshEpoch = payload.applyImmediately ? row.refreshEpoch + 1n : row.refreshEpoch;
+    await tx.update(appConfig).set({
+      value: candidate,
+      revision,
+      refreshEpoch,
+      updatedAt: now(),
+    }).where(eq(appConfig.key, modelConfigKey));
     return { revision: revision.toString(), refreshEpoch: refreshEpoch.toString() };
   });
 }
 
-export async function upsertProvider(provider: ModelProviderWriteInput, write: ModelConfigWrite): Promise<ModelConfigVersion> {
-  return writeModelConfig(write, { kind: 'upsertProvider', provider });
-}
-
-export async function deleteProvider(id: string, write: ModelConfigWrite): Promise<ModelConfigVersion> {
-  return writeModelConfig(write, { kind: 'deleteProvider', id });
-}
-
-export async function upsertAlias(alias: ModelAliasInput, write: ModelConfigWrite): Promise<ModelConfigVersion> {
-  return writeModelConfig(write, { kind: 'upsertAlias', alias });
-}
-
-export async function deleteAlias(alias: string, write: ModelConfigWrite): Promise<ModelConfigVersion> {
-  return writeModelConfig(write, { kind: 'deleteAlias', alias });
-}
-
 export async function applyModelConfig(write: ModelConfigWrite): Promise<ModelConfigVersion> {
   return db().transaction(async tx => {
-    const state = await lockState(tx);
-    assertRevision(state.revision, write.expectedRevision);
-    assertValid(await readProviderRows(tx), await readAliasRows(tx));
-    const refreshEpoch = state.refreshEpoch + 1n;
-    await tx.update(modelConfigState).set({ refreshEpoch, updateTime: now() }).where(eq(modelConfigState.id, modelConfigStateId));
-    return { revision: state.revision.toString(), refreshEpoch: refreshEpoch.toString() };
+    const row = await lockRow(tx);
+    assertRevision(row.revision, write.expectedRevision);
+    parseDocument(row.value);
+    const refreshEpoch = row.refreshEpoch + 1n;
+    await tx.update(appConfig).set({ refreshEpoch, updatedAt: now() }).where(eq(appConfig.key, modelConfigKey));
+    return { revision: row.revision.toString(), refreshEpoch: refreshEpoch.toString() };
   });
 }
 
@@ -296,39 +383,83 @@ export type ModelInitializationResult = { initialized: boolean; revision: string
 export async function initializeModelConfigFromEnv(): Promise<ModelInitializationResult> {
   const config = getConfig();
   return db().transaction(async tx => {
-    const state = await lockState(tx);
-    const providers = await readProviderRows(tx);
-    const aliases = await readAliasRows(tx);
-    if (providers.length || aliases.length) {
-      return { initialized: false, revision: state.revision.toString(), refreshEpoch: state.refreshEpoch.toString(), providerId: null };
+    const row = await lockRow(tx);
+    const document = parseDocument(row.value);
+    if (document.providers.length || document.slots.length) {
+      return { initialized: false, ...versionOf(row), providerId: null };
     }
-    if (state.revision !== 0n || state.refreshEpoch !== 0n) {
+    if (row.revision !== 0n || row.refreshEpoch !== 0n) {
       throw new BusinessError(409, 40903, '模型配置状态不一致：版本非零但配置为空，请人工确认后再初始化');
     }
     if (!config.aiModel) throw new BusinessError(400, 40000, 'AI_MODEL 为空，无法从环境变量初始化模型配置');
-    const provider = modelProviderInputSchema.parse({
+    const time = now();
+    const modelId = `pm_${(await nextSnowflakeId()).toString()}`;
+    const provider: ModelConfigProvider = {
       id: defaultModelProviderId,
       displayName: '环境默认提供商',
       apiFormat: 'openai-chat',
       baseUrl: config.aiBaseUrl,
-      apiKeySource: 'env',
-      apiKeyEnv: baseModelApiKeyEnv,
+      apiKey: { source: 'env', env: baseModelApiKeyEnv },
       options: {},
+      headers: {},
       enabled: true,
-    });
-    const aliasesToCreate = modelSlots.filter(slot => !slot.optional).map(slot => modelAliasInputSchema.parse({
-      alias: slot.slot,
-      providerId: defaultModelProviderId,
-      modelName: config.aiModel,
-      capabilities: capabilitiesForSlot(slot),
+      models: [{
+        id: modelId,
+        upstream: config.aiModel,
+        displayName: config.aiModel,
+        enabled: true,
+        capabilities: { streaming: true, toolCalling: true, structuredOutput: true, imageInput: false },
+        upstreamPrice: null,
+        prices: [],
+        createTime: time,
+        updateTime: time,
+      }],
+      createTime: time,
+      updateTime: time,
+    };
+    const slots = modelSlots.filter(slot => !slot.optional).map(slot => ({
+      slot: slot.slot,
+      modelId,
       settings: {},
-      enabled: true,
     }));
-    assertValid([provider], aliasesToCreate);
-    await upsertProviderRow(tx, provider, undefined);
-    for (const alias of aliasesToCreate) await upsertAliasRow(tx, alias, undefined);
-    const revision = state.revision + 1n;
-    await tx.update(modelConfigState).set({ revision, updateTime: now() }).where(eq(modelConfigState.id, modelConfigStateId));
-    return { initialized: true, revision: revision.toString(), refreshEpoch: state.refreshEpoch.toString(), providerId: defaultModelProviderId };
+    const initial: ModelConfigDocument = {
+      schemaVersion: 1,
+      providers: [provider],
+      slots,
+      legacyPrices: [],
+    };
+    assertDocumentValid(initial);
+    const revision = row.revision + 1n;
+    await tx.update(appConfig).set({
+      value: initial,
+      revision,
+      refreshEpoch: row.refreshEpoch,
+      updatedAt: now(),
+    }).where(eq(appConfig.key, modelConfigKey));
+    return { initialized: true, revision: revision.toString(), refreshEpoch: row.refreshEpoch.toString(), providerId: defaultModelProviderId };
+  });
+}
+
+/** 兼容旧调用点的薄包装：提供商写入统一走 JSON 变更入口。 */
+export async function upsertProvider(provider: ModelProviderWriteInput, write: ModelConfigWrite): Promise<ModelConfigVersion> {
+  return mutateModelConfig({
+    expectedRevision: write.expectedRevision,
+    applyImmediately: write.applyImmediately,
+    mutation: { kind: 'provider.upsert', provider },
+  });
+}
+
+export async function deleteProvider(id: string, write: ModelConfigWrite): Promise<ModelConfigVersion> {
+  return mutateModelConfig({
+    expectedRevision: write.expectedRevision,
+    mutation: { kind: 'provider.delete', providerId: id },
+  });
+}
+
+/** 旧「删除别名」语义 = 清空槽位分配；必需槽位会被拒绝。 */
+export async function deleteAlias(alias: string, write: ModelConfigWrite): Promise<ModelConfigVersion> {
+  return mutateModelConfig({
+    expectedRevision: write.expectedRevision,
+    mutation: { kind: 'slot.clear', slot: alias },
   });
 }

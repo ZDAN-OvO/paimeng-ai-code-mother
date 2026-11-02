@@ -11,7 +11,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { testDatabaseUrl } from '../../support/test-database-url';
 import { db, getPool, now } from '@/server/infra/db';
-import { apps, generations, leases, users, modelAliases, modelConfigState, modelProviders } from '@/server/infra/schema';
+import { apps, generations, leases, users } from '@/server/infra/schema';
 import { publicUser } from '@/server/auth/auth';
 import { createApp } from '@/server/business';
 import { harnessChatResponse } from '@/server/generation/durable-engine';
@@ -20,9 +20,11 @@ import { appendInput, markInputPlaced } from '@/server/generation/control-store'
 import { withRateLimitRedis } from '@/server/infra/redis';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import { workspace as appWorkspace } from '@/server/workspace/workspace';
-import { initializeModelConfigFromEnv, readConfigSnapshot, upsertAlias, upsertProvider } from '@/server/models/store';
+import { initializeModelConfigFromEnv, upsertProvider } from '@/server/models/store';
+import { patchTestDocument, readTestDocument, resetModelConfigRow, upsertTestAlias, writeTestDocument } from '../../support/model-config';
 import { generationModelAlias, modelAdmissionSchema, type ModelAdmission } from '@/shared/durable-model';
-import { modelConfigStateId, type ModelAliasInput, type ModelAliasSettings, type ModelProviderOptions, type ModelProviderWriteInput } from '@/shared/model-config';
+import { type ModelAliasInput, type ModelAliasSettings, type ModelProviderOptions, type ModelProviderWriteInput } from '@/shared/model-config';
+import type { ModelConfigDocument } from '@/shared/model-document';
 import { baseUrl, freePort, harnessAvailable, kill9, postgresReachable, postgresUrl, stopHarness, waitForState, waitHealthy, type HarnessProcess, type HarnessState } from './support';
 
 loadEnvFile('.env');
@@ -140,7 +142,7 @@ let harnessBase = '';
 let runDir = '';
 let workspace = '';
 let port = 0;
-let savedModels: { providers: typeof modelProviders.$inferSelect[]; aliases: typeof modelAliases.$inferSelect[]; state: typeof modelConfigState.$inferSelect[] } | undefined;
+let savedModels: { document: ModelConfigDocument; revision: bigint; refreshEpoch: bigint } | undefined;
 
 function startProductHarness(port: number, options: { reset: boolean } = { reset: true }): HarnessProcess {
 	let output = '';
@@ -171,12 +173,7 @@ function startProductHarness(port: number, options: { reset: boolean } = { reset
 }
 
 async function resetModelConfig(): Promise<void> {
-	await db().delete(modelAliases);
-	await db().delete(modelProviders);
-	await db()
-		.insert(modelConfigState)
-		.values({ id: modelConfigStateId, revision: 0n, refreshEpoch: 0n, updateTime: now() })
-		.onConflictDoUpdate({ target: modelConfigState.id, set: { revision: 0n, refreshEpoch: 0n } });
+	await resetModelConfigRow();
 	await initializeModelConfigFromEnv();
 }
 
@@ -191,7 +188,7 @@ type StubProviderOptions = {
 };
 
 async function writeStubProvider(overrides: StubProviderOptions = {}): Promise<void> {
-	const { revision } = await readConfigSnapshot();
+	const { revision } = await readTestDocument();
 	const common = {
 		id: overrides.id ?? 'stub-provider',
 		displayName: '桩上游',
@@ -204,12 +201,10 @@ async function writeStubProvider(overrides: StubProviderOptions = {}): Promise<v
 	const provider: ModelProviderWriteInput = overrides.apiKeySource === 'env'
 		? { ...common, apiKeySource: 'env', apiKeyEnv: overrides.apiKeyEnv ?? allowedKeyEnv }
 		: { ...common, apiKeySource: 'inline', apiKey: overrides.apiKey ?? sentinel('a') };
-	await upsertProvider(provider, { expectedRevision: revision });
+	await upsertProvider(provider, { expectedRevision: revision.toString() });
 }
 
 async function writeCodegenAlias(options: { modelName: string; providerId?: string; settings?: ModelAliasSettings; imageInput?: boolean }): Promise<void> {
-	const { revision, aliases } = await readConfigSnapshot();
-	if (!aliases.some(candidate => candidate.alias === generationModelAlias)) throw new Error('缺少 codegen.default，先 resetModelConfig 建出完整配置');
 	const alias: ModelAliasInput = {
 		alias: generationModelAlias,
 		providerId: options.providerId ?? 'stub-provider',
@@ -218,7 +213,7 @@ async function writeCodegenAlias(options: { modelName: string; providerId?: stri
 		settings: options.settings ?? {},
 		enabled: true,
 	};
-	await upsertAlias(alias, { expectedRevision: revision });
+	await upsertTestAlias(alias);
 }
 
 async function seedStubModel(options: { apiKey?: string; apiKeySource?: 'inline' | 'env'; modelName?: string; settings?: ModelAliasSettings; headers?: Record<string, string> } = {}): Promise<void> {
@@ -367,7 +362,8 @@ async function inputBeforeSettlement(appId: string, generationId: string) {
 
 describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配置驱动生成', () => {
 	beforeAll(async () => {
-		savedModels = { providers: await db().select().from(modelProviders), aliases: await db().select().from(modelAliases), state: await db().select().from(modelConfigState) };
+		const saved = await readTestDocument();
+		savedModels = { document: saved.document, revision: saved.revision, refreshEpoch: saved.refreshEpoch };
 		process.env.MODEL_API_KEY_ENV_ALLOWLIST = allowedKeyEnv;
 		runDir = mkdtempSync(join(tmpdir(), 'durable-model-config-'));
 		workspace = join(runDir, 'workspace');
@@ -382,17 +378,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 		if (harness) await stopHarness(harness);
 		await stub.close();
 		try {
-			if (savedModels) {
-				const saved = savedModels;
-				await db().transaction(async tx => {
-					await tx.delete(modelAliases);
-					await tx.delete(modelProviders);
-					await tx.delete(modelConfigState);
-					if (saved.providers.length) await tx.insert(modelProviders).values(saved.providers);
-					if (saved.aliases.length) await tx.insert(modelAliases).values(saved.aliases);
-					if (saved.state.length) await tx.insert(modelConfigState).values(saved.state);
-				});
-			}
+			if (savedModels) await writeTestDocument(savedModels.document, { bumpRevision: false, refreshEpoch: savedModels.refreshEpoch });
 		} finally {
 			await getPool().end();
 			for (const [name, value] of savedEnvironment) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
@@ -469,31 +455,40 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 	it('别名缺失/禁用、格式未声明、密文不可解密、未允许的密钥变量都在提交前被拒', async () => {
 		await seedStubModel({ apiKey: sentinel('x') });
 
-		await db().delete(modelAliases).where(eq(modelAliases.alias, generationModelAlias));
+		await patchTestDocument(document => { document.slots = document.slots.filter(slot => slot.slot !== generationModelAlias); });
 		const missing = await admissionFailure();
 		expect(missing.status).toBe(503);
 		expect(missing.body).toMatchObject({ code: 50300 });
 		expect(missing.body.error).toContain('未配置或未启用');
 
 		await seedStubModel({ apiKey: sentinel('x') });
-		await db().update(modelAliases).set({ enabled: 0 }).where(eq(modelAliases.alias, generationModelAlias));
+		await patchTestDocument(document => { for (const provider of document.providers) for (const model of provider.models) model.enabled = false; });
 		const disabled = await admissionFailure();
 		expect(disabled.status).toBe(503);
 		expect(disabled.body.error).toContain('未配置或未启用');
 
-		await db().update(modelAliases).set({ enabled: 1 }).where(eq(modelAliases.alias, generationModelAlias));
-		await db().update(modelProviders).set({ apiFormat: 'gemini-generate-content' }).where(eq(modelProviders.id, 'stub-provider'));
+		await patchTestDocument(document => {
+			for (const provider of document.providers) for (const model of provider.models) model.enabled = true;
+			const provider = document.providers.find(candidate => candidate.id === 'stub-provider');
+			if (provider) provider.apiFormat = 'gemini-generate-content' as never;
+		});
 		const unsupported = await admissionFailure();
 		expect(unsupported.status).toBe(503);
 		expect(unsupported.body.error).toContain('API 格式不支持');
 
-		await db().update(modelProviders).set({ apiFormat: 'openai-chat', apiKeyCiphertext: 'v1:AAAA:BBBB:CCCC' }).where(eq(modelProviders.id, 'stub-provider'));
+		await patchTestDocument(document => {
+			const provider = document.providers.find(candidate => candidate.id === 'stub-provider');
+			if (provider) { provider.apiFormat = 'openai-chat'; provider.apiKey = { source: 'inline', ciphertext: 'v1:AAAA:BBBB:CCCC' }; }
+		});
 		const undecryptable = await admissionFailure();
 		expect(undecryptable.status).toBe(503);
 		expect(undecryptable.body.error).toContain('密钥无法解密');
 		expect(JSON.stringify(undecryptable)).not.toContain('v1:AAAA:BBBB:CCCC');
 
-		await db().update(modelProviders).set({ apiKeyEnv: unallowedKeyEnv, apiKeyCiphertext: null }).where(eq(modelProviders.id, 'stub-provider'));
+		await patchTestDocument(document => {
+			const provider = document.providers.find(candidate => candidate.id === 'stub-provider');
+			if (provider) provider.apiKey = { source: 'env', env: unallowedKeyEnv };
+		});
 		const unallowed = await admissionFailure();
 		expect(unallowed.status).toBe(503);
 		expect(unallowed.body.error).toContain('未允许的环境变量');
@@ -515,7 +510,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 			appId, requestId, message: { id: requestId, role: 'user', parts: [{ type: 'text', text: '模型身份记账验收' }] },
 		}, actor);
 		try {
-			await db().update(modelAliases).set({ enabled: 0 }).where(eq(modelAliases.alias, generationModelAlias));
+			await patchTestDocument(document => { for (const provider of document.providers) for (const model of provider.models) model.enabled = false; });
 			await expect(run(randomUUID())).rejects.toMatchObject({ status: 503, code: 50300, message: expect.stringContaining('未配置或未启用') });
 			expect(await db().select().from(generations).where(eq(generations.appId, BigInt(appId)))).toEqual([]);
 			expect(await db().select().from(leases).where(eq(leases.appId, BigInt(appId)))).toEqual([]);

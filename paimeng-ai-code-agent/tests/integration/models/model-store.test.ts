@@ -1,27 +1,25 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { loadEnvFile } from 'node:process';
 import { testDatabaseUrl } from '../../support/test-database-url';
-import { eq } from 'drizzle-orm';
-import { db, getPool, now } from '@/server/infra/db';
+import { getPool } from '@/server/infra/db';
 import { getConfig } from '@/server/infra/config';
-import { modelAliases, modelConfigState, modelProviders } from '@/server/infra/schema';
-import {
-  modelConfigStateId,
-  type ModelAliasInput,
-  type ModelProviderOptions,
-  type ModelProviderWriteInput,
-  type ProviderApiFormat,
-  type ProviderKeySource,
+import type {
+  ModelAliasCapabilities,
+  ModelProviderOptions,
+  ModelProviderWriteInput,
+  ProviderApiFormat,
+  ProviderKeySource,
 } from '@/shared/model-config';
+import type { ModelConfigMutation } from '@/shared/model-document';
+import { patchTestDocument, resetModelConfigRow, writeTestDocument } from '../../support/model-config';
 import { decryptModelSecret } from '@/server/models/secrets';
 import {
   applyModelConfig,
-  deleteAlias,
-  deleteProvider,
   initializeModelConfigFromEnv,
+  mutateModelConfig,
   readConfigSnapshot,
+  readModelConfigDocumentState,
   readRefreshEpoch,
-  upsertAlias,
   upsertProvider,
 } from '@/server/models/store';
 
@@ -70,50 +68,45 @@ const provider = (overrides: Partial<ProviderDraft> = {}): ModelProviderWriteInp
     : { ...common, apiKeySource: 'inline', apiKey: draft.apiKey };
 };
 
-const codegenAlias = (overrides: Partial<ModelAliasInput> = {}): ModelAliasInput => ({
-  alias: 'codegen.default',
-  providerId: 'primary',
-  modelName: 'gpt-test',
-  capabilities: { streaming: true, toolCalling: true, structuredOutput: false, imageInput: false },
-  settings: {},
-  enabled: true,
-  ...overrides,
-});
+const allCapabilities: ModelAliasCapabilities = { streaming: true, toolCalling: true, structuredOutput: true, imageInput: false };
 
-const routeAlias = (overrides: Partial<ModelAliasInput> = {}): ModelAliasInput => ({
-  alias: 'route.classify',
-  providerId: 'primary',
-  modelName: 'gpt-test',
-  capabilities: { streaming: false, toolCalling: false, structuredOutput: true, imageInput: false },
-  settings: {},
-  enabled: true,
-  ...overrides,
-});
-
-async function resetDatabase() {
-  await db().delete(modelAliases);
-  await db().delete(modelProviders);
-  await db()
-    .insert(modelConfigState)
-    .values({ id: modelConfigStateId, revision: 0n, refreshEpoch: 0n, updateTime: now() })
-    .onConflictDoUpdate({ target: modelConfigState.id, set: { revision: 0n, refreshEpoch: 0n } });
+async function state() {
+  return readModelConfigDocumentState();
 }
 
-async function seedFromEnv() {
-  return initializeModelConfigFromEnv();
+async function mutate(revision: string, mutation: ModelConfigMutation) {
+  return mutateModelConfig({ expectedRevision: revision, mutation });
 }
 
-describe('模型配置存储', () => {
+async function createModel(providerId: string, upstream: string, capabilities: ModelAliasCapabilities = allCapabilities, revision?: string) {
+  const current = revision ?? (await state()).revision;
+  return mutate(current, {
+    kind: 'model.upsert',
+    providerId,
+    upstream,
+    displayName: upstream,
+    capabilities,
+    enabled: true,
+    upstreamPrice: null,
+  });
+}
+
+async function priceModel(modelId: string, revision: string) {
+  return mutate(revision, { kind: 'model.price', modelId, inputMissFen: 100, inputHitFen: 10, outputFen: 400, upstreamUsd: null, note: null });
+}
+
+describe('模型配置 JSON 存储', () => {
   beforeEach(async () => {
     process.env.AI_MODEL = 'gpt-test-model';
     process.env.AI_BASE_URL = 'https://api.example.test/v1';
     process.env.MODEL_SECRET_KEY = 'a'.repeat(64);
     delete process.env.MODEL_API_KEY_ENV_ALLOWLIST;
     delete process.env.MODEL_INTERNAL_BASE_URL_ORIGINS;
-    await resetDatabase();
+    await resetModelConfigRow();
   });
+
   afterAll(async () => {
-    await resetDatabase();
+    await resetModelConfigRow();
     for (const [name, value] of saved) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
@@ -121,45 +114,52 @@ describe('模型配置存储', () => {
     await getPool().end();
   });
 
-  it('迁移后的空配置可读取，版本为零', async () => {
+  it('空文档可读取，版本为零', async () => {
     const snapshot = await readConfigSnapshot();
     expect(snapshot).toMatchObject({ revision: '0', refreshEpoch: '0', providers: [], aliases: [] });
     expect(await readRefreshEpoch()).toBe('0');
+    const { document } = await state();
+    expect(document).toMatchObject({ schemaVersion: 1, providers: [], slots: [], legacyPrices: [] });
   });
 
-  it('仅当配置为空时从环境变量初始化两个必需别名', async () => {
-    const first = await seedFromEnv();
+  it('仅当配置为空时从环境变量初始化提供商、一个未定价模型与两个必需槽位', async () => {
+    const first = await initializeModelConfigFromEnv();
     expect(first).toEqual({ initialized: true, revision: '1', refreshEpoch: '0', providerId: 'env-default' });
 
-    const snapshot = await readConfigSnapshot();
-    expect(snapshot.providers).toHaveLength(1);
-    expect(snapshot.providers[0]).toMatchObject({ id: 'env-default', baseUrl: 'https://api.example.test/v1', apiKeyEnv: 'AI_API_KEY', enabled: true });
-    expect(snapshot.aliases.map(alias => alias.alias).sort()).toEqual(['codegen.default', 'route.classify']);
-    expect(snapshot.aliases.find(alias => alias.alias === 'codegen.default')?.capabilities).toEqual({ streaming: true, toolCalling: true, structuredOutput: false, imageInput: false });
-    expect(snapshot.aliases.find(alias => alias.alias === 'route.classify')?.capabilities).toEqual({ streaming: false, toolCalling: false, structuredOutput: true, imageInput: false });
+    const { document } = await state();
+    expect(document.providers).toHaveLength(1);
+    expect(document.providers[0]).toMatchObject({ id: 'env-default', baseUrl: 'https://api.example.test/v1', apiKey: { source: 'env', env: 'AI_API_KEY' }, enabled: true });
+    expect(document.providers[0]?.models).toHaveLength(1);
+    const model = document.providers[0]!.models[0]!;
+    expect(model.upstream).toBe('gpt-test-model');
+    expect(model.prices).toEqual([]);
+    expect(document.slots.map(slot => slot.slot).sort()).toEqual(['codegen.default', 'route.classify']);
+    expect(new Set(document.slots.map(slot => slot.modelId))).toEqual(new Set([model.id]));
 
-    const second = await seedFromEnv();
+    const snapshot = await readConfigSnapshot();
+    expect(snapshot.aliases.map(alias => alias.alias).sort()).toEqual(['codegen.default', 'route.classify']);
+    expect(snapshot.aliases.every(alias => alias.modelName === 'gpt-test-model')).toBe(true);
+
+    const second = await initializeModelConfigFromEnv();
     expect(second).toEqual({ initialized: false, revision: '1', refreshEpoch: '0', providerId: null });
-    expect((await readConfigSnapshot()).providers).toHaveLength(1);
   });
 
-  it('写入递增版本并在版本过期时返回 409', async () => {
-    await seedFromEnv();
-    const before = await readConfigSnapshot();
+  it('提供商写入递增版本并保留模型；过期版本返回 409', async () => {
+    await initializeModelConfigFromEnv();
+    const before = await state();
     const updated = await upsertProvider(provider({ id: 'env-default', displayName: '改名后' }), { expectedRevision: '1' });
     expect(updated).toMatchObject({ revision: '2', refreshEpoch: '0' });
 
-    const snapshot = await readConfigSnapshot();
-    const row = snapshot.providers[0];
-    expect(row?.displayName).toBe('改名后');
-    expect(row?.createTime).toBe(before.providers[0]?.createTime);
-    expect(row && before.providers[0] && row.updateTime >= before.providers[0].updateTime).toBe(true);
+    const after = await state();
+    expect(after.document.providers[0]?.displayName).toBe('改名后');
+    expect(after.document.providers[0]?.createTime).toBe(before.document.providers[0]?.createTime);
+    expect(after.document.providers[0]?.models).toEqual(before.document.providers[0]?.models);
 
     await expect(upsertProvider(provider({ id: 'env-default' }), { expectedRevision: '1' })).rejects.toMatchObject({ status: 409, code: 40901 });
   });
 
   it('applyImmediately 递增刷新序号，手动应用只递增刷新序号', async () => {
-    await seedFromEnv();
+    await initializeModelConfigFromEnv();
     const plain = await upsertProvider(provider({ id: 'env-default', displayName: '普通保存' }), { expectedRevision: '1' });
     expect(plain).toMatchObject({ revision: '2', refreshEpoch: '0' });
 
@@ -174,7 +174,7 @@ describe('模型配置存储', () => {
   });
 
   it('并发写入同一期望版本时只有一个成功', async () => {
-    await seedFromEnv();
+    await initializeModelConfigFromEnv();
     const outcomes = await Promise.allSettled([
       upsertProvider(provider({ id: 'env-default', displayName: '并发甲' }), { expectedRevision: '1' }),
       upsertProvider(provider({ id: 'env-default', displayName: '并发乙' }), { expectedRevision: '1' }),
@@ -185,145 +185,139 @@ describe('模型配置存储', () => {
     expect(fulfilled[0]?.revision).toBe('2');
     expect(rejected).toHaveLength(1);
     expect(rejected[0]).toMatchObject({ status: 409, code: 40901 });
-    expect((await readConfigSnapshot()).revision).toBe('2');
+    expect((await state()).revision).toBe('2');
   });
 
-  it('引用完整性与必需别名不能被删除或禁用', async () => {
-    await seedFromEnv();
-    await expect(deleteProvider('env-default', { expectedRevision: '1' })).rejects.toMatchObject({ status: 409, code: 40902 });
-    await expect(deleteAlias('codegen.default', { expectedRevision: '1' })).rejects.toMatchObject({ status: 409, code: 40902 });
-    await expect(deleteProvider('missing', { expectedRevision: '1' })).rejects.toMatchObject({ status: 404, code: 40400 });
-    await expect(deleteAlias('missing', { expectedRevision: '1' })).rejects.toMatchObject({ status: 404, code: 40400 });
-    await expect(upsertAlias(codegenAlias({ enabled: false }), { expectedRevision: '1' })).rejects.toMatchObject({ status: 400, code: 40000 });
-    await expect(upsertProvider(provider({ id: 'env-default', enabled: false }), { expectedRevision: '1' })).rejects.toMatchObject({ status: 400, code: 40000 });
-    expect((await readConfigSnapshot()).revision).toBe('1');
+  it('被槽位引用的模型不能停用；有模型的提供商不能删除；必需槽位不能清除', async () => {
+    await initializeModelConfigFromEnv();
+    const current = await state();
+    const modelId = current.document.providers[0]!.models[0]!.id;
+    await expect(mutate(current.revision, { kind: 'model.enabled', modelId, enabled: false }))
+      .rejects.toMatchObject({ status: 409, code: 40902, message: expect.stringContaining('codegen.default') as unknown as string });
+    await expect(mutate(current.revision, { kind: 'provider.delete', providerId: 'env-default' }))
+      .rejects.toMatchObject({ status: 409, code: 40902 });
+    await expect(mutate(current.revision, { kind: 'slot.clear', slot: 'codegen.default' }))
+      .rejects.toMatchObject({ status: 409, code: 40902 });
+    await expect(mutate(current.revision, { kind: 'provider.delete', providerId: 'missing' }))
+      .rejects.toMatchObject({ status: 404, code: 40400 });
+    expect(await state().then(value => value.revision)).toBe('1');
   });
 
-  it('清单外的槽位名写入被拒绝', async () => {
-    await seedFromEnv();
-    await expect(upsertAlias({ ...codegenAlias({ alias: 'extra.model' }) }, { expectedRevision: '1' }))
-      .rejects.toMatchObject({ status: 400, code: 40000 });
-    expect((await readConfigSnapshot()).aliases.map(alias => alias.alias).sort()).toEqual(['codegen.default', 'route.classify']);
+  it('未定价模型不能分配；追加单价后可以分配，并可共享给多个槽位', async () => {
+    await initializeModelConfigFromEnv();
+    const current = await state();
+    const modelId = current.document.providers[0]!.models[0]!.id;
+    await expect(mutate(current.revision, { kind: 'slot.assign', slot: 'codegen.default', modelId, settings: {} }))
+      .rejects.toMatchObject({ status: 400, code: 40000, message: expect.stringContaining('还没有当前生效的单价') as unknown as string });
+
+    const priced = await priceModel(modelId, current.revision);
+    await expect(mutate(priced.revision, { kind: 'slot.assign', slot: 'codegen.default', modelId, settings: { temperature: 0.2 } }))
+      .resolves.toMatchObject({ revision: '3' });
+    const assigned = await mutate('3', { kind: 'slot.assign', slot: 'version.summary', modelId, settings: { maxOutputTokens: 200 } });
+    const next = await state();
+    expect(assigned.revision).toBe('4');
+    expect(next.document.providers[0]?.models[0]?.prices).toHaveLength(1);
+    expect(next.document.slots.find(slot => slot.slot === 'codegen.default')?.settings).toEqual({ temperature: 0.2 });
+    expect(next.document.slots.find(slot => slot.slot === 'version.summary')?.settings).toEqual({ maxOutputTokens: 200 });
+
+    await expect(mutate('4', { kind: 'slot.clear', slot: 'version.summary' })).resolves.toMatchObject({ revision: '5' });
+    expect((await state()).document.slots.some(slot => slot.slot === 'version.summary')).toBe(false);
   });
 
-  it('槽位要求的能力缺失时点名具体能力', async () => {
-    await seedFromEnv();
-    await expect(upsertAlias(codegenAlias({ capabilities: { streaming: true, toolCalling: false, structuredOutput: false, imageInput: false } }), { expectedRevision: '1' }))
+  it('槽位能力不足时点名能力；未知槽位与不存在的模型被拒绝', async () => {
+    await initializeModelConfigFromEnv();
+    const created = await createModel('env-default', 'no-tools-model', { streaming: true, toolCalling: false, structuredOutput: false, imageInput: false });
+    const next = await state();
+    const modelId = next.document.providers[0]!.models.find(model => model.upstream === 'no-tools-model')!.id;
+    const priced = await priceModel(modelId, created.revision);
+    await expect(mutate(priced.revision, { kind: 'slot.assign', slot: 'codegen.default', modelId, settings: {} }))
       .rejects.toMatchObject({ status: 400, code: 40000, message: expect.stringContaining('工具调用') as unknown as string });
+    await expect(mutate(priced.revision, { kind: 'slot.assign', slot: 'extra.model', modelId, settings: {} }))
+      .rejects.toMatchObject({ status: 400, code: 40000 });
+    await expect(mutate(priced.revision, { kind: 'slot.assign', slot: 'route.classify', modelId: 'pm_missing', settings: {} }))
+      .rejects.toMatchObject({ status: 404, code: 40400 });
   });
 
-  it('别名必须指向存在的提供商', async () => {
-    await seedFromEnv();
-    await expect(upsertAlias(routeAlias({ providerId: 'ghost' }), { expectedRevision: '1' })).rejects.toMatchObject({ status: 400, code: 40000 });
-    expect((await readConfigSnapshot()).providers).toHaveLength(1);
-  });
-
-  it('密钥引用只允许 AI_API_KEY 或部署允许名单', async () => {
-    await seedFromEnv();
-    await expect(upsertProvider(provider({ id: 'secondary', apiKeyEnv: 'SECONDARY_KEY' }), { expectedRevision: '1' })).rejects.toMatchObject({ status: 400, code: 40000 });
-    process.env.MODEL_API_KEY_ENV_ALLOWLIST = 'SECONDARY_KEY';
-    await expect(upsertProvider(provider({ id: 'secondary', apiKeyEnv: 'SECONDARY_KEY' }), { expectedRevision: '1' })).resolves.toMatchObject({ revision: '2' });
-    const snapshot = await readConfigSnapshot();
-    expect(snapshot.providers.find(candidate => candidate.id === 'secondary')).toMatchObject({
-      apiKeySource: 'env',
-      apiKeyEnv: 'SECONDARY_KEY',
-    });
+  it('价格版本只追加，版本号递增且当前价取最近生效版本', async () => {
+    await initializeModelConfigFromEnv();
+    const current = await state();
+    const modelId = current.document.providers[0]!.models[0]!.id;
+    const first = await priceModel(modelId, current.revision);
+    const second = await mutate(first.revision, { kind: 'model.price', modelId, inputMissFen: 200, inputHitFen: 20, outputFen: 800, upstreamUsd: { inputMiss: '0.5', inputHit: '0.1', output: '2.0' }, note: '涨价' });
+    expect(second.revision).toBe('3');
+    const prices = (await state()).document.providers[0]!.models[0]!.prices;
+    expect(prices.map(price => price.version)).toEqual([1, 2]);
+    expect(prices[0]).toMatchObject({ inputMissFen: 100, inputHitFen: 10, outputFen: 400 });
+    expect(prices[1]).toMatchObject({ inputMissFen: 200, upstreamUsd: { inputMiss: '0.5' }, note: '涨价' });
   });
 
   it('直接输入的密钥只以密文入库，留空保持原值，切回环境变量时清除密文', async () => {
-    await seedFromEnv();
+    await initializeModelConfigFromEnv();
     await expect(
       upsertProvider(provider({ id: 'env-default', apiKeySource: 'inline', apiKey: 'sk-secret-value' }), { expectedRevision: '1' }),
     ).resolves.toMatchObject({ revision: '2' });
-    const [row] = await db().select().from(modelProviders).where(eq(modelProviders.id, 'env-default'));
-    expect(row?.apiKeyEnv).toBeNull();
-    expect(row?.apiKeyCiphertext).toBeTruthy();
-    expect(JSON.stringify(row)).not.toContain('sk-secret-value');
-    const stored = (await readConfigSnapshot()).providers[0];
-    expect(stored).toMatchObject({ apiKeySource: 'inline' });
-    expect(stored?.apiKeySource === 'inline' ? decryptModelSecret(stored.apiKeyCiphertext) : null).toBe('sk-secret-value');
+    const inline = (await state()).document.providers[0]!;
+    expect(inline.apiKey).toMatchObject({ source: 'inline' });
+    expect(JSON.stringify(inline)).not.toContain('sk-secret-value');
+    expect(inline.apiKey.source === 'inline' ? decryptModelSecret(inline.apiKey.ciphertext) : null).toBe('sk-secret-value');
 
     await expect(
       upsertProvider(provider({ id: 'env-default', apiKeySource: 'inline', apiKey: '' }), { expectedRevision: '2' }),
     ).resolves.toMatchObject({ revision: '3' });
-    const kept = (await readConfigSnapshot()).providers[0];
-    expect(kept?.apiKeySource === 'inline' ? decryptModelSecret(kept.apiKeyCiphertext) : null).toBe('sk-secret-value');
+    const kept = (await state()).document.providers[0]!;
+    expect(kept.apiKey.source === 'inline' ? decryptModelSecret(kept.apiKey.ciphertext) : null).toBe('sk-secret-value');
 
     await expect(
       upsertProvider(provider({ id: 'env-default', apiKeySource: 'env', apiKeyEnv: 'AI_API_KEY' }), { expectedRevision: '3' }),
     ).resolves.toMatchObject({ revision: '4' });
-    const [cleared] = await db().select().from(modelProviders).where(eq(modelProviders.id, 'env-default'));
-    expect(cleared?.apiKeyCiphertext).toBeNull();
-    expect(cleared?.apiKeyEnv).toBe('AI_API_KEY');
+    expect((await state()).document.providers[0]?.apiKey).toEqual({ source: 'env', env: 'AI_API_KEY' });
   });
 
-  it('自定义请求头随配置保存、读取、编辑与清除，旧记录缺列时按空集合读取', async () => {
-    await seedFromEnv();
+  it('自定义请求头随配置保存、读取、编辑与清除', async () => {
+    await initializeModelConfigFromEnv();
     const withHeaders: ModelProviderWriteInput = {
       ...provider({ id: 'env-default' }),
       headers: { 'User-Agent': 'paimeng-ai-code-mother/1.0', 'X-Title': 'paimeng' },
     };
-
     await expect(upsertProvider(withHeaders, { expectedRevision: '1' })).resolves.toMatchObject({ revision: '2' });
     expect((await readConfigSnapshot()).providers[0]?.headers).toEqual({ 'User-Agent': 'paimeng-ai-code-mother/1.0', 'X-Title': 'paimeng' });
-    const [row] = await db().select().from(modelProviders).where(eq(modelProviders.id, 'env-default'));
-    expect(row?.headers).toEqual({ 'User-Agent': 'paimeng-ai-code-mother/1.0', 'X-Title': 'paimeng' });
 
-    await expect(
-      upsertProvider({ ...provider({ id: 'env-default' }), headers: { 'X-Title': 'edited' } }, { expectedRevision: '2' }),
-    ).resolves.toMatchObject({ revision: '3' });
+    await expect(upsertProvider({ ...provider({ id: 'env-default' }), headers: { 'X-Title': 'edited' } }, { expectedRevision: '2' })).resolves.toMatchObject({ revision: '3' });
     expect((await readConfigSnapshot()).providers[0]?.headers).toEqual({ 'X-Title': 'edited' });
 
     await expect(upsertProvider(provider({ id: 'env-default' }), { expectedRevision: '3' })).resolves.toMatchObject({ revision: '4' });
     expect((await readConfigSnapshot()).providers[0]?.headers).toEqual({});
-    const [cleared] = await db().select().from(modelProviders).where(eq(modelProviders.id, 'env-default'));
-    expect(cleared?.headers).toEqual({});
-
-    await db().update(modelProviders).set({ headers: null }).where(eq(modelProviders.id, 'env-default'));
-    expect((await readConfigSnapshot()).providers[0]?.headers).toEqual({});
   });
 
-  it('新建直接密钥为空时被拒绝', async () => {
-    await seedFromEnv();
+  it('新建直接密钥为空时被拒绝；未允许的环境变量被拒绝', async () => {
+    await initializeModelConfigFromEnv();
     await expect(
       upsertProvider(provider({ id: 'secondary', apiKeySource: 'inline', apiKey: '' }), { expectedRevision: '1' }),
     ).rejects.toMatchObject({ status: 400, code: 40000 });
+    await expect(upsertProvider(provider({ id: 'secondary', apiKeyEnv: 'SECONDARY_KEY' }), { expectedRevision: '1' })).rejects.toMatchObject({ status: 400, code: 40000 });
+    process.env.MODEL_API_KEY_ENV_ALLOWLIST = 'SECONDARY_KEY';
+    await expect(upsertProvider(provider({ id: 'secondary', apiKeyEnv: 'SECONDARY_KEY' }), { expectedRevision: '1' })).resolves.toMatchObject({ revision: '2' });
   });
 
   it('切换 API 格式后旧选项不再被接受', async () => {
-    await seedFromEnv();
-    await expect(
-      upsertProvider(provider({ id: 'env-default', apiFormat: 'openai-chat', options: { includeUsage: true } }), { expectedRevision: '1' }),
-    ).resolves.toMatchObject({ revision: '2' });
-    await expect(
-      upsertProvider(
-        provider({ id: 'env-default', apiFormat: 'openai-responses', options: { includeUsage: true } }),
-        { expectedRevision: '2' },
-      ),
-    ).rejects.toMatchObject({ status: 400, code: 40000 });
-    await expect(
-      upsertProvider(provider({ id: 'env-default', apiFormat: 'openai-responses', options: {} }), { expectedRevision: '2' }),
-    ).resolves.toMatchObject({ revision: '3' });
+    await initializeModelConfigFromEnv();
+    await expect(upsertProvider(provider({ id: 'env-default', apiFormat: 'openai-chat', options: { includeUsage: true } }), { expectedRevision: '1' })).resolves.toMatchObject({ revision: '2' });
+    await expect(upsertProvider(provider({ id: 'env-default', apiFormat: 'openai-responses', options: { includeUsage: true } }), { expectedRevision: '2' })).rejects.toMatchObject({ status: 400, code: 40000 });
+    await expect(upsertProvider(provider({ id: 'env-default', apiFormat: 'openai-responses', options: {} }), { expectedRevision: '2' })).resolves.toMatchObject({ revision: '3' });
   });
 
   it('配置为空但版本非零时拒绝重新初始化', async () => {
-    await seedFromEnv();
-    await db().delete(modelAliases);
-    await db().delete(modelProviders);
+    await initializeModelConfigFromEnv();
+    await writeTestDocument({ schemaVersion: 1, providers: [], slots: [], legacyPrices: [] }, { bumpRevision: false });
     await expect(initializeModelConfigFromEnv()).rejects.toMatchObject({ status: 409, code: 40903 });
-    await db().update(modelConfigState).set({ revision: 0n, refreshEpoch: 4n }).where(eq(modelConfigState.id, modelConfigStateId));
+    await writeTestDocument({ schemaVersion: 1, providers: [], slots: [], legacyPrices: [] }, { bumpRevision: false, refreshEpoch: 4n });
     await expect(initializeModelConfigFromEnv()).rejects.toMatchObject({ status: 409, code: 40903 });
-
-    await db().update(modelConfigState).set({ revision: 0n, refreshEpoch: 0n }).where(eq(modelConfigState.id, modelConfigStateId));
+    await resetModelConfigRow();
     await expect(initializeModelConfigFromEnv()).resolves.toMatchObject({ initialized: true, revision: '1', refreshEpoch: '0', providerId: 'env-default' });
-    const snapshot = await readConfigSnapshot();
-    expect(snapshot).toMatchObject({ revision: '1', refreshEpoch: '0' });
-    expect(snapshot.providers).toHaveLength(1);
-    expect(snapshot.aliases).toHaveLength(2);
   });
 
   it('并发编辑期间一致性读不会看到不完整配置', async () => {
-    await seedFromEnv();
+    await initializeModelConfigFromEnv();
     const writer = (async () => {
       let version = await upsertProvider(provider({ id: 'env-default', displayName: '轮换 0' }), { expectedRevision: '1', applyImmediately: true });
       for (let index = 1; index <= 5; index += 1) {
@@ -353,7 +347,7 @@ describe('模型配置存储', () => {
   });
 
   it('HTTP 地址在本机/局域网或部署允许名单内放行', async () => {
-    await seedFromEnv();
+    await initializeModelConfigFromEnv();
     await expect(upsertProvider(provider({ id: 'env-default', baseUrl: 'http://api.example.test/v1' }), { expectedRevision: '1' })).rejects.toMatchObject({ status: 400, code: 40000 });
     await expect(upsertProvider(provider({ id: 'env-default', baseUrl: 'http://internal.example:8080/v1' }), { expectedRevision: '1' })).rejects.toMatchObject({ status: 400, code: 40000 });
     await expect(upsertProvider(provider({ id: 'env-default', baseUrl: 'http://127.0.0.1:8787/v1' }), { expectedRevision: '1' })).resolves.toMatchObject({ revision: '2' });
@@ -361,6 +355,13 @@ describe('模型配置存储', () => {
     process.env.MODEL_INTERNAL_BASE_URL_ORIGINS = 'http://internal.example:8080';
     await expect(upsertProvider(provider({ id: 'env-default', baseUrl: 'http://internal.example:8080/v1' }), { expectedRevision: '3' })).resolves.toMatchObject({ revision: '4' });
     await expect(upsertProvider(provider({ id: 'env-default', baseUrl: 'http://internal.example:9090/v1' }), { expectedRevision: '4' })).rejects.toMatchObject({ status: 400, code: 40000 });
+  });
+
+  it('损坏的 JSON 或未知 schemaVersion 读取失败而不是回退', async () => {
+    await patchTestDocument(document => { (document as { schemaVersion: number }).schemaVersion = 99; });
+    await expect(readConfigSnapshot()).rejects.toThrow();
+    await resetModelConfigRow();
+    expect((await readConfigSnapshot()).providers).toEqual([]);
   });
 
   it('部署允许名单条目非法时配置加载失败', () => {

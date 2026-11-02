@@ -49,3 +49,28 @@
 .policyForm{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 16px;border:1px solid #f0f0f0;border-radius:8px;padding:16px 16px 0}
 .policyForm :global(.ant-form-item:last-child){grid-column:1/-1;margin-bottom:16px}
 .policyUserPicker{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0 12px}
+
+/* 模型配置 JSON 化：提供商折叠、模型行与单价输入 */
+.providerCollapse{margin-bottom:8px}
+.providerHeader{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}
+.providerTitle{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.emptyModels{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:8px 0;color:#8c8c8c}
+.modelList{display:flex;flex-direction:column;gap:8px}
+.modelRow{display:grid;grid-template-columns:minmax(180px,1.1fr) minmax(220px,1.2fr) minmax(180px,1fr) auto;align-items:center;gap:12px;padding:12px;border:1px solid #f0f0f0;border-radius:8px;min-width:0}
+.modelMain{display:flex;flex-direction:column;gap:6px;min-width:0}
+.modelPrices{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}
+.modelPrices > span{display:flex;flex-direction:column;gap:2px}
+.modelPrices i{font-style:normal;color:#8c8c8c;font-size:11px}
+.modelPrices b{font-weight:600;white-space:nowrap}
+.modelUpstream{display:flex;flex-direction:column;gap:2px;min-width:0;overflow-wrap:anywhere}
+.modelActions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.stackRow{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap}
+.fetchButton{margin-bottom:24px}
+.priceInputs{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0 16px}
+
+@media (max-width:720px){
+ .modelRow{grid-template-columns:1fr}
+ .modelActions{justify-content:flex-start}
+ .providerHeader{align-items:flex-start}
+ .stackRow .fetchButton{margin-bottom:0}
+}

@@ -19,7 +19,7 @@ import { monthlyQuotaCredits, type AccountSnapshot, type GrantReceipt } from '@/
 const createdUsers: string[] = [];
 
 beforeAll(async () => {
-  await applyBillingMigrations('010_credit_grant_account.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql');
+  await applyBillingMigrations('010_credit_grant_account.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql', '023_app_config_model_config.sql');
 });
 
 afterAll(async () => {
