@@ -25,8 +25,14 @@ function fixtureTypedSource(type: CodeGenType, prompt: string): FixtureFile | un
   return { ...source, content };
 }
 
-function thickReactPage(prompt: string): FixtureFile {
-  const title = prompt.replace(/[<>&"']/g, '').slice(0, 80);
+/** 实时预览证据：`[live]` 前缀让夹具在同一轮里连续写两次同一页，第二次在等待之后。 */
+export const LIVE_MARKER = '[live]';
+export function fixtureLive(prompt: string) {
+  return prompt.startsWith(LIVE_MARKER);
+}
+
+export function thickReactPage(prompt: string, suffix = ''): FixtureFile {
+  const title = prompt.replace(/[<>&"']/g, '').replace(LIVE_MARKER, '').trim().slice(0, 80) + suffix;
   return {
     path: THICK_REACT_PAGE,
     content: `import { ArrowUpRight } from 'lucide-react';

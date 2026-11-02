@@ -28,13 +28,13 @@
 
 ## 生成控制面
 
-每次生成先在产品库取得 `app_authority` 的 epoch，再在 `runtime/executions/<generationId>/<epoch>/` 建独立目录；每个 generation 使用独立 conversation，工具 cwd、读路径与 git `--work-tree` 都绑定这次执行。基线顺序固定为：当前封存草稿 → 当前版本源码 → 当前工作区（legacy）→ 新应用模板。
+每次生成先在产品库取得 `app_authority` 的 epoch，每个 Generation 使用独立 conversation，工具 cwd 与 App runtime 都指向 `runtime/code_output/<类型>_<id>/` 的持久 Workspace。基线按草稿 → Version → Template → legacy Workspace → 空解析；先在临时隔离目录物化，再在 App → authority 行锁内替换源码，根目录与 node_modules 保留。工具真实落盘与封存也经过同一把跨进程锁，接管等待旧写入完成；执行引用仍绑定 generationId/epoch。见 [ADR-0007](adr/0007-persistent-app-runtime-workspace.md)。
 
 输入在提交时先落 `generation_input`（requestId 幂等、seq 单调），再交付 SDK；`placed` 只表示 SDK 已受理，条目进入转录后才变 `resolved`，完成水位只认连续前缀。发布要求所有输入已结算。
 
 失败/取消时先关写门、等 harness run 退出，再把执行目录封存为草稿，下一轮复制该草稿；封存失败保持 draining 并拒绝新轮，不静默回退旧版本。成功发布先封存源码快照，再从快照构造 Git 提交、从构建产物创建不可变交付目录，最后在同一事务写 `version_record`、`generation_delivery`、`app_preview_pointer`、`generation` 终态与 authority 释放；文件指针随后补写，失败由恢复扫描对账。
 
-预览按指针解析不可变交付；没有指针的旧应用才回退 `code_output`（legacy）。历史恢复优先切已有交付，legacy 版本才重新构建并独立物化；恢复全程占一条 running 部署记录作为维护锁，阻止 generation/其他业务写并跨 Git/构建/交付物化；下载优先读当前交付引用的源码快照（legacy 应用才回退工作区），部署从交付复制，封面按部署地址截图。部署记录按 `requestId` 幂等，失败不会改动应用当前的 `deployKey`/预览。自动回收只处理终态拒绝候选、孤儿临时目录和过期草稿。
+预览在 App runtime 可用时代理 dev server 的 HTTP/HMR，生成中只读；不可用时按指针解析不可变交付，没有指针的旧应用才回退 `code_output`（legacy）。历史恢复优先切已有交付，legacy 版本才重新构建并独立物化；恢复全程占一条 running 部署记录作为维护锁，阻止 generation/其他业务写并跨 Git/构建/交付物化；下载优先读当前交付引用的源码快照（legacy 应用才回退工作区），部署从交付复制，封面按部署地址截图。部署记录按 `requestId` 幂等，失败不会改动应用当前的 `deployKey`/预览。自动回收只处理终态拒绝候选、孤儿临时目录和过期草稿。
 
 旧预览和未发布草稿由 `npm run legacy:import` 导入为 legacy 交付/草稿，不创建版本或 generation，详见 `legacy-import.md`。
 
@@ -88,6 +88,6 @@ harness 失联或重启后从持久任务恢复。Next 启动时先做一次恢�
 
 ## 测试与备份
 
-测试使用 `paimeng_app_test`、`paimeng_agent_test` 与 Redis DB15。隔离 E2E 启动器自行起夹具 harness、Next 与预览，检查健康状态并统一清理进程；不复用开发 harness。会重置存储的测试必须保持串行，E2E、system 与容器构建也不能并发压机器。
+测试产品库使用 `paimeng_app_test` 与 Redis DB15；会重置 harness 存储的验证必须显式传入本票独占的 `DURABLE_PG_URL`，数据库名为 `paimeng_agent_<run>_test`，并先补建缺失库。reset 在连接前拒绝共享 `paimeng_agent_test`、开发库和 URL query 覆盖；生产存储 open 不受影响。隔离 E2E 启动器保留该独占库名，自行起夹具 harness、Next 与预览，检查健康状态并统一清理进程。会重置存储的测试保持串行，E2E、system 与容器构建也不能并发压机器。
 
 备份用 `pg_dump` 保存两个数据库，连同运行目录与主密钥保管。不要删除旧 MySQL 容器或归档卷。一次性导入/旧 UI 对照脚本的适用条件见 [scripts/AGENTS.md](../scripts/AGENTS.md)。

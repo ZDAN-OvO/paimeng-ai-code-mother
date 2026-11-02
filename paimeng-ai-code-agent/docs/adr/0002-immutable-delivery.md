@@ -24,3 +24,5 @@ A Version is built from a sealed source snapshot. An accepted Version has one im
 - A failed Deployment does not change the preview or create a half-published Version.
 
 Source: [archived harness-reliability plan](../plans/archive/harness-reliability.md).
+
+2026-11-03: [ADR-0007](0007-persistent-app-runtime-workspace.md) supersedes the Preview-only-from-Delivery rule while an App runtime is available. Delivery immutability and download/Deployment sources remain unchanged.

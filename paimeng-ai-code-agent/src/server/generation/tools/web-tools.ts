@@ -10,7 +10,7 @@ import { enabledWebToolNames, webAccessToolDescriptions, type WebAccessOperation
  */
 export function createWebTools(deps: {
 	operationsFor: (conversationId: ConversationId) => Promise<WebAccessOperations>;
-	runtime: (toolContext: { abortSignal?: AbortSignal }) => WebAccessRuntime;
+	runtime: (toolContext: { abortSignal?: AbortSignal }, conversationId: ConversationId) => WebAccessRuntime;
 }): ToolRegistration[] {
 	const settings = getConfig().webAccess;
 	const names = enabledWebToolNames({ enabled: settings.enabled, images: settings.images });
@@ -24,28 +24,28 @@ export function createWebTools(deps: {
 			description: webAccessToolDescriptions.webSearch,
 			parameters: query,
 			replay: "safe",
-			execute: async (args, api, toolContext) => webToolResult(await (await deps.operationsFor(api.conversationId)).webSearch(args, deps.runtime(toolContext))),
+			execute: async (args, api, toolContext) => webToolResult(await (await deps.operationsFor(api.conversationId)).webSearch(args, deps.runtime(toolContext, api.conversationId))),
 		}),
 		readWebPage: defineTool({
 			name: "readWebPage",
 			description: webAccessToolDescriptions.readWebPage,
 			parameters: url,
 			replay: "safe",
-			execute: async (args, api, toolContext) => webToolResult(await (await deps.operationsFor(api.conversationId)).readWebPage(args, deps.runtime(toolContext))),
+			execute: async (args, api, toolContext) => webToolResult(await (await deps.operationsFor(api.conversationId)).readWebPage(args, deps.runtime(toolContext, api.conversationId))),
 		}),
 		searchImages: defineTool({
 			name: "searchImages",
 			description: webAccessToolDescriptions.searchImages,
 			parameters: query,
 			replay: "safe",
-			execute: async (args, api, toolContext) => webToolResult(await (await deps.operationsFor(api.conversationId)).searchImages(args, deps.runtime(toolContext))),
+			execute: async (args, api, toolContext) => webToolResult(await (await deps.operationsFor(api.conversationId)).searchImages(args, deps.runtime(toolContext, api.conversationId))),
 		}),
 		importImage: defineTool({
 			name: "importImage",
 			description: webAccessToolDescriptions.importImage,
 			parameters: candidate,
 			replay: "unsafe",
-			execute: async (args, api, toolContext) => webToolResult(await (await deps.operationsFor(api.conversationId)).importImage(args, deps.runtime(toolContext))),
+			execute: async (args, api, toolContext) => webToolResult(await (await deps.operationsFor(api.conversationId)).importImage(args, deps.runtime(toolContext, api.conversationId))),
 		}),
 	};
 	return names.map((name) => definitions[name]);
