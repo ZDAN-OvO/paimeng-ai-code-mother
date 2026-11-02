@@ -20,7 +20,7 @@ import { diffVersions, headVersionSha, listVersions, purgeVersions, restoreVersi
 import { versionThumbnail } from './versioning/version-thumbnail';
 import { createDelivery, setCurrentDelivery } from './delivery/delivery-store';
 import { appWriteBlocker } from './generation/control-store';
-import { runtimePreviewAvailable } from './app-runtime/supervisor';
+import { runtimePreviewAvailable, stopAppRuntime } from './app-runtime/supervisor';
 import { SNAPSHOT_MANIFEST_FILE } from './workspace/execution-workspace';
 import { versionDiffSchema, versionTargetSchema } from '@/shared/versioning';
 import { defaultTemplateFor, resolveTemplate } from './templates/templates';
@@ -90,6 +90,8 @@ export async function deleteApp(raw:unknown,user:User){
  await withAppWriter(id,async(tx,row)=>{if(String(row.userId)!==user.id&&user.userRole!=='admin')throw new BusinessError(403,40300,'无权限删除该应用');await tx.update(apps).set({isDelete:1,updateTime:now()}).where(eq(apps.id,row.id));await tx.delete(generations).where(eq(generations.appId,row.id));});
  // 版本历史随应用一起回收：裸库、缩略图与元数据表都不能留成孤儿。应用行已软删，codeGenType 取自删除前的快照。
  await purgeVersions({id:target.id,codeGenType:target.codeGenType}).catch(problem=>{console.error(`应用 ${target.id} 的版本历史回收失败：`,problem);});
+ // 运行时按 App 独占：删除应用时把容器一起停掉，不留孤儿容器；文件/交付/部署的完整清理在 #146。
+ await stopAppRuntime({id:target.id,codeGenType:target.codeGenType}).catch(problem=>{console.error(`应用 ${target.id} 的运行时回收失败：`,problem);});
  return true;
 }
 

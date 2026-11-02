@@ -18,6 +18,8 @@ import { resolveTemplate } from '@/server/templates/templates';
 import { ensureRuntime, ensureSafeDirectory, workspace } from '@/server/workspace/workspace';
 import { getConfig } from '@/server/infra/config';
 import { ensureAppRuntime, stopAppRuntime } from '@/server/app-runtime/supervisor';
+import { deleteApp } from '@/server/business';
+import { publicUser } from '@/server/auth/auth';
 import { readAppRuntime } from '@/server/app-runtime/store';
 import { appRuntimeKey, runtimeContainerName, runtimePaths, runtimeStorePath } from '@/server/app-runtime/plan';
 import { createPreviewServer } from '@/server/delivery/preview';
@@ -216,8 +218,22 @@ describe('真实 Docker 上的 App runtime', () => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     try {
       const page = await context.newPage();
-      await page.goto(`http://127.0.0.1:${view.port}/preview/${appRuntimeKey(app)}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-      await waitForText(page, newTitle, 60_000);
+      const messages: string[] = [];
+      page.on('console', message => { if (message.type() === 'error') messages.push(message.text()); });
+      page.on('pageerror', error => messages.push('pageerror: ' + error.message));
+      const response = await page.goto(`http://127.0.0.1:${view.port}/preview/${appRuntimeKey(app)}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      try {
+        // 新容器首次启动时 Vite 可能正在优化依赖；给它一次重新加载的机会，
+        // 仍然看不到新基线标题才算“换基线没有生效”。
+        await waitForText(page, newTitle, 20_000);
+      } catch {
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
+        try { await waitForText(page, newTitle, 40_000); }
+        catch (error) {
+          console.error('baseline page failed', response?.status(), messages, await page.locator('body').innerText().catch(() => ''));
+          throw error;
+        }
+      }
       expect(await page.getByText(oldTitle, { exact: false }).count()).toBe(0);
     } finally {
       await context.close();
@@ -225,6 +241,16 @@ describe('真实 Docker 上的 App runtime', () => {
     await rm(nextRoot, { recursive: true, force: true });
     // 后续用例继续用应用工作区作为源码根。
     expect((await ensureAppRuntime({ app, workspaceRoot: workspace(app) })).status).toBe('ready');
+  }, 600_000);
+
+  it('删除应用时停掉它的 runtime 容器', async () => {
+    const app = appsUnderTest[1];
+    expect((await ensureAppRuntime({ app, workspaceRoot: workspace(app) })).status).toBe('ready');
+    const [row] = await db().select().from(users).where(eq(users.id, userId));
+    await deleteApp({ id: app.id }, publicUser(row));
+    const state = await docker(['inspect', '--format', '{{.State.Running}}', runtimeContainerName(app)]).catch(() => 'missing');
+    expect(state).toBe('missing');
+    expect(await readAppRuntime(app)).toBeNull();
   }, 600_000);
 
   it('容器停止后宿主文件仍在，下一轮复用已安装依赖', async () => {
