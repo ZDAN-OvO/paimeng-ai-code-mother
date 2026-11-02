@@ -167,6 +167,29 @@ test('生成中 Preview 连续显示两次写入，生成期间只读，收束�
   expect(userPage.ok()).toBe(true);
   expect((await userPage.json()).data.previewUrl).toContain('/preview/react_project_' + appId + '/');
   await writeFile(join(evidence, 'runtime-row.json'), JSON.stringify(rows, null, 2));
+
+  // 第二轮：同一 App 再生成一次。执行目录会换（容器因此重建），但每个 App 的 node_modules
+  // 与共享 pnpm store 是持久的——用容器里的标记文件证明“没有重新装一份依赖”。
+  const reuseMarker = '.paimeng-reuse-marker';
+  await exec('docker', ['exec', rows[0].container_name, 'sh', '-lc', `printf reused > node_modules/${reuseMarker}`]);
+  const secondPrompt = '第二轮复用验证_' + suffix;
+  await page.getByLabel('对话消息').fill(secondPrompt);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page.getByText('生成中，内容会持续更新', { exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(previewFrame(page).getByText(secondPrompt, { exact: false }).first()).toBeVisible({ timeout: 180_000 });
+  await page.screenshot({ path: join(evidence, '07-second-round-live.png'), fullPage: true });
+  await expect(page.getByText('文件已生成', { exact: false }).first()).toBeVisible({ timeout: 240_000 });
+  await expect(page.getByRole('button', { name: '可视化编辑' })).toBeEnabled({ timeout: 60_000 });
+  const { rows: secondRows } = await db.query(
+    'select status, workspace_root, container_name from app_runtime where app_id = $1', [appId],
+  );
+  expect(secondRows[0].status).toBe('ready');
+  expect(secondRows[0].workspace_root).not.toBe(rows[0].workspace_root);
+  const marker = await exec('docker', ['exec', secondRows[0].container_name, 'sh', '-lc', `cat node_modules/${reuseMarker}`]);
+  expect(marker.stdout.trim()).toBe('reused');
+  await writeFile(join(evidence, 'second-round-runtime.json'), JSON.stringify({ marker: marker.stdout.trim(), ...secondRows[0] }, null, 2));
+  await page.screenshot({ path: join(evidence, '08-second-round-settled.png'), fullPage: true });
+
   await writeFile(join(evidence, 'console-errors.json'), JSON.stringify(consoleErrors, null, 2));
   expect(pageErrors).toEqual([]);
   expect(consoleErrors.filter(text => /Content Security Policy|Uncaught|data-paimeng-editor/i.test(text))).toEqual([]);
