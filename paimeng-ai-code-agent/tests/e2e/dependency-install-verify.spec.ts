@@ -145,7 +145,7 @@ test('模型用 shell 真装 registry 包，Preview 显示包功能，锁文件�
   expect(marker.imageIdentity).toContain('paimeng-app-runtime:');
 
   await writeFile(join(evidence, 'install-side-effects.json'), JSON.stringify({
-    appId, dayjs: manifest.dependencies?.dayjs, lockHasDayjs: lock.includes('dayjs@1.11.13'), marker, runtime: rows[0],
+    appId, 'date-fns': manifest.dependencies?.['date-fns'], lockHasDateFns: lock.includes('date-fns@4.1.0'), marker, runtime: rows[0],
     lockDigest: digest, installedModule: installedModule.stdout.trim(),
   }, null, 2));
 
