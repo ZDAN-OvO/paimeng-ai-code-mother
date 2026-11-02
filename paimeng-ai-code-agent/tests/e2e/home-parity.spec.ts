@@ -13,6 +13,8 @@ async function mockSession(page:Page,user:User|null){
 }
 async function mockHome(page:Page,options:{user:User|null;my?:AppInfo[];good?:AppInfo[];myTotal?:number;goodTotal?:number}){
   await mockSession(page,options.user);
+  // 首页「创建并生成」会先读一次余额：没有会话时真接口返回 401，创建会被就地挡住。
+  await page.route('**/api/billing/summary',route=>route.fulfill({json:{code:0,data:{quota:300,balance:0,total:300,purchasedCredits60d:0,overdraft:0,period:'2026-01',quotaExpiresAt:'2026-01-31 16:00:00.000'}}}));
   await page.route('**/api/app/good/list/page/vo',route=>route.fulfill({json:{code:0,data:pageOf(options.good??[],options.goodTotal)}}));
   await page.route('**/api/app/my/list/page/vo',route=>route.fulfill({json:{code:0,data:pageOf(options.my??[],options.myTotal)}}));
 }
