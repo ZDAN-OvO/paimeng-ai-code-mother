@@ -180,7 +180,7 @@ function pendingReasonOf(snapshot: readonly UsageSnapshotStep[]): string {
   return unpriced > 0 ? `缺少费率或估算样本（${unpriced} 步）` : '已结算，无待补步骤';
 }
 
-/** 未定价步骤的 (provider, model)：补齐 Rate card 后下一次对账就能补上。 */
+/** 未定价步骤的 (provider, model)：补齐模型价格版本后下一次对账就能补上。 */
 function missingRateKeysOf(steps: readonly UsageSnapshotStep[]): string[] {
   return [...new Set(steps
     .filter(row => !row.priced)
