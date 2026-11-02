@@ -225,7 +225,7 @@ npx tsx evals/scripts/summarize.ts --run runtime/evals/<run-id>
 - **web 套件依赖外部服务与时效**。2025 诺贝尔奖、2026 购置税政策会过时；跑之前确认事实仍然成立，或换成年份无关的题。
 - **probe 是启发式**。对比度只覆盖纯色背景上的直接文本；图片/渐变背景会跳过或误报；没有做完整 WCAG 审计。
 - **runner 不验证所有交互**。它只抓首屏截图，点击、输入、拖拽需要 judge 打开预览实际操作；预览已关闭时只能判 `UNKNOWN`。
-- **Credit 未折算**。`accounts.json` 有 token、轮次与构建次数；Rate card 会变，这里不硬编码金额。
+- **Credit 未折算**。`accounts.json` 有 token、轮次与构建次数；模型配置 JSON 中的人民币 Token price 会变，这里不硬编码金额。实际结算采用的价格以账单快照为准，见 [ADR-0006](../docs/adr/0006-model-config-document.md)。
 - **部署、下载与管理员权限不在本轮范围**。这里只评到「可预览的生成结果」；发布、下载和后台有独立的 E2E 测试。
 - **临时账号与应用会留在开发库**。目前不做自动清理，避免误删；需要清理时按账号 `eval_…` 手动处理。
 

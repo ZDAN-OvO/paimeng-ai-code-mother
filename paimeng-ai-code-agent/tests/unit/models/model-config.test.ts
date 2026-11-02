@@ -315,19 +315,17 @@ describe('完整候选配置校验', () => {
     expect(modelConfigIssues([provider()], [codegenAlias(), routeAlias()], policy)).toEqual([]);
   });
 
-  it('缺少、禁用必需槽位或能力不符会被拒绝', () => {
+  it('缺少必需槽位会被拒绝；停用与能力变化留给分配时检查', () => {
     const missing = modelConfigIssues([provider()], [codegenAlias()], policy);
     expect(missing.some(issue => issue.includes('缺少必需槽位类型路由（route.classify）'))).toBe(true);
     expect(missing.some(issue => issue.includes('无法识别工程类型'))).toBe(true);
-    expect(modelConfigIssues([provider()], [codegenAlias({ enabled: false }), routeAlias()], policy))
-      .toContain('必需槽位代码生成（codegen.default）不能禁用');
-    expect(modelConfigIssues([provider()], [codegenAlias({ capabilities: { streaming: true, toolCalling: false, structuredOutput: false, imageInput: false } }), routeAlias()], policy))
-      .toContain('槽位代码生成（codegen.default）需要工具调用能力，当前未勾选');
+    expect(modelConfigIssues([provider()], [codegenAlias({ enabled: false }), routeAlias()], policy)).toEqual([]);
+    expect(modelConfigIssues([provider()], [codegenAlias({ capabilities: { streaming: true, toolCalling: false, structuredOutput: false, imageInput: false } }), routeAlias()], policy)).toEqual([]);
+    expect(modelConfigIssues([provider({ enabled: false })], [codegenAlias(), routeAlias()], policy)).toEqual([]);
   });
 
-  it('别名必须指向存在的启用提供商', () => {
+  it('别名必须指向存在的提供商', () => {
     expect(modelConfigIssues([provider()], [codegenAlias({ providerId: 'missing' }), routeAlias({ providerId: 'missing' })], policy).some(issue => issue.includes('不存在的提供商'))).toBe(true);
-    expect(modelConfigIssues([provider({ enabled: false })], [codegenAlias(), routeAlias()], policy).some(issue => issue.includes('已禁用的提供商'))).toBe(true);
   });
 
   it('未允许的密钥引用与非法地址会被拒绝', () => {

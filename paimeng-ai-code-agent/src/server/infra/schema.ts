@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { bigint, bigserial, boolean, char, index, integer, jsonb, numeric, pgTable, primaryKey, smallint, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
 import type { ChargeStatus, CreditPool, GrantSource, QuotaAdjustmentMode, QuotaBatchItemStatus, QuotaBatchScope, QuotaBatchStatus, QuotaPolicyMode, QuotaPolicyScope, QuotaPolicySource, RateCardView, UsageSnapshotStep } from '@/shared/billing';
+import type { ModelConfigDocument } from '@/shared/model-document';
 
 const times = { createTime: timestamp('create_time', { mode: 'string' }).notNull(), updateTime: timestamp('update_time', { mode: 'string' }).notNull() };
 export const users = pgTable('app_user', { id: bigint('id', { mode: 'bigint' }).primaryKey(), userAccount: varchar('user_account', { length: 256 }).notNull(), userPassword: varchar('user_password', { length: 512 }).notNull(), userName: varchar('user_name', { length: 256 }), userAvatar: varchar('user_avatar', { length: 1024 }), userProfile: varchar('user_profile', { length: 512 }), userRole: varchar('user_role', { length: 256 }).notNull().default('user'), ...times, isDelete: integer('is_delete').notNull().default(0) }, t => [uniqueIndex('uk_app_user_account').on(t.userAccount)]);
@@ -20,6 +21,15 @@ const modelTimes = { createTime: timestamp('create_time', { mode: 'string', prec
 export const modelProviders = pgTable('model_provider', { id: varchar('id', { length: 64 }).primaryKey(), displayName: varchar('display_name', { length: 128 }).notNull(), apiFormat: varchar('api_format', { length: 64 }).notNull(), baseUrl: varchar('base_url', { length: 2048 }).notNull(), apiKeyEnv: varchar('api_key_env', { length: 128 }), apiKeyCiphertext: varchar('api_key_ciphertext', { length: 2048 }), options: jsonb('options').notNull(), headers: jsonb('headers'), enabled: integer('enabled').notNull().default(0), ...modelTimes });
 export const modelAliases = pgTable('model_alias', { alias: varchar('alias', { length: 64 }).primaryKey(), providerId: varchar('provider_id', { length: 64 }).notNull().references(() => modelProviders.id), modelName: varchar('model_name', { length: 256 }).notNull(), capabilities: jsonb('capabilities').notNull(), settings: jsonb('settings').notNull(), enabled: integer('enabled').notNull().default(0), ...modelTimes }, t => [index('idx_model_alias_provider').on(t.providerId)]);
 export const modelConfigState = pgTable('model_config_state', { id: varchar('id', { length: 32 }).primaryKey(), revision: bigint('revision', { mode: 'bigint' }).notNull(), refreshEpoch: bigint('refresh_epoch', { mode: 'bigint' }).notNull(), updateTime: timestamp('update_time', { mode: 'string', precision: 3 }).notNull() });
+// 模型配置的唯一事实：一行 JSON 文档（migrations/023_app_config_model_config.sql）。
+// 提供商、模型、价格版本与槽位分配都在 value 里；上面的三张旧表与 credit_rate_card 只留作回滚参考，运行期不再读写。
+export const appConfig = pgTable('app_config', {
+  key: text('key').primaryKey(),
+  revision: bigint('revision', { mode: 'bigint' }).notNull(),
+  refreshEpoch: bigint('refresh_epoch', { mode: 'bigint' }).notNull(),
+  value: jsonb('value').$type<ModelConfigDocument>().notNull(),
+  updatedAt: timestamp('updated_at', { mode: 'string', precision: 3 }).notNull(),
+});
 
 // ---- harness 控制面（migrations/006_harness_control.sql）----
 // 只供 control-store / generation-lifecycle 使用。generation 新增的 phase/deadline/input_watermark/parent_version_sha

@@ -61,6 +61,7 @@ web
 - `paimeng-ai-code-agent/public/paimeng.png` 是现有的派蒙同人角色图；它来自外部作品，不能作为新品牌的视觉基础。
 - `docs/prototypes/in-progress/workbench/`：当前方向的界面原型（首页 / 工作台 / 移动端，明暗双主题）。
 - `paimeng-ai-code-agent/docs/prototypes/in-progress/folded-run/`：AI 输出「过程折叠」的三个变体（一行折叠组 / 左侧时间线 / 摘要行 + 侧栏），用来对齐折叠形态。
+- [provider-pricing 历史原型](paimeng-ai-code-agent/docs/prototypes/deprecated/provider-pricing/README.md)：2026-11-02 采纳模型内显式人民币单价与槽位分配方向；原型的倍率/汇率推导未采纳，存为历史参考，当前决策见 [ADR-0006](paimeng-ai-code-agent/docs/adr/0006-model-config-document.md)。
 - **没有**可直接引用的真实精选案例、客户证言、用户数量、性能基准或生产部署 URL。原型中的 App 名称、委托方、日期、版本号和网址均为演示数据。
 
 ## Product Principles

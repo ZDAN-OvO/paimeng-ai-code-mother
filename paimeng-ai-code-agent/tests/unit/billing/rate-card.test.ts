@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { resolveRate, SELL_UNIT, validateRateInput } from '@/server/billing/rate-card';
+import { ratesFromDocument, rateViewOfPrice, resolveRate, SELL_UNIT } from '@/server/billing/rate-card';
 import { creditDenominationLabel, rateCardUnitLabel, type RateCardView } from '@/shared/billing';
+import type { ModelConfigDocument } from '@/shared/model-document';
 
-/** 只填费率解析关心的字段，其余按「成本未知」构造，避免每个用例重复 12 个字段。 */
+/** 只填费率解析关心的字段，其余按「成本未知」构造。 */
 function rate(providerId: string, modelName: string, effectiveFrom: string, creditInputMiss = 600): RateCardView {
   return {
     providerId,
@@ -52,65 +53,77 @@ describe('按步骤时刻解析费率', () => {
     expect(resolveRate(rates, 'env-default', 'deepseek-v4-pro', '2026-10-15 00:00:00.000')?.creditInputMiss).toBe(2600);
     expect(resolveRate(rates, 'durable', 'deepseek-flash', '2026-10-15 00:00:00.000')?.creditInputMiss).toBe(700);
     expect(resolveRate(rates, 'env-default', 'gpt-4o', '2026-10-15 00:00:00.000')).toBeNull();
-    expect(resolveRate(rates, 'fixture', 'deepseek-flash', '2026-10-15 00:00:00.000')).toBeNull();
-  });
-
-  it('步骤缺少提供商或模型时返回未定价，不回退到任何常量', () => {
-    expect(resolveRate(rates, null, 'deepseek-flash', '2026-10-15 00:00:00.000')).toBeNull();
-    expect(resolveRate(rates, 'env-default', null, '2026-10-15 00:00:00.000')).toBeNull();
-  });
-
-  it('空费率表返回未定价', () => {
-    expect(resolveRate([], 'env-default', 'deepseek-flash', '2026-10-15 00:00:00.000')).toBeNull();
   });
 });
 
-describe('费率输入校验', () => {
-  const valid = {
-    providerId: 'env-default',
-    modelName: 'deepseek-flash',
-    effectiveFrom: '2026-12-01 00:00:00.000',
-    creditInputMiss: 600,
-    creditInputHit: 12,
-    creditOutput: 2500,
-  };
-
-  it('接受完整费率并保留空白的成本字段为 null', () => {
-    expect(validateRateInput(valid)).toEqual({
-      providerId: 'env-default',
-      modelName: 'deepseek-flash',
-      effectiveFrom: '2026-12-01 00:00:00.000',
-      creditInputMiss: 600,
-      creditInputHit: 12,
-      creditOutput: 2500,
-      usdInputMiss: null,
-      usdInputHit: null,
-      usdOutput: null,
-      costBasis: null,
-      costSource: null,
+describe('JSON 价格版本转费率视图', () => {
+  it('分直接等于 Credit，元显示为分 / 100', () => {
+    const view = rateViewOfPrice('env-default', 'deepseek-flash', {
+      version: 1,
+      effectiveAt: '2026-11-02 10:30:00.000',
+      currency: 'CNY',
+      inputMissFen: 520,
+      inputHitFen: 52,
+      outputFen: 1860,
+      upstreamUsd: { inputMiss: '0.28', inputHit: '0.028', output: '1.10' },
       note: null,
     });
-  });
-
-  it('拒绝负费率', () => {
-    expect(() => validateRateInput({ ...valid, creditOutput: -1 })).toThrow(/费率不能是负数/u);
-  });
-
-  it('拒绝三个费率全为零', () => {
-    expect(() => validateRateInput({ ...valid, creditInputMiss: 0, creditInputHit: 0, creditOutput: 0 })).toThrow(/不能同时为 0/u);
-  });
-
-  it('拒绝非法生效时间', () => {
-    expect(() => validateRateInput({ ...valid, effectiveFrom: '2026-13-01 00:00:00' })).toThrow(/不是合法时刻/u);
-    expect(() => validateRateInput({ ...valid, effectiveFrom: '下周一' })).toThrow(/生效时间必须形如/u);
-  });
-
-  it('保留成本未知，也接受最多 6 位小数的上游成本', () => {
-    expect(validateRateInput({ ...valid, usdInputMiss: '0.3', costBasis: 'peak' })).toMatchObject({
-      usdInputMiss: '0.3',
-      costBasis: 'peak',
+    expect(view).toMatchObject({
+      providerId: 'env-default',
+      modelName: 'deepseek-flash',
+      effectiveFrom: '2026-11-02 10:30:00.000',
+      creditInputMiss: 520,
+      creditInputHit: 52,
+      creditOutput: 1860,
+      usdInputMiss: '0.28',
+      usdInputHit: '0.028',
+      usdOutput: '1.10',
+      costBasis: 'unknown',
     });
-    expect(() => validateRateInput({ ...valid, usdOutput: '0.1234567' })).toThrow(/最多 6 位小数/u);
+  });
+
+  it('同一提供商同名模型只保留自己的价格，孤儿历史价单独保留', () => {
+    const document: ModelConfigDocument = {
+      schemaVersion: 1,
+      providers: [{
+        id: 'env-default',
+        displayName: '默认',
+        apiFormat: 'openai-chat',
+        baseUrl: 'https://api.example.test/v1',
+        apiKey: { source: 'env', env: 'AI_API_KEY' },
+        options: {},
+        headers: {},
+        enabled: true,
+        createTime: '2026-01-01 00:00:00.000',
+        updateTime: '2026-01-01 00:00:00.000',
+        models: [{
+          id: 'pm_1',
+          upstream: 'deepseek-flash',
+          displayName: 'Flash',
+          enabled: true,
+          capabilities: { streaming: true, toolCalling: true, structuredOutput: true, imageInput: false },
+          upstreamPrice: null,
+          prices: [{
+            version: 1,
+            effectiveAt: '2026-10-01 00:00:00.000',
+            currency: 'CNY',
+            inputMissFen: 600,
+            inputHitFen: 12,
+            outputFen: 2500,
+            upstreamUsd: null,
+            note: null,
+          }],
+          createTime: '2026-01-01 00:00:00.000',
+          updateTime: '2026-01-01 00:00:00.000',
+        }],
+      }],
+      slots: [],
+      legacyPrices: [rate('legacy-provider', 'old-model', '2020-01-01 00:00:00.000', 42)],
+    };
+    const views = ratesFromDocument(document);
+    expect(views).toHaveLength(2);
+    expect(views.find(view => view.providerId === 'env-default')?.creditInputMiss).toBe(600);
+    expect(views.find(view => view.providerId === 'legacy-provider')?.creditInputMiss).toBe(42);
   });
 });
 

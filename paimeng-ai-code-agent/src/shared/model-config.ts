@@ -449,24 +449,14 @@ export function modelConfigIssues(
     aliasNames.add(alias.alias);
     const provider = providersById.get(alias.providerId);
     if (!provider) issues.push(`别名 ${alias.alias} 指向不存在的提供商 ${alias.providerId}`);
-    else if (alias.enabled && !provider.enabled) issues.push(`启用中的别名 ${alias.alias} 不能指向已禁用的提供商 ${alias.providerId}`);
+    // 提供商停用不会让配置结构失效：运行期会跳过它，界面把已分配槽位标红要求重新配置。
   }
   for (const slot of modelSlots) {
     if (slot.optional) continue;
     const alias = aliases.find(candidate => candidate.alias === slot.slot);
-    const name = `${slot.label}（${slot.slot}）`;
-    if (!alias) {
-      issues.push(`缺少必需槽位${name}：${slot.missingImpact}`);
-      continue;
-    }
-    if (!alias.enabled) issues.push(`必需槽位${name}不能禁用`);
-    const provider = providersById.get(alias.providerId);
-    if (provider && !provider.enabled) issues.push(`必需槽位${name}不能指向已禁用的提供商 ${alias.providerId}`);
-    const missing = missingSlotCapabilities(slot, alias.capabilities);
-    if (missing.length) {
-      const required = missing.map(requirement => modelCapabilityLabels[requirement]).join('、');
-      issues.push(`槽位${name}需要${required}能力，当前未勾选`);
-    }
+    if (!alias) issues.push(`缺少必需槽位${slot.label}（${slot.slot}）：${slot.missingImpact}`);
+    // 已分配的槽位可以因为模型/提供商停用或能力调整而暂时不可用；界面会标红要求重新配置。
+    // 运行期由注册表按启用状态过滤，缺失绑定会让生成请求明确失败，而不是回退到别的模型。
   }
   return issues;
 }

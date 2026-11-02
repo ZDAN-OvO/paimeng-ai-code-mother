@@ -27,7 +27,7 @@ scripts/
 ## Entry points
 
 - Dev and processes: `dev` (harness + preview + Next, Ctrl-C stops all), `dev:stop` (process-group cleanup for a leftover launcher), `dev:web`, `preview`, `durable:harness`, `durable:pg`, `infra:up`, `infra:status`, `infra:stop`, `hooks:install`
-- Database: `db:migrate`, `db:test:setup`, `db:init-models`, `db:admin -- <account>`
+- Database: `db:migrate`, `db:test:setup`, `db:init-models`, `db:backfill-model-config`, `db:admin -- <account>`
 - Verify and quality: `check:ui`, `check:e2e`, `check:fast`, `verify:boundary`, `verify:infra`, `verify:restart`, `test:e2e:isolated`, `test:all`
 - Diagnose: `durable:inspect`
 
@@ -37,7 +37,7 @@ All of them run from `paimeng-ai-code-agent/`, not the repo root.
 
 1. **Entry points only.** A new script must be referenced by `package.json`, CI, tests or a current doc. No caller means it does not belong here.
 2. **One-off scripts are deleted after they run.** Migration, backfill, historic comparison and data-repair scripts go away once verified — the file, its `package.json` command and the doc references together. Never move them to `archive/`, never keep them behind a "might need it later" comment.
-3. **Pending one-off scripts are listed explicitly.** Only while their plan is open; today that is the two legacy-import entries. Delete them once the switch is done.
+3. **Pending one-off scripts are listed explicitly.** Only while their plan is open; today that is the legacy-import entries and model-config backfill. Delete them once the switch is done.
 4. **Group by purpose.** Entry points in `dev/`, `db/`, `verify/`, `ops/`; shared implementation in `lib/`; Git hooks in `hooks/`. Shared logic is not copied between entry points.
 5. **Safe by default.** Migrations and backfills dry-run unless `--apply` is passed, and each script validates its own target database instead of trusting the caller.
 
@@ -47,6 +47,10 @@ Kept only until the production switch in `docs/plans/legacy-import.md` finishes,
 
 - `npm run db:import -- <snapshot>` — import a reviewed JSON copy of old users and apps, optionally copying legacy artifacts.
 - `npm run legacy:import -- --runtime <copy>` — import old previews and unpublished drafts into the new delivery/draft control plane.
+
+Kept while the model-config switch in `docs/plans/provider-model-billing.md` is pending:
+
+- `npm run db:backfill-model-config` — dry-run the legacy model tables and rate cards into `app_config`; add `-- --apply` to commit under a row lock. Requires migration 023 and a dedicated app database. Reports contain counts, UTF-8 document bytes, conflict messages, and zero-based orphan rate row positions (ordered by provider ID, model name, effective time); configuration values are never printed. Remove this tool after the switch is verified.
 
 ## Already removed
 

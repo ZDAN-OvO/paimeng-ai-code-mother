@@ -15,13 +15,13 @@ src/server/
 │   ├── prompts/            # instructions handed to the model (per Generation type + web capability)
 │   ├── tools/              # the agent's tool surface; web/ is the web-access implementation behind it
 │   └── durable/            # the harness process: attach HTTP surface, hooks, model admission, storage
-├── billing/        # Credit: Rate card, ledger, settlement, monthly quota, admin grants
+├── billing/        # Credit: JSON token prices, ledger, settlement, monthly quota, admin grants
 ├── delivery/      # build, immutable Delivery, preview server
 ├── versioning/    # git-backed Version history, ledger, migration, thumbnails
 ├── templates/     # versioned skeletons copied into new apps
 ├── workspace/     # app/execution project trees, uploaded objects, legacy artifact import
 ├── infra/         # config, Postgres schema, Redis, snowflake ids, HTTP envelope, network parsing
-└── models/        # provider/alias configuration, secrets, admin
+└── models/        # app_config JSON document: providers, models, prices, slots, secrets, admin
 ```
 
 ## Boundaries

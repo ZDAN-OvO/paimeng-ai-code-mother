@@ -1,19 +1,11 @@
 import 'server-only';
-import { asc, desc } from 'drizzle-orm';
-import {
-  rateCardColumns,
-  rateCardInputSchema,
-  rateCardUnit,
-  type RateCardInput,
-  type RateCardList,
-  type RateCardView,
-} from '@/shared/billing';
-import { db, now, type Transaction } from '../infra/db';
-import { BusinessError } from '../infra/http';
-import { creditRateCard } from '../infra/schema';
+import type { RateCardView } from '@/shared/billing';
+import { modelPriceVersionSchema, type ModelConfigDocument, type ModelPriceVersion } from '@/shared/model-document';
+import type { Transaction } from '../infra/db';
+import { readModelConfigDocument } from '../models/store';
 
 /**
- * 费率表：读取、按时刻解析、管理员追加版本。
+ * 费率来源：模型配置 JSON 里的价格版本（+ 迁移遗留的孤儿价格）。
  *
  * 解析严格按 (provider_id, model_name) 匹配，未命中返回 null —— 调用方据此把 Charge 标成
  * `unpriced`。这里不做模型名回退、不猜提供商、也不回退到任何常量价：generation_step.provider_id
@@ -21,7 +13,6 @@ import { creditRateCard } from '../infra/schema';
  * 会直接变成错的账单。
  */
 
-/** 面额常量的唯一定义在 `@/shared/billing`，这里转出给服务端调用方。 */
 export { SELL_UNIT } from '@/shared/billing';
 
 /** 全库时间列都是 UTC 朴素时间戳；换算成毫秒比较，避免毫秒位数不同（有无 `.000`）导致误判。 */
@@ -56,102 +47,70 @@ export function resolveRate(
   return matched;
 }
 
-/**
- * 全部版本，按 provider / model 升序、版本由新到旧，与 idx_credit_rate_card_model 的顺序一致。
- * 传事务句柄时在结算事务里读：费率必须与这次 Charge 的快照出自同一个可见性快照。
- */
-export async function readRates(tx?: Transaction): Promise<RateCardView[]> {
-  const rows = await (tx ?? db())
-    .select()
-    .from(creditRateCard)
-    .orderBy(asc(creditRateCard.providerId), asc(creditRateCard.modelName), desc(creditRateCard.effectiveFrom));
-  return rows.map(rateCardViewOf);
-}
-
-/**
- * 管理界面的读模型：全部版本 + 三列顺序 + 单位文案 + 每个 (provider, model) 此刻生效的版本。
- * 「此刻生效」走的是与结算同一个 resolveRate，界面只据此打标签，不自己再算一遍。
- */
-export async function readRateCardList(at: string = now()): Promise<RateCardList> {
-  const rates = await readRates();
-  const models = new Map<string, RateCardView[]>();
-  for (const rate of rates) {
-    const key = `${rate.providerId}\u0000${rate.modelName}`;
-    const group = models.get(key);
-    if (group) group.push(rate);
-    else models.set(key, [rate]);
-  }
-  const effectiveNow: RateCardList['effectiveNow'] = [];
-  for (const group of models.values()) {
-    const current = resolveRate(group, group[0].providerId, group[0].modelName, at);
-    if (current) {
-      effectiveNow.push({
-        providerId: current.providerId,
-        modelName: current.modelName,
-        effectiveFrom: current.effectiveFrom,
-      });
-    }
-  }
-  return { rates, columns: [...rateCardColumns], unit: rateCardUnit, effectiveNow };
-}
-
-/** 管理员 payload 的严格校验：负数、全零、非法生效时间都在这里被拒（ZodError → 400/40000）。 */
-export function validateRateInput(input: unknown): RateCardInput {
-  return rateCardInputSchema.parse(input);
-}
-
-/**
- * 追加一个费率版本。历史行永不修改：改价就是给同一模型写一个更晚的 effective_from。
- * 相同 (provider_id, model_name, effective_from) 由主键挡下，转成可读的 409。
- */
-export async function appendRate(input: unknown, createdBy: string): Promise<RateCardView> {
-  const parsed = validateRateInput(input);
-  try {
-    const [row] = await db()
-      .insert(creditRateCard)
-      .values({ ...parsed, createdBy: BigInt(createdBy), createTime: now() })
-      .returning();
-    return rateCardViewOf(row);
-  } catch (error) {
-    if (uniqueViolation(error)) {
-      throw new BusinessError(
-        409,
-        40900,
-        `${parsed.providerId} / ${parsed.modelName} 在 ${parsed.effectiveFrom} 已有一个版本；改价请填一个更晚的生效时间`,
-      );
-    }
-    throw error;
-  }
-}
-
-/** drizzle 把 SQL 错误包在 cause 里，主键冲突的 23505 要顺着 cause 链找。 */
-function uniqueViolation(error: unknown): boolean {
-  for (let current = error; current; current = (current as { cause?: unknown }).cause) {
-    if ((current as { code?: string }).code === '23505') return true;
-  }
-  return false;
-}
-
 /** Postgres 在毫秒为 0 时省略 `.000`；DTO 只保留一种时间格式，补齐成 3 位。 */
 function fixedMillis(timestamp: string): string {
   return timestamp.length === 19 ? `${timestamp}.000` : timestamp;
 }
 
-function rateCardViewOf(row: typeof creditRateCard.$inferSelect): RateCardView {
+/** JSON 单价（分 / 1M tokens）直接就是 Credit；1 分 = 1 Credit。 */
+export function rateViewOfPrice(providerId: string, modelName: string, raw: ModelPriceVersion): RateCardView {
+  const price = modelPriceVersionSchema.parse(raw);
+  const usd = price.upstreamUsd;
+  const hasUsd = Boolean(usd && (usd.inputMiss !== null || usd.inputHit !== null || usd.output !== null));
   return {
-    providerId: row.providerId,
-    modelName: row.modelName,
-    effectiveFrom: fixedMillis(row.effectiveFrom),
-    creditInputMiss: row.creditInputMiss,
-    creditInputHit: row.creditInputHit,
-    creditOutput: row.creditOutput,
-    usdInputMiss: row.usdInputMiss ?? null,
-    usdInputHit: row.usdInputHit ?? null,
-    usdOutput: row.usdOutput ?? null,
-    costBasis: row.costBasis ?? null,
-    costSource: row.costSource ?? null,
-    note: row.note ?? null,
-    createdBy: row.createdBy === null ? null : String(row.createdBy),
-    createTime: fixedMillis(row.createTime),
+    providerId,
+    modelName,
+    effectiveFrom: fixedMillis(price.effectiveAt),
+    creditInputMiss: price.inputMissFen,
+    creditInputHit: price.inputHitFen,
+    creditOutput: price.outputFen,
+    usdInputMiss: usd?.inputMiss ?? null,
+    usdInputHit: usd?.inputHit ?? null,
+    usdOutput: usd?.output ?? null,
+    costBasis: price.costBasis ?? (hasUsd ? 'unknown' : null),
+    costSource: price.costSource ?? null,
+    note: price.note,
+    createdBy: null,
+    createTime: fixedMillis(price.effectiveAt),
   };
+}
+
+/** 从 JSON 文档展开成结算沿用的费率视图（含未来版本；是否生效由 resolveRate 判断）。 */
+export function ratesFromDocument(document: ModelConfigDocument): RateCardView[] {
+  const rates: RateCardView[] = [];
+  for (const provider of document.providers) {
+    for (const model of provider.models) {
+      for (const price of model.prices) rates.push(rateViewOfPrice(provider.id, model.upstream, price));
+    }
+  }
+  for (const legacy of document.legacyPrices) {
+    rates.push({
+      providerId: legacy.providerId,
+      modelName: legacy.modelName,
+      effectiveFrom: fixedMillis(legacy.effectiveFrom),
+      creditInputMiss: legacy.creditInputMiss,
+      creditInputHit: legacy.creditInputHit,
+      creditOutput: legacy.creditOutput,
+      usdInputMiss: legacy.usdInputMiss,
+      usdInputHit: legacy.usdInputHit,
+      usdOutput: legacy.usdOutput,
+      costBasis: legacy.costBasis,
+      costSource: legacy.costSource,
+      note: legacy.note,
+      createdBy: legacy.createdBy,
+      createTime: fixedMillis(legacy.createTime || legacy.effectiveFrom),
+    });
+  }
+  return rates.sort((left, right) =>
+    left.providerId.localeCompare(right.providerId)
+    || left.modelName.localeCompare(right.modelName)
+    || instantOf(right.effectiveFrom) - instantOf(left.effectiveFrom));
+}
+
+/**
+ * 全部版本，按 provider / model 升序、版本由新到旧。
+ * 传事务句柄时在结算事务里读：价格必须与这次 Charge 的快照出自同一个可见性快照。
+ */
+export async function readRates(tx?: Transaction): Promise<RateCardView[]> {
+  return ratesFromDocument(await readModelConfigDocument(tx));
 }

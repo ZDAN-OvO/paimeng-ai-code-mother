@@ -1,7 +1,8 @@
 import { createInterface } from 'node:readline';
 import { getPool } from '@/server/infra/db';
 import { modelRegistry } from '@/server/models/registry';
-import { readConfigSnapshot, upsertAlias } from '@/server/models/store';
+import { readConfigSnapshot } from '@/server/models/store';
+import { readTestDocument, upsertTestAlias } from '../../../support/model-config';
 import type { ModelAliasInput } from '@/shared/model-config';
 
 type Command =
@@ -35,8 +36,9 @@ async function handle(message: Command): Promise<Record<string, unknown>> {
         settings: alias.settings,
         enabled: alias.enabled,
       };
-      const version = await upsertAlias(input, { expectedRevision: snapshot.revision, applyImmediately: message.applyImmediately });
-      return { ok: true, revision: version.revision, refreshEpoch: version.refreshEpoch };
+      await upsertTestAlias(input, { applyImmediately: message.applyImmediately });
+      const after = await readTestDocument();
+      return { ok: true, revision: after.revision.toString(), refreshEpoch: after.refreshEpoch.toString() };
     }
     case 'close':
       await getPool().end();

@@ -154,6 +154,20 @@ _Avoid_: slug, public key, release key
 从旧平台迁移、可能没有 Version 或 Delivery 的 App；它可能回退到 App workspace 提供预览和下载。
 _Avoid_: old app, imported app
 
+## 模型配置
+
+**Provider model**:
+某个提供商下已登记的模型，拥有稳定的 `pm_...` ID、上游请求名、能力和 Token price 版本；同名模型在不同提供商下是不同身份。业务槽位通过模型 ID 分配，调用参数属于槽位分配。见 [ADR-0006](paimeng-ai-code-agent/docs/adr/0006-model-config-document.md)。
+_Avoid_: global model, model catalog, Model alias
+
+**Model config document**:
+PostgreSQL `app_config` 中 `key='model_config'` 的一份 `value` JSONB 文档，包含提供商、嵌套 Provider model、价格版本、槽位分配及迁移遗留价格。`revision` 控制并发编辑，`refresh_epoch` 控制立即刷新；服务端校验整份文档。
+_Avoid_: provider table, model table, slot table, price table
+
+**Model alias**:
+历史术语：原先独立存储提供商、请求模型名与参数的别名配置。现已由 Model config document 中的槽位分配替代；内部 alias 类型和运行描述保留兼容含义，不作为另一份配置真值。
+_Avoid_: Provider model, 当前模型配置实体
+
 ## 计费
 
 **Usage**:
@@ -161,16 +175,20 @@ _Avoid_: old app, imported app
 _Avoid_: consumption, cost, 成本
 
 **Credit**:
-用户可见的用量单位，由 Usage 按 Rate card 折算而来。面额固定为 1 Credit = ¥0.01；它不可兑换成货币，也不能提现。
+用户可见的用量单位，由 Usage 按 Provider model 的 Token price 折算而来。面额固定为 1 Credit = ¥0.01 = 1 分；它不可兑换成货币，也不能提现。
 _Avoid_: token, 积分, points, 点数
 
+**Token price**:
+Admin 明确填写的人民币售价，单位为元 / 1M tokens，区分未命中输入、缓存命中输入和输出。存储为整数分 / 1M tokens；1 分 = 1 Credit，因此 ¥6 / 1M tokens 对应 600 Credit / 1M tokens。价格版本带 UTC 生效时间；改价只追加版本，已计价步骤使用不可变的账单快照。上游 USD 成本仅供参考，不通过倍率或汇率自动推导售价。
+_Avoid_: Rate card, Markup, USD price, 按次价格
+
 **Rate card**:
-把 Usage 和按次动作折算成 Credit 的价目表，按模型和动作分别定价，定价基准是上游峯时真实成本乘 Markup。Rate card 带生效时间，改价不修改历史 Credit charge。
-_Avoid_: 价格表, pricing, tariff
+历史术语：原先独立维护的 Credit 费率表与管理入口，售价来源已被 Token price 替代，见 [ADR-0006](paimeng-ai-code-agent/docs/adr/0006-model-config-document.md)。`credit_rate_card` 旧表保留一个发布周期供回滚；`rate_card_snapshot` 等内部名称继续承载历史账单，不代表仍可维护独立费率表。
+_Avoid_: 当前售价来源, pricing, tariff
 
 **Markup**:
-Rate card 相对上游峯时真实成本的加成倍数，当前为 3 倍；它兼作上游涨价与汇率波动的准备量。
-_Avoid_: 利润, margin, 加价率
+历史术语：[ADR-0004](paimeng-ai-code-agent/docs/adr/0004-credit-billing.md) 中上游峰时成本的 3 倍加成策略，已由明确填写的人民币 Token price 替代。当前售价流程没有倍率或汇率输入；该术语仅用于解释旧决策与旧账单。
+_Avoid_: 当前定价规则, margin, 加价率
 
 **Credit pool**:
 Credit 的来源类别：配额池按周期发放并会重置，余额池由充值或发放而来且不重置。扣减总是先配额池、后余额池。
