@@ -182,6 +182,8 @@ test('生成中创建的后一个应用排队、刷新保持、可取消；结�
   await waitFor(async () => (await runtimeRow(appC))?.status === 'stopped', 120_000, 'C 被 LRU 驱逐');
   const containerGone = await docker(['inspect', '--format', '{{.State.Running}}', `paimeng-app-runtime-react_project_${appC}`]).catch(() => 'missing');
   expect(containerGone).toBe('missing');
+  // 创建应用的自动提交可能还在路上：等 D 的 Generation 行落库再查转移，避免拿到 null。
+  await waitFor(async () => (await generationRow(appD)) !== null, 60_000, 'D 的 Generation 落库');
   const dGeneration = await generationRow(appD);
   const dTransitions = await db.query(
     'select from_state, to_state, reason from generation_transition where generation_id = $1 order by create_time, id',
