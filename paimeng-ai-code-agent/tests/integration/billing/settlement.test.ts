@@ -156,6 +156,33 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     expect(await balancesOf(owner.id)).toEqual({ quota: 0, balance: -190 });
   });
 
+  it('改价只追加 JSON 价格版本，已结算 Charge 的金额与快照不变，新步骤用新价', async () => {
+    const owner = await withoutMonthlyQuota(await newUser());
+    await seedRate({ modelName: 'model-price-change', creditInputMiss: 600 });
+    await grant(owner.id, 'balance', 1000);
+    const app = await newApp(owner);
+    const firstGeneration = await seedGeneration({ appId: app.id, userId: owner.id, messageId: 'msg-price-first' });
+    // 100k 未命中输入 × 600 / 1M = 60 Credit
+    await seedStep(firstGeneration, { modelName: 'model-price-change', input: 100_000 });
+    await settleGenerationBilling(firstGeneration);
+    const [before] = await chargeRows(firstGeneration);
+    expect(before).toMatchObject({ credits: 60, rateCardSnapshot: [{ creditInputMiss: 600 }] });
+
+    await seedRate({ modelName: 'model-price-change', creditInputMiss: 900, effectiveAt: '2026-01-01 00:00:00.000' });
+    // 重跑结算不应对已有步骤重复计价，也不应重写历史快照。
+    await settleGenerationBilling(firstGeneration);
+    const [after] = await chargeRows(firstGeneration);
+    expect(after?.credits).toBe(before?.credits);
+    expect(after?.rateCardSnapshot).toEqual(before?.rateCardSnapshot);
+    expect((await entriesOfCharge(firstGeneration)).map(entry => entry.credits)).toEqual([60]);
+
+    const secondGeneration = await seedGeneration({ appId: app.id, userId: owner.id, messageId: 'msg-price-second' });
+    await seedStep(secondGeneration, { modelName: 'model-price-change', input: 100_000 });
+    await settleGenerationBilling(secondGeneration);
+    const [second] = await chargeRows(secondGeneration);
+    expect(second).toMatchObject({ credits: 90, rateCardSnapshot: [{ creditInputMiss: 900 }] });
+  });
+
   it('配额为零时只扣余额，余额可以变成欠款', async () => {
     const owner = await withoutMonthlyQuota(await newUser());
     await seedRate({ modelName: 'model-debt' });
