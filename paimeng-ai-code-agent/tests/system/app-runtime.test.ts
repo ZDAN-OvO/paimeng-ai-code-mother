@@ -227,6 +227,8 @@ describe('真实 Docker 上的 App runtime', () => {
         // 仍然看不到新基线标题才算“换基线没有生效”。
         await waitForText(page, newTitle, 20_000);
       } catch {
+        const devLog = await docker(['exec', runtimeContainerName(app), 'sh', '-lc', `tail -c 2000 ${'.paimeng-dev.log'} 2>/dev/null || true`]).catch(() => '');
+        console.error('baseline cold-start diagnostics', JSON.stringify({ status: response?.status(), messages, devLog: devLog.slice(-1200) }));
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
         try { await waitForText(page, newTitle, 40_000); }
         catch (error) {
