@@ -532,6 +532,8 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 			stub.holdModels.add(accountModel);
 			stub.retryFirst = mode === 'retry';
 			stub.failFirst = mode === 'new-input-after-error';
+			// stub.requests 是文件级累积（reset 只清 hold/release/calls），先记基线，只断言本用例新增的请求。
+			const baselineRequests = stub.requests.length;
 			const requestId = randomUUID();
 			if (mode === 'new-input-after-error') {
 				bridge = await inputBeforeSettlement(appId, requestId);
@@ -547,9 +549,10 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 			if (mode !== 'normal') {
 				// 精确「2 次」依赖 bridge 把 followUp 注入在 retry run 收束之前；全量运行时也观测到 3 次
 				//（followUp 落在收束之后会开启新 run）。契约是：至少一次失败 + 一次重试，且所有请求都属于本 mode 的模型。
-				const modeRequests = stub.requests.filter(request => request.model === accountModel);
+				const newRequests = stub.requests.slice(baselineRequests);
+				const modeRequests = newRequests.filter(request => request.model === accountModel);
 				expect(modeRequests.length).toBeGreaterThanOrEqual(2);
-				expect(stub.requests.every(request => request.model === accountModel)).toBe(true);
+				expect(newRequests.every(request => request.model === accountModel)).toBe(true);
 				expect(account?.steps.some(step => step.kind === 'model' && step.finishReason === 'error')).toBe(true);
 			}
 			if (bridge) expect(bridge.intercepted()).toBe(true);

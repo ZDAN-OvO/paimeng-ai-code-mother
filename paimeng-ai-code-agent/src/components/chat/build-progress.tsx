@@ -21,7 +21,8 @@ function iconOf(status: StageStatus) {
 }
 
 function metaOf(stage: ProgressStage) {
-  if (stage.kind === 'queued') return stage.position > 0 ? `前面还有 ${stage.position} 个` : '等待空闲槽位';
+  // position 是 1 起的排队名次；这里显示的是「前面还有几个」，与状态提示的 position-1 保持一致。
+  if (stage.kind === 'queued') return stage.position > 0 ? `前面还有 ${Math.max(0, stage.position - 1)} 个` : '等待空闲槽位';
   if (stage.kind === 'files') return `${stage.count} 个文件${stage.lastPath ? ` · 最近 ${stage.lastPath}` : ''}`;
   if (stage.kind === 'preview') return `v${stage.version}`;
   return '';
