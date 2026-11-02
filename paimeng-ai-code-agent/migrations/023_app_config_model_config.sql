@@ -1,4 +1,4 @@
--- 模型配置 JSON 文档（ADR-0007）：提供商、模型、价格版本与槽位分配收进一行 JSONB。
+-- 模型配置 JSON 文档（ADR-0006）：提供商、模型、价格版本与槽位分配收进一行 JSONB。
 -- 这里只建承载表；旧表 model_provider / model_alias / model_config_state / credit_rate_card
 -- 保留一个发布周期供回滚，运行期不再读写。回填工具见 scripts/db/backfill-model-config.ts。
 CREATE TABLE app_config (
