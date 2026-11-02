@@ -18,7 +18,7 @@ import { db, now } from '../infra/db';
 import { generationControl, generationFor } from './generation-store';
 // 读路径的 ready 修复也要补一次结算；billing 侧不 import 本模块（否则终态路径 import 计费就成环）。
 import { evaluateRunningOverdraft, reconcileSettlements, settleGenerationBilling } from '../billing/settlement';
-import { activeExecution, appendInput, assertAuthority, beginChecking, bindExecutionConversation, completeAttempt, heartbeatAuthority, inputsSettled, setExecutionStatus, markInputPlaced, markInputUnanswered, markInputResolved, openQuestionOf, reserveAttempt, withdrawInput, type ExecutionRecord, type InputRecord } from './control-store';
+import { withWorkspaceWrite, activeExecution, appendInput, assertAuthority, beginChecking, bindExecutionConversation, completeAttempt, heartbeatAuthority, inputsSettled, setExecutionStatus, markInputPlaced, markInputUnanswered, markInputResolved, openQuestionOf, reserveAttempt, withdrawInput, type ExecutionRecord, type InputRecord } from './control-store';
 import { CandidateInvalidatedError, failOrCancel, getInputs, pauseForQuestion, publishReady, recoverStartup, settleGeneration, startGeneration } from './generation-lifecycle';
 import { recordAssistantStep, recordBuildStep, stopReasonOf, type AccountToolCall, type EntryUsage, type GenerationStopReason, type ModelIdentity } from './generation-accounting';
 import { BusinessError } from '../infra/http';
@@ -1612,12 +1612,12 @@ export async function harnessChatResponse(req: Request, raw: unknown, user: User
     throw new BusinessError(409, 40900, '该请求已经处理，请读取生成状态');
   }
   const execution = started.execution;
-  // 惰性唤醒：这一轮的文件工具与 dev server 面向同一份执行目录，模型一写文件 Preview 就能看到。
+  // 惰性唤醒：这一轮的文件工具与 dev server 面向同一份持久 Workspace，模型一写文件 Preview 就能看到。
   // 启动失败只降级 Preview（构建后仍可看），不让一次运行时装不起来挡掉整轮生成。
   await prepareGenerationRuntime({ app, workspaceRoot: execution.directory });
   let conversationId: number;
   try {
-    await uploadAttachmentImages(app, user, attachmentImages, projectAt(app, execution.directory));
+    await withWorkspaceWrite({ appId: app.id, epoch: started.epoch, generationId: started.generationId }, () => uploadAttachmentImages(app, user, attachmentImages, projectAt(app, execution.directory)));
     conversationId = await conversationForExecution(app, execution, binding);
     await setExecutionStatus(execution.id, 'active');
     await configureHarnessInstructions(conversationId, instructions);

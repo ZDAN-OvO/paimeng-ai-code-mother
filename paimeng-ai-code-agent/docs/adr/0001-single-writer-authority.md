@@ -24,3 +24,5 @@ Every App has one durable authority record with a monotonic epoch and an optiona
 - Every new write path must acquire the same authority. Adding a bypass is an architecture change, not a local shortcut.
 
 Source: [archived harness-reliability plan](../plans/archive/harness-reliability.md).
+
+2026-11-03: [ADR-0007](0007-persistent-app-runtime-workspace.md) supersedes the per-Execution source directory. Execution conversations and authority epochs remain independent; file writes and owner handoff now share a durable lock around the persistent App Workspace.

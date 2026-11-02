@@ -36,6 +36,7 @@ import { completeAttempt, reserveAttempt } from "../control-store";
 import { BusinessError } from "../../infra/http";
 import { harnessProtocol } from "./protocol";
 import { getConfig } from "../../infra/config";
+import { safeRelativePath as workspaceRelativePath } from "../../workspace/workspace";
 import { createWebAccessOperations, createWebAccessSession, type WebAccessOperations, type WebAccessRuntime, type WebAccessSession } from "../tools/web/tools";
 import { createAskTool } from "../tools/ask-tool";
 import { type AppRef, appRefFromWorkspace } from "../tools/app-ref";
@@ -48,6 +49,7 @@ import { createWebTools } from "../tools/web-tools";
 import {
 	assertReadable,
 	assertWritable,
+	withWritableEffect,
 	bindEffect,
 	effectBindingDoc,
 	effectBindingOf,
@@ -137,7 +139,7 @@ function safeRelativePath(path: string): string {
 	if (parts.some((part) => part === "..")) throw new Error("路径不允许包含 ..");
 	const normalized = parts.filter((part) => part !== "" && part !== ".").join("/");
 	if (normalized.startsWith("@")) throw new Error("路径不允许以 @ 开头");
-	return normalized;
+	return workspaceRelativePath(normalized);
 }
 
 /** 原生工具支持绝对路径，在执行前保留产品的工作区相对路径限制。 */
@@ -327,12 +329,12 @@ async function webOperationsFor(conversationId: ConversationId): Promise<WebAcce
 	return operations;
 }
 
-function webRuntime(toolContext: { abortSignal?: AbortSignal }): WebAccessRuntime {
+function webRuntime(toolContext: { abortSignal?: AbortSignal }, conversationId: ConversationId): WebAccessRuntime {
 	return {
 		signal: toolContext.abortSignal,
 		check: () => { if (toolContext.abortSignal?.aborted) throw new Error("生成已取消"); },
-		ensureWritable: async () => undefined,
-		write: async (work) => work(),
+		ensureWritable: async () => { await assertWritable(effectBindingOf(conversationId)); },
+		write: async (work) => withWritableEffect(effectBindingOf(conversationId), work),
 	};
 }
 type ProjectedEntry = { id: number; kind: string; text: string };
@@ -415,7 +417,10 @@ const stubTools: ToolRegistration[] = fauxModelEnabled() || fauxFixtureEnabled()
 const workspaceOf = (conversationId: ConversationId) => workspaces.get(conversationId);
 
 const productTools = [
-	...fileTools,
+	...fileTools.map(tool => tool.name === 'write' || tool.name === 'edit' ? {
+		...tool,
+		execute: (args, api, toolContext) => withWritableEffect(effectBindingOf(api.conversationId), () => tool.execute(args, api, toolContext)),
+	} satisfies ToolRegistration : tool),
 	listFilesTool,
 	createBuildPreviewTool({ appRefFor, workspaceOf }),
 	createGitTool({ appRefFor, workspaceOf }),

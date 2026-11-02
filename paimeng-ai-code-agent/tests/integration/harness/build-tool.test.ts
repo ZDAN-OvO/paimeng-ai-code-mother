@@ -17,8 +17,8 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M2b：harness 里的 b
     const port = await freePort();
     const runDir = mkdtempSync(join(tmpdir(), 'durable-m2b-surface-'));
     const base = baseUrl(port);
-    // 关掉脚本桩就是真实生成看到的工具面；联网工具默认关闭。
-    const harness = startHarness({ port, runDir, reset: true, waitMs: 0, finalText: 'M2B_SURFACE_DONE', env: { DURABLE_FAUX_MODEL: '' } });
+    // 显式关闭联网与脚本桩，验证此配置下真实生成看到的工具面，不继承本机 .env。
+    const harness = startHarness({ port, runDir, reset: true, waitMs: 0, finalText: 'M2B_SURFACE_DONE', env: { DURABLE_FAUX_MODEL: '', WEB_ACCESS_ENABLED: '0' } });
     try {
       await waitHealthy(base, 60_000);
       const body = (await (await fetch(`${base}/tools`)).json()) as { tools: { name: string }[] };
@@ -40,7 +40,7 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M2b：harness 里的 b
     const base = baseUrl(port);
     const harness = startHarness({
       port, runDir, reset: true, waitMs: 0, finalText: 'M2B_BUILD_DONE', workspace,
-      tool: 'buildPreview', args: { milestone: 'm2b-smoke' },
+      tool: 'buildPreview', args: { milestone: 'm2b-smoke' }, env: { WEB_ACCESS_ENABLED: '0' },
     });
     try {
       await waitHealthy(base, 60_000);

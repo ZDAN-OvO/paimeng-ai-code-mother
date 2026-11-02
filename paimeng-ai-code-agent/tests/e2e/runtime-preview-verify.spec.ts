@@ -2,7 +2,7 @@ import { test, expect, type FrameLocator, type WebSocket } from '@playwright/tes
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { rm, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadEnvFile } from 'node:process';
 import pg from 'pg';
@@ -29,7 +29,6 @@ const prompt = `[live] 实时预览工作台_${suffix}`;
 const firstTitle = `实时预览工作台_${suffix} · 第一版`;
 const secondTitle = `实时预览工作台_${suffix} · 第二版`;
 const evidence = evidenceDir('runtime-preview');
-const outputRoot = join(process.cwd(), 'runtime/code_output');
 let appId = '';
 let db: pg.Client;
 
@@ -41,17 +40,15 @@ test.beforeAll(async () => {
   await db.connect();
 });
 
-test.afterAll(async () => {
+test.afterEach(async ({ page }) => {
   if (appId) {
-    // 清理只针对本次创建的应用：容器、工作区、运行时台账与数据库行。
-    const [runtime] = await db?.query('select container_name from app_runtime where app_id = $1', [appId]).then(result => result.rows).catch(() => []) ?? [];
-    if (runtime?.container_name) await exec('docker', ['rm', '-f', runtime.container_name]).catch(() => undefined);
-    await db?.query('delete from app where id = $1', [appId]).catch(() => undefined);
-    await rm(join(outputRoot, `react_project_${appId}`), { recursive: true, force: true }).catch(() => undefined);
-    await rm(join(process.cwd(), 'runtime/app-runtime', `react_project_${appId}`), { recursive: true, force: true }).catch(() => undefined);
+    const response = await page.request.post('/api/app/delete', { headers: { origin }, data: { id: appId } });
+    expect(response.ok()).toBe(true);
+    expect((await response.json()).code).toBe(0);
   }
-  await db?.end().catch(() => undefined);
 });
+
+test.afterAll(async () => { await db?.end(); });
 
 /** iframe 里的预览文档：与测试主页不同源，操作都走 frameLocator。 */
 function previewFrame(page: import('@playwright/test').Page): FrameLocator {
@@ -110,10 +107,10 @@ test('生成中 Preview 连续显示两次写入，生成期间只读，收束�
   expect(await frame.locator('body').evaluate(() => document.querySelectorAll('.paimeng-edit-selected').length)).toBe(0);
   await expect(frame.locator('html')).toHaveAttribute('data-paimeng-editor', 'locked');
 
-  // 页面级探针：HMR 更新不刷新文档，所以这个值必须活到第二版出现。
-  await page.evaluate(() => { (window as unknown as { __runtimeProbe?: number }).__runtimeProbe = 1; });
+  // 探针放在预览 iframe 文档中：宿主页保持不变不能证明预览没有重载。
+  await frame.locator('html').evaluate(() => { (window as unknown as { __runtimeProbe?: string }).__runtimeProbe = 'iframe-first-write'; });
   await expect(frame.getByText(secondTitle, { exact: false }).first()).toBeVisible({ timeout: 180_000 });
-  expect(await page.evaluate(() => (window as unknown as { __runtimeProbe?: number }).__runtimeProbe)).toBe(1);
+  expect(await frame.locator('html').evaluate(() => (window as unknown as { __runtimeProbe?: string }).__runtimeProbe)).toBe('iframe-first-write');
   await page.screenshot({ path: join(evidence, '03-preview-second-write.png'), fullPage: true });
   await writeFile(join(evidence, 'hmr-websockets.json'), JSON.stringify(sockets, null, 2));
 
@@ -145,7 +142,9 @@ test('生成中 Preview 连续显示两次写入，生成期间只读，收束�
   // HMR websocket 确实经过预览代理，并收到过 Vite 的更新帧。
   const runtimeSockets = sockets.filter(socket => /\/preview\/react_project_\d+\//.test(socket.url));
   expect(runtimeSockets.length).toBeGreaterThan(0);
-  expect(runtimeSockets.some(socket => socket.frames.some(frame => frame.includes('"type"')))).toBe(true);
+  expect(runtimeSockets.some(socket => socket.frames.some(payload => {
+    try { return JSON.parse(payload).type === 'update'; } catch { return false; }
+  }))).toBe(true);
 
   // 刷新后：源码、预览与编辑能力都来自同一份持久状态。
   await page.reload();
@@ -156,39 +155,52 @@ test('生成中 Preview 连续显示两次写入，生成期间只读，收束�
 
   // 运行时台账与 Workspace：容器仍在、端口与源码根对应这次执行。
   const { rows } = await db.query(
-    'select status, port, image_identity, workspace_root, container_name from app_runtime where app_id = $1', [appId],
+    'select status, port, image_identity, workspace_root, container_id, container_name from app_runtime where app_id = $1', [appId],
   );
   expect(rows).toHaveLength(1);
   expect(rows[0].status).toBe('ready');
   expect(rows[0].port).toBeGreaterThan(0);
   expect(rows[0].image_identity).toContain('paimeng-app-runtime:');
-  expect(rows[0].workspace_root).toContain('/executions/');
+  expect(rows[0].workspace_root).toBe(join(process.cwd(), 'runtime/code_output', 'react_project_' + appId));
   const userPage = await page.request.get('/api/app/get/vo?id=' + appId, { headers: { origin } });
   expect(userPage.ok()).toBe(true);
   expect((await userPage.json()).data.previewUrl).toContain('/preview/react_project_' + appId + '/');
   await writeFile(join(evidence, 'runtime-row.json'), JSON.stringify(rows, null, 2));
 
-  // 第二轮：同一 App 再生成一次。执行目录会换（容器因此重建），但每个 App 的 node_modules
-  // 与共享 pnpm store 是持久的——用容器里的标记文件证明“没有重新装一份依赖”。
+  // 第二轮真实 Generation：容器身份、端口与持久 Workspace 必须保持；依赖仍在根内。
   const reuseMarker = '.paimeng-reuse-marker';
   await exec('docker', ['exec', rows[0].container_name, 'sh', '-lc', `printf reused > node_modules/${reuseMarker}`]);
+  const repliesBefore = await page.getByText('文件已生成', { exact: false }).count();
   const secondPrompt = '第二轮复用验证_' + suffix;
   await page.getByLabel('对话消息').fill(secondPrompt);
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await expect(page.getByText('生成中，内容会持续更新', { exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(previewFrame(page).getByText(secondPrompt, { exact: false }).first()).toBeVisible({ timeout: 180_000 });
   await page.screenshot({ path: join(evidence, '07-second-round-live.png'), fullPage: true });
-  await expect(page.getByText('文件已生成', { exact: false }).first()).toBeVisible({ timeout: 240_000 });
+  await expect.poll(() => page.getByText('文件已生成', { exact: false }).count(), { timeout: 240_000 }).toBeGreaterThan(repliesBefore);
   await expect(page.getByRole('button', { name: '可视化编辑' })).toBeEnabled({ timeout: 60_000 });
   const { rows: secondRows } = await db.query(
-    'select status, workspace_root, container_name from app_runtime where app_id = $1', [appId],
+    'select status, port, workspace_root, container_id, container_name from app_runtime where app_id = $1', [appId],
   );
   expect(secondRows[0].status).toBe('ready');
-  expect(secondRows[0].workspace_root).not.toBe(rows[0].workspace_root);
+  expect(secondRows[0].workspace_root).toBe(rows[0].workspace_root);
+  expect(secondRows[0].container_id).toBe(rows[0].container_id);
+  expect(secondRows[0].port).toBe(rows[0].port);
   const marker = await exec('docker', ['exec', secondRows[0].container_name, 'sh', '-lc', `cat node_modules/${reuseMarker}`]);
   expect(marker.stdout.trim()).toBe('reused');
   await writeFile(join(evidence, 'second-round-runtime.json'), JSON.stringify({ marker: marker.stdout.trim(), ...secondRows[0] }, null, 2));
   await page.screenshot({ path: join(evidence, '08-second-round-settled.png'), fullPage: true });
+  const { rows: executions } = await db.query('select generation_id, epoch, directory, status from generation_execution where app_id = $1 order by epoch', [appId]);
+  expect(executions).toHaveLength(2);
+  expect(executions.map(row => row.directory)).toEqual([rows[0].workspace_root, rows[0].workspace_root]);
+  expect(executions.map(row => row.status)).toEqual(['sealed', 'sealed']);
+  expect(BigInt(executions[1].epoch)).toBe(BigInt(executions[0].epoch) + 1n);
+  await writeFile(join(evidence, 'executions.json'), JSON.stringify(executions, null, 2));
+  await writeFile(join(evidence, 'second-round-source.tsx'), await readFile(join(rows[0].workspace_root, 'src/pages/home.tsx')));
+  await page.reload();
+  await expect(previewFrame(page).getByText(secondPrompt, { exact: false }).first()).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole('button', { name: '可视化编辑' })).toBeEnabled();
+  await page.screenshot({ path: join(evidence, '09-second-round-refresh.png'), fullPage: true });
 
   await writeFile(join(evidence, 'console-errors.json'), JSON.stringify(consoleErrors, null, 2));
   expect(pageErrors).toEqual([]);

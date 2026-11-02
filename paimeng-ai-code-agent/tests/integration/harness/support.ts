@@ -2,10 +2,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer, connect, type Socket } from 'node:net';
 import { join, resolve } from 'node:path';
+import { storageTestDatabaseUrl } from '../../support/test-database-url';
 
 export const productRoot = process.cwd();
 const harnessEntry = resolve(productRoot, 'src', 'server', 'generation', 'durable', 'harness-server.ts');
-export const postgresUrl = process.env.DURABLE_PG_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_agent_test';
+export const postgresUrl = storageTestDatabaseUrl(process.env.DURABLE_PG_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_agent_test');
 /**
  * 产品库（app / generation / app_authority / generation_execution）地址。
  * 集成测试一律指向专用的 paimeng_app_test：从开发库取连接串也只换库名，永不写开发库。

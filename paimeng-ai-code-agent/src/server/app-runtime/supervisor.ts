@@ -1,16 +1,16 @@
 import 'server-only';
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { getConfig } from '../infra/config';
-import { ensureSafeDirectory, projectAt } from '../workspace/workspace';
+import { ensureSafeDirectory, projectAt, workspace } from '../workspace/workspace';
 import { appTemplate } from '../workspace/template-workspace';
 import { readTemplateFile, templateLockfile, templatePackageManager } from '../templates/templates';
 import type { TemplateIdentity } from '@/shared/templates';
 import {
   appNeedsRuntime, appRuntimeKey, devServerCommand, installCommand, lockfileDigest, runtimeContainerName,
-  runtimeDockerfile, runtimeImageTag, runtimeMounts, runtimePaths, runtimePreviewBase, runtimeRunArgs,
+  runtimeDockerfile, runtimeImageTag, runtimeMounts, runtimePreviewBase, runtimeRunArgs,
   runtimeStorePath, RUNTIME_DEV_LOG, RUNTIME_DEV_PORT, type RuntimeApp,
 } from './plan';
 import { deleteAppRuntime, readAppRuntime, saveAppRuntime, touchAppRuntime, updateAppRuntime, type AppRuntimeRecord } from './store';
@@ -19,9 +19,9 @@ import { deleteAppRuntime, readAppRuntime, saveAppRuntime, touchAppRuntime, upda
  * 运行时容器唯一的启停者。
  *
  * 生命周期（#139 只覆盖「惰性创建 + 复用 + 明确状态」，回收/排队在 #144、对账在 #145）：
- *   生成开始 → ensureAppRuntime(app, 本次执行的源码根)
- *     有记录且容器还活着、源码根没换 → 复用它（dev server 还在就直接用）。
- *     否则用同一份 node_modules 与 pnpm store 重建容器，重新安装（锁文件或镜像身份变了才装）并启动 dev server。
+ *   生成开始 → ensureAppRuntime(app, 持久 Workspace)
+ *     容器与镜像身份仍有效 → 原地复用，锁文件变化时在同一容器内重新安装。
+ *     容器故障或镜像身份变化 → 重建；源码与 node_modules 始终留在同一份 Workspace。
  *   Preview → 读台账，把 HTTP 与 HMR websocket 代理到该端口。
  *
  * 失败不抛给生成：运行时不健康时记一条 `failed` 与可读原因，Preview 回落静态产物。
@@ -164,31 +164,31 @@ async function startDevServer(app: RuntimeApp, workspaceRoot: string, template: 
   return true;
 }
 
-async function installDependencies(app: RuntimeApp, workspaceRoot: string, template: TemplateIdentity | null) {
+async function installDependencies(app: RuntimeApp, workspaceRoot: string, template: TemplateIdentity | null, imageIdentity: string) {
   const packageManager = packageManagerOf(template);
   if (!packageManager) return;
   const lock = await lockfileOf(app, workspaceRoot, template);
+  const markerPath = join(workspaceRoot, '.paimeng-dependencies.json');
+  const pair = JSON.stringify({ imageIdentity, lockDigest: lock?.digest ?? null });
+  const installed = await readFile(markerPath, 'utf8').catch(() => null);
+  if (installed === pair && await stat(join(workspaceRoot, 'node_modules/.bin/vite')).then(info => info.isFile()).catch(() => false)) return;
   const command = installCommand({ packageManager, hasLockfile: lock !== null });
   await docker(['exec', '-w', '/work', runtimeContainerName(app), ...command], getConfig().appRuntime.startTimeoutMs);
+  await writeFile(markerPath, pair);
 }
 
 async function createContainer(app: RuntimeApp, workspaceRoot: string, image: string, identity: string): Promise<AppRuntimeRecord> {
   const config = getConfig();
   const template = await projectTemplate(app, workspaceRoot);
   await runtimeBaseDirectory();
-  const paths = runtimePaths(config.runtimeRoot, app);
-  await ensureSafeDirectory(paths.base);
-  await ensureSafeDirectory(paths.nodeModules);
   await ensureSafeDirectory(runtimeStorePath(config.runtimeRoot));
   const name = runtimeContainerName(app);
   const mountList = runtimeMounts({
     workspaceRoot,
-    nodeModulesRoot: paths.nodeModules,
     storeRoot: runtimeStorePath(config.runtimeRoot),
   });
   await removeContainer(name);
-  const uid = process.getuid?.() ?? 1000;
-  const gid = process.getgid?.() ?? 1000;
+  const { uid, gid } = await stat(workspaceRoot);
   await docker(runtimeRunArgs({
     app, image, uid, gid, mounts: mountList, registry: config.buildNpmRegistry,
   }), config.appRuntime.startTimeoutMs);
@@ -207,7 +207,7 @@ async function createContainer(app: RuntimeApp, workspaceRoot: string, image: st
   });
   try {
     if (packageManagerOf(template)) {
-      await installDependencies(app, workspaceRoot, template);
+      await installDependencies(app, workspaceRoot, template, identity);
       await updateAppRuntime(app, { lockDigest: lock?.digest ?? null });
     }
     await startDevServer(app, workspaceRoot, template, state.port);
@@ -229,13 +229,25 @@ async function ensureUnlocked(app: RuntimeApp, workspaceRoot: string): Promise<R
   if (!config.appRuntime.enabled || !appNeedsRuntime(app)) {
     return { app, status: 'disabled', port: null, containerId: null, workspaceRoot: null, imageIdentity: null, lastActivityAt: null, error: null };
   }
+  const image = await ensureRuntimeImage();
   const existing = await readAppRuntime(app);
   const name = runtimeContainerName(app);
   if (existing) {
     const state = await containerRunning(existing.containerName);
-    if (state.running && existing.workspaceRoot === workspaceRoot) {
+    if (state.running && existing.workspaceRoot === workspaceRoot && existing.imageIdentity === image.identity) {
       const template = await projectTemplate(app, workspaceRoot);
       const base = runtimePreviewBase(app);
+      const lock = await lockfileOf(app, workspaceRoot, template);
+      try {
+        if (lock?.digest !== existing.lockDigest) await updateAppRuntime(app, { status: 'starting', lastError: null });
+        await installDependencies(app, workspaceRoot, template, image.identity);
+        await updateAppRuntime(app, { lockDigest: lock?.digest ?? null });
+      } catch (error) {
+        const detail = (error as Error).message.slice(0, 1000);
+        await updateAppRuntime(app, { status: 'failed', lastError: detail });
+        log(`应用 ${app.id} 的依赖重装失败：${detail}`);
+        return { app, status: 'failed', port: null, containerId: state.id, workspaceRoot, imageIdentity: image.identity, lastActivityAt: existing.lastActivityAt, error: detail };
+      }
       if (state.port && await devServerResponding(state.port, base)) {
         await touchAppRuntime(app);
         await updateAppRuntime(app, { status: 'ready', port: state.port, lastError: null });
@@ -244,8 +256,6 @@ async function ensureUnlocked(app: RuntimeApp, workspaceRoot: string): Promise<R
       // 容器在但 dev server 掉了（崩溃/上一轮还没起来）：先尝试原地拉起，不行再重建。
       if (state.port) {
         try {
-          const lock = await lockfileOf(app, workspaceRoot, template);
-          if (lock && lock.digest !== existing.lockDigest) await installDependencies(app, workspaceRoot, template);
           await startDevServer(app, workspaceRoot, template, state.port);
           await updateAppRuntime(app, { status: 'ready', port: state.port, lockDigest: lock?.digest ?? existing.lockDigest, lastError: null });
           await touchAppRuntime(app);
@@ -258,7 +268,6 @@ async function ensureUnlocked(app: RuntimeApp, workspaceRoot: string): Promise<R
     await removeContainer(existing.containerName);
     await deleteAppRuntime(app).catch(() => undefined);
   }
-  const image = await ensureRuntimeImage();
   try {
     const record = await createContainer(app, workspaceRoot, image.tag, image.identity);
     return {
@@ -282,6 +291,7 @@ async function ensureUnlocked(app: RuntimeApp, workspaceRoot: string): Promise<R
 /** 生成开始时惰性唤醒；同一个 App 的并发调用排队，避免两台容器同时挂同一份源码。 */
 export async function ensureAppRuntime(input: { app: RuntimeApp; workspaceRoot: string }): Promise<RuntimeView> {
   const { app, workspaceRoot } = input;
+  if (workspaceRoot !== workspace(app)) throw new Error('运行时只能挂载 App 的持久 Workspace');
   if (!appNeedsRuntime(app)) {
     return { app, status: 'disabled', port: null, containerId: null, workspaceRoot: null, imageIdentity: null, lastActivityAt: null, error: null };
   }

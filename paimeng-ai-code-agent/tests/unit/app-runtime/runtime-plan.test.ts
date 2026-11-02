@@ -8,11 +8,10 @@ import {
 const app = { id: '900000001', codeGenType: 'react_project' as const };
 
 describe('App runtime 容器策略', () => {
-  it('以 Workspace 属主的宿主 uid 运行，只挂自己的 Workspace、自己的 node_modules 与共享 pnpm store', () => {
-    const mounts = runtimeMounts({ workspaceRoot: '/host/executions/gen/1', nodeModulesRoot: '/host/app-runtime/node_modules', storeRoot: '/host/app-runtime/store' });
+  it('以 Workspace 属主的宿主 uid 运行，只挂持久 Workspace 与共享 pnpm store', () => {
+    const mounts = runtimeMounts({ workspaceRoot: '/host/code_output/react_project_900000001', storeRoot: '/host/app-runtime/store' });
     expect(mounts).toEqual([
-      { source: '/host/executions/gen/1', target: '/work' },
-      { source: '/host/app-runtime/node_modules', target: '/work/node_modules' },
+      { source: '/host/code_output/react_project_900000001', target: '/work' },
       { source: '/host/app-runtime/store', target: '/store' },
     ]);
     const args = runtimeRunArgs({ app, image: 'paimeng-app-runtime:abc', uid: 1234, gid: 5678, mounts, registry: 'https://registry.npmjs.org' });
@@ -24,8 +23,7 @@ describe('App runtime 容器策略', () => {
     expect(args.slice(args.indexOf('--publish'), args.indexOf('--publish') + 2)).toEqual(['--publish', `127.0.0.1::${RUNTIME_DEV_PORT}`]);
     const mountArgs = args.flatMap((value, index) => value === '--mount' ? [args[index + 1]] : []);
     expect(mountArgs).toEqual([
-      'type=bind,src=/host/executions/gen/1,dst=/work',
-      'type=bind,src=/host/app-runtime/node_modules,dst=/work/node_modules',
+      'type=bind,src=/host/code_output/react_project_900000001,dst=/work',
       'type=bind,src=/host/app-runtime/store,dst=/store',
     ]);
     expect(mountArgs.join(' ')).not.toContain('docker.sock');
@@ -78,7 +76,6 @@ describe('App runtime 容器策略', () => {
     expect(runtimeContainerName(app)).toBe(`paimeng-app-runtime-${app.codeGenType}_${app.id}`);
     const paths = runtimePaths('/root', app);
     expect(paths.base).toBe(`/root/app-runtime/${app.codeGenType}_${app.id}`);
-    expect(paths.nodeModules).toBe(`${paths.base}/node_modules`);
     expect(runtimeStorePath('/root')).toBe('/root/app-runtime/store');
   });
 });

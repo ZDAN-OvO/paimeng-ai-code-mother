@@ -11,7 +11,7 @@ import type { TemplateIdentity } from '@/shared/templates';
  * 预览代理与测试都复用同一份计算结果，避免「测试里的挂载」和「真实容器」各写一套。
  *
  * 隔离边界（父 spec「App runtime」）：
- * - 只挂自己的 Workspace、自己的 node_modules、共享 pnpm store；不挂 Docker socket、平台目录或别的 App。
+ * - 只挂自己的持久 Workspace（含 node_modules）、共享 pnpm store；不挂 Docker socket、平台目录或别的 App。
  * - 不注入任何平台环境变量；容器里只有 HOME / COREPACK_HOME / npm 的 store 与 registry。
  * - 以 Workspace 属主的宿主 uid/gid 运行，容器写出的文件宿主用户能删。
  * - 网络放开：安装期很多包要拉自己的二进制，收窄出网点只会产生难诊断的失败。
@@ -55,7 +55,7 @@ export function appNeedsRuntime(app: RuntimeApp) {
 
 export function runtimePaths(runtimeRoot: string, app: RuntimeApp) {
   const base = join(runtimeRoot, 'app-runtime', appRuntimeKey(app));
-  return { base, nodeModules: join(base, 'node_modules') };
+  return { base };
 }
 
 /** 全机共享的 pnpm store：与每个 App 的 node_modules 在同一个文件系统上才能硬链接。 */
@@ -81,10 +81,9 @@ export function runtimeDockerfile(image: string, pnpmVersion: string) {
   ].join('\n') + '\n';
 }
 
-export function runtimeMounts(input: { workspaceRoot: string; nodeModulesRoot: string; storeRoot: string }): RuntimeMount[] {
+export function runtimeMounts(input: { workspaceRoot: string; storeRoot: string }): RuntimeMount[] {
   return [
     { source: input.workspaceRoot, target: RUNTIME_WORKDIR },
-    { source: input.nodeModulesRoot, target: RUNTIME_NODE_MODULES },
     { source: input.storeRoot, target: RUNTIME_STORE },
   ];
 }

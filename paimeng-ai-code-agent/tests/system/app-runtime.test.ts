@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
-import { cp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadEnvFile } from 'node:process';
 import { createServer as createNetServer } from 'node:net';
@@ -17,12 +17,13 @@ import { initializeTemplate } from '@/server/workspace/template-workspace';
 import { resolveTemplate } from '@/server/templates/templates';
 import { ensureRuntime, ensureSafeDirectory, workspace } from '@/server/workspace/workspace';
 import { getConfig } from '@/server/infra/config';
-import { ensureAppRuntime, stopAppRuntime } from '@/server/app-runtime/supervisor';
+import { ensureAppRuntime, runtimePreviewTarget, stopAppRuntime } from '@/server/app-runtime/supervisor';
 import { deleteApp } from '@/server/business';
 import { publicUser } from '@/server/auth/auth';
 import { readAppRuntime } from '@/server/app-runtime/store';
 import { appRuntimeKey, runtimeContainerName, runtimePaths, runtimeStorePath } from '@/server/app-runtime/plan';
 import { createPreviewServer } from '@/server/delivery/preview';
+import { startGeneration, failOrCancel } from '@/server/generation/generation-lifecycle';
 
 loadEnvFile('.env');
 process.env.DATABASE_URL = testDatabaseUrl(process.env.DATABASE_URL ?? '');
@@ -123,9 +124,9 @@ describe('真实 Docker 上的 App runtime', () => {
     const gid = process.getgid?.() ?? 1000;
     expect(inspect.Config.User).toBe(`${uid}:${gid}`);
     const mounts = inspect.Mounts.filter(item => item.Type === 'bind');
-    expect(mounts.map(item => item.Destination).sort()).toEqual(['/store', '/work', '/work/node_modules']);
+    expect(mounts.map(item => item.Destination).sort()).toEqual(['/store', '/work']);
     expect(mounts.find(item => item.Destination === '/work')?.Source).toBe(workspace(app));
-    expect(mounts.find(item => item.Destination === '/work/node_modules')?.Source).toBe(runtimePaths(getConfig().runtimeRoot, app).nodeModules);
+    expect(mounts.some(item => item.Destination === '/work/node_modules')).toBe(false);
     expect(mounts.find(item => item.Destination === '/store')?.Source).toBe(runtimeStorePath(getConfig().runtimeRoot));
     expect(mounts.every(item => item.RW)).toBe(true);
     expect(mounts.some(item => item.Source.includes('docker.sock'))).toBe(false);
@@ -190,59 +191,31 @@ describe('真实 Docker 上的 App runtime', () => {
     }
   }, 900_000);
 
-  it('写入基线切换（下一次执行的源码根）时重建容器，新容器只挂新的执行目录', async () => {
+  it('正常下一轮保持同一容器、端口与持久 Workspace，已安装依赖留在 Workspace 内', async () => {
     const app = appsUnderTest[0];
     const previous = await readAppRuntime(app);
-    expect(previous?.status).toBe('ready');
-    const nextRoot = join(getConfig().runtimeRoot, 'executions', 'system-baseline', '1');
-    await rm(nextRoot, { recursive: true, force: true });
-    await cp(workspace(app), nextRoot, {
-      recursive: true,
-      filter: source => !/\/(node_modules|dist)(\/|$)/.test(source) && !/\/(\.git|\.paimeng-)/.test(source),
-    });
-    const oldTitle = marker('旧基线');
-    const newTitle = marker('新基线');
-    await writeFile(join(workspace(app), 'src/pages/home.tsx'), homeSource(oldTitle));
-    await writeFile(join(nextRoot, 'src/pages/home.tsx'), homeSource(newTitle));
-
-    const view = await ensureAppRuntime({ app, workspaceRoot: nextRoot });
+    const installedMarker = join(workspace(app), 'node_modules/.paimeng-round-marker');
+    await writeFile(installedMarker, 'installed');
+    const before = await stat(workspace(app));
+    const first = await startGeneration({ app, userId: String(userId), requestId: randomUUID(), holder: 'system', prompt: 'first' });
+    expect(first.execution!.directory).toBe(workspace(app));
+    const view = await ensureAppRuntime({ app, workspaceRoot: first.execution!.directory });
     expect(view.status).toBe('ready');
-    expect(view.workspaceRoot).toBe(nextRoot);
-    expect(view.containerId).not.toBe(previous?.containerId);
-    const [inspect] = JSON.parse(await docker(['inspect', runtimeContainerName(app)])) as [{
-      Mounts: { Type: string; Source: string; Destination: string }[];
-    }];
-    const work = inspect.Mounts.find(item => item.Type === 'bind' && item.Destination === '/work');
-    expect(work?.Source).toBe(nextRoot);
-    // 新容器上跑着新基线的 dev server：旧执行目录的内容不再可达。
-    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const newTitle = marker('同容器新基线');
+    await writeFile(join(workspace(app), 'src/pages/home.tsx'), homeSource(newTitle));
+    await failOrCancel({ app, generationId: first.generationId, epoch: first.epoch!, execution: first.execution!, outcome: 'cancelled', error: 'system next round' });
+    const second = await startGeneration({ app, userId: String(userId), requestId: randomUUID(), holder: 'system', prompt: 'second' });
+    const reused = await ensureAppRuntime({ app, workspaceRoot: second.execution!.directory });
+    expect(reused).toMatchObject({ status: 'ready', containerId: previous?.containerId, port: previous?.port, workspaceRoot: workspace(app) });
+    expect((await stat(workspace(app))).ino).toBe(before.ino);
+    expect(await readFile(installedMarker, 'utf8')).toBe('installed');
+    const context = await browser.newContext();
     try {
       const page = await context.newPage();
-      const messages: string[] = [];
-      page.on('console', message => { if (message.type() === 'error') messages.push(message.text()); });
-      page.on('pageerror', error => messages.push('pageerror: ' + error.message));
-      const response = await page.goto(`http://127.0.0.1:${view.port}/preview/${appRuntimeKey(app)}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-      try {
-        // 新容器首次启动时 Vite 可能正在优化依赖；给它一次重新加载的机会，
-        // 仍然看不到新基线标题才算“换基线没有生效”。
-        await waitForText(page, newTitle, 20_000);
-      } catch {
-        const devLog = await docker(['exec', runtimeContainerName(app), 'sh', '-lc', `tail -c 2000 ${'.paimeng-dev.log'} 2>/dev/null || true`]).catch(() => '');
-        console.error('baseline cold-start diagnostics', JSON.stringify({ status: response?.status(), messages, devLog: devLog.slice(-1200) }));
-        await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
-        try { await waitForText(page, newTitle, 40_000); }
-        catch (error) {
-          console.error('baseline page failed', response?.status(), messages, await page.locator('body').innerText().catch(() => ''));
-          throw error;
-        }
-      }
-      expect(await page.getByText(oldTitle, { exact: false }).count()).toBe(0);
-    } finally {
-      await context.close();
-    }
-    await rm(nextRoot, { recursive: true, force: true });
-    // 后续用例继续用应用工作区作为源码根。
-    expect((await ensureAppRuntime({ app, workspaceRoot: workspace(app) })).status).toBe('ready');
+      await page.goto(`http://127.0.0.1:${previewPort}/preview/${appRuntimeKey(app)}/`);
+      await waitForText(page, newTitle, 60_000);
+    } finally { await context.close(); }
+    await failOrCancel({ app, generationId: second.generationId, epoch: second.epoch!, execution: second.execution!, outcome: 'cancelled', error: 'system done' });
   }, 600_000);
 
   it('删除应用时停掉它的 runtime 容器', async () => {
@@ -255,16 +228,31 @@ describe('真实 Docker 上的 App runtime', () => {
     expect(await readAppRuntime(app)).toBeNull();
   }, 600_000);
 
+  it('锁文件失效时停止提供实时 Preview，修正后仍在同一容器恢复', async () => {
+    const app = appsUnderTest[0];
+    const previous = await readAppRuntime(app);
+    const lockPath = join(workspace(app), 'pnpm-lock.yaml');
+    const original = await readFile(lockPath);
+    try {
+      await writeFile(lockPath, 'lockfileVersion: [broken');
+      const failed = await ensureAppRuntime({ app, workspaceRoot: workspace(app) });
+      expect(failed.status).toBe('failed');
+      expect(await runtimePreviewTarget(app)).toEqual({ status: 'failed', port: null });
+    } finally { await writeFile(lockPath, original); }
+    const recovered = await ensureAppRuntime({ app, workspaceRoot: workspace(app) });
+    expect(recovered).toMatchObject({ status: 'ready', containerId: previous?.containerId, port: previous?.port });
+  }, 600_000);
+
   it('容器停止后宿主文件仍在，下一轮复用已安装依赖', async () => {
     const app = appsUnderTest[0];
     const record = await readAppRuntime(app);
     expect(record?.status).toBe('ready');
-    const nodeModules = runtimePaths(getConfig().runtimeRoot, app).nodeModules;
+    const nodeModules = join(workspace(app), 'node_modules');
     const installedMarker = join(nodeModules, '.paimeng-installed-marker');
     await writeFile(installedMarker, 'installed');
     const source = await readFile(join(workspace(app), 'src/pages/home.tsx'), 'utf8');
 
-    await docker(['rm', '-f', runtimeContainerName(app)]);
+    await stopAppRuntime(app);
     // 记录还在但容器没了：下一轮必须重建容器，而不是继续代理一个死端口。
     const rebuilt = await ensureAppRuntime({ app, workspaceRoot: workspace(app) });
     expect(rebuilt.status).toBe('ready');
