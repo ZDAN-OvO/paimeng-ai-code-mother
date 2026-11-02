@@ -45,7 +45,7 @@ const charge = {
   credits: 900, effectiveCredits: 900, status: 'settled', estimatedSteps: 0,
   estimated: false, unpriced: false, createTime: '2026-10-10 10:05:00.000',
   generationStatus: 'failed', stopReason: 'overdraft',
-  entries: [{ pool: 'quota', credits: 500 }, { pool: 'balance', credits: 400 }],
+  entries: [{ bucket: 'limited', credits: 500 }, { bucket: 'lasting', credits: 400 }],
   reversals: [],
 };
 
@@ -59,11 +59,11 @@ async function setup(page: Page) {
   await page.route('**/api/app/messages?*', route => route.fulfill({ json: { code: 0, data: history, message: 'ok' } }));
   await page.route('**/api/app/generation?*', route => route.fulfill({ json: { code: 0, data: generation, message: 'ok' } }));
   await page.route('**/api/app/generation/accounts?*', route => route.fulfill({ json: { code: 0, data: [account], message: 'ok' } }));
-  // 余额池已被这笔账单扣成欠款：合计 −400 是 Owner 判定「为什么被掐断」的直接依据。
+  // 长期积分已被这笔账单扣成欠款：可用 −400 是 Owner 判定「为什么被掐断」的直接依据。
   await page.route('**/api/billing/summary', route => route.fulfill({
     json: {
       code: 0,
-      data: { quota: 0, balance: -400, total: -400, purchasedCredits60d: 0, overdraft: 0, period: '2026-10', quotaExpiresAt: '2026-10-31 16:00:00.000' },
+      data: { available: -400, limited: 0, lasting: -400, limitedExpiresAt: null, purchasedCredits60d: 0, overdraft: 0, period: '2026-10' },
       message: 'ok',
     },
   }));
@@ -82,9 +82,9 @@ test('被透支熔断中止：中断说明 + 停止原因 + 最终账单三处�
   // 账单行说的是「超出透支线」而不是「生成失败」，并给出实收金额与分池明细。
   const credit = page.locator('.generation-credit').first();
   await expect(credit).toBeVisible();
-  await expect(credit).toContainText('本次生成因超出透支线被中止，已按实际用量扣费 900 Credit');
-  await expect(credit).toContainText('配额池 500');
-  await expect(credit).toContainText('余额池 400');
+  await expect(credit).toContainText('本次生成因超出透支线被中止，已按实际用量扣费 900 积分');
+  await expect(credit).toContainText('限时积分 500');
+  await expect(credit).toContainText('长期积分 400');
   // 不是平台故障：不能显示成「已全额退还」。
   await expect(credit).not.toContainText('退还');
 
@@ -93,9 +93,9 @@ test('被透支熔断中止：中断说明 + 停止原因 + 最终账单三处�
   await expect(usage).toContainText('超出透支线，已中止');
 
   // 当前余额就在页面顶部：欠款 −400 与账单对得上。
-  const balance = page.getByLabel('我的 Credit 概览');
+  const balance = page.getByLabel('我的积分概览');
   await expect(balance).toBeVisible();
-  await expect(balance).toContainText('合计');
+  await expect(balance).toContainText('可用');
   await expect(balance).toContainText('-400');
 
   await page.screenshot({ path: evidencePath('billing', 'overdraft-abort.png'), fullPage: true });

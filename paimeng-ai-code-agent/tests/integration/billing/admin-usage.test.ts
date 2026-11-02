@@ -6,9 +6,7 @@ import {
   seedBillingRate, seedBillingStep, withoutMonthlyQuota, type BillingTestUser,
 } from '../../support/billing';
 import { db, getPool } from '@/server/infra/db';
-import {
-  apps, creditAccounts, creditCharges, creditEntries, creditGrants, creditQuotaAdjustments, creditQuotaIssues, generations, sessions, users,
-} from '@/server/infra/schema';
+import { apps, creditBalance, creditCharges, creditLedger, generations, sessions, users } from '@/server/infra/schema';
 import { settleGenerationBilling } from '@/server/billing/settlement';
 import type { AdminUserUsage, BillingChargeView, ChargeReversalReceipt } from '@/shared/billing';
 
@@ -26,9 +24,7 @@ const createdApps: bigint[] = [];
 const createdGenerations: string[] = [];
 
 beforeAll(async () => {
-  await applyBillingMigrations(
-    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '014_credit_entry_audit.sql',
-    '018_credit_entry_reason_length.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql', '023_app_config_model_config.sql');
+  await applyBillingMigrations('024_credit_ledger.sql');
   await seedBillingRate({ modelName: model });
 });
 
@@ -36,17 +32,15 @@ afterAll(async () => {
   if (createdGenerations.length) {
     const chargeIds = (await db().select({ generationId: creditCharges.generationId }).from(creditCharges)
       .where(inArray(creditCharges.generationId, createdGenerations))).map(row => row.generationId);
-    if (chargeIds.length) await db().delete(creditEntries).where(inArray(creditEntries.chargeId, chargeIds));
+    if (chargeIds.length) await db().delete(creditLedger).where(inArray(creditLedger.chargeId, chargeIds));
     await db().delete(creditCharges).where(inArray(creditCharges.generationId, createdGenerations));
     await db().delete(generations).where(inArray(generations.id, createdGenerations));
   }
   if (createdApps.length) await db().delete(apps).where(inArray(apps.id, createdApps));
   if (createdUsers.length) {
     const ids = createdUsers.map(id => BigInt(id));
-    await db().delete(creditQuotaAdjustments).where(inArray(creditQuotaAdjustments.userId, ids));
-    await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, ids));
-    await db().delete(creditGrants).where(inArray(creditGrants.userId, ids));
-    await db().delete(creditAccounts).where(inArray(creditAccounts.userId, ids));
+    await db().delete(creditLedger).where(inArray(creditLedger.userId, ids));
+    await db().delete(creditBalance).where(inArray(creditBalance.userId, ids));
     await db().delete(sessions).where(inArray(sessions.userId, ids));
     await db().delete(users).where(inArray(users.id, ids));
   }
@@ -111,8 +105,8 @@ async function chargeRow(chargeId: string) {
 }
 
 async function entryRows(chargeId: string) {
-  return db().select().from(creditEntries).where(eq(creditEntries.chargeId, chargeId))
-    .orderBy(creditEntries.id);
+  return db().select().from(creditLedger).where(eq(creditLedger.chargeId, chargeId))
+    .orderBy(creditLedger.id);
 }
 
 describe('GET admin/billing/usage：权限、成本可辨识、估算与未定价比例', () => {
@@ -130,8 +124,8 @@ describe('GET admin/billing/usage：权限、成本可辨识、估算与未定�
   it('返回额度快照、逐笔售价/成本与估算/未定价比例；成本未知显式为 null', async () => {
     const admin = await newUser('admin');
     const { owner, appId } = await fixture();
-    await grantBillingCredits(owner.id, 'quota', 100);
-    await grantBillingCredits(owner.id, 'balance', 1000);
+    await grantBillingCredits(owner.id, 'limited', 100);
+    await grantBillingCredits(owner.id, 'lasting', 1000);
 
     const settled = await settledCharge({ owner, appId });
     // 估算：第一步有真实用量当样本，第二步缺用量 → 按均值估算，状态 estimated
@@ -147,7 +141,7 @@ describe('GET admin/billing/usage：权限、成本可辨识、估算与未定�
     const envelope = await usageOf(admin.cookie, owner.id);
     expect(envelope.code).toBe(0);
     expect(envelope.data.userId).toBe(owner.id);
-    expect(envelope.data.account).toMatchObject({ quota: 37, balance: 1000, total: 1037 });
+    expect(envelope.data.account).toMatchObject({ available: 1037, limited: 37, lasting: 1000 });
     expect(envelope.data.charges.map(charge => charge.generationId).sort()).toEqual([settled, estimated, unpriced].sort());
     expect(envelope.data.estimatedRatio).toBe(0.3333);
     expect(envelope.data.unpricedRatio).toBe(0.3333);
@@ -200,23 +194,23 @@ describe('POST admin/billing/charge/:id/reverse：人工整笔冲正', () => {
   it('写理由与操作人、反向分录关联原 entry、余额回到结算前；重复提交不再退款', async () => {
     const admin = await newUser('admin');
     const { owner, appId } = await fixture();
-    await grantBillingCredits(owner.id, 'quota', 100);
+    await grantBillingCredits(owner.id, 'limited', 100);
     const chargeId = await settledCharge({ owner, appId });
     const originalEntries = await entryRows(chargeId);
-    expect(await billingBalancesOf(owner.id)).toEqual({ quota: 40, balance: 0 });
+    expect(await billingBalancesOf(owner.id)).toEqual({ available: (40) + (0), limited: 40, lasting: 0 });
 
     const envelope = await reverseEnvelope(admin.cookie, chargeId);
     expect(envelope.code).toBe(0);
     expect(envelope.data).toEqual({ reversed: true, entries: 1, status: 'reversed', effectiveCredits: 0 });
 
-    expect(await billingBalancesOf(owner.id)).toEqual({ quota: 100, balance: 0 });
+    expect(await billingBalancesOf(owner.id)).toEqual({ available: (100) + (0), limited: 100, lasting: 0 });
     expect((await chargeRow(chargeId))).toMatchObject({ credits: 0, status: 'reversed' });
     const entries = await entryRows(chargeId);
     expect(entries).toHaveLength(2);
     // 原 entry 逐字段不变：冲正只追加，不改历史扣费事实
     expect(entries[0]).toEqual(originalEntries[0]);
     expect(entries[1]).toMatchObject({
-      pool: 'quota', credits: -60, reversalOf: originalEntries[0].id,
+      kind: 'refund', credits: 60, reversalOf: originalEntries[0].id,
       reason: '管理员冲正：费率配置错误', operatorId: BigInt(admin.id),
     });
 
@@ -224,13 +218,13 @@ describe('POST admin/billing/charge/:id/reverse：人工整笔冲正', () => {
     const replay = await reverseEnvelope(admin.cookie, chargeId);
     expect(replay.data).toEqual({ reversed: false, entries: 0, status: 'reversed', effectiveCredits: 0 });
     expect(await entryRows(chargeId)).toHaveLength(2);
-    expect(await billingBalancesOf(owner.id)).toEqual({ quota: 100, balance: 0 });
+    expect(await billingBalancesOf(owner.id)).toEqual({ available: (100) + (0), limited: 100, lasting: 0 });
   });
 
   it('并发两次冲正只退一次', async () => {
     const admin = await newUser('admin');
     const { owner, appId } = await fixture();
-    await grantBillingCredits(owner.id, 'balance', 100);
+    await grantBillingCredits(owner.id, 'lasting', 100);
     const chargeId = await settledCharge({ owner, appId });
 
     const receipts = await Promise.all([
@@ -239,41 +233,40 @@ describe('POST admin/billing/charge/:id/reverse：人工整笔冲正', () => {
     ]);
     expect(receipts.map(receipt => receipt.data.reversed).sort()).toEqual([false, true]);
     expect(await entryRows(chargeId)).toHaveLength(2);
-    expect(await billingBalancesOf(owner.id)).toEqual({ quota: 0, balance: 100 });
+    expect(await billingBalancesOf(owner.id)).toEqual({ available: (0) + (100), limited: 0, lasting: 100 });
   });
 
-  it('冲正老账期的 quota 分录：反向分录落库但不复活当前配额', async () => {
+  it('冲正老账期的限时积分：退回立即过期，长期部分正常回来', async () => {
     const admin = await newUser('admin');
     const { owner, appId } = await fixture();
-    await grantBillingCredits(owner.id, 'quota', 100);
-    // 上个月的扣费：quota 40 + balance 20（余额池当时因此是 -20），账单时间落在旧账期
     const chargeId = await seedBillingGeneration({ appId, userId: owner.id, status: 'ready', stopReason: 'completed' });
     createdGenerations.push(chargeId);
-    await db().update(creditAccounts).set({ balance: -20, updateTime: '2020-01-01 00:00:00.000' })
-      .where(and(eq(creditAccounts.userId, BigInt(owner.id)), eq(creditAccounts.pool, 'balance')));
     await db().insert(creditCharges).values({
       generationId: chargeId, appId: BigInt(appId), userId: BigInt(owner.id), credits: 60, costUsd: null,
       rateCardSnapshot: [], usageSnapshot: [], status: 'settled', estimatedSteps: 0,
       createTime: '2020-01-01 00:00:00.000',
     });
-    await db().insert(creditEntries).values([
-      { chargeId, pool: 'quota', credits: 40, reversalOf: null, createTime: '2020-01-01 00:00:00.000' },
-      { chargeId, pool: 'balance', credits: 20, reversalOf: null, createTime: '2020-01-01 00:00:00.000' },
+    await db().insert(creditLedger).values([
+      { userId: BigInt(owner.id), kind: 'quota', origin: 'manual', credits: 100, period: '2020-01', expiresAt: '2020-01-31 16:00:00.000', createTime: '2020-01-01 00:00:00.000' },
+      { userId: BigInt(owner.id), kind: 'grant', origin: 'manual', credits: 30, createTime: '2020-01-01 00:00:00.000' },
+      { userId: BigInt(owner.id), kind: 'consume', origin: 'charge', credits: -40, period: '2020-01', expiresAt: '2020-01-31 16:00:00.000', chargeId, createTime: '2020-01-01 00:00:00.000' },
+      { userId: BigInt(owner.id), kind: 'consume', origin: 'charge', credits: -20, chargeId, createTime: '2020-01-01 00:00:00.000' },
     ]);
 
     const envelope = await reverseEnvelope(admin.cookie, chargeId);
     expect(envelope.data).toEqual({ reversed: true, entries: 2, status: 'reversed', effectiveCredits: 0 });
-    expect(await billingBalancesOf(owner.id)).toEqual({ quota: 100, balance: 0 });
-    expect((await entryRows(chargeId)).map(entry => ({ pool: entry.pool, credits: entry.credits }))).toEqual([
-      { pool: 'quota', credits: 40 }, { pool: 'balance', credits: 20 },
-      { pool: 'quota', credits: -40 }, { pool: 'balance', credits: -20 },
+    // 老账期退回的 40 被一条 reversal 过期行抵消；长期 20 正常回来。
+    expect(await billingBalancesOf(owner.id)).toEqual({ available: 30, limited: 0, lasting: 30 });
+    expect((await entryRows(chargeId)).map(entry => ({ kind: entry.kind, credits: entry.credits }))).toEqual([
+      { kind: 'consume', credits: -40 }, { kind: 'consume', credits: -20 },
+      { kind: 'refund', credits: 40 }, { kind: 'refund', credits: 20 },
     ]);
   });
 
   it('长理由（257..500 字）能整笔冲正并完整落库，>500 字是 400 而不是 500', async () => {
     const admin = await newUser('admin');
     const { owner, appId } = await fixture();
-    await grantBillingCredits(owner.id, 'balance', 100);
+    await grantBillingCredits(owner.id, 'lasting', 100);
     const chargeId = await settledCharge({ owner, appId });
 
     // 300 字：超过 014 建表时的 256 宽度，靠 018 加宽到 500 才落得下
@@ -282,7 +275,7 @@ describe('POST admin/billing/charge/:id/reverse：人工整笔冲正', () => {
     const envelope = await reverseEnvelope(admin.cookie, chargeId, reason);
     expect(envelope.code).toBe(0);
     expect(envelope.data).toMatchObject({ reversed: true, status: 'reversed', effectiveCredits: 0 });
-    expect(await billingBalancesOf(owner.id)).toEqual({ quota: 0, balance: 100 });
+    expect(await billingBalancesOf(owner.id)).toEqual({ available: (0) + (100), limited: 0, lasting: 100 });
     const reversal = (await entryRows(chargeId)).find(entry => entry.reversalOf !== null);
     expect(reversal?.reason).toBe(reason);
   });

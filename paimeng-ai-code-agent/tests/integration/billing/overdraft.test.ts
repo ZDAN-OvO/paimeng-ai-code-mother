@@ -1,15 +1,16 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray } from 'drizzle-orm';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, getPool, now } from '@/server/infra/db';
-import {
-  creditAccounts, creditCharges, creditEntries, creditGrants, creditQuotaAdjustments, creditQuotaIssues, generationSteps, generations, sessions, users,
-} from '@/server/infra/schema';
+import { creditBalance, creditCharges, creditLedger, generationSteps, generations, sessions, users } from '@/server/infra/schema';
 import { evaluateRunningOverdraft, settleGenerationBilling } from '@/server/billing/settlement';
 import {
   applyBillingMigrations, createBillingUser, loadBillingDatabase, purgeBillingRateCards, seedBillingApp,
   seedBillingGeneration, seedBillingRate, seedBillingStep, withoutMonthlyQuota, type BillingTestUser,
 } from '../../support/billing';
+import { balanceFactsOf } from '@/server/billing/expiry';
+import { rebuildBalance } from '@/server/billing/ledger';
+import { naiveTime, periodOf, periodRange } from '@/server/billing/period';
 
 /**
  * 运行期透支熔断（票 95）：未结算消耗从 `generation_step` 现算，判定按 Owner 而不是单个 App。
@@ -26,9 +27,7 @@ const createdGenerations: string[] = [];
 const rateModel = 'model-overdraft';
 
 beforeAll(async () => {
-  await applyBillingMigrations(
-    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql',
-    '014_credit_entry_audit.sql', '018_credit_entry_reason_length.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql', '023_app_config_model_config.sql');
+  await applyBillingMigrations('024_credit_ledger.sql');
   await seedBillingRate({ modelName: rateModel });
 });
 
@@ -36,7 +35,7 @@ afterAll(async () => {
   if (createdGenerations.length) {
     const chargeIds = (await db().select({ generationId: creditCharges.generationId }).from(creditCharges)
       .where(inArray(creditCharges.generationId, createdGenerations))).map(row => row.generationId);
-    if (chargeIds.length) await db().delete(creditEntries).where(inArray(creditEntries.chargeId, chargeIds));
+    if (chargeIds.length) await db().delete(creditLedger).where(inArray(creditLedger.chargeId, chargeIds));
     await db().delete(creditCharges).where(inArray(creditCharges.generationId, createdGenerations));
     await db().delete(generationSteps).where(inArray(generationSteps.generationId, createdGenerations));
     await db().delete(generations).where(inArray(generations.id, createdGenerations));
@@ -44,10 +43,8 @@ afterAll(async () => {
   if (createdApps.length) await db().delete(creditCharges).where(inArray(creditCharges.appId, createdApps));
   if (createdUsers.length) {
     const ids = createdUsers.map(id => BigInt(id));
-    await db().delete(creditQuotaAdjustments).where(inArray(creditQuotaAdjustments.userId, ids));
-    await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, ids));
-    await db().delete(creditGrants).where(inArray(creditGrants.userId, ids));
-    await db().delete(creditAccounts).where(inArray(creditAccounts.userId, ids));
+    await db().delete(creditLedger).where(inArray(creditLedger.userId, ids));
+    await db().delete(creditBalance).where(inArray(creditBalance.userId, ids));
     await db().delete(sessions).where(inArray(sessions.userId, ids));
     await db().delete(users).where(inArray(users.id, ids));
   }
@@ -63,28 +60,38 @@ async function newOwner(): Promise<BillingTestUser> {
   return owner;
 }
 
-/** 直接写两池余额快照：评估只读快照（不补发配额），结算在同一组行上扣减。 */
-async function setBalances(userId: string, quota: number, balance: number): Promise<void> {
-  for (const [pool, value] of [['quota', quota], ['balance', balance]] as const) {
-    await db().insert(creditAccounts)
-      .values({ userId: BigInt(userId), pool, balance: value, updateTime: now() })
-      .onConflictDoUpdate({
-        target: [creditAccounts.userId, creditAccounts.pool],
-        set: { balance: value, updateTime: now() },
-      });
+/**
+ * 把可用额写到指定值：保留已经造好的充值行（那是透支线基数），用一条长期发放把差额补平，
+ * 再按需要写一条当前账期的限时积分。评估与结算都读账本。
+ */
+async function setBalances(userId: string, limited: number, lasting: number): Promise<void> {
+  const id = BigInt(userId);
+  const [purchased] = await db().select({ credits: sql<string>`coalesce(sum(${creditLedger.credits}), 0)` })
+    .from(creditLedger).where(and(eq(creditLedger.userId, id), eq(creditLedger.kind, 'topup')));
+  await db().execute(sql`delete from credit_ledger where user_id = ${id} and kind <> 'topup'`);
+  if (limited !== 0) {
+    const period = periodOf(new Date());
+    await db().insert(creditLedger).values({
+      userId: id, kind: 'quota', origin: 'manual', credits: limited,
+      period, expiresAt: naiveTime(periodRange(period).end), createTime: now(),
+    });
   }
+  const gap = lasting - Number(purchased?.credits ?? 0);
+  if (gap !== 0) {
+    await db().insert(creditLedger).values({ userId: id, kind: 'grant', origin: 'manual', credits: gap, createTime: now() });
+  }
+  await rebuildBalance(userId);
 }
 
 async function balanceOf(userId: string, pool: 'quota' | 'balance'): Promise<number> {
-  const [row] = await db().select().from(creditAccounts)
-    .where(and(eq(creditAccounts.userId, BigInt(userId)), eq(creditAccounts.pool, pool)));
-  return row?.balance ?? 0;
+  const facts = await balanceFactsOf(userId);
+  return pool === 'quota' ? facts.limited : facts.lasting;
 }
 
-/** 购买入账：只写账本事实，余额快照由用例自己写死（否则会把可用额度一起加上去）。 */
+/** 充值入账：只写账本事实，用完再结算时由 `setBalances` 把可用额调到用例想要的值。 */
 async function seedPurchase(userId: string, credits: number, createTime: string = now()): Promise<void> {
-  await db().insert(creditGrants).values({
-    id: randomUUID(), userId: BigInt(userId), pool: 'balance', credits, source: 'purchase', createTime,
+  await db().insert(creditLedger).values({
+    userId: BigInt(userId), kind: 'topup', origin: 'payment', credits, createTime,
   });
 }
 

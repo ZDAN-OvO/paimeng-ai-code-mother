@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 /**
- * 每次生成结束后的 Credit 行（组件在 `src/components/chat/generation-credit.tsx`）。
+ * 每次生成结束后的积分行（组件在 `src/components/chat/generation-credit.tsx`）。
  * 全部走 `page.route` 打桩：这里只验证渲染与状态文案，不验证结算——结算在
  * tests/integration/billing/{settlement,failures}.test.ts 里对真库断言。
  *
@@ -36,26 +36,26 @@ function charge(overrides: Record<string, unknown>) {
 const charges = [
   charge({
     generationId: 'gen-1', messageId: 'credit-msg-1', credits: 12, effectiveCredits: 12, status: 'settled',
-    entries: [{ pool: 'quota', credits: 10 }, { pool: 'balance', credits: 2 }],
+    entries: [{ bucket: 'limited', credits: 10 }, { bucket: 'lasting', credits: 2 }],
   }),
   charge({
     generationId: 'gen-2', messageId: 'credit-msg-2', credits: 7, effectiveCredits: 7, status: 'estimated',
-    estimatedSteps: 1, entries: [{ pool: 'balance', credits: 7 }],
+    estimatedSteps: 1, entries: [{ bucket: 'lasting', credits: 7 }],
   }),
   charge({ generationId: 'gen-3', messageId: 'credit-msg-3', credits: 0, effectiveCredits: 0, status: 'unpriced' }),
   charge({
     generationId: 'gen-4', messageId: 'credit-msg-4', credits: 9, effectiveCredits: 9, status: 'settled',
-    generationStatus: 'failed', stopReason: 'model-error', entries: [{ pool: 'balance', credits: 9 }],
+    generationStatus: 'failed', stopReason: 'model-error', entries: [{ bucket: 'lasting', credits: 9 }],
   }),
   charge({
     generationId: 'gen-5', messageId: 'credit-msg-5', credits: 4, effectiveCredits: 4, status: 'settled',
-    generationStatus: 'cancelled', stopReason: 'cancelled', entries: [{ pool: 'quota', credits: 4 }],
+    generationStatus: 'cancelled', stopReason: 'cancelled', entries: [{ bucket: 'limited', credits: 4 }],
   }),
   charge({
     generationId: 'gen-6', messageId: 'credit-msg-6', credits: 0, effectiveCredits: 0, status: 'reversed',
     generationStatus: 'failed', stopReason: 'lease-lost',
-    entries: [{ pool: 'balance', credits: 6 }],
-    reversals: [{ pool: 'balance', credits: -6, reason: '平台故障自动退还', createTime: '2026-10-10 10:05:00.000' }],
+    entries: [{ bucket: 'lasting', credits: 6 }],
+    reversals: [{ bucket: 'lasting', credits: -6, reason: '平台故障自动退还', createTime: '2026-10-10 10:05:00.000' }],
   }),
 ];
 
@@ -82,22 +82,22 @@ async function setup(
   await page.route('**/api/billing/summary', route => route.fulfill({
     json: {
       code: 0,
-      data: { quota: 88, balance: 40, total: 128, purchasedCredits60d: 0, overdraft: 0, period: '2026-11', quotaExpiresAt: '2026-11-30 16:00:00.000' },
+      data: { available: 128, limited: 88, lasting: 40, limitedExpiresAt: '2026-11-30 16:00:00.000', purchasedCredits60d: 0, overdraft: 0, period: '2026-11' },
       message: 'ok',
     },
   }));
   await page.route('**/api/billing/charges?*', route => route.fulfill({ json: { code: 0, data: options.charges ?? charges, message: 'ok' } }));
 }
 
-test('每次助手回复下显示本次消耗与分池明细', async ({ page }) => {
+test('每次助手回复下显示本次消耗与积分种类明细', async ({ page }) => {
   await setup(page);
   await page.goto('/app/chat/' + appId);
 
   const settled = page.locator('.generation-credit').first();
   await expect(settled).toBeVisible();
-  await expect(settled).toContainText('本次消耗 12 Credit');
-  await expect(settled).toContainText('配额池 10');
-  await expect(settled).toContainText('余额池 2');
+  await expect(settled).toContainText('本次消耗 12 积分');
+  await expect(settled).toContainText('限时积分 10');
+  await expect(settled).toContainText('长期积分 2');
   // 一个气泡一行：不会把同一笔账单重复挂在别处
   await expect(page.locator('.generation-credit')).toHaveCount(6);
 });
@@ -107,10 +107,10 @@ test('估算标「估算」、未定价显示待结算，都不伪装成精确�
   await page.goto('/app/chat/' + appId);
 
   const estimated = page.locator('.generation-credit').nth(1);
-  await expect(estimated).toContainText('本次消耗约 7 Credit（估算）');
+  await expect(estimated).toContainText('本次消耗约 7 积分（估算）');
   const pending = page.locator('.generation-credit').nth(2);
   await expect(pending).toContainText('待结算');
-  await expect(pending).not.toContainText('0 Credit');
+  await expect(pending).not.toContainText('0 积分');
 });
 
 test('失败照实收费、用户取消、平台故障已退还三类文案互不相同', async ({ page }) => {
@@ -119,13 +119,13 @@ test('失败照实收费、用户取消、平台故障已退还三类文案互�
 
   // 失败按实收：说明原因，并说清「按实际用量收费」
   await expect(page.locator('.generation-credit').nth(3))
-    .toContainText('生成失败（模型错误），已按实际用量收费 9 Credit');
+    .toContainText('生成失败（模型错误），已按实际用量收费 9 积分');
   // 用户取消同样照实收费
   await expect(page.locator('.generation-credit').nth(4))
-    .toContainText('用户取消，已按实际用量收费 4 Credit');
-  // 平台故障整笔冲正：金额回到 0，并说清退到哪个池
+    .toContainText('用户取消，已按实际用量收费 4 积分');
+  // 平台故障整笔冲正：金额回到 0，并说清退到哪种积分
   const reversed = page.locator('.generation-credit').nth(5);
-  await expect(reversed).toContainText('本次生成因平台故障中止，已全额退还 6 Credit（余额池 6）');
+  await expect(reversed).toContainText('本次生成因平台故障中止，已全额退还 6 积分（长期积分 6）');
   await expect(reversed).not.toContainText('本次消耗');
 });
 
@@ -133,8 +133,8 @@ test('没有助手气泡的终态也在状态区给出账单入口', async ({ pa
   const orphan = charge({
     generationId: 'gen-9', messageId: null, credits: 0, effectiveCredits: 0, status: 'reversed',
     generationStatus: 'failed', stopReason: 'initialization-failed',
-    reversals: [{ pool: 'balance', credits: -3, reason: '平台故障自动退还', createTime: '2026-10-10 10:05:00.000' }],
-    entries: [{ pool: 'balance', credits: 3 }],
+    reversals: [{ bucket: 'lasting', credits: -3, reason: '平台故障自动退还', createTime: '2026-10-10 10:05:00.000' }],
+    entries: [{ bucket: 'lasting', credits: 3 }],
   });
   await setup(page, {
     history: [userMessage],
@@ -145,7 +145,7 @@ test('没有助手气泡的终态也在状态区给出账单入口', async ({ pa
 
   const note = page.locator('.message-note-credit .generation-credit');
   await expect(note).toBeVisible();
-  await expect(note).toContainText('本次生成因平台故障中止，已全额退还 3 Credit（余额池 3）');
+  await expect(note).toContainText('本次生成因平台故障中止，已全额退还 3 积分（长期积分 3）');
   // 气泡里没有账单，状态区也不重复
   await expect(page.locator('.generation-credit')).toHaveCount(1);
 });

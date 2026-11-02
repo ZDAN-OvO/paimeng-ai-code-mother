@@ -1,5 +1,5 @@
 import { getPool } from '../../src/server/infra/db';
-import { rebuildAccount } from '../../src/server/billing/ledger';
+import { rebuildBalance } from '../../src/server/billing/ledger';
 import { auditAccount, pendingSettlements, reconcileSettlements } from '../../src/server/billing/settlement';
 
 /**
@@ -8,8 +8,8 @@ import { auditAccount, pendingSettlements, reconcileSettlements } from '../../sr
  *
  *   npm run billing:reconcile                        # 列出终态缺账 / 待补价的账单
  *   npm run billing:reconcile -- --apply             # 执行补结算（可加 --limit=200）
- *   npm run billing:reconcile -- --user <id>         # 核对某个用户的两池余额
- *   npm run billing:reconcile -- --user <id> --apply # 按账本事实重写该用户的余额快照
+ *   npm run billing:reconcile -- --user <id>         # 核对某个用户的可用积分
+ *   npm run billing:reconcile -- --user <id> --apply # 按账本重写该用户的余额快照
  *
  * 运行说明见 `docs/billing-operations.md`。
  */
@@ -40,15 +40,14 @@ try {
   if (userId !== undefined) {
     const audit = await auditAccount(userId);
     console.log(`用户 ${userId} 的余额核对`);
-    console.log(`  期望（grant − entry）：配额 ${audit.expected.quota}，余额 ${audit.expected.balance}`);
-    console.log(`  快照（credit_account）：配额 ${audit.actual.quota}，余额 ${audit.actual.balance}`);
-    console.log(`  差异（快照 − 期望）：配额 ${audit.diff.quota}，余额 ${audit.diff.balance}`);
-    const drifted = audit.diff.quota !== 0 || audit.diff.balance !== 0;
-    if (!drifted) console.log('  快照与账本事实一致。');
-    else if (!apply) console.log('  快照有差异；加 --apply 会按账本事实重写快照（不动 grant / entry）。');
+    console.log(`  期望（账本求和）：可用 ${audit.expected}`);
+    console.log(`  快照（credit_balance）：可用 ${audit.actual}`);
+    console.log(`  差异（快照 − 期望）：${audit.diff}`);
+    if (audit.diff === 0) console.log('  快照与账本一致。');
+    else if (!apply) console.log('  快照有差异；加 --apply 会按账本重写快照（不动账本）。');
     else {
-      const repaired = await rebuildAccount(userId);
-      console.log(`  已按账本事实重写快照：配额 ${repaired.quota}，余额 ${repaired.balance}`);
+      const repaired = await rebuildBalance(userId);
+      console.log(`  已按账本重写快照：可用 ${repaired.available}（限时 ${repaired.limited} / 长期 ${repaired.lasting}）`);
     }
   } else if (!apply) {
     const items = await pendingSettlements({ limit });

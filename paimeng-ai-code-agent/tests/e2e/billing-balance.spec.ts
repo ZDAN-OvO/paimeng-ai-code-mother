@@ -47,8 +47,8 @@ test.afterAll(async () => {
   if (!createdUserIds.length) return;
   const connection = await testConnection();
   try {
-    await connection.query('DELETE FROM credit_grant WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
-    await connection.query('DELETE FROM credit_account WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
+    await connection.query('DELETE FROM credit_ledger WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
+    await connection.query('DELETE FROM credit_balance WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
     await connection.query('DELETE FROM user_session WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
     await connection.query('DELETE FROM app_user WHERE id = ANY($1::bigint[])', [createdUserIds]);
   } finally {
@@ -56,40 +56,41 @@ test.afterAll(async () => {
   }
 });
 
-test('管理员发放后 Owner 的额度条显示余额池与透支线', async ({ page, browser }) => {
+test('管理员发放长期积分后，Owner 的额度条显示长期积分与透支线', async ({ page, browser }) => {
   const ownerAccount = uniqueAccount();
   const ownerId = await registerUser(page, ownerAccount);
   await adminLogin(page, uniqueAccount());
 
   await page.goto('/admin/billing');
-  // Credit 管理默认是全用户总览：先搜索用户，再从详情抽屉进入余额发放。
+  // 主从账本：左边搜人、选中，右边直接发放。
   await page.getByLabel('搜索用户').fill(ownerAccount);
   await page.getByLabel('搜索用户').press('Enter');
-  const ownerRow = page.getByRole('row').filter({ hasText: ownerId });
+  const ownerRow = page.getByRole('button').filter({ hasText: ownerAccount }).first();
   await expect(ownerRow).toBeVisible();
-  await ownerRow.getByRole('button', { name: '查看详情' }).click();
-  await page.getByRole('tab', { name: '发放余额' }).click();
-  await page.getByLabel('发放金额').fill('300');
-  await page.getByLabel('备注').fill('浏览器演示发放');
-  await page.getByRole('button', { name: /^发\s*放$/ }).click();
+  await ownerRow.click();
+  await expect(page.getByRole('region', { name: '用户积分详情' })).toContainText(ownerAccount);
 
-  const drawer = page.locator('.ant-drawer-section');
-  await expect(drawer).toContainText(ownerId);
-  await expect(drawer).toContainText('300 Credit');
-  await expect(drawer).toContainText('浏览器演示发放');
-  await page.screenshot({ path: evidencePath('billing', 'admin-grant.png'), fullPage: true });
+  await page.getByRole('button', { name: '发放长期积分' }).click();
+  await page.getByLabel('数量（积分）').fill('300');
+  await page.getByLabel('理由（写进流水）').fill('浏览器演示发放');
+  await page.getByRole('button', { name: '确认发放' }).click();
 
-  // Owner 换一个浏览器上下文登录：余额只从自己的 billing/summary 读到，管理员的发放已经生效。
+  const detail = page.getByRole('region', { name: '用户积分详情' });
+  await expect(detail).toContainText('+300');
+  await expect(detail).toContainText('浏览器演示发放');
+  await page.screenshot({ path: evidencePath('billing', 'admin-issue.png'), fullPage: true });
+
+  // Owner 换一个浏览器上下文登录：可用额只从自己的 billing/summary 读到。
   const ownerContext = await browser.newContext();
   const ownerPage = await ownerContext.newPage();
   try {
     await login(ownerPage, ownerAccount);
-    const bar = ownerPage.getByRole('region', { name: '我的 Credit 概览' });
-    await expect(bar).toContainText('余额池');
+    const bar = ownerPage.getByRole('region', { name: '我的积分概览' });
+    await expect(bar).toContainText('可用');
+    await expect(bar).toContainText('长期');
     await expect(bar).toContainText('300');
-    await expect(bar).toContainText('透支线 6 Credit');
-    await ownerPage.getByRole('region', { name: '我的 Credit 概览' })
-      .screenshot({ path: evidencePath('billing', 'credit-summary-bar.png') });
+    await expect(bar).toContainText('透支线 0 积分');
+    await bar.screenshot({ path: evidencePath('billing', 'credit-summary-bar.png') });
     await ownerPage.screenshot({ path: evidencePath('billing', 'owner-balance.png'), fullPage: true });
   } finally {
     await ownerContext.close();
@@ -99,14 +100,13 @@ test('管理员发放后 Owner 的额度条显示余额池与透支线', async (
 test('普通用户不能发放，未登录不显示额度条', async ({ page }) => {
   const account = uniqueAccount();
   const userId = await registerUser(page, account);
-  // 先真正登录：要验证的是「已登录但不是管理员」的 403，未登录的 401 是另一件事。
   await login(page, account);
-  const response = await page.request.post('/api/admin/billing/grant', {
+  const response = await page.request.post('/api/admin/billing/issue', {
     headers: { origin },
-    data: { userId, pool: 'balance', credits: 100, source: 'purchase' },
+    data: { userId, kind: 'lasting', credits: 100, reason: '越权测试', requestId: randomUUID() },
   });
   expect(response.status()).toBe(403);
 
   await page.goto('/');
-  await expect(page.getByRole('region', { name: '我的 Credit 概览' })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: '我的积分概览' })).toHaveCount(0);
 });

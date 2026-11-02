@@ -128,9 +128,9 @@ describe('JSON 价格版本转费率视图', () => {
 });
 
 describe('Credit 面额', () => {
-  it('1 Credit = ¥0.01 是固定面额', () => {
+  it('1 积分 = ¥0.01 是固定面额', () => {
     expect(SELL_UNIT).toEqual({ creditPerYuan: 100, tokensPerMillion: 1_000_000 });
-    expect(creditDenominationLabel).toBe('1 Credit = ¥0.01');
-    expect(rateCardUnitLabel).toBe('Credit / 1M tokens');
+    expect(creditDenominationLabel).toBe('1 积分 = ¥0.01');
+    expect(rateCardUnitLabel).toBe('积分 / 1M tokens');
   });
 });

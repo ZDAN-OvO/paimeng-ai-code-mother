@@ -4,12 +4,12 @@ import { App } from 'antd';
 import { api } from '@/client/api';
 import { useAuth } from '@/components/providers';
 import { formatBeijingTime } from '@/shared/display';
-import { poolLabels, quotaPolicySourceLabels, type AccountSummary } from '@/shared/billing';
+import type { AccountSummary } from '@/shared/billing';
 import styles from './credit-balance.module.css';
 
 /**
- * 额度条：Owner 自己的双池余额、本期配额的有效期、近 60 天购买额与透支线。
- * 永远只读自己的——管理员看他人余额走 92 的 admin/billing/usage，这里不接受 userId。
+ * 额度条：Owner 自己的可用积分，以及它由哪两种积分组成。
+ * 永远只读自己的——管理员看他人余额走 admin 接口，这里不接受 userId。
  * `refreshToken` 变化时重取，用来在发放或结算之后刷新。
  */
 export function CreditBalance({ refreshToken }: { refreshToken?: string }) {
@@ -34,25 +34,25 @@ export function CreditBalance({ refreshToken }: { refreshToken?: string }) {
   }, [user, load, refreshToken]);
 
   if (!user || !summary) return null;
-  return <section className={styles.creditBalance} aria-label="我的 Credit 概览">
+  return <section className={styles.creditBalance} aria-label="我的积分概览">
     <p className={styles.pools}>
-      <span>{poolLabels.quota}<strong>{summary.quota}</strong></span>
+      <span>可用<strong>{summary.available}</strong></span>
       <span aria-hidden="true">·</span>
-      <span>{poolLabels.balance}<strong>{summary.balance}</strong></span>
+      <span>限时<strong>{summary.limited}</strong></span>
       <span aria-hidden="true">·</span>
-      <span>合计<strong>{summary.total}</strong></span>
+      <span>长期<strong>{summary.lasting}</strong></span>
     </p>
     <p className={styles.detail}>
-      <span>{`本期配额 ${summary.quotaBase} Credit（${quotaPolicySourceLabels[summary.quotaPolicySource]}），有效期至北京时间 ${formatBeijingTime(summary.quotaExpiresAt)}`}</span>
+      <span>{summary.limitedExpiresAt
+        ? `限时积分在北京时间 ${formatBeijingTime(summary.limitedExpiresAt)} 到期，不累积、不折现`
+        : '当前没有会过期的限时积分'}</span>
       <span aria-hidden="true">·</span>
-      <span>月底清零，不累积、不折现</span>
+      <span>长期积分不过期</span>
     </p>
     <p className={styles.detail}>
-      <span>{poolLabels.balance}不随账期重置</span>
+      <span>透支线 {summary.overdraft} 积分</span>
       <span aria-hidden="true">·</span>
-      <span>透支线 {summary.overdraft} Credit</span>
-      <span aria-hidden="true">·</span>
-      <span>近 60 天购买 {summary.purchasedCredits60d} Credit</span>
+      <span>近 60 天充值 {summary.purchasedCredits60d} 积分</span>
     </p>
   </section>;
 }

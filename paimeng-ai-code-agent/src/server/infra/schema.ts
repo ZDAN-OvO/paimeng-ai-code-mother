@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { bigint, bigserial, boolean, char, index, integer, jsonb, numeric, pgTable, primaryKey, smallint, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
-import type { ChargeStatus, CreditPool, GrantSource, QuotaAdjustmentMode, QuotaBatchItemStatus, QuotaBatchScope, QuotaBatchStatus, QuotaPolicyMode, QuotaPolicyScope, QuotaPolicySource, RateCardView, UsageSnapshotStep } from '@/shared/billing';
+import type { ChargeStatus, CreditEntryKind, CreditEntryOrigin, CreditOperationKind, CreditOperationStatus, QuotaPolicyMode, QuotaPolicySource, QuotaPolicyScope, RateCardView, UsageSnapshotStep } from '@/shared/billing';
 import type { ModelConfigDocument } from '@/shared/model-document';
 
 const times = { createTime: timestamp('create_time', { mode: 'string' }).notNull(), updateTime: timestamp('update_time', { mode: 'string' }).notNull() };
@@ -190,9 +190,9 @@ export const creditRateCard = pgTable('credit_rate_card', {
 export const creditGrants = pgTable('credit_grant', {
   id: varchar('id', { length: 36 }).primaryKey(),
   userId: bigint('user_id', { mode: 'bigint' }).notNull(),
-  pool: varchar('pool', { length: 16 }).$type<CreditPool>().notNull(),
+  pool: varchar('pool', { length: 16 }).$type<'quota' | 'balance'>().notNull(),
   credits: bigint('credits', { mode: 'number' }).notNull(),
-  source: varchar('source', { length: 16 }).$type<GrantSource>().notNull(),
+  source: varchar('source', { length: 16 }).$type<'purchase' | 'admin_grant' | 'monthly_quota'>().notNull(),
   externalRef: varchar('external_ref', { length: 128 }),
   requestId: varchar('request_id', { length: 128 }),
   grantedBy: bigint('granted_by', { mode: 'bigint' }),
@@ -208,7 +208,7 @@ export const creditGrants = pgTable('credit_grant', {
 
 export const creditAccounts = pgTable('credit_account', {
   userId: bigint('user_id', { mode: 'bigint' }).notNull(),
-  pool: varchar('pool', { length: 16 }).$type<CreditPool>().notNull(),
+  pool: varchar('pool', { length: 16 }).$type<'quota' | 'balance'>().notNull(),
   balance: bigint('balance', { mode: 'number' }).notNull().default(0),
   updateTime: timestamp('update_time', { mode: 'string', precision: 3 }).notNull(),
 }, t => [primaryKey({ columns: [t.userId, t.pool] })]);
@@ -256,7 +256,7 @@ export const creditQuotaAdjustments = pgTable('credit_quota_adjustment', {
   id: varchar('id', { length: 36 }).primaryKey(),
   userId: bigint('user_id', { mode: 'bigint' }).notNull(),
   period: varchar('period', { length: 7 }).notNull(),
-  mode: varchar('mode', { length: 16 }).$type<QuotaAdjustmentMode>().notNull(),
+  mode: varchar('mode', { length: 16 }).$type<'increase' | 'decrease' | 'target'>().notNull(),
   credits: bigint('credits', { mode: 'number' }).notNull(),
   reason: varchar('reason', { length: 500 }).notNull(),
   operatorId: bigint('operator_id', { mode: 'bigint' }).notNull(),
@@ -274,11 +274,11 @@ export const creditQuotaAdjustments = pgTable('credit_quota_adjustment', {
 export const creditQuotaBatches = pgTable('credit_quota_batch', {
   id: varchar('id', { length: 36 }).primaryKey(),
   period: varchar('period', { length: 7 }).notNull(),
-  scope: varchar('scope', { length: 16 }).$type<QuotaBatchScope>().notNull(),
+  scope: varchar('scope', { length: 16 }).$type<'pending' | 'users'>().notNull(),
   selection: jsonb('selection').notNull(),
   previewToken: varchar('preview_token', { length: 64 }).notNull(),
   previewFingerprint: varchar('preview_fingerprint', { length: 64 }).notNull(),
-  status: varchar('status', { length: 16 }).$type<QuotaBatchStatus>().notNull(),
+  status: varchar('status', { length: 16 }).$type<'previewed' | 'running' | 'completed' | 'failed' | 'superseded'>().notNull(),
   targetCount: integer('target_count').notNull().default(0),
   pendingCount: integer('pending_count').notNull().default(0),
   grantedCount: integer('granted_count').notNull().default(0),
@@ -302,7 +302,7 @@ export const creditQuotaBatchItems = pgTable('credit_quota_batch_item', {
   policySource: varchar('policy_source', { length: 16 }).$type<QuotaPolicySource>().notNull(),
   policyVersion: integer('policy_version'),
   policyId: varchar('policy_id', { length: 36 }),
-  status: varchar('status', { length: 16 }).$type<QuotaBatchItemStatus>().notNull(),
+  status: varchar('status', { length: 16 }).$type<'pending' | 'granted' | 'skipped' | 'failed'>().notNull(),
   issueId: varchar('issue_id', { length: 36 }),
   reason: varchar('reason', { length: 500 }),
   updateTime: timestamp('update_time', { mode: 'string', precision: 3 }).notNull(),
@@ -310,6 +310,60 @@ export const creditQuotaBatchItems = pgTable('credit_quota_batch_item', {
   primaryKey({ columns: [t.batchId, t.userId] }),
   index('idx_credit_quota_batch_item_status').on(t.batchId, t.status),
 ]);
+
+// ---- 单账本（migrations/024_credit_ledger.sql）----
+// 一张追加式账本是真值：发放、消费、冲正、过期都是行，没有池。credit_balance 是锁点与快照，
+// 随时能由账本重算；credit_operation 只记批量/扫描的摘要，金额以账本按 request_id 重算为准。
+export const creditLedger = pgTable('credit_ledger', {
+  id: bigserial('id', { mode: 'bigint' }).primaryKey(),
+  userId: bigint('user_id', { mode: 'bigint' }).notNull(),
+  kind: varchar('kind', { length: 16 }).$type<CreditEntryKind>().notNull(),
+  origin: varchar('origin', { length: 16 }).$type<CreditEntryOrigin>().notNull(),
+  credits: bigint('credits', { mode: 'number' }).notNull(),
+  period: varchar('period', { length: 7 }),
+  expiresAt: timestamp('expires_at', { mode: 'string', precision: 3 }),
+  chargeId: varchar('charge_id', { length: 36 }),
+  reversalOf: bigint('reversal_of', { mode: 'bigint' }),
+  reason: text('reason'),
+  operatorId: bigint('operator_id', { mode: 'bigint' }),
+  requestId: varchar('request_id', { length: 128 }),
+  ref: varchar('ref', { length: 128 }),
+  createTime: timestamp('create_time', { mode: 'string', precision: 3 }).notNull(),
+}, t => [
+  index('idx_credit_ledger_user_time').on(t.userId, t.createTime, t.id),
+  index('idx_credit_ledger_user_period').on(t.userId, t.period),
+  index('idx_credit_ledger_charge').on(t.chargeId),
+  index('idx_credit_ledger_request').on(t.requestId),
+  uniqueIndex('uk_credit_ledger_rule').on(t.userId, t.period).where(sql`kind = 'quota' AND origin = 'rule'`),
+  uniqueIndex('uk_credit_ledger_expire').on(t.userId, t.period).where(sql`kind = 'expire' AND origin = 'expiry'`),
+  uniqueIndex('uk_credit_ledger_request').on(t.userId, t.requestId).where(sql`request_id IS NOT NULL`),
+  uniqueIndex('uk_credit_ledger_reversal').on(t.reversalOf).where(sql`reversal_of IS NOT NULL`),
+  uniqueIndex('uk_credit_ledger_ref').on(t.ref).where(sql`ref IS NOT NULL`),
+]);
+
+export const creditBalance = pgTable('credit_balance', {
+  userId: bigint('user_id', { mode: 'bigint' }).primaryKey(),
+  available: bigint('available', { mode: 'number' }).notNull().default(0),
+  nextExpiryAt: timestamp('next_expiry_at', { mode: 'string', precision: 3 }),
+  updateTime: timestamp('update_time', { mode: 'string', precision: 3 }).notNull(),
+});
+
+export const creditOperations = pgTable('credit_operation', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  kind: varchar('kind', { length: 16 }).$type<CreditOperationKind>().notNull(),
+  requestId: varchar('request_id', { length: 128 }).notNull(),
+  period: varchar('period', { length: 7 }),
+  operatorId: bigint('operator_id', { mode: 'bigint' }),
+  targetCount: integer('target_count').notNull().default(0),
+  issuedCount: integer('issued_count').notNull().default(0),
+  skippedCount: integer('skipped_count').notNull().default(0),
+  failedCount: integer('failed_count').notNull().default(0),
+  credits: bigint('credits', { mode: 'number' }).notNull().default(0),
+  status: varchar('status', { length: 16 }).$type<CreditOperationStatus>().notNull(),
+  detail: jsonb('detail').$type<{ userId: string; reason: string }[]>().notNull(),
+  createTime: timestamp('create_time', { mode: 'string', precision: 3 }).notNull(),
+  finishTime: timestamp('finish_time', { mode: 'string', precision: 3 }),
+}, t => [index('idx_credit_operation_time').on(t.createTime.desc())]);
 
 // ---- 计费（migrations/012_credit_charge_entry.sql）----
 // 出账聚合根：一次 Generation 一行（generation_id 唯一）。credits / cost_usd / status 是分红推导出来的投影，
@@ -337,7 +391,7 @@ export const creditCharges = pgTable('credit_charge', {
 export const creditEntries = pgTable('credit_entry', {
   id: bigserial('id', { mode: 'bigint' }).primaryKey(),
   chargeId: varchar('charge_id', { length: 36 }).notNull(),
-  pool: varchar('pool', { length: 16 }).$type<CreditPool>().notNull(),
+  pool: varchar('pool', { length: 16 }).$type<'quota' | 'balance'>().notNull(),
   credits: bigint('credits', { mode: 'number' }).notNull(),
   reversalOf: bigint('reversal_of', { mode: 'bigint' }),
   reason: varchar('reason', { length: 500 }),

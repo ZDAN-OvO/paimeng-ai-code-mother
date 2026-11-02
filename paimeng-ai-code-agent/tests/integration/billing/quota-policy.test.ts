@@ -10,15 +10,16 @@ import {
 } from '../../support/billing';
 import { db, getPool } from '@/server/infra/db';
 import {
-  creditAccounts, creditGrants, creditQuotaAdjustments, creditQuotaIssues, creditQuotaPolicies, sessions, users,
+  creditBalance, creditLedger, creditQuotaPolicies, sessions, users,
 } from '@/server/infra/schema';
-import { ensurePeriodQuota, issueMonthlyQuota } from '@/server/billing/quota';
-import { quotaFactsOfPeriod } from '@/server/billing/quota-facts';
+import { ensurePeriodQuota, issuePendingQuota, ruleEntryOf } from '@/server/billing/quota';
+import { balanceFactsOf } from '@/server/billing/expiry';
+import { rebuildBalance } from '@/server/billing/ledger';
 import { nextPeriodOf } from '@/server/billing/quota-policy';
 import { nextPeriodStart, periodOf } from '@/server/billing/period';
 import {
   monthlyQuotaCredits,
-  type QuotaIssueView, type QuotaPolicyAdminView, type QuotaPolicySaveReceipt,
+  type QuotaPolicyAdminView, type QuotaPolicySaveReceipt,
 } from '@/shared/billing';
 
 /**
@@ -36,8 +37,7 @@ const nextAt = nextPeriodStart(new Date());
 
 beforeAll(async () => {
   loadBillingDatabase();
-  await applyBillingMigrations(
-    '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql', '023_app_config_model_config.sql');
+  await applyBillingMigrations('024_credit_ledger.sql');
   admin = await createBillingUser({ role: 'admin' });
 });
 
@@ -49,10 +49,8 @@ afterAll(async () => {
   await db().execute(sql`delete from credit_entry where charge_id in (
     select generation_id from credit_charge where user_id in (${scope}))`);
   await db().execute(sql`delete from credit_charge where user_id in (${scope})`);
-  await db().delete(creditQuotaAdjustments).where(inArray(creditQuotaAdjustments.userId, userIds));
-  await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, userIds));
-  await db().delete(creditGrants).where(inArray(creditGrants.userId, userIds));
-  await db().delete(creditAccounts).where(inArray(creditAccounts.userId, userIds));
+  await db().delete(creditLedger).where(inArray(creditLedger.userId, userIds));
+  await db().delete(creditBalance).where(inArray(creditBalance.userId, userIds));
   await db().delete(sessions).where(inArray(sessions.userId, userIds));
   await db().delete(users).where(inArray(users.id, userIds));
   await getPool().end();
@@ -86,17 +84,13 @@ async function savePolicyOk(payload: Record<string, unknown>): Promise<QuotaPoli
   return receipt;
 }
 
-async function issuesOf(userId: string, targetPeriod: string): Promise<typeof creditQuotaIssues.$inferSelect[]> {
-  return db().select().from(creditQuotaIssues)
-    .where(and(eq(creditQuotaIssues.userId, BigInt(userId)), eq(creditQuotaIssues.period, targetPeriod)));
-}
-
-async function grantsOf(userId: string, targetPeriod: string) {
-  return db().select().from(creditGrants)
+async function rulesOf(userId: string, targetPeriod: string) {
+  return db().select().from(creditLedger)
     .where(and(
-      eq(creditGrants.userId, BigInt(userId)),
-      eq(creditGrants.source, 'monthly_quota'),
-      eq(creditGrants.period, targetPeriod),
+      eq(creditLedger.userId, BigInt(userId)),
+      eq(creditLedger.kind, 'quota'),
+      eq(creditLedger.origin, 'rule'),
+      eq(creditLedger.period, targetPeriod),
     ));
 }
 
@@ -177,8 +171,8 @@ describe('月度配额策略版本', () => {
   });
 });
 
-describe('基础发放与 0 配额', () => {
-  it('下一账期策略为 0 时只写 issue、不写零金额 grant；重复 ensure 不重复', async () => {
+describe('基础发放与 0 积分', () => {
+  it('下一账期规则为 0 时写一条 0 积分回执行，不增加可用额；重复 ensure 不重复', async () => {
     const user = await newUser();
     await savePolicyOk({
       scope: 'global', effectivePeriod: nextPeriod, mode: 'override', credits: 0,
@@ -186,74 +180,66 @@ describe('基础发放与 0 配额', () => {
     });
 
     const first = await ensurePeriodQuota(user.id, nextAt);
-    expect(first).toMatchObject({ granted: true, period: nextPeriod });
-    expect(first.issue).toMatchObject({
-      baseCredits: 0, status: 'granted', policySource: 'global', policyVersion: 3, grantId: null,
-    });
-    expect(await grantsOf(user.id, nextPeriod)).toHaveLength(0);
-    expect(await issuesOf(user.id, nextPeriod)).toHaveLength(1);
+    expect(first).toMatchObject({ granted: true, period: nextPeriod, credits: 0 });
+    expect((await rulesOf(user.id, nextPeriod))[0]).toMatchObject({ credits: 0, origin: 'rule' });
 
     const second = await ensurePeriodQuota(user.id, nextAt);
-    expect(second).toMatchObject({ granted: false, period: nextPeriod });
-    expect(second.issue.baseCredits).toBe(0);
-    const facts = await quotaFactsOfPeriod(db(), BigInt(user.id), nextPeriod);
-    expect(facts).toMatchObject({ baseCredits: 0, remainingCredits: 0, issueStatus: 'granted', policySource: 'global' });
+    expect(second).toMatchObject({ granted: false, period: nextPeriod, credits: 0 });
+    expect(await rulesOf(user.id, nextPeriod)).toHaveLength(1);
+
+    // 该账期没有可用额，但「已发」是事实。
+    await rebuildBalance(user.id, nextAt);
+    expect((await balanceFactsOf(user.id, nextAt)).available).toBe(0);
+    expect(await ruleEntryOf(db(), BigInt(user.id), nextPeriod)).toMatchObject({ credits: 0 });
   });
 
-  it('已有 legacy grant 时以 grant 为准，不按新策略重解释，也不重复写 grant', async () => {
+  it('已有的规则行不会被后来的策略重新解释', async () => {
     const user = await newUser();
-    // 模拟迁移前数据：保留 grant，删掉回填 issue。
-    await db().delete(creditQuotaAdjustments).where(eq(creditQuotaAdjustments.userId, BigInt(user.id)));
-    await db().delete(creditQuotaIssues).where(eq(creditQuotaIssues.userId, BigInt(user.id)));
-    const [legacy] = await grantsOf(user.id, period);
-    expect(legacy).toBeTruthy();
-    const before = await grantsOf(user.id, period);
+    const before = await rulesOf(user.id, period);
+    expect(before).toHaveLength(1);
+    expect(before[0].credits).toBe(monthlyQuotaCredits);
 
-    const result = await ensurePeriodQuota(user.id);
-    expect(result.granted).toBe(true);
-    expect(result.issue).toMatchObject({
-      baseCredits: legacy.credits, policySource: 'legacy', grantId: legacy.id, status: 'granted',
+    // 改的是下一账期，不影响已发的当月。
+    await savePolicyOk({
+      scope: 'user', userId: user.id, effectivePeriod: nextPeriod, mode: 'override', credits: 999,
+      expectedRevision: null, note: '未来 999',
     });
-    expect(await grantsOf(user.id, period)).toHaveLength(before.length);
+    const result = await ensurePeriodQuota(user.id);
+    expect(result).toMatchObject({ granted: false, credits: monthlyQuotaCredits });
+    expect((await rulesOf(user.id, period))[0].credits).toBe(monthlyQuotaCredits);
   });
 
-  it('并发 ensure 同一用户同一账期只落一条 issue 与一笔 grant', async () => {
+  it('并发 ensure 同一用户同一账期只落一行', async () => {
     const user = await newUser();
-    // 使用一个还没有发过的账期：下下个月。
-    const at = nextPeriodStart(new Date(nextAt.getTime() + 40 * 86400000));
+    const at = nextPeriodStart(new Date(nextAt.getTime() + 40 * 86_400_000));
     const target = periodOf(at);
-    // 前一个用例把下一账期设成了 0；这个更晚的账期显式给 300，避免继承 0。
     await savePolicyOk({
       scope: 'global', effectivePeriod: target, mode: 'override', credits: 300,
       expectedRevision: null, note: '并发用例：300',
     });
     const results = await Promise.all([ensurePeriodQuota(user.id, at), ensurePeriodQuota(user.id, at)]);
     expect(results.filter(result => result.granted)).toHaveLength(1);
-    expect(await issuesOf(user.id, target)).toHaveLength(1);
-    expect(await grantsOf(user.id, target)).toHaveLength(1);
+    expect(await rulesOf(user.id, target)).toHaveLength(1);
   });
 
-  it('批量补发按 issue 去重：0 配额用户也会被记为已发，dry run 不写库', async () => {
+  it('批量补发按规则行去重：0 积分用户也算已处理，dry run 不写库', async () => {
     const zeroUser = await newUser();
     const paidUser = await newUser();
-    // 下一账期全局已在上面的用例改成 0；给 paidUser 一个 120 的用户覆盖。
     await savePolicyOk({
       scope: 'user', userId: paidUser.id, effectivePeriod: nextPeriod, mode: 'override', credits: 120,
       expectedRevision: null, note: '批量用例：120',
     });
 
-    const dryRun = await issueMonthlyQuota({ at: nextAt, dryRun: true, userIds: [zeroUser.id, paidUser.id] });
+    const dryRun = await issuePendingQuota({ at: nextAt, dryRun: true, userIds: [zeroUser.id, paidUser.id] });
     expect(dryRun).toMatchObject({ period: nextPeriod, dryRun: true, scanned: 2, issued: 0 });
-    expect(await issuesOf(zeroUser.id, nextPeriod)).toHaveLength(0);
+    expect(await rulesOf(zeroUser.id, nextPeriod)).toHaveLength(0);
 
-    const applied = await issueMonthlyQuota({ at: nextAt, userIds: [zeroUser.id, paidUser.id] });
+    const applied = await issuePendingQuota({ at: nextAt, userIds: [zeroUser.id, paidUser.id] });
     expect(applied).toMatchObject({ period: nextPeriod, issued: 2, granted: 1, zero: 1, credits: 120 });
-    expect((await issuesOf(zeroUser.id, nextPeriod))[0].baseCredits).toBe(0);
-    expect((await issuesOf(paidUser.id, nextPeriod))[0].baseCredits).toBe(120);
-    expect(await grantsOf(zeroUser.id, nextPeriod)).toHaveLength(0);
-    expect(await grantsOf(paidUser.id, nextPeriod)).toHaveLength(1);
+    expect((await rulesOf(zeroUser.id, nextPeriod))[0].credits).toBe(0);
+    expect((await rulesOf(paidUser.id, nextPeriod))[0].credits).toBe(120);
 
-    const rerun = await issueMonthlyQuota({ at: nextAt, userIds: [zeroUser.id, paidUser.id] });
+    const rerun = await issuePendingQuota({ at: nextAt, userIds: [zeroUser.id, paidUser.id] });
     expect(rerun.scanned).toBe(0);
     expect(rerun.issued).toBe(0);
   });

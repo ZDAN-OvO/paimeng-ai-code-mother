@@ -130,8 +130,8 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
   it('先扣配额再扣余额，配额不负、余额可为负，charge 是 entries 的投影', async () => {
     const owner = await withoutMonthlyQuota(await newUser());
     await seedRate({ modelName: 'model-pools' });
-    await grant(owner.id, 'quota', 100);
-    await grant(owner.id, 'balance', 10);
+    await grant(owner.id, 'limited', 100);
+    await grant(owner.id, 'lasting', 10);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id, messageId: 'msg-pools' });
     // 500k 未命中输入 × 600 / 1M = 300 Credit
@@ -149,17 +149,17 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     expect(charge.usageSnapshot).toMatchObject([{ modelName: 'model-pools', input: 500_000, estimated: false, priced: true }]);
 
     const entries = await entriesOfCharge(charge.generationId);
-    expect(entries.map(entry => ({ pool: entry.pool, credits: entry.credits })))
-      .toEqual([{ pool: 'quota', credits: 100 }, { pool: 'balance', credits: 200 }]);
+    expect(entries.map(entry => ({ kind: entry.kind, credits: entry.credits })))
+      .toEqual([{ kind: 'consume', credits: -100 }, { kind: 'consume', credits: -200 }]);
     expect(entries.every(entry => entry.reversalOf === null)).toBe(true);
     expect(await effectiveCreditsOf(charge.generationId)).toBe(300);
-    expect(await balancesOf(owner.id)).toEqual({ quota: 0, balance: -190 });
+    expect(await balancesOf(owner.id)).toEqual({ available: (0) + (-190), limited: 0, lasting: -190 });
   });
 
   it('改价只追加 JSON 价格版本，已结算 Charge 的金额与快照不变，新步骤用新价', async () => {
     const owner = await withoutMonthlyQuota(await newUser());
     await seedRate({ modelName: 'model-price-change', creditInputMiss: 600 });
-    await grant(owner.id, 'balance', 1000);
+    await grant(owner.id, 'lasting', 1000);
     const app = await newApp(owner);
     const firstGeneration = await seedGeneration({ appId: app.id, userId: owner.id, messageId: 'msg-price-first' });
     // 100k 未命中输入 × 600 / 1M = 60 Credit
@@ -174,7 +174,7 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     const [after] = await chargeRows(firstGeneration);
     expect(after?.credits).toBe(before?.credits);
     expect(after?.rateCardSnapshot).toEqual(before?.rateCardSnapshot);
-    expect((await entriesOfCharge(firstGeneration)).map(entry => entry.credits)).toEqual([60]);
+    expect((await entriesOfCharge(firstGeneration)).map(entry => entry.credits)).toEqual([-60]);
 
     const secondGeneration = await seedGeneration({ appId: app.id, userId: owner.id, messageId: 'msg-price-second' });
     await seedStep(secondGeneration, { modelName: 'model-price-change', input: 100_000 });
@@ -186,7 +186,7 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
   it('配额为零时只扣余额，余额可以变成欠款', async () => {
     const owner = await withoutMonthlyQuota(await newUser());
     await seedRate({ modelName: 'model-debt' });
-    await grant(owner.id, 'balance', 5);
+    await grant(owner.id, 'lasting', 5);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
     await seedStep(generationId, { modelName: 'model-debt', input: 100_000 });
@@ -195,15 +195,15 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
 
     const [charge] = await chargeRows(generationId);
     expect(charge.credits).toBe(60);
-    expect((await entriesOfCharge(charge.generationId)).map(entry => ({ pool: entry.pool, credits: entry.credits })))
-      .toEqual([{ pool: 'balance', credits: 60 }]);
-    expect(await balancesOf(owner.id)).toEqual({ quota: 0, balance: -55 });
+    expect((await entriesOfCharge(charge.generationId)).map(entry => ({ kind: entry.kind, credits: entry.credits })))
+      .toEqual([{ kind: 'consume', credits: -60 }]);
+    expect(await balancesOf(owner.id)).toEqual({ available: (0) + (-55), limited: 0, lasting: -55 });
   });
 
   it('重复结算与并发结算都只产生一条 charge、只扣一次钱', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'model-idempotent' });
-    await grant(owner.id, 'quota', 1000);
+    await grant(owner.id, 'limited', 1000);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
     await seedStep(generationId, { modelName: 'model-idempotent', input: 100_000 });
@@ -216,13 +216,13 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     expect(charges).toHaveLength(1);
     expect(charges[0].credits).toBe(60);
     expect(await entriesOfCharge(charges[0].generationId)).toHaveLength(1);
-    expect(await balancesOf(owner.id)).toEqual({ quota: monthlyQuotaCredits + 1000 - 60, balance: 0 });
+    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits + 1000 - 60) + (0), limited: monthlyQuotaCredits + 1000 - 60, lasting: 0 });
   });
 
   it('只有 build 步骤的终态也写一条 0 Credit 的 charge，不写 entry', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'model-build-only' });
-    await grant(owner.id, 'quota', 100);
+    await grant(owner.id, 'limited', 100);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id, status: 'failed', stopReason: 'model-error' });
     // build 步骤的 token 不参与计价：计费只认 kind='model'
@@ -233,13 +233,13 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     const [charge] = await chargeRows(generationId);
     expect(charge).toMatchObject({ credits: 0, status: 'settled', estimatedSteps: 0 });
     expect(await entriesOfCharge(charge.generationId)).toHaveLength(0);
-    expect(await balancesOf(owner.id)).toEqual({ quota: monthlyQuotaCredits + 100, balance: 0 });
+    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits + 100) + (0), limited: monthlyQuotaCredits + 100, lasting: 0 });
   });
 
   it('注册即得的当期配额先于余额池被扣减', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'model-signup' });
-    await grant(owner.id, 'balance', 100);
+    await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
     // 50k 未命中输入 × 600 / 1M = 30 Credit
@@ -247,9 +247,9 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
 
     await settleGenerationBilling(generationId);
 
-    expect((await entriesOfCharge(generationId)).map(entry => ({ pool: entry.pool, credits: entry.credits })))
-      .toEqual([{ pool: 'quota', credits: 30 }]);
-    expect(await balancesOf(owner.id)).toEqual({ quota: monthlyQuotaCredits - 30, balance: 100 });
+    expect((await entriesOfCharge(generationId)).map(entry => ({ kind: entry.kind, credits: entry.credits })))
+      .toEqual([{ kind: 'consume', credits: -30 }]);
+    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits - 30) + (100), limited: monthlyQuotaCredits - 30, lasting: 100 });
   });
 
   it('非终态的 generation 不结算', async () => {
@@ -266,7 +266,7 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
 
   it('查不到费率时整单待处理：credits 为 0、不写 entry、不动余额', async () => {
     const owner = await newUser();
-    await grant(owner.id, 'balance', 50);
+    await grant(owner.id, 'lasting', 50);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
     await seedStep(generationId, { providerId: 'no-such-provider', modelName: 'no-such-model', input: 100_000 });
@@ -277,13 +277,13 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     expect(charge).toMatchObject({ credits: 0, status: 'unpriced', estimatedSteps: 0 });
     expect(charge.usageSnapshot).toMatchObject([{ priced: false, estimated: false, input: 100_000 }]);
     expect(await entriesOfCharge(charge.generationId)).toHaveLength(0);
-    expect(await balancesOf(owner.id)).toEqual({ quota: monthlyQuotaCredits, balance: 50 });
+    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits) + (50), limited: monthlyQuotaCredits, lasting: 50 });
   });
 
   it('用量缺失时按已知步骤均值估算，账单标记 estimated 并保留估算依据', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'model-estimate' });
-    await grant(owner.id, 'balance', 100);
+    await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
     await seedStep(generationId, { modelName: 'model-estimate', input: 1_000, output: 400, stepNumber: 0 });
@@ -298,7 +298,7 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
       { estimated: false, sampleSteps: 1 },
       { estimated: true, sampleSteps: 1, input: null, billedInput: 1_000, billedOutput: 400 },
     ]);
-    expect(await balancesOf(owner.id)).toEqual({ quota: monthlyQuotaCredits - 3, balance: 100 });
+    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits - 3) + (100), limited: monthlyQuotaCredits - 3, lasting: 100 });
   });
 });
 
@@ -306,7 +306,7 @@ describe('终态路径都接上了结算', () => {
   it('发布成功（ready）后出现一条 charge，重复发布不重复扣费', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'model-publish' });
-    await grant(owner.id, 'quota', 1000);
+    await grant(owner.id, 'limited', 1000);
     const app = await newApp(owner);
     const started = await startGeneration({
       app, userId: owner.id, requestId: randomUUID(), holder: 'settlement-publish', prompt: '做一个页面',
@@ -329,13 +329,13 @@ describe('终态路径都接上了结算', () => {
     const charges = await chargeRows(started.generationId);
     expect(charges).toHaveLength(1);
     expect(charges[0]).toMatchObject({ credits: 60, status: 'settled' });
-    expect(await balancesOf(owner.id)).toEqual({ quota: monthlyQuotaCredits + 1000 - 60, balance: 0 });
+    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits + 1000 - 60) + (0), limited: monthlyQuotaCredits + 1000 - 60, lasting: 0 });
   });
 
   it('没有源码改动（no-changes）同样结算', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'model-nochange' });
-    await grant(owner.id, 'balance', 100);
+    await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const started = await startGeneration({
       app, userId: owner.id, requestId: randomUUID(), holder: 'settlement-nochange', prompt: '只回答',
@@ -354,13 +354,13 @@ describe('终态路径都接上了结算', () => {
 
     const [charge] = await chargeRows(started.generationId);
     expect(charge).toMatchObject({ credits: 30, status: 'settled' });
-    expect(await balancesOf(owner.id)).toEqual({ quota: monthlyQuotaCredits - 30, balance: 100 });
+    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits - 30) + (100), limited: monthlyQuotaCredits - 30, lasting: 100 });
   });
 
   it('取消（cancelled）也结算，并把 messageId 带到 generation 上', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'model-cancel' });
-    await grant(owner.id, 'quota', 1000);
+    await grant(owner.id, 'limited', 1000);
     const app = await newApp(owner);
     const started = await startGeneration({
       app, userId: owner.id, requestId: randomUUID(), holder: 'settlement-cancel', prompt: '做一个页面',
@@ -388,7 +388,7 @@ describe('终态路径都接上了结算', () => {
   it('恢复（interrupted）也结算，且只结算一次', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'model-recover' });
-    await grant(owner.id, 'balance', 100);
+    await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const started = await startGeneration({
       app, userId: owner.id, requestId: randomUUID(), holder: 'settlement-recover', prompt: '做一个页面',
@@ -409,13 +409,13 @@ describe('终态路径都接上了结算', () => {
     const charges = await chargeRows(started.generationId);
     expect(charges).toHaveLength(1);
     expect(charges[0].credits).toBe(30);
-    expect(await balancesOf(owner.id)).toEqual({ quota: monthlyQuotaCredits - 30, balance: 100 });
+    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits - 30) + (100), limited: monthlyQuotaCredits - 30, lasting: 100 });
   });
 
   it('接管写权限时被收束的多条 generation 全部结算', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'model-takeover' });
-    await grant(owner.id, 'quota', 1000);
+    await grant(owner.id, 'limited', 1000);
     const app = await newApp(owner);
     await ensureAuthority(app.id);
     const staleIds: string[] = [];
@@ -436,7 +436,7 @@ describe('终态路径都接上了结算', () => {
       expect(charges).toHaveLength(1);
       expect(charges[0].credits).toBe(60);
     }
-    expect(await balancesOf(owner.id)).toEqual({ quota: monthlyQuotaCredits + 1000 - 120, balance: 0 });
+    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits + 1000 - 120) + (0), limited: monthlyQuotaCredits + 1000 - 120, lasting: 0 });
   });
 });
 
@@ -445,8 +445,8 @@ describe('GET billing/charges：只读自己的 App，成本只给 Admin', () =>
     const owner = await newUser();
     const other = await newUser();
     await seedRate({ modelName: 'model-http' });
-    await grant(owner.id, 'quota', 100);
-    await grant(owner.id, 'balance', 10);
+    await grant(owner.id, 'limited', 100);
+    await grant(owner.id, 'lasting', 10);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id, messageId: 'msg-http' });
     await seedStep(generationId, { modelName: 'model-http', input: 150_000 });
@@ -471,7 +471,7 @@ describe('GET billing/charges：只读自己的 App，成本只给 Admin', () =>
       generationStatus: 'ready',
       stopReason: 'completed',
     });
-    expect(envelope.data[0].entries).toEqual([{ pool: 'quota', credits: 90 }]);
+    expect(envelope.data[0].entries).toEqual([{ bucket: 'limited', credits: 90 }]);
     expect(envelope.data[0].reversals).toEqual([]);
     // 普通用户看不到平台成本
     expect(envelope.data[0]).not.toHaveProperty('costUsd');
@@ -482,7 +482,7 @@ describe('GET billing/charges：只读自己的 App，成本只给 Admin', () =>
     await seedRate({
       modelName: 'model-cost', usdInputMiss: '0.300000', usdInputHit: '0.006000', usdOutput: '1.200000',
     });
-    await grant(admin.id, 'balance', 100);
+    await grant(admin.id, 'lasting', 100);
     const app = await newApp(admin);
     const generationId = await seedGeneration({ appId: app.id, userId: admin.id });
     await seedStep(generationId, { modelName: 'model-cost', input: 1_000, output: 500 });

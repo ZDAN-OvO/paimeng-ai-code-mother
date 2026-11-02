@@ -3,23 +3,23 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, getPool, now } from '@/server/infra/db';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import { failure } from '@/server/infra/http';
 import {
-  appAuthority, apps, creditAccounts, creditCharges, creditGrants, creditQuotaAdjustments, creditQuotaIssues, generationExecutions, generationInputs,
+  appAuthority, apps, creditBalance, creditCharges, creditLedger, generationExecutions, generationInputs,
   generations, users,
 } from '@/server/infra/schema';
 import { appendInput } from '@/server/generation/control-store';
 import { startGeneration } from '@/server/generation/generation-lifecycle';
-import { availableCredits, recordGrant } from '@/server/billing/ledger';
+import { availableCredits, rebuildBalance } from '@/server/billing/ledger';
 import { assertCanStartGeneration, ensurePeriodQuota } from '@/server/billing/quota';
 import { accountSnapshot } from '@/server/billing/ledger';
-import { periodOf } from '@/server/billing/period';
+import { naiveTime, periodOf, periodRange } from '@/server/billing/period';
 import { insufficientCreditsCode, monthlyQuotaCredits } from '@/shared/billing';
 import type { WorkspaceApp } from '@/server/workspace/workspace';
-import { applyBillingMigrations, envelopeOf, loadBillingDatabase } from '../../support/billing';
+import { applyBillingMigrations, envelopeOf, grantBillingCredits, loadBillingDatabase, seedLedgerEntry } from '../../support/billing';
 
 /**
  * 准入：可用 Credit ≤ 0 时不创建新的 Generation（票 94）。
@@ -58,19 +58,25 @@ async function newApp(userId: string): Promise<WorkspaceApp> {
 }
 
 /**
- * 把两池余额快照改到指定值。先确保当期配额已发放——否则下一次准入会当场补发 500，
- * 就等于没有把配额用完；快照本身就是结算与准入共同读取的余额事实。
+ * 把一个人的账本改到指定值：`limited` 记当前账期的限时积分，`lasting` 记长期积分。
+ * 先确保当期规则已发（否则下一次准入会当场补发 500），再清空重写。
  */
-async function setBalances(userId: string, quota: number, balance: number, at?: Date): Promise<void> {
+async function setBalances(userId: string, limited: number, lasting: number, at: Date = new Date()): Promise<void> {
   await ensurePeriodQuota(userId, at);
-  for (const [pool, value] of [['quota', quota], ['balance', balance]] as const) {
-    await db().insert(creditAccounts)
-      .values({ userId: BigInt(userId), pool, balance: value, updateTime: now() })
-      .onConflictDoUpdate({
-        target: [creditAccounts.userId, creditAccounts.pool],
-        set: { balance: value, updateTime: now() },
-      });
+  const period = periodOf(at);
+  // 保留当期规则行（否则下一次准入会当场补发 500），把它的金额改成想要的限时余额；
+  // 其余流水清空，再按需要补一条长期积分。
+  await db().execute(sql`delete from credit_ledger
+    where user_id = ${BigInt(userId)}
+      and not (kind = 'quota' and origin = 'rule' and period = ${period})`);
+  await db().execute(sql`update credit_ledger set credits = ${limited}
+    where user_id = ${BigInt(userId)} and kind = 'quota' and origin = 'rule' and period = ${period}`);
+  if (lasting !== 0) {
+    await db().insert(creditLedger).values({
+      userId: BigInt(userId), kind: 'grant', origin: 'manual', credits: lasting, createTime: now(),
+    });
   }
+  await rebuildBalance(userId, at);
 }
 
 function startInput(app: WorkspaceApp, userId: string, overrides: { requestId?: string } = {}) {
@@ -88,8 +94,7 @@ async function generationRowsOf(appId: string) {
 beforeAll(async () => {
   loadBillingDatabase();
   process.env.GENERATION_MAX_CONCURRENT = '64';
-  await applyBillingMigrations(
-    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '014_credit_entry_audit.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql', '023_app_config_model_config.sql');
+  await applyBillingMigrations('024_credit_ledger.sql');
   tree = await realpath(await mkdtemp(join(tmpdir(), 'paimeng-admission-')));
   runtimeRoot = join(tree, 'runtime');
   snapshotsRoot = join(tree, 'snapshots');
@@ -110,28 +115,26 @@ afterAll(async () => {
     await db().delete(apps).where(inArray(apps.id, createdAppIds));
   }
   if (userIds.length) {
-    await db().delete(creditQuotaAdjustments).where(inArray(creditQuotaAdjustments.userId, userIds));
-    await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, userIds));
-    await db().delete(creditGrants).where(inArray(creditGrants.userId, userIds));
-    await db().delete(creditAccounts).where(inArray(creditAccounts.userId, userIds));
+    await db().delete(creditLedger).where(inArray(creditLedger.userId, userIds));
+    await db().delete(creditBalance).where(inArray(creditBalance.userId, userIds));
     await db().delete(users).where(inArray(users.id, userIds));
   }
   await rm(tree, { recursive: true, force: true }).catch(() => undefined);
   await getPool().end().catch(() => undefined);
 });
 
-describe('准入判定：先补当期配额，再按配额池 + 余额池判定', () => {
+describe('准入判定：先补当期规则与过期，再按可用积分判定', () => {
   it('可用为 0 时拒绝，文案给出当前可用 Credit 与下一步', async () => {
     const userId = await newUser();
     await setBalances(userId, 0, 0);
 
-    expect(await availableCredits(userId)).toEqual({ quota: 0, balance: 0, total: 0 });
+    expect(await availableCredits(userId)).toMatchObject({ available: 0, limited: 0, lasting: 0 });
     const rejection = await assertCanStartGeneration(userId).catch(error => error);
     expect(rejection).toMatchObject({ status: 402, code: insufficientCreditsCode });
-    expect(rejection.message).toContain('当前可用 Credit 为 0');
-    expect(rejection.message).toContain('配额池 0');
-    expect(rejection.message).toContain('余额池 0');
-    expect(rejection.message).toContain('联系管理员补充 Credit');
+    expect(rejection.message).toContain('当前可用积分为 0');
+    expect(rejection.message).toContain('限时 0');
+    expect(rejection.message).toContain('长期 0');
+    expect(rejection.message).toContain('联系管理员补充积分');
     // 支付通道还没接，文案里不能出现充值/购买入口这种兑现不了的话。
     expect(rejection.message).not.toMatch(/充值|立即购买|购买 Credit/u);
   });
@@ -140,35 +143,37 @@ describe('准入判定：先补当期配额，再按配额池 + 余额池判定'
     const userId = await newUser();
 
     await expect(assertCanStartGeneration(userId)).resolves.toBeUndefined();
-    const grants = await db().select().from(creditGrants)
-      .where(and(eq(creditGrants.userId, BigInt(userId)), eq(creditGrants.source, 'monthly_quota')));
-    expect(grants.map(grant => grant.period)).toEqual([periodOf(new Date())]);
-    expect(await availableCredits(userId)).toEqual({ quota: monthlyQuotaCredits, balance: 0, total: monthlyQuotaCredits });
+    const rules = await db().select().from(creditLedger)
+      .where(and(eq(creditLedger.userId, BigInt(userId)), eq(creditLedger.kind, 'quota'), eq(creditLedger.origin, 'rule')));
+    expect(rules.map(row => row.period)).toEqual([periodOf(new Date())]);
+    expect(await availableCredits(userId)).toMatchObject({ available: monthlyQuotaCredits, limited: monthlyQuotaCredits, lasting: 0 });
   });
 
-  it('欠款（余额池为负）同样拒绝，可用 Credit 如实显示为负数', async () => {
+  it('欠款（长期积分为负）同样拒绝，可用积分如实显示为负数', async () => {
     const userId = await newUser();
     await setBalances(userId, 0, -20);
 
     const rejection = await assertCanStartGeneration(userId).catch(error => error);
     expect(rejection).toMatchObject({ status: 402, code: insufficientCreditsCode });
-    expect(rejection.message).toContain('当前可用 Credit 为 -20');
+    expect(rejection.message).toContain('当前可用积分为 -20');
   });
 
-  it('可用为正时放行，余额池单独为正也算', async () => {
+  it('可用为正时放行，长期积分单独为正也算', async () => {
     const adminGranted = await newUser();
-    await recordGrant({ userId: adminGranted, pool: 'balance', credits: 10, source: 'admin_grant' });
+    await grantBillingCredits(adminGranted, 'lasting', 10);
     await expect(assertCanStartGeneration(adminGranted)).resolves.toBeUndefined();
   });
 
-  it('Overdraft 不是可启动额度：只有透支线、两池见底时仍然拒绝', async () => {
+  it('Overdraft 不是可启动额度：只有透支线、可用为 0 时仍然拒绝', async () => {
     const userId = await newUser();
-    await recordGrant({ userId, pool: 'balance', credits: 10_000, source: 'purchase' });
     await setBalances(userId, 0, 0);
+    await seedLedgerEntry({ userId, kind: 'topup', origin: 'payment', credits: 10_000, createTime: now() });
+    // 把充进来的花掉：可用为 0，但透支线仍由近 60 天充值推导。
+    await seedLedgerEntry({ userId, kind: 'grant', origin: 'manual', credits: -10_000, createTime: now() });
 
     const snapshot = await accountSnapshot(userId);
     expect(snapshot.overdraft).toBeGreaterThan(0);
-    expect(snapshot.total).toBe(0);
+    expect(snapshot.available).toBe(0);
     await expect(assertCanStartGeneration(userId)).rejects.toMatchObject({ status: 402, code: insufficientCreditsCode });
   });
 
@@ -181,7 +186,7 @@ describe('准入判定：先补当期配额，再按配额池 + 余额池判定'
     await expect(assertCanStartGeneration(userId, marchEnd))
       .rejects.toMatchObject({ status: 402, code: insufficientCreditsCode });
     await expect(assertCanStartGeneration(userId, aprilStart)).resolves.toBeUndefined();
-    expect(await availableCredits(userId)).toEqual({ quota: monthlyQuotaCredits, balance: 0, total: monthlyQuotaCredits });
+    expect(await availableCredits(userId, aprilStart)).toMatchObject({ available: monthlyQuotaCredits, limited: monthlyQuotaCredits, lasting: 0 });
   });
 });
 
@@ -198,7 +203,7 @@ describe('startGeneration：被拒时不写任何状态，也不占住写权限'
     expect(await db().select().from(generationExecutions).where(eq(generationExecutions.appId, BigInt(app.id)))).toEqual([]);
     expect(await db().select().from(generationInputs).where(eq(generationInputs.appId, BigInt(app.id)))).toEqual([]);
     // 不预扣：拒绝不会留下任何金额变动。
-    expect(await availableCredits(userId)).toEqual({ quota: 0, balance: 0, total: 0 });
+    expect(await availableCredits(userId)).toMatchObject({ available: 0, limited: 0, lasting: 0 });
   });
 
   it('被拒之后发放额度即可开始，且拿到的是第一代写权限（失败的请求没有占住它）', async () => {
@@ -207,7 +212,7 @@ describe('startGeneration：被拒时不写任何状态，也不占住写权限'
     await setBalances(userId, 0, 0);
     await expect(startInput(app, userId)).rejects.toMatchObject({ status: 402 });
 
-    await recordGrant({ userId, pool: 'balance', credits: 5, source: 'admin_grant' });
+    await grantBillingCredits(userId, 'lasting', 5);
     const started = await startInput(app, userId);
     expect(started).toMatchObject({ epoch: 1, status: 'generating', replay: false });
     const [authority] = await db().select().from(appAuthority).where(eq(appAuthority.appId, BigInt(app.id)));
@@ -238,7 +243,7 @@ describe('startGeneration：被拒时不写任何状态，也不占住写权限'
     expect(rejected && (rejected as PromiseRejectedResult).reason).toMatchObject({ status: 409 });
 
     expect(await generationRowsOf(app.id)).toHaveLength(1);
-    expect(await availableCredits(userId)).toEqual({ quota: 1, balance: 0, total: 1 });
+    expect(await availableCredits(userId)).toMatchObject({ available: 1, limited: 1, lasting: 0 });
   });
 
   it('插话与排队输入在余额为 0 时仍可投递：不建新 Generation、不预扣；下一笔新请求按准入被拦', async () => {
@@ -261,7 +266,7 @@ describe('startGeneration：被拒时不写任何状态，也不占住写权限'
     await expect(startInput(app, userId)).rejects.toMatchObject({ status: 402, code: insufficientCreditsCode });
     expect(await generationRowsOf(app.id)).toHaveLength(1);
     expect(await db().select().from(creditCharges).where(eq(creditCharges.appId, BigInt(app.id)))).toEqual([]);
-    expect(await availableCredits(userId)).toEqual({ quota: 0, balance: 0, total: 0 });
+    expect(await availableCredits(userId)).toMatchObject({ available: 0, limited: 0, lasting: 0 });
   });
 
   it('40201 的信封契约：走真实的 failure() 是 HTTP 402 + code 40201 + data null', async () => {

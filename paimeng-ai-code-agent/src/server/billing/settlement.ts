@@ -11,7 +11,7 @@ import {
 import { stopReasonFrom } from '@/server/generation/generation-accounting';
 import { readRates } from './rate-card';
 import {
-  accountSnapshot, chargePools, expectedBalancesOf, insertCharge, projectCharge, reprojectCharge,
+  accountSnapshot, auditBalance, insertCharge, postConsume, projectCharge, reprojectCharge,
   reverseChargeTx, type CreditChargeRow,
 } from './ledger';
 import { priceSteps, resolveStepRate, type PricedStep, type RatedStep } from './pricing';
@@ -148,7 +148,7 @@ async function completeChargeTx(tx: Transaction, charge: CreditChargeRow): Promi
     rateCardSnapshot: mergeRates(charge.rateCardSnapshot, pricing.rates),
   });
   if (delta > 0) {
-    await chargePools(tx, { chargeId: charge.generationId, userId: charge.userId, credits: delta, createTime: now() });
+    await postConsume(tx, { chargeId: charge.generationId, userId: charge.userId, credits: delta, createTime: now() });
   }
   // 待处理的账单必须能被发现：结算不能因为缺费率而阻断生成，所以这里只告警（不抛错）。
   if (pricing.status === 'unpriced' || pricing.status === 'partial') {
@@ -372,18 +372,11 @@ function chargeReasonOf(status: ChargeStatus, missingSteps: number, unpriced: nu
 }
 
 /**
- * 以 `credit_grant` − `credit_entry` 的事实重算某用户两池余额，返回差异；不改账本。
- * 差异为正说明快照多给了钱，为负说明少给了；修复走 `rebuildAccount`（只重写快照，不碰账本事实）。
+ * 以账本重算某用户可用额，返回与快照的差异；不改账本。
+ * 差异为正说明快照多给了钱，为负说明少给了；修复走 `rebuildBalance`（只重写快照，不碰账本事实）。
  */
 export async function auditAccount(userId: string): Promise<AccountAudit> {
-  const expected = await expectedBalancesOf(userId);
-  const snapshot = await accountSnapshot(userId);
-  const actual = { quota: snapshot.quota, balance: snapshot.balance };
-  return {
-    expected,
-    actual,
-    diff: { quota: actual.quota - expected.quota, balance: actual.balance - expected.balance },
-  };
+  return auditBalance(userId);
 }
 
 /**
@@ -415,7 +408,7 @@ const runningStatuses = ['generating', 'building'] as const;
 export type RunningOverdraft = {
   /** Owner：看的是一个人的钱，不是一个 App 的钱。 */
   userId: string;
-  /** 双池可用余额（配额池 + 余额池），不含透支线。 */
+  /** 账本可用额，不含透支线。 */
   available: number;
   /** Owner 所有活跃 Generation 已发生但尚未结算的消耗。 */
   runningCredits: number;
@@ -453,9 +446,9 @@ export async function evaluateRunningOverdraft(generationId: string, at: Date = 
   if (!generation) throw new BusinessError(404, 40400, '生成任务不存在');
   const userId = String(generation.userId);
   const runningCredits = await runningCreditsOf(userId);
-  const { total, overdraft } = await accountSnapshot(userId, at);
-  const projected = total - runningCredits;
-  return { userId, available: total, runningCredits, projected, overdraft, exceeded: exceedsOverdraft(projected, overdraft) };
+  const { available, overdraft } = await accountSnapshot(userId, at);
+  const projected = available - runningCredits;
+  return { userId, available, runningCredits, projected, overdraft, exceeded: exceedsOverdraft(projected, overdraft) };
 }
 
 /** 一个 Owner 所有活跃 Generation 的未结算消耗：按 Generation 分组定价再求和。 */
