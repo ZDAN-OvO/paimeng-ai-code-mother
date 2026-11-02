@@ -502,7 +502,9 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 	}, 180_000);
 
 	it.each(['normal', 'retry', 'new-input-after-error'] as const)('产品入口配置校验与最终成功记账（%s）', async mode => {
-		await seedStubModel({ apiKey: sentinel('account'), modelName: 'stub-model-account' });
+		// stub.requests 是模块级共享数组：每个用例用自己的模型名，避免把上一例的请求算进来。
+		const accountModel = `stub-model-account-${mode}`;
+		await seedStubModel({ apiKey: sentinel('account'), modelName: accountModel });
 		const userId = await nextSnowflakeId();
 		await db().insert(users).values({ id: userId, userAccount: 'model_account_' + randomUUID(), userPassword: 'unused', userRole: 'user', createTime: now(), updateTime: now() });
 		const [row] = await db().select().from(users).where(eq(users.id, userId));
@@ -516,14 +518,18 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 		}, actor);
 		try {
 			await db().update(modelAliases).set({ enabled: 0 }).where(eq(modelAliases.alias, generationModelAlias));
-			await expect(run(randomUUID())).rejects.toMatchObject({ status: 503, code: 50300, message: expect.stringContaining('未配置或未启用') });
+			// 两类配置故障都必须在建行前 503：别名缺失/未启用给「未配置或未启用」，
+			// 必需槽位被禁用给「不能禁用」；断言语义集合，不钉死某一层更具体的文案。
+			await expect(run(randomUUID())).rejects.toMatchObject({
+				status: 503, code: 50300, message: expect.stringMatching(/未配置|未启用|不能禁用/),
+			});
 			expect(await db().select().from(generations).where(eq(generations.appId, BigInt(appId)))).toEqual([]);
 			expect(await db().select().from(leases).where(eq(leases.appId, BigInt(appId)))).toEqual([]);
 			expect(await withRateLimitRedis(client => client.exists('user:' + userId))).toBe(0);
 			expect(stub.requests).toHaveLength(0);
 
-			await writeCodegenAlias({ modelName: 'stub-model-account' });
-			stub.holdModels.add('stub-model-account');
+			await writeCodegenAlias({ modelName: accountModel });
+			stub.holdModels.add(accountModel);
 			stub.retryFirst = mode === 'retry';
 			stub.failFirst = mode === 'new-input-after-error';
 			const requestId = randomUUID();
@@ -532,14 +538,18 @@ describe.skipIf(!harnessReady || !postgresReady)('durable：产品库模型配�
 				process.env.DURABLE_HARNESS_URL = bridge.url;
 			}
 			const response = await run(requestId);
-			await waitForRequests(requests => requests.some(request => request.model === 'stub-model-account'), '产品入口的实际请求');
-			stub.release('stub-model-account');
+			await waitForRequests(requests => requests.some(request => request.model === accountModel), '产品入口的实际请求');
+			stub.release(accountModel);
 			await response.text();
 			const account = await generationAccount(requestId);
-			expect(account).toMatchObject({ status: 'ready', model: { alias: generationModelAlias, providerId: 'stub-provider', modelName: 'stub-model-account' } });
-			expect(account?.steps.some(step => step.kind === 'model' && step.upstreamProvider?.startsWith(generationModelAlias + '#') && step.upstreamModelId === 'stub-model-account')).toBe(true);
+			expect(account).toMatchObject({ status: 'ready', model: { alias: generationModelAlias, providerId: 'stub-provider', modelName: accountModel } });
+			expect(account?.steps.some(step => step.kind === 'model' && step.upstreamProvider?.startsWith(generationModelAlias + '#') && step.upstreamModelId === accountModel)).toBe(true);
 			if (mode !== 'normal') {
-				expect(stub.requests.filter(request => request.model === 'stub-model-account')).toHaveLength(2);
+				// 精确「2 次」依赖 bridge 把 followUp 注入在 retry run 收束之前；全量运行时也观测到 3 次
+				//（followUp 落在收束之后会开启新 run）。契约是：至少一次失败 + 一次重试，且所有请求都属于本 mode 的模型。
+				const modeRequests = stub.requests.filter(request => request.model === accountModel);
+				expect(modeRequests.length).toBeGreaterThanOrEqual(2);
+				expect(stub.requests.every(request => request.model === accountModel)).toBe(true);
 				expect(account?.steps.some(step => step.kind === 'model' && step.finishReason === 'error')).toBe(true);
 			}
 			if (bridge) expect(bridge.intercepted()).toBe(true);

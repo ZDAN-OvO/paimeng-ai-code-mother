@@ -10,7 +10,7 @@ import { generationRequestSchema as baseGenerationRequestSchema, uploadDirectory
 import { readAttachmentBytes, readAttachmentOriginal } from './attachment-store';
 import { buildApp, sourceDigest, type BuildStageProgress } from '../delivery/artifacts';
 import { harnessProtocol } from './durable/protocol';
-import { conversationModelSchema, harnessModelFailureSchema, modelAdmissionSchema, type ModelAdmission } from '@/shared/durable-model';
+import { conversationModelSchema, generationModelAlias, harnessModelFailureSchema, modelAdmissionSchema, type ModelAdmission } from '@/shared/durable-model';
 import { classifyBuildFailure, formatBuildFeedback, noProgressMessage } from '../delivery/build-feedback';
 import { appForAdoption, getApp } from '../business';
 import { getConfig } from '../infra/config';
@@ -31,6 +31,7 @@ import { validatePrompt } from './prompt-safety';
 import { harnessInstructions } from './prompts/harness-instructions';
 import { projectAt, workspace, writeProjectFileBytes } from '../workspace/workspace';
 import { prepareGenerationRuntime } from '../app-runtime/supervisor';
+import { modelRegistry } from '../models/registry';
 import { cancelQueuedGeneration, queuedGenerationView } from '../app-runtime/scheduler';
 
 const textBlockSchema = z.object({ type: z.literal('text'), text: z.string() });
@@ -1561,8 +1562,23 @@ async function uploadAttachmentImages(app: AppInfo, user: User, images: readonly
 }
 
 /**
- * 生成入口。返回 UI 消息流响应（`data-progress` / 文本增量 / 工具条目 / 用量块挂载方式不变，前端不需要改）。
+ * 生成入口的模型配置预检：别名缺失/禁用时必须在建任何 generation/lease/限流计数之前 503。
+ *
+ * 只走只读的 registry 快照（`resolveBindingFresh`，不写缓存、不推进 epoch），不发网络也不建
+ * provider 实例。fixture 与环境变量覆盖的模型端点由 harness 的 model-domain 优先处理，
+ * 这里按同样的优先级跳过数据库别名。
  */
+async function assertGenerationModelConfigured(): Promise<void> {
+  // 顺序与 harness 的 model-domain 一致：fixture → 环境变量覆盖 → 数据库别名。
+  // 夹具路径不经过生产的数据库别名校验，报告里要说明这一点，避免误以为夹具验证过生产准入。
+  if (process.env.DURABLE_FAUX_FIXTURE === '1' || process.env.DURABLE_FAUX_MODEL === '1') return;
+  const override = [process.env.DURABLE_MODEL_BASE_URL, process.env.DURABLE_MODEL_API_KEY, process.env.DURABLE_MODEL_ID]
+    .filter(value => value !== undefined && value !== '');
+  if (override.length === 3) return;
+  if (override.length > 0) throw new BusinessError(503, 50300, 'DURABLE_MODEL_BASE_URL、DURABLE_MODEL_API_KEY、DURABLE_MODEL_ID 必须同时设置');
+  await modelRegistry().resolveBindingFresh(generationModelAlias);
+}
+
 /**
  * 拿到执行之后到「观察 harness」之间的全部步骤（模型准入、附件、runtime 唤醒、提交）。
  * 立即启动与排队后被唤醒共用这一份：排队中的请求先落 queued，granted 之后才走到这里。
@@ -1672,6 +1688,9 @@ export async function harnessChatResponse(req: Request, raw: unknown, user: User
     parts: input.message.parts.filter(part => part.type === 'text'),
     metadata: { generationId: input.requestId, ...(attachmentParts.length ? { attachments: attachmentParts } : {}) },
   };
+  // 配置预检：别名不可用/被禁用时 503 必须在建 generation、lease 与限流计数之前发生。
+  // 只读 registry 快照（resolveBindingFresh），不发网络、不建 provider 实例。
+  await assertGenerationModelConfigured();
   const holder = `next:${process.pid}:${randomUUID()}`;
   const stop = new AbortController();
   const channel = new ChunkChannel();
