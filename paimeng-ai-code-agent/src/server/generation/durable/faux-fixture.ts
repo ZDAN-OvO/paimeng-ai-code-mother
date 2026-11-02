@@ -23,6 +23,7 @@ export function fauxFixtureRef() {
 
 const APP_TYPE = /当前应用类型 (html|multi_file|vue_project|react_project)/;
 const TEMPLATED = /当前工程已从 \S+@\S+ 模板初始化/;
+const THICK_REACT = /当前工程已从 react-ts@2\.0\.0 模板初始化/;
 
 function messageText(message: Message): string {
 	if (message.role === "system") {
@@ -54,10 +55,11 @@ function scriptedTurn(messages: readonly Message[]): ScriptedTurn {
 	if (asked) return { tool: "ask", args: { question: asked[1] } };
 	const results = messages.slice(lastUser + 1).filter((message) => message.role === "toolResult").length;
 	const templated = TEMPLATED.test(instructions) && (type === "react_project" || type === "vue_project");
-	const reads = templated ? fixtureReadSteps(type) : [];
+	const thickReact = THICK_REACT.test(instructions);
+	const reads = templated ? fixtureReadSteps(type, thickReact) : [];
 	const read = reads[results];
 	if (read) return { tool: read.tool, args: read.path === undefined ? {} : { path: read.path } };
-	const file = fixtureWriteSteps(type, prompt, templated)[results - reads.length];
+	const file = fixtureWriteSteps(type, prompt, templated, thickReact)[results - reads.length];
 	return file === undefined ? { tool: null } : { tool: "write", args: { path: file.path, content: file.content } };
 }
 

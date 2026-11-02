@@ -2,41 +2,43 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { initializeTemplate } from '@/server/workspace/template-workspace';
-import { resolveTemplate, readTemplateFile } from '@/server/templates/templates';
+import { resolveTemplate, readTemplateFile, templateLockfile } from '@/server/templates/templates';
 import { workspace, writeProjectFile, readProjectFile } from '@/server/workspace/workspace';
 import { buildApp, hasPreview } from '@/server/delivery/artifacts';
 const cases = [
-  { id: 'vue-ts', type: 'vue_project' as const },
-  { id: 'react-ts', type: 'react_project' as const },
+  { id: 'vue-ts', version: '1.0.0', type: 'vue_project' as const },
+  { id: 'react-ts', version: '1.0.0', type: 'react_project' as const },
+  { id: 'react-ts', version: '2.0.0', type: 'react_project' as const },
 ];
 const base = Date.now() + 10000;
 const apps = cases.map((item, index) => ({ id: String(base + index), codeGenType: item.type }));
 afterAll(async () => { for (const app of apps) await rm(workspace(app), { recursive: true, force: true }); });
-describe.each(cases)('真实 $id 模板构建', item => {
-  const template = resolveTemplate(item.id);
-  const fresh = apps[cases.indexOf(item)];
-  it('未经 AI 修改的示例通过真实 Docker 类型检查与构建，改锁、非法依赖或类型错误都不覆盖旧产物', async () => {
-    await initializeTemplate(fresh, template);
-    await buildApp(fresh);
-    expect(await hasPreview(fresh)).toBe(true);
-    const before = await readFile(join(workspace(fresh), 'dist/index.html'), 'utf8');
+describe.each(cases)('真实 $id@$version 模板构建', item => {
+  const template = resolveTemplate(item.id, item.version);
+  const app = apps[cases.indexOf(item)];
+  it('未经 AI 修改的示例通过真实安装、类型检查与构建，改锁、非法依赖或类型错误都不覆盖旧产物', async () => {
+    await initializeTemplate(app, template);
+    await buildApp(app);
+    expect(await hasPreview(app)).toBe(true);
+    const before = await readFile(join(workspace(app), 'dist/index.html'), 'utf8');
     expect(before).toContain('./assets/');
 
-    await writeFile(join(workspace(fresh), 'package-lock.json'), '{}');
-    await expect(buildApp(fresh)).rejects.toThrow('模板依赖锁已改变');
-    expect(await readFile(join(workspace(fresh), 'dist/index.html'), 'utf8')).toBe(before);
+    const lockfile = templateLockfile(template);
+    await writeFile(join(workspace(app), lockfile), lockfile === 'pnpm-lock.yaml' ? 'lockfileVersion: 0\n' : '{}');
+    await expect(buildApp(app)).rejects.toThrow('模板依赖锁已改变');
+    expect(await readFile(join(workspace(app), 'dist/index.html'), 'utf8')).toBe(before);
 
-    await writeFile(join(workspace(fresh), 'package-lock.json'), await readTemplateFile(template, 'package-lock.json'));
-    const manifest = JSON.parse(await readProjectFile(fresh, 'package.json'));
+    await writeFile(join(workspace(app), lockfile), await readTemplateFile(template, lockfile));
+    const manifest = JSON.parse(await readProjectFile(app, 'package.json'));
     manifest.dependencies.vite = 'https://evil.invalid/package.tgz';
-    await expect(writeProjectFile(fresh, 'package.json', JSON.stringify(manifest))).resolves.toBeUndefined();
-    await expect(buildApp(fresh)).rejects.toThrow('不允许的构建依赖');
-    expect(await readFile(join(workspace(fresh), 'dist/index.html'), 'utf8')).toBe(before);
-    await writeProjectFile(fresh, 'package.json', await readTemplateFile(template, 'package.json'));
-    await expect(buildApp(fresh)).resolves.toBeUndefined();
+    await expect(writeProjectFile(app, 'package.json', JSON.stringify(manifest))).resolves.toBeUndefined();
+    await expect(buildApp(app)).rejects.toThrow(lockfile === 'pnpm-lock.yaml' ? '依赖由模板版本固定' : '不允许的构建依赖');
+    expect(await readFile(join(workspace(app), 'dist/index.html'), 'utf8')).toBe(before);
+    await writeProjectFile(app, 'package.json', await readTemplateFile(template, 'package.json'));
+    await expect(buildApp(app)).resolves.toBeUndefined();
 
-    await writeProjectFile(fresh, 'src/type-error.ts', 'export const count: number = "这不是数字";');
-    await expect(buildApp(fresh)).rejects.toThrow('not assignable to type');
-    expect(await readFile(join(workspace(fresh), 'dist/index.html'), 'utf8')).toBe(before);
+    await writeProjectFile(app, 'src/type-error.ts', 'export const count: number = "这不是数字";');
+    await expect(buildApp(app)).rejects.toThrow('not assignable to type');
+    expect(await readFile(join(workspace(app), 'dist/index.html'), 'utf8')).toBe(before);
   }, 360000);
 });

@@ -3,7 +3,7 @@ import { generateText, Output } from 'ai';
 import { z } from 'zod';
 import { getConfig } from '../infra/config';
 import { BusinessError } from '../infra/http';
-import { codeGenTypes, type CodeGenType } from '@/shared/contracts';
+import type { StarterKind } from '@/shared/templates';
 import { modelRegistry } from '../models/registry';
 
 export function aliasNotConfiguredMessage(alias: string): string {
@@ -19,23 +19,35 @@ function routingFailureDetail(error: unknown) {
  return raw.replace(/\s+/g, ' ').replace(/(sk-|Bearer\s+)[A-Za-z0-9._-]{6,}/gi, '$1***').slice(0, 300) || '未知错误';
 }
 
-export async function routeCodeGenType(prompt: string): Promise<CodeGenType> {
- if (getConfig().aiMode === 'fixture') {
-  if (/react/i.test(prompt)) return 'react_project';
-  return /商城|管理|登录|购物|评论|vue|复杂交互/i.test(prompt) ? 'vue_project' : /多页面|多个页面|多文件|分离.*css/i.test(prompt) ? 'multi_file' : 'html';
- }
+// 起点二分类的确定性规则：只有需求确实简单、没有多页面/交互/数据时才是轻量静态页；其余一律构建类。
+const buildSignals = /管理|后台|登录|注册|购物|商城|订单|评论|数据|图表|动画|动效|多页面|多个页面|多文件|路由|交互|表单|搜索|筛选|支付|用户|接口|api|组件|系统|react|vue/i;
+const lightSignals = /简单|静态|单页|单页面|纯展示|展示页|落地页|个人简介|简历页|landing/i;
+
+export function starterForPrompt(prompt: string): StarterKind {
+ if (buildSignals.test(prompt)) return 'build';
+ return lightSignals.test(prompt) ? 'light' : 'build';
+}
+
+const starterSchema = z.object({ starter: z.enum(['light', 'build']) });
+
+/**
+ * 自动选择起点：只判断轻量静态页还是构建类应用，模板由 `templateForStarter` 决定。
+ * 模型拿不准时也按构建类处理，轻量路径只留给确实简单的需求。
+ */
+export async function routeStarter(prompt: string): Promise<StarterKind> {
+ if (getConfig().aiMode === 'fixture') return starterForPrompt(prompt);
  const model = await modelRegistry().resolveModel('route.classify');
  try {
   const result = await generateText({
    model,
-   output: Output.object({ schema: z.object({ codeGenType: z.enum(codeGenTypes) }) }),
-   system: '你是代码生成方案路由器。简单静态展示页面选择 html（单 HTML，内联 CSS/JS）；多个页面但没有复杂交互选择 multi_file（分离 HTML/CSS/JS）；复杂多页面、交互或数据管理需要前端工程：需求明确要求 React 时选择 react_project，明确要求 Vue 时选择 vue_project，没有指明技术栈时选择 vue_project。根据用户需求选择最合适的类型。只返回 JSON 对象，字段必须为 codeGenType，其值只能是 html、multi_file、vue_project 或 react_project。例如 {"codeGenType":"html"}。不要返回其他字段或解释。',
+   output: Output.object({ schema: starterSchema }),
+   system: '你是应用起点路由器。需求包含多页面、路由、状态、表单、数据管理、登录或复杂交互时选择 build（构建类应用）；只有内容确实简单、单个静态展示页时才选择 light（轻量静态页）。拿不准时选择 build。只返回 JSON 对象，字段必须为 starter，其值只能是 light 或 build。例如 {"starter":"build"}。不要返回其他字段或解释。',
    prompt,
    abortSignal: AbortSignal.timeout(60000),
   });
-  return result.output.codeGenType;
+  return result.output.starter;
  } catch (error) {
   // 上游拒答、超时或返回非法 JSON 都不能变成没有线索的 500：路由别名可以在管理端改。
-  throw new BusinessError(502, 50200, `生成类型识别失败：${routingFailureDetail(error)}。请在「模型管理 → 模型分配」里更换类型路由槽位的提供商或模型后重试。`);
+  throw new BusinessError(502, 50200, `应用起点识别失败：${routingFailureDetail(error)}。请在「模型管理 → 模型分配」里更换类型路由槽位的提供商或模型后重试。`);
  }
 }
