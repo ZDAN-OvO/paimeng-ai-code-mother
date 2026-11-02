@@ -24,16 +24,27 @@ describe.each(cases)('真实 $id@$version 模板构建', item => {
     expect(before).toContain('./assets/');
 
     const lockfile = templateLockfile(template);
-    await writeFile(join(workspace(app), lockfile), lockfile === 'pnpm-lock.yaml' ? 'lockfileVersion: 0\n' : '{}');
-    await expect(buildApp(app)).rejects.toThrow('模板依赖锁已改变');
+    const pnpm = lockfile === 'pnpm-lock.yaml';
+    await writeFile(join(workspace(app), lockfile), pnpm ? 'lockfileVersion: 0\n' : '{}');
+    await expect(buildApp(app)).rejects.toThrow(pnpm ? '锁文件无法识别' : '模板依赖锁已改变');
     expect(await readFile(join(workspace(app), 'dist/index.html'), 'utf8')).toBe(before);
 
     await writeFile(join(workspace(app), lockfile), await readTemplateFile(template, lockfile));
     const manifest = JSON.parse(await readProjectFile(app, 'package.json'));
     manifest.dependencies.vite = 'https://evil.invalid/package.tgz';
     await expect(writeProjectFile(app, 'package.json', JSON.stringify(manifest))).resolves.toBeUndefined();
-    await expect(buildApp(app)).rejects.toThrow(lockfile === 'pnpm-lock.yaml' ? '依赖由模板版本固定' : '不允许的构建依赖');
+    await expect(buildApp(app)).rejects.toThrow(pnpm ? '依赖来源不被允许' : '不允许的构建依赖');
     expect(await readFile(join(workspace(app), 'dist/index.html'), 'utf8')).toBe(before);
+
+    if (pnpm) {
+      // registry 依赖可以由模型自己安装；这里验证清单更新而锁文件没跟上时构建明确失败，不产出新 dist。
+      delete manifest.dependencies.vite;
+      manifest.dependencies.dayjs = '^1.11.0';
+      await expect(writeProjectFile(app, 'package.json', JSON.stringify(manifest))).resolves.toBeUndefined();
+      await expect(buildApp(app)).rejects.toThrow(/OUTDATED_LOCKFILE|依赖安装失败|构建失败/);
+      expect(await readFile(join(workspace(app), 'dist/index.html'), 'utf8')).toBe(before);
+      await writeFile(join(workspace(app), lockfile), await readTemplateFile(template, lockfile));
+    }
     await writeProjectFile(app, 'package.json', await readTemplateFile(template, 'package.json'));
     await expect(buildApp(app)).resolves.toBeUndefined();
 

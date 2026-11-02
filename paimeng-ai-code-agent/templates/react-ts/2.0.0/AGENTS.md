@@ -16,6 +16,7 @@
 
 - 用函数组件和 TypeScript 写页面。入口 `src/main.tsx`、`index.html` 的 `#root` 和 `vite.config.ts` 的 `base: './'` 都不要改。
 - 优先复用已有布局、设计令牌和 `src/components/ui/` 里的组件，按需扩展；不要重写一套设计系统，也不要引入 antd。
-- package.json 的依赖与 pnpm-lock.yaml 由模板版本固定，不要增删依赖。构建诊断指出清单或锁文件被改坏时，恢复模板版本后重试 buildPreview。
-- 平台用 pnpm 安装依赖，并在隔离容器中执行 `tsc --noEmit` 和 `vite build --base=./`，通过后才提供预览。不要写 .env 或密钥，不要写服务端代码。
+- 需要新库时用 shell 工具在 App runtime 里执行 `pnpm add <包名>@<版本>`（工作目录就是工程根 `/work`）。依赖只能来自 npm registry 的包名与版本范围：`git:`、`file:`、`link:`、`http(s):`、`workspace:` 与 `.npmrc` 都会被平台拒绝；shell 的网络是开放的，这条规则约束的是依赖来源，不是网络访问。
+- 依赖装好后直接改源码引用它；平台在轮末会用 pnpm 归一化并校验 `pnpm-lock.yaml`，清单与锁文件对不上时这一轮会失败。构建由平台在隔离容器里执行 `tsc --noEmit` 和 `vite build --base=./`，不要自己提交或改锁文件来源。不要写 .env 或密钥，不要写服务端代码。
+- 工作区里没有 `.git`，容器内也没有：版本历史在平台侧。需要看历史时用 git 工具（只读），不要执行 git 提交/切换命令。
 - 用语义化 HTML、可访问的表单标签和按钮，支持键盘操作与窄屏显示。

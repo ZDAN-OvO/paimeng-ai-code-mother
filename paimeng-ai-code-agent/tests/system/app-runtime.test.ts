@@ -21,7 +21,7 @@ import { ensureAppRuntime, runtimePreviewTarget, stopAppRuntime } from '@/server
 import { deleteApp } from '@/server/business';
 import { publicUser } from '@/server/auth/auth';
 import { readAppRuntime } from '@/server/app-runtime/store';
-import { appRuntimeKey, runtimeContainerName, runtimePaths, runtimeStorePath } from '@/server/app-runtime/plan';
+import { appRuntimeKey, runtimeAppDataPath, runtimeContainerName, runtimePaths, runtimeStorePath } from '@/server/app-runtime/plan';
 import { createPreviewServer } from '@/server/delivery/preview';
 import { startGeneration, failOrCancel } from '@/server/generation/generation-lifecycle';
 
@@ -226,6 +226,8 @@ describe('真实 Docker 上的 App runtime', () => {
     const state = await docker(['inspect', '--format', '{{.State.Running}}', runtimeContainerName(app)]).catch(() => 'missing');
     expect(state).toBe('missing');
     expect(await readAppRuntime(app)).toBeNull();
+    // node_modules 的包文件住在共享 store 挂载内的 App virtual store；删除应用不能留下孤儿目录。
+    await expect(stat(runtimeAppDataPath(getConfig().runtimeRoot, app))).rejects.toMatchObject({ code: 'ENOENT' });
   }, 600_000);
 
   it('锁文件失效时停止提供实时 Preview，修正后仍在同一容器恢复', async () => {

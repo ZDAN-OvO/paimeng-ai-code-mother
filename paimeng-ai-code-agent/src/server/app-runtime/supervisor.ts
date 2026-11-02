@@ -11,7 +11,7 @@ import type { TemplateIdentity } from '@/shared/templates';
 import {
   appNeedsRuntime, appRuntimeKey, devServerCommand, installCommand, lockfileDigest, runtimeContainerName,
   runtimeDockerfile, runtimeImageTag, runtimeMounts, runtimePreviewBase, runtimeRunArgs,
-  runtimeStorePath, RUNTIME_DEV_LOG, RUNTIME_DEV_PORT, type RuntimeApp,
+  runtimeStorePath, runtimeVirtualStore, RUNTIME_DEV_LOG, RUNTIME_DEV_PORT, type RuntimeApp,
 } from './plan';
 import { deleteAppRuntime, readAppRuntime, saveAppRuntime, touchAppRuntime, updateAppRuntime, type AppRuntimeRecord } from './store';
 
@@ -164,14 +164,23 @@ async function startDevServer(app: RuntimeApp, workspaceRoot: string, template: 
   return true;
 }
 
+function dependencyPair(imageIdentity: string, lockDigest: string | null) {
+  return JSON.stringify({ imageIdentity, lockDigest });
+}
+
 async function installDependencies(app: RuntimeApp, workspaceRoot: string, template: TemplateIdentity | null, imageIdentity: string) {
   const packageManager = packageManagerOf(template);
   if (!packageManager) return;
   const lock = await lockfileOf(app, workspaceRoot, template);
   const markerPath = join(workspaceRoot, '.paimeng-dependencies.json');
-  const pair = JSON.stringify({ imageIdentity, lockDigest: lock?.digest ?? null });
+  const pair = dependencyPair(imageIdentity, lock?.digest ?? null);
   const installed = await readFile(markerPath, 'utf8').catch(() => null);
-  if (installed === pair && await stat(join(workspaceRoot, 'node_modules/.bin/vite')).then(info => info.isFile()).catch(() => false)) return;
+  if (installed === pair) {
+    // node_modules 里的条目是指向 /store 的相对符号链接，宿主上无法 follow；在容器里确认 vite 可执行。
+    const installedVite = await docker(['exec', runtimeContainerName(app), 'test', '-x', 'node_modules/.bin/vite'], 20_000)
+      .then(() => true).catch(() => false);
+    if (installedVite) return;
+  }
   const command = installCommand({ packageManager, hasLockfile: lock !== null });
   await docker(['exec', '-w', '/work', runtimeContainerName(app), ...command], getConfig().appRuntime.startTimeoutMs);
   await writeFile(markerPath, pair);
@@ -183,6 +192,7 @@ async function createContainer(app: RuntimeApp, workspaceRoot: string, image: st
   await runtimeBaseDirectory();
   await ensureSafeDirectory(runtimeStorePath(config.runtimeRoot));
   const name = runtimeContainerName(app);
+  // 只挂 App 的持久 Workspace 与共享 store；node_modules 的符号链接指向 store 挂载内的 virtual store。
   const mountList = runtimeMounts({
     workspaceRoot,
     storeRoot: runtimeStorePath(config.runtimeRoot),
@@ -190,7 +200,7 @@ async function createContainer(app: RuntimeApp, workspaceRoot: string, image: st
   await removeContainer(name);
   const { uid, gid } = await stat(workspaceRoot);
   await docker(runtimeRunArgs({
-    app, image, uid, gid, mounts: mountList, registry: config.buildNpmRegistry,
+    app, image, uid, gid, mounts: mountList, registry: config.buildNpmRegistry, virtualStore: runtimeVirtualStore(app),
   }), config.appRuntime.startTimeoutMs);
   const state = await containerRunning(name);
   if (!state.running || !state.id || !state.port) throw new Error('运行时容器没有启动成功');
@@ -286,6 +296,18 @@ async function ensureUnlocked(app: RuntimeApp, workspaceRoot: string): Promise<R
       imageIdentity: image.identity, lastActivityAt: null, error: detail,
     };
   }
+}
+
+/**
+ * 依赖已经与当前锁文件对齐（例如模型用 shell 安装、平台在轮末归一化之后）：
+ * 更新安装标记，下一轮 ensureAppRuntime 不必为同一个锁文件再装一次。
+ */
+export async function recordDependenciesInstalled(app: RuntimeApp, workspaceRoot: string): Promise<void> {
+  const record = await readAppRuntime(app);
+  if (!record) return;
+  const template = await projectTemplate(app, workspaceRoot);
+  const lock = await lockfileOf(app, workspaceRoot, template);
+  await writeFile(join(workspaceRoot, '.paimeng-dependencies.json'), dependencyPair(record.imageIdentity, lock?.digest ?? null));
 }
 
 /** 生成开始时惰性唤醒；同一个 App 的并发调用排队，避免两台容器同时挂同一份源码。 */

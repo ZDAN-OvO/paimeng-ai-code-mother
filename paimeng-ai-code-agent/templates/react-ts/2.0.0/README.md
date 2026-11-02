@@ -21,4 +21,4 @@ pnpm build        # 类型检查 + vite build，产物在 dist/
 - `src/index.css`：Tailwind 入口与设计令牌。
 - `src/data/`：示例数据。
 
-依赖与 `pnpm-lock.yaml` 由模板版本固定，平台按锁文件安装后构建静态产物。
+需要额外依赖时在 App runtime 里用 `pnpm add` 安装（Shell），平台只接受 npm registry 的包名与版本范围，并在轮末归一化 `pnpm-lock.yaml` 后构建静态产物。
