@@ -232,22 +232,23 @@ export async function failQueuedGeneration(input: {
 /**
  * 进程崩溃/重启留下的等待者：心跳超时就把 Generation 收敛成 failed（interrupted），
  * 而不是重新启动它——同一请求不会因为一次 tick 被启动两次。
- * granted 的记录不在这里处理：它已经过批准，由启动/收束路径释放，避免把正在建容器的请求杀掉。
+ * 已经 granted、但还没把 Generation 推进到 generating 也属于这一类：它占着槽位却没有执行者，
+ * 必须回收；一旦进入 generating，后续由执行/对账路径接管，这里不再动。
  */
 export async function abandonStaleWaitingGenerations(): Promise<string[]> {
   const leaseMs = getConfig().appRuntime.queueLeaseMs;
-  const stale = await db().select().from(appRuntimeQueue).where(and(
-    eq(appRuntimeQueue.state, 'waiting'),
-    sql`${appRuntimeQueue.heartbeatAt} < timezone('UTC', now()) - make_interval(secs => ${leaseMs / 1000})`,
-  ));
+  const stale = await db().execute(sql`select q.app_id, q.generation_id
+    from app_runtime_queue q join generation g on g.id = q.generation_id
+    where q.heartbeat_at < timezone('UTC', now()) - make_interval(secs => ${leaseMs / 1000})
+      and (q.state = 'waiting' or (q.state = 'granted' and g.status = 'queued'))`);
   const failed: string[] = [];
-  for (const row of stale) {
-    const app = { id: String(row.appId), codeGenType: 'react_project' as const };
+  for (const row of stale.rows as { app_id: string; generation_id: string }[]) {
+    const app = { id: String(row.app_id) };
     const ok = await failQueuedGeneration({
-      app, generationId: row.generationId, status: 'failed',
+      app, generationId: row.generation_id, status: 'failed',
       error: '生成进程中断，请重新提交', stopReason: 'interrupted',
     }).catch(() => false);
-    if (ok) failed.push(row.generationId);
+    if (ok) failed.push(row.generation_id);
   }
   return failed;
 }

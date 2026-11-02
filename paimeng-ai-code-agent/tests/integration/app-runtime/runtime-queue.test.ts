@@ -223,4 +223,20 @@ describe('运行时槽位排队', () => {
     await expect(launchQueuedGeneration(prepared.plan)).rejects.toMatchObject({ status: 409 });
     expect(await waitingQueue()).toHaveLength(0);
   });
+
+  it('已 granted 但还没开始执行的等待者失联时同样收敛，不会永久占着槽位', async () => {
+    const busy = await newApp();
+    await occupySlot(busy);
+    await protectSlot(busy);
+    const waiting = await newApp();
+    const prepared = await prepareGenerationStart(startInput(waiting));
+    if (prepared.kind !== 'queued') throw new Error('期望进入排队');
+    await db().update(appRuntimeQueue).set({ state: 'granted' }).where(eq(appRuntimeQueue.appId, BigInt(waiting.id)));
+    await db().execute(sql`update app_runtime_queue set heartbeat_at = timezone('UTC', now()) - interval '1 hour' where app_id = ${BigInt(waiting.id)}`);
+    const outcome = await maintainRuntimeCapacity();
+    expect(outcome.abandoned).toContain(prepared.plan.generationId);
+    expect(await generationRow(prepared.plan.generationId)).toMatchObject({ status: 'failed', stopReason: 'interrupted' });
+    expect(await readQueueTicket(waiting)).toBeNull();
+    expect(await db().select().from(generationExecutions).where(eq(generationExecutions.generationId, prepared.plan.generationId))).toHaveLength(0);
+  });
 });
