@@ -168,9 +168,10 @@ test('保存后的刷新读落后于下一次保存时，不会把新名称改�
   const firstSaved = saved();
   await page.getByRole('button', { name: '保存修改' }).click();
   expect((await firstSaved).ok()).toBe(true);
+  // 第一次保存的刷新读还没回来，表单仍处于 submitting；用回车再提交一次，模拟用户连续两次保存。
   await page.getByLabel('应用名称', { exact: true }).fill(secondSave);
   const secondSaved = saved();
-  await page.getByRole('button', { name: '保存修改' }).click();
+  await page.getByLabel('应用名称', { exact: true }).press('Enter');
   expect((await secondSaved).ok()).toBe(true);
 
   await page.waitForTimeout(2500);
