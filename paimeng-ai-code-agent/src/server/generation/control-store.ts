@@ -31,7 +31,7 @@ export const invalidatedCandidateWatermark = -1;
 const openExecutionStatuses: ExecutionStatus[] = ['preparing', 'active', 'draining'];
 const unsettledInputStatuses: InputStatus[] = ['accepted', 'placed', 'unanswered'];
 const inputModes: InputMode[] = ['start', 'steer', 'followUp', 'write', 'answer'];
-const attemptKinds: AttemptKind[] = ['model', 'build', 'tool'];
+const attemptKinds: AttemptKind[] = ['model', 'build', 'tool', 'shell'];
 const attemptStatuses: AttemptStatus[] = ['prepared', 'sent', 'succeeded', 'failed', 'unknown'];
 const executionStatuses: ExecutionStatus[] = ['preparing', 'active', 'draining', 'sealed', 'failed'];
 /** attempt 只允许这些推进：unknown 允许晚到回执补记事实，终态一律不再回退。 */
@@ -868,6 +868,7 @@ export async function reserveAttempt(input: ReserveAttemptInput): Promise<Attemp
 function attemptBudgetMessage(kind: AttemptKind, scope: string, limit: number): string {
   if (kind === 'model') return `模型调用已达 ${limit} 次上限`;
   if (kind === 'tool') return `工具调用已达 ${limit} 次上限`;
+  if (kind === 'shell') return `shell 命令已达 ${limit} 条上限`;
   if (scope === 'self-check') return `自检构建已达 ${limit} 次上限`;
   if (scope === 'repair') return `修复轮次已达 ${limit} 次上限`;
   return `构建调用已达 ${limit} 次上限`;

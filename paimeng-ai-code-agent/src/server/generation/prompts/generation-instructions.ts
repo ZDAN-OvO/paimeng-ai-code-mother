@@ -22,7 +22,7 @@ export function staticPathHint(type: CodeGenType) {
 function templateOpening(template: TemplateIdentity, entry: string, files: readonly string[], project: boolean) {
   const contents = files.length ? `模板包含 ${files.join('、')}。` : '';
   return project
-    ? `当前工程已从 ${template.id}@${template.version} 模板初始化。先使用 listFiles，再 read 阅读 AGENTS.md、package.json、入口 ${entry} 与要改的源码，然后在现有工程上实现用户需求。保留 TypeScript 入口 ${entry} 和 vite.config.ts，不要另起一套工程。${contents}优先复用模板里的布局、设计令牌和已有组件，按需扩展，不要重写一套设计系统。依赖与锁文件由模板版本固定，可用库见 package.json，不要增删依赖。平台在隔离容器中检查类型并构建静态产物。`
+    ? `当前工程已从 ${template.id}@${template.version} 模板初始化。先使用 listFiles，再 read 阅读 AGENTS.md、package.json、入口 ${entry} 与要改的源码，然后在现有工程上实现用户需求。保留 TypeScript 入口 ${entry} 和 vite.config.ts，不要另起一套工程。${contents}优先复用模板里的布局、设计令牌和已有组件，按需扩展，不要重写一套设计系统。平台在隔离容器中检查类型并构建静态产物。`
     : `当前工程已从 ${template.id}@${template.version} 模板初始化，骨架可直接使用或改写。先使用 listFiles，再 read 阅读 AGENTS.md 与入口 ${entry}。${contents}在现有文件上实现用户需求，保留入口，优先复用骨架里的布局与设计令牌。${staticProhibitions}`;
 }
 
@@ -49,16 +49,22 @@ export function generationInstructions({ app, template, entry, files = [], webIn
     : '本轮只有文件工具（read / write / edit / listFiles），没有构建与预览：把需求完整写成文件，工具返回错误时修正后重试。';
   const preview = !previewTool
     ? project
-      ? '构建与预览由平台在后续步骤负责（本轮没有构建工具），不要执行任何安装或构建命令。'
-      : '平台直接静态托管这个目录，写出的文件即刻可预览；不要执行任何安装或构建命令。'
+      ? '构建与预览由平台在后续步骤负责（本轮没有构建工具）：需要装依赖时用 shell 在 App runtime 内执行 pnpm，不要自己发布或改锁文件来源。'
+      : '平台直接静态托管这个目录，写出的文件即刻可预览；这个应用没有 App runtime，shell 不可用，不要执行安装或构建命令。'
     : project
-      ? '最终验证时服务端会自动构建前端工程并提供 dist/index.html 预览，无需调用 shell。'
-      : '平台直接静态托管这个目录，写出的文件即刻可预览，无需构建、无需调用 shell。不要执行任何安装或构建命令。';
+      ? '最终验证时服务端会用 pnpm 安装依赖、构建前端工程并提供 dist/index.html 预览；需要装依赖或跑工程检查时用 shell，它在当前 App runtime 的工程根 /work 里执行。'
+      : '平台直接静态托管这个目录，写出的文件即刻可预览，无需构建。这个应用没有 App runtime，shell 不可用，不要执行安装或构建命令。';
   // 有图片时补一句：图片已随消息提供可直接看图；工作区副本只在用户明确要求当素材时才引用。
   const imageInstruction = hasImages
     ? ' 本轮用户上传了图片，图片已随消息一起提供，你可以直接看图理解需求。工作区里的上传原图只有用户明确要求用作页面素材时才在页面里引用（用相对路径）；仅用于理解布局或风格的参考图不要写进网站。'
     : '';
+  // shell 在 App runtime 里执行；模板工程可以用 pnpm 装 registry 依赖，静态应用没有运行时。
+  const shellInstruction = project
+    ? template
+      ? ' 需要新库时用 shell 在 App runtime 里执行 `pnpm add <包名>@<版本>`；依赖只能来自 npm registry 的包名与版本范围，git:、file:、link:、http(s):、workspace: 与 .npmrc 都会被平台拒绝。shell 的网络是开放的，这条规则约束的是依赖来源，不是网络访问。'
+      : ' 需要新库时用 shell 在 App runtime 里执行命令；但这类旧工程的依赖仍在固定允许清单内，不要在清单之外装包。'
+    : ' 这个应用没有 App runtime，shell 不可用：不要执行安装或构建命令。';
   // git 只读：模型用它理解项目与看这一轮的未提交改动，提交与回退都由平台做。
-  const versionInstruction = ' 版本与历史：版本库在平台侧，工作区里没有 .git；git 工具只读（status log show diff rev-parse reflog tag describe blame shortlog ls-files cat-file），用来读懂项目历史和这一轮还没提交的改动。提交由平台负责：这一轮成功结束后平台会把改动自动提交成一版，你不需要也不能 git add、git commit、切分支或合并；写完文件就好。没有远端，push/pull/fetch 不可用。用户要求回到旧版本时，说明平台会在版本面板里切，并在那一版基础上继续改。';
-  return `你是应用生成 Agent。当前应用类型 ${app.codeGenType}。所有读写必须使用工具，禁止仅输出代码而不写入文件。只能修改当前应用。禁止写密钥或 .env。${opening}${rules}${webInstruction} 禁止安装脚本和任意 shell。工具返回错误时根据错误修正并重试。${milestone}${preview}${imageInstruction}${versionInstruction}完成后简短说明改动。初始化需求 ${app.initPrompt}`;
+  const versionInstruction = ' 版本与历史：版本库在平台侧，工作区和容器里都没有 .git；git 工具只读（status log show diff rev-parse reflog tag describe blame shortlog ls-files cat-file），用来读懂项目历史和这一轮还没提交的改动。提交由平台负责：这一轮成功结束后平台会把改动自动提交成一版，你不需要也不能 git add、git commit、切分支或合并；写完文件就好。没有远端，push/pull/fetch 不可用。用户要求回到旧版本时，说明平台会在版本面板里切，并在那一版基础上继续改。';
+  return `你是应用生成 Agent。当前应用类型 ${app.codeGenType}。所有读写必须使用工具，禁止仅输出代码而不写入文件。只能修改当前应用。禁止写密钥或 .env。${opening}${rules}${webInstruction}${shellInstruction}${project ? ' 命令都在 App runtime 内执行，看不到平台密钥。' : ''} 工具返回错误时根据错误修正并重试。${milestone}${preview}${imageInstruction}${versionInstruction}完成后简短说明改动。初始化需求 ${app.initPrompt}`;
 }

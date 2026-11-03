@@ -25,6 +25,80 @@ function fixtureTypedSource(type: CodeGenType, prompt: string): FixtureFile | un
   return { ...source, content };
 }
 
+/** 装包证据：`[install]` 让夹具用 shell 真装一个 registry 包并把它的结果写进页面；`[install-fail]` 装一个不存在的包。 */
+export const INSTALL_MARKER = '[install]';
+export const INSTALL_FAIL_MARKER = '[install-fail]';
+// 用 system 用例没有装过的包，E2E 这一轮必须真的从 registry 下载（而不是命中共享 store 缓存）。
+export const INSTALL_PACKAGE = 'date-fns';
+export const INSTALL_PACKAGE_VERSION = '4.1.0';
+/** 不存在的包名带随机后缀，避免任何缓存或镜像里恰好存在同名包。 */
+export function missingPackageName(suffix: string) {
+  return `pkm-missing-dependency-${suffix.replace(/[^a-z0-9]/gi, '').toLowerCase() || 'x'}@1.0.0`;
+}
+
+export function fixtureInstall(prompt: string): 'install' | 'install-fail' | null {
+  if (prompt.startsWith(INSTALL_FAIL_MARKER)) return 'install-fail';
+  if (prompt.startsWith(INSTALL_MARKER)) return 'install';
+  return null;
+}
+
+function pageTitle(prompt: string, marker: string) {
+  return prompt.replace(/[<>&"'`{}]/g, '').replace(marker, '').trim().slice(0, 80);
+}
+
+/** 装包成功：页面用 date-fns 渲染一个固定日期，输出与时间无关。 */
+export function installedPage(prompt: string): FixtureFile {
+  const title = pageTitle(prompt, INSTALL_MARKER) + ' · 已装包';
+  return {
+    path: THICK_REACT_PAGE,
+    content: `import { format } from 'date-fns';
+import { PageHeader } from '@/components/layout/page-header';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+
+export function HomePage() {
+  const formatted = format(new Date(2020, 0, 2), 'yyyy年M月d日');
+  return (
+    <div className="space-y-8">
+      <PageHeader title="${title}" description="这条页面的依赖是模型在 App runtime 里用 pnpm 安装的。" />
+      <Card>
+        <CardHeader><CardTitle>依赖安装结果</CardTitle></CardHeader>
+        <CardContent><p data-testid="runtime-marker">date-fns 渲染 {formatted}</p></CardContent>
+      </Card>
+    </div>
+  );
+}
+`,
+  };
+}
+
+/** 装包失败：把 shell 返回的可读原因写进页面，证明模型拿到了原因。 */
+export function installFailedPage(prompt: string, toolOutput: string): FixtureFile {
+  const title = pageTitle(prompt, INSTALL_FAIL_MARKER) + ' · 安装失败';
+  const snippet = toolOutput
+    .split('\n')
+    .map(line => line.trim())
+    .find(line => /ERR_PNPM|404|Not Found/i.test(line)) ?? toolOutput.split('\n').map(line => line.trim()).find(Boolean) ?? '未知原因';
+  const safe = snippet.replace(/[^0-9A-Za-z\u4e00-\u9fa5 .:_\-\/]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+  return {
+    path: THICK_REACT_PAGE,
+    content: `import { PageHeader } from '@/components/layout/page-header';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+
+export function HomePage() {
+  return (
+    <div className="space-y-8">
+      <PageHeader title="${title}" description="平台把 shell 的失败原因交回模型，模型把它写在这里。" />
+      <Card>
+        <CardHeader><CardTitle>安装失败反馈</CardTitle></CardHeader>
+        <CardContent><p data-testid="install-error">${safe}</p></CardContent>
+      </Card>
+    </div>
+  );
+}
+`,
+  };
+}
+
 /** 实时预览证据：`[live]` 前缀让夹具在同一轮里连续写两次同一页，第二次在等待之后。 */
 export const LIVE_MARKER = '[live]';
 export function fixtureLive(prompt: string) {

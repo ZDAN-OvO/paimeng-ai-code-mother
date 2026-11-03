@@ -19,10 +19,25 @@ import type { TemplateIdentity } from '@/shared/templates';
 
 /** 容器内工作目录：Workspace 的 bind mount 目标。 */
 export const RUNTIME_WORKDIR = '/work';
-/** 每个 App 独立的 node_modules；跨轮次保留，通过硬链接共享 pnpm store 的内容。 */
+/** 每个 App 独立的 node_modules；跨轮次保留，包内容通过硬链接共享同一个 store。 */
 export const RUNTIME_NODE_MODULES = '/work/node_modules';
-/** 共享的 pnpm 内容寻址 store。 */
+/** 共享的 pnpm 内容寻址 store（单独挂载）。 */
 export const RUNTIME_STORE = '/store';
+/**
+ * App 的 pnpm virtual store：node_modules 里的包符号链接指向它，包文件在这里硬链接共享 store。
+ *
+ * 它必须在 store 挂载内：跨 bind mount 的 link() 会 EXDEV，pnpm 只能复制；node_modules 仍留在
+ * Workspace 里（真实目录，条目是指向 virtual store 的相对符号链接），所以每个 App 的依赖树独立，
+ * 而包内容在宿主上是同一批 inode。
+ */
+export function runtimeVirtualStore(app: RuntimeApp) {
+  return `${RUNTIME_STORE}/apps/${appRuntimeKey(app)}/.paimeng-virtual`;
+}
+
+/** 宿主上该 App 的 runtime 数据目录（virtual store 落在共享 store 下，删除应用时一并回收）。 */
+export function runtimeAppDataPath(runtimeRoot: string, app: RuntimeApp) {
+  return join(runtimeStorePath(runtimeRoot), 'apps', appRuntimeKey(app));
+}
 /** dev server 在容器内的固定端口；宿主端口由 Docker 随机分配并记录。 */
 export const RUNTIME_DEV_PORT = 5173;
 /** 容器名前缀；supervisor 对账与测试都按它识别「本平台的运行时容器」。 */
@@ -92,19 +107,22 @@ export function runtimeMounts(input: { workspaceRoot: string; storeRoot: string 
  * 容器环境变量白名单。没有 `--env` 的变量不会进容器；这里也只放运行期必需项，
  * 平台密钥、数据库地址、预览来源等一律不出现。
  */
-export function runtimeEnvironment(registry: string): string[] {
+export function runtimeEnvironment(input: { registry: string; virtualStore: string }): string[] {
   return [
     'HOME=/tmp',
     // corepack 下载的包管理器落在共享 store 里，容器重建后不用重新下载。
     'COREPACK_HOME=/store/corepack',
     'COREPACK_ENABLE_DOWNLOAD_PROMPT=0',
-    'COREPACK_NPM_REGISTRY=' + registry,
-    'npm_config_store_dir=/store',
-    'npm_config_registry=' + registry,
+    'COREPACK_NPM_REGISTRY=' + input.registry,
+    'npm_config_store_dir=' + RUNTIME_STORE,
+    // 模型自己执行的 pnpm 与平台安装必须落在同一个 virtual store，否则 hardlink 只在其中一次生效。
+    'npm_config_virtual_store_dir=' + input.virtualStore,
+    'npm_config_registry=' + input.registry,
     'CI=1',
   ];
 }
 
+/** `docker run -d ...` 的完整参数；`--publish 127.0.0.1::5173` 让 Docker 分配宿主端口并只绑本机。 */
 export type RuntimeRunInput = {
   app: RuntimeApp;
   image: string;
@@ -112,9 +130,9 @@ export type RuntimeRunInput = {
   gid: number;
   mounts: readonly RuntimeMount[];
   registry: string;
+  virtualStore: string;
 };
 
-/** `docker run -d ...` 的完整参数；`--publish 127.0.0.1::5173` 让 Docker 分配宿主端口并只绑本机。 */
 export function runtimeRunArgs(input: RuntimeRunInput): string[] {
   return [
     'run', '-d',
@@ -126,7 +144,7 @@ export function runtimeRunArgs(input: RuntimeRunInput): string[] {
     '--memory=1g', '--memory-swap=1g', '--cpus=1',
     ...input.mounts.flatMap(mount => ['--mount', `type=bind,src=${mount.source},dst=${mount.target}`]),
     '--publish', `127.0.0.1::${RUNTIME_DEV_PORT}`,
-    ...runtimeEnvironment(input.registry).flatMap(value => ['--env', value]),
+    ...runtimeEnvironment({ registry: input.registry, virtualStore: input.virtualStore }).flatMap(value => ['--env', value]),
     '--workdir', RUNTIME_WORKDIR,
     input.image,
     'sh', '-lc', 'while :; do sleep 3600; done',

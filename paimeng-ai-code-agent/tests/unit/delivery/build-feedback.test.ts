@@ -43,8 +43,9 @@ describe('模型可读诊断', () => {
     expect(feedback).not.toContain('/work/');
     expect(feedback).toContain('main.ts(2,1)');
     expect(feedback).toContain('保留换行');
-    expect(feedback).toContain('不要添加或改动既有依赖');
-    expect(feedback).toContain('把 package.json 与锁文件恢复成模板自带的内容');
+    expect(feedback).toContain('用 shell 执行 pnpm add');
+    expect(feedback).toContain('锁文件由平台在轮末归一化');
+    expect(feedback).not.toContain('恢复成模板自带的内容');
   });
 
   it('没有容器输出时只给摘要，不产生空的输出段', () => {

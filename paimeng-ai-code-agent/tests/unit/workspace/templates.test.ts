@@ -48,16 +48,26 @@ describe.each(cases)('版本化 $id@$version 工程模板', item => {
     await expect(writeProjectFile(fresh, TEMPLATE_MARKER, '{}')).rejects.toThrow('文件路径不允许访问');
     await expect(writeProjectFile(fresh, item.lockfile, '')).resolves.toBeUndefined();
     const stages: string[] = [];
+    const pnpm = item.lockfile === 'pnpm-lock.yaml';
     const lockError = await buildApp(fresh, undefined, (stage, status) => { stages.push(`${stage}:${status}`); }).catch((error: unknown) => error);
     expect(lockError).toBeInstanceOf(Error);
-    expect((lockError as Error).message).toContain('模板依赖锁已改变');
+    expect((lockError as Error).message).toContain(pnpm ? '锁文件无法识别' : '模板依赖锁已改变');
     expect(classifyBuildFailure(lockError)).toMatchObject({ repairable: true, stage: 'source' });
     expect(stages).toEqual(['source:started', 'source:failed']);
     await expect(writeProjectFile(fresh, item.lockfile, await readTemplateFile(template, item.lockfile))).resolves.toBeUndefined();
     const manifest = JSON.parse(await readProjectFile(fresh, 'package.json'));
-    delete manifest.dependencies[item.removable];
-    await expect(writeProjectFile(fresh, 'package.json', JSON.stringify(manifest))).resolves.toBeUndefined();
-    await expect(buildApp(fresh)).rejects.toThrow(item.lockfile === 'pnpm-lock.yaml' ? '依赖由模板版本固定' : '保留全部依赖');
+    if (pnpm) {
+      // pnpm 模板可以用 shell 增删 registry 依赖；只有来源不合规才在源码阶段被拒绝。
+      manifest.dependencies.dayjs = '^1.11.0';
+      await expect(writeProjectFile(fresh, 'package.json', JSON.stringify(manifest))).resolves.toBeUndefined();
+      manifest.dependencies.dayjs = 'git+https://github.com/user/repo.git';
+      await expect(writeProjectFile(fresh, 'package.json', JSON.stringify(manifest))).resolves.toBeUndefined();
+      await expect(buildApp(fresh)).rejects.toThrow('依赖来源不被允许');
+    } else {
+      delete manifest.dependencies[item.removable];
+      await expect(writeProjectFile(fresh, 'package.json', JSON.stringify(manifest))).resolves.toBeUndefined();
+      await expect(buildApp(fresh)).rejects.toThrow('保留全部依赖');
+    }
     await expect(writeProjectFile(fresh, item.jsEntry, 'export default {}')).resolves.toBeUndefined();
     await expect(writeProjectFile(fresh, 'vite.config.js', 'export default {}')).resolves.toBeUndefined();
     await expect(writeProjectFile(fresh, 'vite.config.ts', await readTemplateFile(template, 'vite.config.ts'))).resolves.toBeUndefined();

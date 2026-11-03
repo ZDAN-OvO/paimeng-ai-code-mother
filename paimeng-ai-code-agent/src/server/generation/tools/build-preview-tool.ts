@@ -57,7 +57,7 @@ export function createBuildPreviewTool(deps: {
 					stage: verdict.stage,
 					repairable: verdict.repairable,
 					diagnostic,
-					note: "这次构建没有通过，右侧仍是上一次成功的预览。按诊断修改源码后再次调用 buildPreview；不要添加或改动既有依赖，只在诊断指出依赖声明或锁文件被误改时才把 package.json 与锁文件恢复成模板自带的内容。",
+					note: "这次构建没有通过，右侧仍是上一次成功的预览。按诊断修改源码后再次调用 buildPreview；需要新依赖时用 shell 执行 pnpm add（只允许 npm registry 的包名与版本范围），不要手改锁文件来源。",
 				};
 				await api.details(result, context);
 				return { output: [{ type: "text", text: diagnostic }], details: result };

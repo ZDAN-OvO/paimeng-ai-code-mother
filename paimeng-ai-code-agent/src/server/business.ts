@@ -21,6 +21,8 @@ import { versionThumbnail } from './versioning/version-thumbnail';
 import { createDelivery, setCurrentDelivery } from './delivery/delivery-store';
 import { appWriteBlocker } from './generation/control-store';
 import { runtimePreviewAvailable, stopAppRuntime } from './app-runtime/supervisor';
+import { runtimeAppDataPath } from './app-runtime/plan';
+import { getConfig } from './infra/config';
 import { SNAPSHOT_MANIFEST_FILE } from './workspace/execution-workspace';
 import { versionDiffSchema, versionTargetSchema } from '@/shared/versioning';
 import { defaultTemplateFor, resolveTemplate } from './templates/templates';
@@ -92,6 +94,9 @@ export async function deleteApp(raw:unknown,user:User){
  await purgeVersions({id:target.id,codeGenType:target.codeGenType}).catch(problem=>{console.error(`应用 ${target.id} 的版本历史回收失败：`,problem);});
  // 运行时按 App 独占：删除应用时把容器一起停掉，不留孤儿容器；文件/交付/部署的完整清理在 #146。
  await stopAppRuntime({id:target.id,codeGenType:target.codeGenType}).catch(problem=>{console.error(`应用 ${target.id} 的运行时回收失败：`,problem);});
+ // node_modules 的包文件住在共享 store 挂载内的 App virtual store 里；容器停了也要把这个目录回收，不留孤儿。
+ await rm(runtimeAppDataPath(getConfig().runtimeRoot,{id:target.id,codeGenType:target.codeGenType}),{recursive:true,force:true})
+  .catch(problem=>{console.error(`应用 ${target.id} 的依赖目录回收失败：`,problem);});
  return true;
 }
 
