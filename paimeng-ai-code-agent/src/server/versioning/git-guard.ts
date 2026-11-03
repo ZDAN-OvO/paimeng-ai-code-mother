@@ -8,10 +8,11 @@ import { join } from 'node:path';
  * - 禁止对 refs/heads/* 的非快进更新（改写历史）
  * 提交、开分支、快进合并、--no-ff 合并、切换 detached HEAD 全部放行；
  * refs/paimeng/versions/* 是平台保留的历史引用，不受用户分支规则限制。
+ * 钩子装在平台裸库里，不在 Workspace：容器进程既看不到也删不掉它。
  * 用 bash 而不是 sh：`<<<`/`[[` 不在 POSIX sh 里。
  */
-export async function installGitGuard(repoWorkTree: string) {
-  const hooksDir = join(repoWorkTree, '.git', 'hooks');
+export async function installGitGuard(repo: string) {
+  const hooksDir = join(repo, 'hooks');
   await mkdir(hooksDir, { recursive: true });
   const file = join(hooksDir, 'reference-transaction');
   const script = `#!/bin/bash

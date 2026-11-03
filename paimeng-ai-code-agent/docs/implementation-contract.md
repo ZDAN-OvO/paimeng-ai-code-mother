@@ -24,6 +24,12 @@
 - 终态与租约释放在同一事务里完成（`generation-store.ts` 的 `finishGeneration`）；租约由每 5 秒一次的心跳发现，失去租约的旧进程不能覆盖新任务。
 - 限流计数与任务创建同事务，位置在重复请求与租约检查之后，锁顺序 `app_user` → `app` → `rate_limit`。
 
+## 版本
+
+- 版本历史在平台裸库里（`runtime/versionstore/repos/`），Workspace 没有 `.git`：读写历史一律用 `--git-dir <平台库> --work-tree <目录>`。ADR-0006。
+- 提交只走 `versioning/version-store` 的临时索引入口；工作区提交、执行目录提交和发布前构造共用同一套配额（默认 1000 个文件、50 MiB 总量、单文件 10 MiB，`COMMIT_MAX_*` 可配置）。超限不产生 commit、不推 HEAD、不写台账、不改 Workspace。
+- 历史只增的 `reference-transaction` 钩子装在平台裸库；只读 git 工具不能执行写子命令。
+
 ## 构建、预览与交付
 
 - 服务端拥有验收权：每轮模型结束后先 `buildApp`，诊断能定位到生成源码时交回模型，最多 `BUILD_REPAIR_ROUNDS`（默认 2）轮；源码指纹未变则用原始构建错误收尾，不空转。

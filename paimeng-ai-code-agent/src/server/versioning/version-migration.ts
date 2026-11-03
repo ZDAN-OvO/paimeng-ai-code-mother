@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { ensureVersionRepo, versionRepo, versionRoot, versionThumbnailPath } from './version-store';
 import { insertVersionRow, listVersionRows } from './version-ledger';
-import type { WorkspaceApp } from '../workspace/workspace';
+import { workspace, type WorkspaceApp } from '../workspace/workspace';
 
 /**
  * 三张版本表 → Git 的一次性迁移。表里还留着 Git 自己讲不出来的东西：
@@ -86,7 +86,7 @@ function legacyThumbnailPath(app: WorkspaceApp, legacyId: string) {
 }
 
 /**
- * 预演读哪个仓库：工作区的 .git，或还没搬进去的旧裸库。
+ * 预演读哪个仓库：平台裸库、还没搬进去的旧裸库，或旧版留在工作区的 .git。
  * 必须分清「压根没有仓库」和「有仓库但读不了」——后者报告成「提交不存在」会把
  * 权限/IO 故障伪装成正常结果，用户以为迁移做完了。
  */
@@ -96,7 +96,7 @@ type RepoSource =
   | { kind: 'unreadable'; reason: string };
 
 async function readableRepo(app: WorkspaceApp): Promise<RepoSource> {
-  for (const candidate of [versionRepo(app), join(versionRoot(), `${app.codeGenType}_${app.id}.git`)]) {
+  for (const candidate of [versionRepo(app), join(versionRoot(), `${app.codeGenType}_${app.id}.git`), join(workspace(app), '.git')]) {
     const head = await stat(join(candidate, 'HEAD')).then(() => 'ok' as const, (error: NodeJS.ErrnoException) => error.code ?? 'UNKNOWN');
     if (head === 'ok') return { kind: 'ok', repo: candidate };
     if (head !== 'ENOENT') return { kind: 'unreadable', reason: `${candidate} 读不了（${head}）` };

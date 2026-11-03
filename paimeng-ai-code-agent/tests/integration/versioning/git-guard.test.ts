@@ -1,18 +1,20 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { installGitGuard } from '@/server/versioning/git-guard';
-import { ensureWorkspace, workspace, type WorkspaceApp } from '@/server/workspace/workspace';
 
 const run = promisify(execFile);
-const app: WorkspaceApp = { id: `${Date.now()}31`, codeGenType: 'html' };
-const tree = workspace(app);
+const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C' };
+let root = '';
+let repo = '';
+const tree = () => join(root, 'worktree');
 
 async function git(args: string[], options: { allowFailure?: boolean } = {}) {
   try {
-    const { stdout, stderr } = await run('git', ['-C', tree, ...args], { env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } });
+    const { stdout, stderr } = await run('git', ['--git-dir', repo, '--work-tree', tree(), ...args], { env });
     return { ok: true, stdout, stderr };
   } catch (error) {
     if (options.allowFailure) return { ok: false, stdout: '', stderr: String((error as { stderr?: string }).stderr ?? '') };
@@ -21,7 +23,7 @@ async function git(args: string[], options: { allowFailure?: boolean } = {}) {
 }
 
 async function write(path: string, content: string) {
-  const file = join(tree, path);
+  const file = join(tree(), path);
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, content);
 }
@@ -33,12 +35,12 @@ async function commit(message: string) {
 }
 
 beforeAll(async () => {
-  await rm(tree, { recursive: true, force: true });
-  await ensureWorkspace(app);
-  await git(['init', '-q', '-b', 'main']);
+  root = await mkdtemp(join(tmpdir(), 'paimeng-git-guard-'));
+  repo = join(root, 'version.git');
+  await run('git', ['init', '--bare', '-q', '-b', 'main', repo], { env });
   await git(['config', 'user.name', 'paimeng']);
   await git(['config', 'user.email', 'version@paimeng.local']);
-  await installGitGuard(tree);
+  await installGitGuard(repo);
   await write('a.txt', 'v1');
   await commit('v1');
   await write('b.txt', 'v2');
@@ -46,7 +48,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await rm(tree, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true });
 });
 
 describe('git 安全闸（reference-transaction hook）', () => {
@@ -80,7 +82,7 @@ describe('git 安全闸（reference-transaction hook）', () => {
     await git(['switch', '-q', '-c', 'from-detached']);
     const committed = await commit('detached work');
     expect((await git(['rev-parse', 'HEAD'])).stdout.trim()).toBe(committed);
-    expect((await git(['rev-parse', `refs/heads/from-detached`])).stdout.trim()).toBe(committed);
+    expect((await git(['rev-parse', 'refs/heads/from-detached'])).stdout.trim()).toBe(committed);
     expect((await git(['rev-parse', 'refs/heads/main'])).stdout.trim()).toBe(main);
     expect((await git(['rev-parse', 'HEAD~1'])).stdout.trim()).toBe(detached);
   });

@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, getPool, now } from '@/server/infra/db';
@@ -13,7 +13,7 @@ import { harnessChatResponse } from '@/server/generation/durable-engine';
 import { generationControl, generationFor } from '@/server/generation/generation-store';
 import { listVersionRows, versionRowOf } from '@/server/versioning/version-ledger';
 import { workspace, writeProjectFile } from '@/server/workspace/workspace';
-import { commitVersion, ensureVersionRepo, listVersions } from '@/server/versioning/version-store';
+import { commitVersion, ensureVersionRepo, listVersions, versionRepo } from '@/server/versioning/version-store';
 import type { User } from '@/shared/contracts';
 import { testDatabaseUrl } from '../../support/test-database-url';
 import { baseUrl, freePort, harnessAvailable, postgresReachable, postgresUrl, startHarness, stopHarness, waitHealthy } from '../harness/support';
@@ -45,7 +45,7 @@ const gitEnv = {
 };
 
 function git(app: TestApp, args: string[]): string {
-  return execFileSync('git', args, { cwd: workspace(app), env: gitEnv, encoding: 'utf8' });
+  return execFileSync('git', ['--git-dir', versionRepo(app), '--work-tree', workspace(app), ...args], { env: gitEnv, encoding: 'utf8' });
 }
 
 function headSha(app: TestApp): string {
@@ -214,8 +214,9 @@ describe.skipIf(!harnessReady || !postgresReady)('生成收尾的版本', () => 
     const account = await createApp('版本库不可写');
     const { app } = account;
     await writeProjectFile(app, 'index.html', '<!doctype html><html><body>BLOCKED_REPO</body></html>');
-    // 在 .git 该在的位置放一个普通文件：git 初始化必然失败，发布事务不能凭空造出版本。
-    writeFileSync(join(workspace(app), '.git'), 'not-a-repo');
+    // 在平台裸库该在的位置放一个普通文件：git 初始化必然失败，发布事务不能凭空造出版本。
+    mkdirSync(dirname(versionRepo(app)), { recursive: true });
+    writeFileSync(versionRepo(app), 'not-a-repo');
 
     const requestId = await runGeneration({ account, text: '照常生成', finalText: '照常完成', tool: 'm1_wait', args: { ms: 0 }, expectedStatus: 'failed' });
 
