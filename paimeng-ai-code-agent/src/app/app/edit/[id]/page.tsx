@@ -1,5 +1,5 @@
 'use client';
-import { use, useEffect, useState } from 'react';
+import { use, useCallback, useEffect, useRef, useState } from 'react';
 import {
   App as AntApp,
   Alert,
@@ -37,9 +37,8 @@ export default function AppEdit({ params }: { params: Promise<{ id: string }> })
   const isAdmin = user?.userRole === 'admin';
   const canEdit = Boolean(user && (isAdmin || (app && app.userId === user.id)));
 
-  async function fetchApp() {
-    try {
-      const value = await api<AppInfo>('app/get/vo?id=' + encodeURIComponent(id));
+  const applyApp = useCallback(
+    (value: AppInfo) => {
       setError('');
       setApp(value);
       form.setFieldsValue({
@@ -47,13 +46,40 @@ export default function AppEdit({ params }: { params: Promise<{ id: string }> })
         cover: value.cover ?? '',
         priority: value.priority ?? 0,
       });
+    },
+    [form],
+  );
+  // 保存后会重新读一次；初始读取或上一次保存的读取可能更晚返回，只有最新一次读取可以写表单。
+  const readSequence = useRef(0);
+  const readApp = useCallback(() => api<AppInfo>('app/get/vo?id=' + encodeURIComponent(id)), [id]);
+  async function readLatest() {
+    const sequence = ++readSequence.current;
+    const value = await readApp();
+    return { sequence, value };
+  }
+  async function fetchApp() {
+    try {
+      const { sequence, value } = await readLatest();
+      if (sequence === readSequence.current) applyApp(value);
     } catch (e) {
       setError((e as Error).message);
     }
   }
   useEffect(() => {
-    void fetchApp();
-  }, [id]);
+    // id 变了就重新读；旧 id 的响应晚到时不能覆盖当前应用。
+    let live = true;
+    const sequence = ++readSequence.current;
+    void readApp()
+      .then((value) => {
+        if (live && sequence === readSequence.current) applyApp(value);
+      })
+      .catch((e: Error) => {
+        if (live) setError(e.message);
+      });
+    return () => {
+      live = false;
+    };
+  }, [applyApp, readApp]);
 
   async function save(value: EditForm) {
     if (!app) return;

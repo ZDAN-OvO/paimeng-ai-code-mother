@@ -13,23 +13,36 @@ const AuthContext = createContext<{
   refresh: () => Promise<void>;
 }>({ user: null, loading: true, refresh: async () => {} });
 export const useAuth = () => useContext(AuthContext);
+
+/** 会话读取失败就是未登录；挂载和登录后的 refresh 共用同一份判断。 */
+async function readSession(): Promise<User | null> {
+  try {
+    return await api<User>('user/get/login');
+  } catch {
+    return null;
+  }
+}
 export function Providers({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const pathname = usePathname();
   const router = useRouter();
   const refresh = useCallback(async () => {
-    try {
-      setUser(await api<User>('user/get/login'));
-    } catch {
-      setUser(null);
-    } finally {
-      setLoading(false);
-    }
+    setUser(await readSession());
+    setLoading(false);
   }, []);
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    // 挂载时读一次会话；组件卸载后到达的响应不再写状态。
+    let live = true;
+    void readSession().then((next) => {
+      if (!live) return;
+      setUser(next);
+      setLoading(false);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
   const items = [
     { key: '/', icon: <HomeOutlined />, label: '主页' },
     ...(user ? [{ key: '/billing', label: '我的账单' }] : []),

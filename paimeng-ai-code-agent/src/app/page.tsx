@@ -43,28 +43,56 @@ export default function Home() {
   const [templateId, setTemplateId] = useState<string>('auto');
   const [my, setMy] = useState<Page<AppInfo>>(emptyPage);
   const [good, setGood] = useState<Page<AppInfo>>(emptyPage);
+  async function fetchMy(page = 1) {
+    return api<Page<AppInfo>>('app/my/list/page/vo', { pageNum: page, pageSize: 6 });
+  }
+  async function fetchGood(page = 1) {
+    return api<Page<AppInfo>>('app/good/list/page/vo', { pageNum: page, pageSize: 6 });
+  }
   async function loadMy(page = 1) {
     if (!user) return;
     try {
-      setMy(await api<Page<AppInfo>>('app/my/list/page/vo', { pageNum: page, pageSize: 6 }));
+      setMy(await fetchMy(page));
     } catch (error) {
       message.error((error as Error).message);
     }
   }
   async function loadGood(page = 1) {
     try {
-      setGood(await api<Page<AppInfo>>('app/good/list/page/vo', { pageNum: page, pageSize: 6 }));
+      setGood(await fetchGood(page));
     } catch (error) {
       message.error((error as Error).message);
     }
   }
   useEffect(() => {
-    void loadGood();
-  }, []);
+    let live = true;
+    void fetchGood()
+      .then((page) => {
+        if (live) setGood(page);
+      })
+      .catch((error: Error) => {
+        if (live) message.error(error.message);
+      });
+    return () => {
+      live = false;
+    };
+  }, [message]);
   useEffect(() => {
-    if (user) void loadMy();
-    else setMy(emptyPage);
-  }, [user]);
+    if (!user) return;
+    let live = true;
+    void fetchMy()
+      .then((page) => {
+        if (live) setMy(page);
+      })
+      .catch((error: Error) => {
+        if (live) message.error(error.message);
+      });
+    return () => {
+      live = false;
+    };
+  }, [user, message]);
+  // 退出登录后立即按空列表渲染，不等清空状态的副作用，也不把上个账号的作品留在屏幕上。
+  const myShown = user ? my : emptyPage;
   useEffect(() => {
     function handleMouseMove(event: MouseEvent) {
       document.documentElement.style.setProperty(
@@ -175,15 +203,15 @@ export default function Home() {
         <section className="section">
           <h2 className="section-title">我的作品</h2>
           <div className="app-grid">
-            {my.records.map((app) => (
+            {myShown.records.map((app) => (
               <HomeAppCard key={app.id} app={app} />
             ))}
           </div>
           <div className="pagination-wrapper">
             <Pagination
-              current={my.pageNumber}
-              pageSize={my.pageSize}
-              total={my.totalRow}
+              current={myShown.pageNumber}
+              pageSize={myShown.pageSize}
+              total={myShown.totalRow}
               showSizeChanger={false}
               showTotal={(total) => `共 ${total} 个应用`}
               onChange={(page) => {

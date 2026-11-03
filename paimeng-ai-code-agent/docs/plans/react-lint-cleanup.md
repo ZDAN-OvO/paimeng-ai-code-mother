@@ -11,7 +11,7 @@
 
 Status. Draft.
 Blockers. G0：lint/Prettier 仍是未提交工作树，尚无可复现的前置合入提交；F1：下面列出的局部修法及跨边界 ref 识别尚无最小实验结果，不能保证既清零规则又保留时序。
-Execution. 只交付计划。生产实施需要用户明确启动；先处理 G0/F1，再冻结验收并改为 Ready。下文 PR 划分可审查，但技术方向中未证实部分不得当作定案。
+Execution. 用户已明确启动。G0 已提交并推送（`1c41a93`，未合入），F1 已有观察结果；实施按 PR-01 → PR-04 串行、叠加在 `chore/lint-and-prettier` 之上，父项未合入前子项不进入 merge-ready。
 Roles. 实施者负责产品与自检；每个 Behavior PR 由未参与该 PR 产品及检查实现的验证者执行 /verify-pr；用户审阅交互证据并独占合并权限。
 Permissions. 本轮只有调查与规划授权，没有子 Agent、/spike、提交、推送、发布或合并授权。后续独立验证者可以是获授权的 Agent 或人工；没有独立验证则保持 pending。
 
@@ -27,7 +27,7 @@ F1 前置：按 Appendix A 的任务准备 /spike；只有获明确授权后才�
 每轮集成检查：`npm run check:fast && npm run type-check && npm test`，再执行该轮真实浏览器场景；最后全量 `npm run test:integration` 串行运行。
 
 Parallel. None. 四组共同修改 `eslint-suppressions.json`、质量说明并共享 `_test` 数据库及 Redis DB 15；串行交付比为本次清理新增四套数据库更合理。后续若要并行，必须先指定唯一集成者处理共享文件，拆分数据库并重审本计划；单换端口不构成隔离。
-Feasibility. 已复核真实 44 条原始诊断、18 个状态所有者、SDK 回调调用时机、插件 Ref 命名识别和现有验证入口。未验证局部修法的 lint 结果、antd 表单会话重置及聊天回调稳定性，见 Appendix A；因此本计划不是 Ready。
+Feasibility. F1 已在隔离 worktree 完成：原始诊断 44 条可复现；Ref 命名、纯 prepare 回调、带存活校验的 promise 回调、`afterOpenChange` + `initialValues` 表单会话、派生标记与按预览身份保存选中态五类修法，分别用原始 ESLint 扫描确认对应诊断消失（44 → 35，详见 Appendix A）。PR-01 已在叠加分支实现并跑真实浏览器证据；PR-02–04 仍须按各自 Verify 门禁验证。
 Acceptance. A1–A6 的映射见下表；证据根为每个 PR 的 `runtime/evidence/react-lint/PR-NN/`，技能生成的浏览器证据包另保存原路径并在 handoff 中链接。
 Changes. 改变目标、预算、覆盖、误报豁免或不适用理由须用户明确审查；保留原标准与变更原因。不能把存量转成 44 条行内 disable 宣称清零。
 
@@ -296,6 +296,22 @@ Verifier. Independent.
 5. 已有事件可承载初始化：model-manager 的 openCreateProvider/openEditProvider/openAddModel 已清 probeText，后续 effect 再清是可调查的重复来源；仍须验证表单未挂载时 setFieldsValue 及重开/冲突草稿，不能只删除 effect 就宣称行为等价。
 6. 危险共享：聊天 page 初始化写 shownMessageIds，useGenerationSync 也写它；activeGenerationId 由 page 传入并被 Hook 改写；setMessages 更新函数里还写 ref。回执、终态、运行态和刷新多来源交错，已有多条竞态用例，但大量用 page.route 构造响应，必须另补真实链路观察。
 7. 既有运行证据：前一轮 lint 接入的本机验证报告（`.pi/skills/verify-paimeng-agent/evidences/26-11-03/platform-180016/report.md`，.pi 已 gitignore，不随仓库发布）记录 13ef405 dirty 上的真实平台两条流程、生产构建和 9 张截图；512 单元、475 集成通过的日志也存在本机 `/tmp/pi-processes-ABFd2S/`。这些仅说明当时部分行为可用，不能代替本计划新增时序/性能场景，也不能给未来 head 发通过结论。
+
+### F1 最小可行性实验结果
+
+在独立 worktree（`runtime/react-lint-spike`，分支 `spike/react-lint`，基线 `d8c00e3`）按同一份原始 ESLint Node API 扫描（不应用 bulk suppressions）观察到：
+
+| 修法 | 观察对象 | 结果 |
+| --- | --- | --- |
+| Ref 统一以 `Ref` 结尾（不改语义） | chat page + useGenerationSync | 该目录 15 → 11；4 条 immutability 消失，属插件按命名识别 Ref 的误报 |
+| transport 的 prepare 回调改为纯函数，requestId 在发送事件里生成 | chat page | 1 条 refs 消失；原有“渲染时读 ref”实际只在发送时执行，改成事件生成后连插件也不再报 |
+| effect 内改用带存活校验的 promise 回调写状态 | credit-balance | 1 → 0；同时补上了原实现缺失的卸载/切换用户保护 |
+| 删除打开弹窗的 effect，改用 `afterOpenChange` 重置 requestId + `initialValues` | credit-grant-dialog | 1 → 0 |
+| 派生 `generating && memoryBusy`、按预览身份保存选中态 | chat page | 2 条 set-state 消失；不再需要“生成结束/预览变化”时同步清空 |
+
+应用上述切片后，扫描集合从 44 条降到 35 条，剩余为 2 条真实待重构（refresh 用量、初始提示自动发送）和 6 条依赖数组问题（其中 2 条是切片未完成的临时产物）。该 worktree 是部分切片，不作为可合入提交；PR-01 另在 `agent/react-lint-pages` 上按同一批模式实现，类型、lint、单测与浏览器证据见对应 PR。
+
+实验产物在本机 `paimeng-ai-code-agent/runtime/plans/react-lint-cleanup/spike/`（gitignored）：`raw-lint-before.txt`、`raw-lint-after.txt`、`pattern-changes.diff`。这组观察只证明“这些写法能让规则与类型同时成立”，不证明每个组件的行为等价；行为由每个 PR 的 Verify 门禁单独证明。
 
 SDK 源码哈希：default-chat-transport `60efc63699c7f97abb7c00f5d62ae04de45310ee4086a32cafecc4d9505139ac`；http-chat-transport `e450c8d367f41703d90a4dd7fd785903d98d80bfbc6b18381e01d62dc6483425`。react-hooks 插件 JS 哈希 `d401e94560ab2660e40fe59a3408828b96d78e9929a22358386aa51acbe32e2b`。重装或更新后重新核对。
 
