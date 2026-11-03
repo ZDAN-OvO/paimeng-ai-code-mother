@@ -24,7 +24,7 @@ web
 
 ## Operating Context
 
-- 首页：描述需求、选择技术栈或从模板起步、浏览自己的应用与精选案例。
+- 首页：描述需求、选择起点（轻量静态页或 React 厚架子）或交给自动选择、浏览自己的应用与精选案例。
 - App chat：围绕一个 App 的连续对话，跨越多次 Generation；显示生成状态、工具进展、预览与源码、版本历史和部署入口。
 - 生成状态：generating（生成中）、building（构建中）、ready（可预览）、failed（失败）、cancelled（已取消）。Generation 是一次完整请求，结束后不复用；新的输入产生新的 Generation。
 - 产物类型：HTML、多文件静态站、Vue 工程、React 工程；模板有版本，产物类型没有。

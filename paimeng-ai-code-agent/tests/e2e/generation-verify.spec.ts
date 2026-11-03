@@ -63,8 +63,8 @@ test('首页填写需求后生成出可预览的页面，刷新后仍在', async
   await expect(page).toHaveURL('/');
 
   await page.getByLabel('技术栈', { exact: true }).click();
-  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('原生 HTML', { exact: true }).click();
-  await expect(page.getByText('单文件静态页，样式与交互集中在 index.html', { exact: true })).toBeVisible();
+  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('轻量静态页', { exact: true }).click();
+  await expect(page.getByText('单文件静态页，无需构建，适合内容简单的单页站点', { exact: true })).toBeVisible();
   await page.getByLabel('应用描述').fill(prompt);
   await page.screenshot({ path: join(evidence, '01-home-filled.png'), fullPage: true });
 
