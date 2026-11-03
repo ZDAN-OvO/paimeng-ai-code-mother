@@ -31,7 +31,7 @@ import { VersionPanel } from '@/components/chat/version-panel';
 import { DeploySuccessModal } from '@/components/chat/deploy-success-modal';
 import './chat.css';
 
-const statusLabels = { generating: '生成中', building: '构建中', ready: '可预览', failed: '失败', cancelled: '已取消' } as const;
+const statusLabels = { queued: '排队中', generating: '生成中', building: '构建中', ready: '可预览', failed: '失败', cancelled: '已取消' } as const;
 const historyPageSize = 10;
 const inputLimit = 1000;
 /** 两栏布局的偏好键：按浏览器记一份，跨应用共用。 */
@@ -346,7 +346,9 @@ function Chat({ id }: { id: string }) {
     task, status, stop, fetchHistory, fetchRuntime, liveRef, mounted,
     activeGenerationId, setMessages, setProgress, message,
   });
-  const generating = live || runtimeBusy || task?.status === 'generating' || task?.status === 'building';
+  // 排队中也是「这一轮还没结束」：轮询、取消与输入区都必须按运行态处理，否则刷新后就看不到排队状态了。
+  const queuedTask = task?.status === 'queued';
+  const generating = live || runtimeBusy || queuedTask || task?.status === 'generating' || task?.status === 'building';
   // 持久输入状态与草稿交接：后端给了 `runtime.inputs` 就以它为准，没有这个字段时回退到原生队列
   // （`runtime.pending` → 本地 `inputs`）与既有文案，页面行为不变。
   const inputProjection = useMemo(() => projectGenerationInputs({ inputs: runtimeInputs }), [runtimeInputs]);
@@ -739,7 +741,7 @@ function Chat({ id }: { id: string }) {
   // 响应流被浏览器/网络层切断时的原文（如 `Error in input stream`）换成可读文案。
   const interrupted = rawRequestError ? interruptedStreamMessage({ message: rawRequestError, status: task?.status ?? null }) : null;
   const requestError = interrupted ? null : rawRequestError;
-  const taskRunning = task?.status === 'generating' || task?.status === 'building';
+  const taskRunning = task?.status === 'generating' || task?.status === 'building' || task?.status === 'queued';
   // 正在跑的这一轮不该背着上一轮的失败：重新发送之后旧原因就收起来。
   // 提问暂停也不是失败：提问本身或「等待回答」不该显示成失败终态。
   const taskError = !failureResolved && !taskRunning && !questionPaused ? task?.error ?? null : null;
@@ -752,6 +754,10 @@ function Chat({ id }: { id: string }) {
   const interruption = interrupted ?? (requestError ? `请求失败：${requestError}` : taskInterruption);
   const interruptionFailed = !!requestError || (!!taskError && !cancelledByUser);
   const statusLabel = task ? (awaitingAnswer ? '等待回答' : taskRunning ? statusLabels[task.status] : canPreview ? statusLabels.ready : statusLabels[task.status]) : null;
+  // 排队位置是读取时的事实，可能下一秒就变；只用于说明，不参与任何准入判断。
+  const queueHint = queuedTask && task?.queue
+    ? `排队中 · 前面还有 ${Math.max(0, task.queue.position - 1)} 个生成在等运行时槽位 · 可以取消等待`
+    : '排队中 · 正在等待可用的运行时槽位 · 可以取消等待';
   const statusColor = statusLabel === statusLabels.ready ? 'green' : statusLabel === statusLabels.failed ? 'red' : 'default';
   const canDownload = canEdit && sourceAvailable && !generating;
   const canDeploy = canEdit && (canPreview || sourceAvailable) && !generating;
@@ -893,7 +899,7 @@ function Chat({ id }: { id: string }) {
         {!stickToBottom && <button type="button" className="jump-to-bottom" onClick={() => scrollToBottom(true)}>回到最新 ↓</button>}
         {memoryBusy && <p className="memory-hint" role="status">正在整理历史上下文，请稍候…</p>}
         {!questionPaused && <BuildProgress state={progress} error={taskError} />}
-        {generating && <p className="generating-hint" role="status">{repairing ? '构建未通过，正在进行第 ' + repairing.attempt + '/' + repairing.maxAttempts + ' 次修复…' : '正在生成或构建，请稍候…'}</p>}
+        {generating && <p className="generating-hint" role="status">{queuedTask ? queueHint : repairing ? '构建未通过，正在进行第 ' + repairing.attempt + '/' + repairing.maxAttempts + ' 次修复…' : '正在生成或构建，请稍候…'}</p>}
         <div className="chat-input" style={dragging ? { outline: '2px dashed #cb573e', outlineOffset: -4 } : undefined}
           onDragOver={event => { if (!canAttachImages || !draggingFiles(event.dataTransfer)) return; event.preventDefault(); if (!dragging) setDragging(true); }}
           onDragLeave={event => { if (!canAttachImages) return; const target = event.relatedTarget instanceof Node ? event.relatedTarget : null; if (!event.currentTarget.contains(target)) setDragging(false); }}
@@ -965,7 +971,19 @@ function Chat({ id }: { id: string }) {
             <Space wrap>
               <Button size="small" icon={<PictureOutlined aria-hidden="true" />} aria-label="添加图片" disabled={!canAttachImages || imageDrafts.length >= imageLimits.maxImages} onClick={() => imageInput.current?.click()}>添加图片</Button>
               <VoiceInput editable={canEdit && loaded} serverEnabled={voiceEnabled} onTranscript={appendVoiceText} />
-              {generating ? (input.trim()
+              {generating ? (
+                queuedTask ? (
+                  /* 排队中：新应用的输入框会被初始需求预填，所以不能靠「清空输入才出现取消」；
+                     取消入口与提示里的「可以取消等待」保持一致，有文字时再并列一个 followUp 发送。 */
+                  <>
+                    {input.trim() && (
+                      <Tooltip title={imageBlockReason}>
+                        <span><Button type="primary" icon={<SendOutlined aria-hidden="true" />} disabled={!canEdit || !loaded || sealing || imageBlockReason !== null} onClick={() => { void sendInput('followUp'); }}>发送</Button></span>
+                      </Tooltip>
+                    )}
+                    <Button danger icon={<StopOutlined aria-hidden="true" />} loading={cancelling} disabled={!canEdit || !loaded} onClick={() => { void cancel(); }}>取消</Button>
+                  </>
+                ) : input.trim()
                 ? /* 有文字时的主按钮是 followUp：附件跟着一起进下一轮；附图状态挡住发送时原因走悬浮提示（常显的长文案会把按钮行撑出面板）。 */
                   <Tooltip title={imageBlockReason}>
                     <span><Button type="primary" icon={<SendOutlined aria-hidden="true" />} disabled={!canEdit || !loaded || sealing || imageBlockReason !== null} onClick={() => { void sendInput('followUp'); }}>发送</Button></span>
@@ -991,13 +1009,13 @@ function Chat({ id }: { id: string }) {
           <Button size="small" type="text" icon={<RightOutlined aria-hidden="true" />} aria-label="收起网页展示" onClick={togglePreview}>收起</Button>
         </Space></div>
         {canPreview ? <div className={'preview-live preview-live-' + activeDevice}>
-          {generating && <div className="preview-live-badge" role="status">生成中，内容会持续更新</div>}
+          {generating && <div className="preview-live-badge" role="status">{queuedTask ? '排队中，轮到时自动开始' : '生成中，内容会持续更新'}</div>}
           {/* 手机端与电脑端共用这一个 iframe：只换外层容器的类名，切换时不重载。 */}
           <div className="preview-screen">
             <iframe ref={iframe} className="preview-frame" title="应用预览" src={previewSrc} sandbox="allow-scripts allow-same-origin" referrerPolicy="no-referrer" onLoad={() => { previewLoaded.current = true; setSelected([]); editorMessage({ type: 'TOGGLE_EDIT_MODE', editMode: editing && editingAllowed, locked: !editingAllowed }); }} />
           </div>
         </div> :
-          generating || rebuilding ? <div className="preview-loading" role="status"><Spin size="large" /><p>{generating ? '正在生成网站...' : '正在重建预览...'}</p></div> :
+          generating || rebuilding ? <div className="preview-loading" role="status"><Spin size="large" /><p>{queuedTask ? '排队中，轮到后会自动开始生成...' : generating ? '正在生成网站...' : '正在重建预览...'}</p></div> :
           <div className="preview-placeholder"><div className="preview-placeholder-icon">🌐</div><p>网站文件生成完成后将在这里展示</p></div>}
       </section>
     </div>

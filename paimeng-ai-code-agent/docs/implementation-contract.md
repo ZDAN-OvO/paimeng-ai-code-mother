@@ -19,7 +19,9 @@
 
 - harness 是唯一写者，Next 只是 attach 客户端与 SSE 转发：浏览器断连只停止转发，任务在 harness 里照常跑完（ADR-0001、ADR-0003）。
 - 平台没有自己的消息表：转录的权威存储在 harness，`GET app/messages` 读回后投影成 UI 消息。
-- 每个应用同时只有一个活动任务，状态 `generating` / `building` / `ready` / `failed` / `cancelled`。
+- 每个应用同时只有一个活动任务，状态 `queued` / `generating` / `building` / `ready` / `failed` / `cancelled`。
+- `queued` 表示这一轮已经持久化、但没有空闲 App runtime 槽位：排队不拿写权限、不建执行、不产生 Credit；等待截止取「本轮绝对 Deadline」与「`RUNTIME_QUEUE_WAIT_TIMEOUT_MS`」的较小值，不因排队延长。取消、队列满、等待超时都落可读终态/错误；同一 requestId 的重复事件只会启动一次。
+- 槽位、空闲回收、队列上限与等待截止都在 `app_runtime` 配置里（`RUNTIME_MAX_SLOTS` 默认 3、`RUNTIME_IDLE_TIMEOUT_MS` 默认 15 分钟、`RUNTIME_QUEUE_LIMIT`、`RUNTIME_QUEUE_WAIT_TIMEOUT_MS`）。驱逐按 LRU 挑空闲 runtime，持有 Write authority 的绝不驱逐。容量统计只认 cgroup 匿名内存（`anon`/`total_rss`），不把可回收 page cache 当占用。
 - 取消只在模型还在写文件时生效；已进入构建则忽略，构建继续完成。
 - 终态与租约释放在同一事务里完成（`generation-store.ts` 的 `finishGeneration`）；租约由每 5 秒一次的心跳发现，失去租约的旧进程不能覆盖新任务。
 - 限流计数与任务创建同事务，位置在重复请求与租约检查之后，锁顺序 `app_user` → `app` → `rate_limit`。

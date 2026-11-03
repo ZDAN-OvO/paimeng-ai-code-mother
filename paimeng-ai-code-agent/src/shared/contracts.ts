@@ -13,7 +13,8 @@ export const roleSchema = z.enum(['user', 'admin']);
 export type User = {id:string;userAccount:string;userName:string|null;userAvatar:string|null;userProfile:string|null;userRole:'user'|'admin';createTime:string;updateTime:string};
 export type AppInfo = {id:string;appName:string|null;cover:string|null;initPrompt:string;codeGenType:CodeGenType;deployKey:string|null;deployedTime:string|null;editTime?:string|null;priority:number;userId:string;createTime:string;updateTime:string;user?:User;sourceAvailable?:boolean;previewUrl?:string|null;builtAt?:string|null;deployUrl?:string|null;template?:TemplateIdentity|null};
 export type Page<T> = {records:T[];totalRow:number;pageNumber:number;pageSize:number};
-export type GenerationStatus = 'generating'|'building'|'ready'|'failed'|'cancelled';
+/** `queued`：没有空闲 runtime 槽位、还没开始执行；排队不消耗 Credit，等待计入同一份绝对 Deadline。 */
+export type GenerationStatus = 'queued'|'generating'|'building'|'ready'|'failed'|'cancelled';
 /**
  * 草稿交接：`draining` 正在排空本轮写入、`sealing` 正在封存源码快照。它只用于 UI 的等待文案，
  * 不是产品 phase；状态标签仍按 `GenerationStatus`（generating/building/…）显示。
@@ -27,7 +28,9 @@ export type GenerationPhase = 'editing'|'checking'|'publishing'|'finished';
  * 旧后端不返回这个字段，页面按「没有提问」处理。
  */
 export type GenerationQuestion = {id:string;prompt:string;generationId:string};
-export type Generation = {id:string;appId:string;status:GenerationStatus;error:string|null;stopReason:string|null;createTime:string;updateTime:string;phase?:GenerationPhase;handoff?:GenerationHandoff|null;draftPending?:boolean;question?:GenerationQuestion|null};
+/** 排队中的可读进度：position 从 1 开始，waiting 是当前队列长度，waitDeadline 是排队等待的绝对截止（数据库时钟）。 */
+export type GenerationQueue = {position:number;waiting:number;waitDeadline:string};
+export type Generation = {id:string;appId:string;status:GenerationStatus;error:string|null;stopReason:string|null;createTime:string;updateTime:string;phase?:GenerationPhase;handoff?:GenerationHandoff|null;draftPending?:boolean;question?:GenerationQuestion|null;queue?:GenerationQueue|null};
 export type ChatHistory = {id:string;appId:string;userId:string;message:string;messageType:'user'|'ai';createTime:string};
 /** 任务级停止原因（D2 记账，设计见 docs/plans/archive/agent-design-review.md §9）。`step-limit` 是历史值：步数上限已于 2026-10-16 取消，新代码不再产生它，但旧行仍要能读回与展示。`overdraft` 是运行期熔断（95）：欠款超过透支线时中止，与普通失败区分。 */
 export const generationStopReasons = ['completed','no-changes','step-limit','verification-failed','timeout','cancelled','lease-lost','model-error','initialization-failed','interrupted','question','overdraft'] as const;
@@ -37,8 +40,9 @@ export type GenerationStopReason = typeof generationStopReasons[number];
  * `files` 是写入/修改/删除完成后的文件，`preview` 表示部分预览已可看（版本单调递增），
  * 构建阶段事件来自 buildApp 的 stage 回调，`ready`/`failed`/`cancelled` 是任务终态。
  */
-export type BuildProgressStage = 'files'|'preview'|'source'|'install'|'typecheck'|'build'|'ready'|'failed'|'cancelled';
+export type BuildProgressStage = 'queued'|'files'|'preview'|'source'|'install'|'typecheck'|'build'|'ready'|'failed'|'cancelled';
 export type BuildProgressEvent =
+ | {stage:'queued';position:number;at:number}
  | {stage:'files';paths:string[];at:number}
  | {stage:'preview';version:number;at:number}
  | {stage:'source'|'install'|'typecheck'|'build';status:'started'|'ok'|'failed';ms:number;at:number}

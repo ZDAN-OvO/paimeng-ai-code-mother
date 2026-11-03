@@ -5,6 +5,7 @@ import { getConfig } from '../infra/config';
 import { appTemplate } from '../workspace/template-workspace';
 import { projectAt } from '../workspace/workspace';
 import { templatePackageManager } from '../templates/templates';
+import { isProjectCodeGenType } from '@/shared/contracts';
 import { markBuildFailure, sourceFailure } from '../delivery/build-feedback';
 import { assertNoNpmrc, assertRegistryDependencies, DependencySourceError } from '../delivery/dependency-policy';
 import { ensureAppRuntime, recordDependenciesInstalled } from './supervisor';
@@ -71,7 +72,10 @@ export async function finalizeRuntimeDependencies(input: {
   const config = getConfig();
   if (!config.appRuntime.enabled) return;
   const template = await appTemplate(projectAt(app, workspaceRoot)).catch(() => null);
-  if (!template || templatePackageManager(template) !== 'pnpm') return;
+  // 只有前端工程模板（pnpm）需要轮末归一化。html / multi-file 是静态模板，
+  // templatePackageManager 对它们抛错而不是返回 null，所以必须先按类型过滤。
+  if (!template || !isProjectCodeGenType(app.codeGenType)) return;
+  if (templatePackageManager(template) !== 'pnpm') return;
   try {
     assertNoNpmrc(await npmrcFiles(workspaceRoot));
     const manifest = await readFile(join(workspaceRoot, 'package.json'), 'utf8');

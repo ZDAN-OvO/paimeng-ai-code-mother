@@ -10,7 +10,7 @@ import { generationRequestSchema as baseGenerationRequestSchema, uploadDirectory
 import { readAttachmentBytes, readAttachmentOriginal } from './attachment-store';
 import { buildApp, sourceDigest, type BuildStageProgress } from '../delivery/artifacts';
 import { harnessProtocol } from './durable/protocol';
-import { conversationModelSchema, harnessModelFailureSchema, modelAdmissionSchema, type ModelAdmission } from '@/shared/durable-model';
+import { conversationModelSchema, generationModelAlias, harnessModelFailureSchema, modelAdmissionSchema, type ModelAdmission } from '@/shared/durable-model';
 import { classifyBuildFailure, formatBuildFeedback, noProgressMessage } from '../delivery/build-feedback';
 import { appForAdoption, getApp } from '../business';
 import { getConfig } from '../infra/config';
@@ -19,7 +19,7 @@ import { generationControl, generationFor } from './generation-store';
 // 读路径的 ready 修复也要补一次结算；billing 侧不 import 本模块（否则终态路径 import 计费就成环）。
 import { evaluateRunningOverdraft, reconcileSettlements, settleGenerationBilling } from '../billing/settlement';
 import { withWorkspaceWrite, activeExecution, appendInput, assertAuthority, beginChecking, bindExecutionConversation, completeAttempt, heartbeatAuthority, inputsSettled, setExecutionStatus, markInputPlaced, markInputUnanswered, markInputResolved, openQuestionOf, reserveAttempt, withdrawInput, type ExecutionRecord, type InputRecord } from './control-store';
-import { CandidateInvalidatedError, failOrCancel, getInputs, pauseForQuestion, publishReady, recoverStartup, settleGeneration, startGeneration } from './generation-lifecycle';
+import { CandidateInvalidatedError, failOrCancel, getInputs, launchQueuedGeneration, pauseForQuestion, prepareGenerationStart, publishReady, recoverStartup, settleGeneration, type StartGenerationResult } from './generation-lifecycle';
 import { recordAssistantStep, recordBuildStep, stopReasonOf, type AccountToolCall, type EntryUsage, type GenerationStopReason, type ModelIdentity } from './generation-accounting';
 import { BusinessError } from '../infra/http';
 import { pendingChangeStatsFrom } from '../versioning/version-store';
@@ -32,6 +32,8 @@ import { harnessInstructions } from './prompts/harness-instructions';
 import { projectAt, workspace, writeProjectFileBytes } from '../workspace/workspace';
 import { prepareGenerationRuntime } from '../app-runtime/supervisor';
 import { finalizeRuntimeDependencies } from '../app-runtime/dependencies';
+import { modelRegistry } from '../models/registry';
+import { cancelQueuedGeneration, queuedGenerationView } from '../app-runtime/scheduler';
 
 const textBlockSchema = z.object({ type: z.literal('text'), text: z.string() });
 const thinkingBlockSchema = z.object({ type: z.literal('thinking'), thinking: z.string() });
@@ -1540,6 +1542,8 @@ export async function generationStatus(appId: string) {
     draftPending: authority?.draftSnapshotId !== null && authority?.draftSnapshotId !== undefined,
     handoff: authority?.state === 'draining' ? { state: 'sealing' as const, reason: task.error } : null,
     question: await openQuestionView(appId),
+    // 排队进度是读取时的实时事实（位置会随队列变化），不落库。
+    queue: task.status === 'queued' ? await queuedGenerationView({ id: appId }).catch(() => null) : null,
   };
 }
 
@@ -1561,7 +1565,112 @@ async function uploadAttachmentImages(app: AppInfo, user: User, images: readonly
 }
 
 /**
- * 生成入口。返回 UI 消息流响应（`data-progress` / 文本增量 / 工具条目 / 用量块挂载方式不变，前端不需要改）。
+ * 生成入口的模型配置预检：别名缺失/禁用时必须在建任何 generation/lease/限流计数之前 503。
+ *
+ * 只走只读的 registry 快照（`resolveBindingFresh`，不写缓存、不推进 epoch），不发网络也不建
+ * provider 实例。fixture 与环境变量覆盖的模型端点由 harness 的 model-domain 优先处理，
+ * 这里按同样的优先级跳过数据库别名。
+ */
+async function assertGenerationModelConfigured(): Promise<void> {
+  // 顺序与 harness 的 model-domain 一致：fixture → 环境变量覆盖 → 数据库别名。
+  // 夹具路径不经过生产的数据库别名校验，报告里要说明这一点，避免误以为夹具验证过生产准入。
+  if (process.env.DURABLE_FAUX_FIXTURE === '1' || process.env.DURABLE_FAUX_MODEL === '1') return;
+  const override = [process.env.DURABLE_MODEL_BASE_URL, process.env.DURABLE_MODEL_API_KEY, process.env.DURABLE_MODEL_ID]
+    .filter(value => value !== undefined && value !== '');
+  if (override.length === 3) return;
+  if (override.length > 0) throw new BusinessError(503, 50300, 'DURABLE_MODEL_BASE_URL、DURABLE_MODEL_API_KEY、DURABLE_MODEL_ID 必须同时设置');
+  await modelRegistry().resolveBindingFresh(generationModelAlias);
+}
+
+/**
+ * 拿到执行之后到「观察 harness」之间的全部步骤（模型准入、附件、runtime 唤醒、提交）。
+ * 立即启动与排队后被唤醒共用这一份：排队中的请求先落 queued，granted 之后才走到这里。
+ * 任何失败都把这一轮收敛成失败（执行行已经存在，不能留一个永远 generating 的任务）。
+ */
+async function startHarnessRun(run: {
+  app: AppInfo;
+  user: User;
+  started: StartGenerationResult;
+  requestId: string;
+  prompt: string;
+  modelText: string;
+  attachmentParts: readonly { type: 'attachment'; attachmentId: string }[];
+  incoming: ChatMessage;
+  channel: ChunkChannel;
+  stop: AbortController;
+  holder: string;
+}): Promise<void> {
+  const { app, user, started, channel, stop, holder } = run;
+  const execution = started.execution;
+  if (!execution || started.epoch === null) throw new BusinessError(409, 40900, '该请求已经处理，请读取生成状态');
+  try {
+    // 模型准入放在拿到槽位之后：准入 token 只有两分钟，排队可能远超这个时间。
+    const admission = await admitGenerationModel();
+    if (run.attachmentParts.length > 0 && !admission.imageInput) {
+      throw new BusinessError(400, 40000, '当前生成模型不支持图片输入：请在模型管理的模型分配里为该槽位开启「图片输入」，或换用支持视觉的模型');
+    }
+    const attachmentImages: AttachmentImage[] = await Promise.all(run.attachmentParts.map(async part => ({
+      attachmentId: part.attachmentId,
+      ...await readAttachmentBytes({ attachmentId: part.attachmentId, userId: user.id, appId: app.id }),
+    })));
+    const content: SubmitContentBlock[] = [
+      { type: 'text', text: run.modelText },
+      ...attachmentImages.map(image => ({ type: 'image' as const, data: image.bytes.toString('base64'), mimeType: image.mediaType })),
+    ];
+    const instructions = harnessInstructions(app, attachmentImages.length > 0);
+    const model: ModelIdentity = { alias: admission.identity.alias, providerId: admission.identity.providerId, modelName: admission.identity.modelName };
+    const binding = admission.token ?? undefined;
+    // 惰性唤醒：这一轮的文件工具与 dev server 面向同一份持久 Workspace，模型一写文件 Preview 就能看到。
+    // 启动失败只降级 Preview（构建后仍可看），不让一次运行时装不起来挡掉整轮生成。
+    await prepareGenerationRuntime({ app, workspaceRoot: execution.directory });
+    await withWorkspaceWrite({ appId: app.id, epoch: started.epoch, generationId: started.generationId }, () => uploadAttachmentImages(app, user, attachmentImages, projectAt(app, execution.directory)));
+    const conversationId = await conversationForExecution(app, execution, binding);
+    await setExecutionStatus(execution.id, 'active');
+    await configureHarnessInstructions(conversationId, instructions);
+    const submission = await submitHarness(conversationId, content, run.requestId, { entry: { kind: userEntryKind, data: run.incoming }, binding });
+    if (submission.status === 'unanswered') throw new BusinessError(409, 40900, '消息未能进入生成上下文');
+    await markInputPlaced({ appId: app.id, inputId: started.input.id, submissionId: submission.submissionId });
+    startHarnessObservation({
+      conversationId, requestId: started.generationId, app, model, channel, stop,
+      execution, epoch: started.epoch, holder,
+    });
+  } catch (problem) {
+    const detail = problem instanceof Error ? problem.message.slice(0, 1000) : '提交给 harness 失败';
+    await failOrCancel({
+      app, generationId: started.generationId, epoch: started.epoch,
+      execution: { id: execution.id, directory: execution.directory },
+      outcome: 'failed', error: detail, stopReason: 'initialization-failed',
+    }).catch(() => undefined);
+    throw problem;
+  }
+}
+
+function generationStreamResponse(channel: ChunkChannel, generationId: string, stop: AbortController, failure?: () => unknown): Response {
+  const stream = createUIMessageStream({
+    onError: () => {
+      const problem = failure?.();
+      if (problem instanceof Error) return problem.message;
+      return stop.signal.aborted ? '生成已取消' : '生成失败，请查看任务状态';
+    },
+    execute: async ({ writer }) => {
+      writer.write({ type: 'start', messageId: `${generationId}-assistant`, messageMetadata: { generationId } });
+      for await (const chunk of channel.drain()) {
+        try { writer.write(chunk); } catch {}
+      }
+      const problem = failure?.();
+      if (problem) throw problem;
+    },
+  });
+  return createUIMessageStreamResponse({
+    stream,
+    headers: { 'Cache-Control': 'no-store', 'X-Generation-Id': generationId, 'X-Accel-Buffering': 'no' },
+  });
+}
+
+/**
+ * 生成入口。返回 UI 消息流响应（`data-progress` / 文本增量 / 工具条目 / 用量块挂载方式不变）。
+ * 没有空闲 runtime 时这一轮先落成 `queued`：响应立刻建立 SSE，排队位置用 `data-progress` 的
+ * `queued` 事件推给界面；拿到槽位后在同一条流里继续正常生成。刷新页面时状态读取会给出 queued。
  */
 export async function harnessChatResponse(req: Request, raw: unknown, user: User): Promise<Response> {
   const input = generationRequestSchema.parse(raw);
@@ -1582,80 +1691,52 @@ export async function harnessChatResponse(req: Request, raw: unknown, user: User
     parts: input.message.parts.filter(part => part.type === 'text'),
     metadata: { generationId: input.requestId, ...(attachmentParts.length ? { attachments: attachmentParts } : {}) },
   };
-  const admission = await admitGenerationModel();
-  if (attachmentParts.length > 0 && !admission.imageInput) {
-    throw new BusinessError(400, 40000, '当前生成模型不支持图片输入：请在模型管理的模型分配里为该槽位开启「图片输入」，或换用支持视觉的模型');
-  }
-  const attachmentImages: AttachmentImage[] = await Promise.all(attachmentParts.map(async part => ({
-    attachmentId: part.attachmentId,
-    ...await readAttachmentBytes({ attachmentId: part.attachmentId, userId: user.id, appId: input.appId }),
-  })));
-  const content: SubmitContentBlock[] = [
-    { type: 'text', text: modelText },
-    ...attachmentImages.map(image => ({ type: 'image' as const, data: image.bytes.toString('base64'), mimeType: image.mediaType })),
-  ];
-  const instructions = harnessInstructions(app, attachmentImages.length > 0);
-  const model: ModelIdentity = { alias: admission.identity.alias, providerId: admission.identity.providerId, modelName: admission.identity.modelName };
-  const binding = admission.token ?? undefined;
-  const stop = new AbortController();
+  // 配置预检：别名不可用/被禁用时 503 必须在建 generation、lease 与限流计数之前发生。
+  // 只读 registry 快照（resolveBindingFresh），不发网络、不建 provider 实例。
+  await assertGenerationModelConfigured();
   const holder = `next:${process.pid}:${randomUUID()}`;
+  const stop = new AbortController();
+  const channel = new ChunkChannel();
+  const queuedProgress = (position: number) => channel.push({
+    type: 'data-progress', data: { stage: 'queued', position, at: Date.now() }, transient: true,
+  } as UiChunk);
   const reservation = await reserveChatRateLimit(user.id, clientIp(req.headers));
-  let started: Awaited<ReturnType<typeof startGeneration>>;
+  let prepared: Awaited<ReturnType<typeof prepareGenerationStart>>;
   try {
-    started = await startGeneration({
+    prepared = await prepareGenerationStart({
       app, userId: user.id, requestId: input.requestId, holder, prompt,
       ...(input.expectedQuestionId === undefined ? {} : { expectedQuestionId: input.expectedQuestionId }),
-    });
+    }, { onQueued: info => queuedProgress(info.position) });
   } catch (problem) {
     if (reservation) await refundChatRateLimit(reservation);
     throw problem;
   }
-  if (started.replay || !started.execution || started.epoch === null) {
+  if (prepared.kind === 'replay') {
     if (reservation) await refundChatRateLimit(reservation);
     throw new BusinessError(409, 40900, '该请求已经处理，请读取生成状态');
   }
-  const execution = started.execution;
-  // 惰性唤醒：这一轮的文件工具与 dev server 面向同一份持久 Workspace，模型一写文件 Preview 就能看到。
-  // 启动失败只降级 Preview（构建后仍可看），不让一次运行时装不起来挡掉整轮生成。
-  await prepareGenerationRuntime({ app, workspaceRoot: execution.directory });
-  let conversationId: number;
-  try {
-    await withWorkspaceWrite({ appId: app.id, epoch: started.epoch, generationId: started.generationId }, () => uploadAttachmentImages(app, user, attachmentImages, projectAt(app, execution.directory)));
-    conversationId = await conversationForExecution(app, execution, binding);
-    await setExecutionStatus(execution.id, 'active');
-    await configureHarnessInstructions(conversationId, instructions);
-    const submission = await submitHarness(conversationId, content, input.requestId, { entry: { kind: userEntryKind, data: incoming }, binding });
-    if (submission.status === 'unanswered') throw new BusinessError(409, 40900, '消息未能进入生成上下文');
-    await markInputPlaced({ appId: app.id, inputId: started.input.id, submissionId: submission.submissionId });
-  } catch (problem) {
-    const detail = problem instanceof Error ? problem.message.slice(0, 1000) : '提交给 harness 失败';
-    await failOrCancel({
-      app, generationId: started.generationId, epoch: started.epoch,
-      execution: { id: execution.id, directory: execution.directory },
-      outcome: 'failed', error: detail, stopReason: 'initialization-failed',
-    }).catch(() => undefined);
-    throw problem;
+  const runInput = { app, user, requestId: input.requestId, prompt, modelText, attachmentParts, incoming, channel, stop, holder };
+  if (prepared.kind === 'started') {
+    await startHarnessRun({ ...runInput, started: prepared.result });
+    return generationStreamResponse(channel, prepared.result.generationId, stop);
   }
 
-  const channel = new ChunkChannel();
-  startHarnessObservation({
-    conversationId, requestId: started.generationId, app, model, channel, stop,
-    execution, epoch: started.epoch, holder,
-  });
-
-  const stream = createUIMessageStream({
-    onError: () => (stop.signal.aborted ? '生成已取消' : '生成失败，请查看任务状态'),
-    execute: async ({ writer }) => {
-      writer.write({ type: 'start', messageId: `${started.generationId}-assistant`, messageMetadata: { generationId: started.generationId } });
-      for await (const chunk of channel.drain()) {
-        try { writer.write(chunk); } catch {}
-      }
-    },
-  });
-  return createUIMessageStreamResponse({
-    stream,
-    headers: { 'Cache-Control': 'no-store', 'X-Generation-Id': started.generationId, 'X-Accel-Buffering': 'no' },
-  });
+  // 排队：响应立刻返回，等待与启动都在流里完成；队列满/参数错误仍然同步返回 HTTP 错误。
+  const plan = prepared.plan;
+  let failure: unknown;
+  void (async () => {
+    queuedProgress(1);
+    try {
+      const started = await launchQueuedGeneration(plan);
+      await startHarnessRun({ ...runInput, started });
+    } catch (problem) {
+      failure = problem;
+      if (reservation) await refundChatRateLimit(reservation);
+    } finally {
+      channel.finish();
+    }
+  })();
+  return generationStreamResponse(channel, plan.generationId, stop, () => failure);
 }
 
 /**
@@ -1666,6 +1747,8 @@ export async function harnessCancelGeneration(appId: string, user: User): Promis
   const app = await getApp(appId, user, true);
   await ensureRecovered();
   const task = await generationFor(appId);
+  // 排队还没有执行行：直接落 cancelled 终态并删排队记录，等待中的流会读到并退出。
+  if (task?.status === 'queued') return cancelQueuedGeneration({ app, generationId: task.id });
   if (!task || (task.status !== 'generating' && task.status !== 'building')) return true;
   const execution = await activeExecution(appId);
   generationObservers.get(task.id)?.abort(new Error('生成已取消'));

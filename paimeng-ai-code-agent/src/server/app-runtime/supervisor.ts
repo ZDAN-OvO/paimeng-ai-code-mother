@@ -13,7 +13,11 @@ import {
   runtimeDockerfile, runtimeImageTag, runtimeMounts, runtimePreviewBase, runtimeRunArgs,
   runtimeStorePath, runtimeVirtualStore, RUNTIME_DEV_LOG, RUNTIME_DEV_PORT, type RuntimeApp,
 } from './plan';
-import { deleteAppRuntime, readAppRuntime, saveAppRuntime, touchAppRuntime, updateAppRuntime, type AppRuntimeRecord } from './store';
+import { appsWithWriteAuthority, deleteAppRuntime, listAppRuntimes, markAppRuntimeStopped, readAppRuntime, saveAppRuntime, touchAppRuntime, updateAppRuntime, type AppRuntimeRecord } from './store';
+import { anonymousMemoryBytes, evictionVictim, idleRuntimes, type RuntimeCandidate } from './capacity';
+import {
+  abandonStaleWaitingGenerations, activeQueueDepth, deleteQueueTicket, grantWaitingTickets, runtimeSlotUsage,
+} from './queue';
 
 /**
  * 运行时容器唯一的启停者。
@@ -344,6 +348,8 @@ export async function runtimePreviewTarget(app: RuntimeApp): Promise<{ status: '
   if (record.status === 'ready' && await devServerResponding(record.port, runtimePreviewBase(app))) {
     return { status: 'ready', port: record.port };
   }
+  // 已回收（睡眠）的 runtime 不再占有预览：交给静态产物回落，查看 Preview 不会唤醒它。
+  if (record.status === 'stopped') return null;
   if (record.status === 'ready' || record.status === 'starting') return { status: 'starting', port: null };
   return { status: 'failed', port: null };
 }
@@ -362,4 +368,134 @@ export async function prepareGenerationRuntime(input: { app: RuntimeApp; workspa
   } catch (error) {
     log(`准备 runtime 失败（应用 ${input.app.id}）：${(error as Error).message}`);
   }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// 容量：空闲回收、LRU 驱逐与批准等待者（#144）
+// ---------------------------------------------------------------------------------------------------
+
+export type CapacityOutcome = {
+  /** 超过空闲时长被回收的 App。 */
+  reclaimed: string[];
+  /** 为等待者腾槽位而被 LRU 驱逐的 App。 */
+  evicted: string[];
+  /** 这次拿到槽位的等待者。 */
+  granted: string[];
+  /** 心跳超时、被收敛成 failed/interrupted 的等待者。 */
+  abandoned: string[];
+};
+
+async function capacityCandidates(statuses: readonly ('starting' | 'ready')[] = ['ready']): Promise<RuntimeCandidate[]> {
+  const records = await listAppRuntimes(statuses);
+  if (!records.length) return [];
+  const privileged = await appsWithWriteAuthority(records.map(record => record.appId));
+  return records.map(record => ({
+    appId: record.appId,
+    status: record.status as 'starting' | 'ready',
+    lastActivityAt: record.lastActivityAt,
+    writeAuthority: privileged.has(record.appId),
+  }));
+}
+
+/** 停掉一台 runtime：先条件更新状态（槽位立即释放），再按容器标识停容器，名字被新容器复用时也不会误杀。 */
+async function stopRuntimeForCapacity(app: RuntimeApp, error: string): Promise<boolean> {
+  const containerId = await markAppRuntimeStopped(app, error);
+  if (containerId === null) return false;
+  if (containerId) await docker(['rm', '-f', containerId], 30_000).catch(problem => log(`停止 runtime 容器失败（应用 ${app.id}）：${(problem as Error).message}`));
+  await deleteQueueTicket(app).catch(() => false);
+  log(`回收 runtime（应用 ${app.id}）：${error}`);
+  return true;
+}
+
+/** 连续空闲超过 RUNTIME_IDLE_TIMEOUT_MS 的 App 让出槽位；持有写权限的一律跳过。 */
+export async function reclaimIdleRuntimes(): Promise<string[]> {
+  const config = getConfig();
+  if (!config.appRuntime.enabled) return [];
+  const idle = idleRuntimes(await capacityCandidates(), Date.now(), config.appRuntime.idleTimeoutMs);
+  const reclaimed: string[] = [];
+  for (const candidate of idle) {
+    if (await stopRuntimeForCapacity({ id: candidate.appId, codeGenType: 'react_project' }, '空闲超时，已回收运行时').catch(() => false)) {
+      reclaimed.push(candidate.appId);
+    }
+  }
+  return reclaimed;
+}
+
+/** 有等待者、槽位又满时，按 LRU 驱逐没有写权限的 runtime，直到空出一格或没有可驱逐对象。 */
+export async function evictForWaitingGenerations(): Promise<string[]> {
+  const config = getConfig();
+  if (!config.appRuntime.enabled) return [];
+  const evicted: string[] = [];
+  for (;;) {
+    if (await activeQueueDepth() === 0) break;
+    const usage = await runtimeSlotUsage();
+    if (usage.used + usage.reserved < config.appRuntime.maxSlots) break;
+    const victim = evictionVictim(await capacityCandidates(), new Set(evicted));
+    if (!victim) break;
+    if (await stopRuntimeForCapacity({ id: victim.appId, codeGenType: 'react_project' }, '为等待中的生成让出运行时').catch(() => false)) {
+      evicted.push(victim.appId);
+    } else break;
+  }
+  return evicted;
+}
+
+/**
+ * 一次容量维护：回收空闲 → 为等待者驱逐 → 批准队首 → 收敛崩溃留下的等待者。
+ * 主路径由等待方在每次轮询时调用，常驻 tick 只是让「没人排队时的 15 分钟回收」也会发生。
+ */
+export async function maintainRuntimeCapacity(): Promise<CapacityOutcome> {
+  const reclaimed = await reclaimIdleRuntimes();
+  const evicted = await evictForWaitingGenerations();
+  const granted = (await grantWaitingTickets()).map(ticket => ticket.appId);
+  const abandoned = await abandonStaleWaitingGenerations();
+  return { reclaimed, evicted, granted, abandoned };
+}
+
+let maintenanceTimer: ReturnType<typeof setInterval> | undefined;
+
+/** 懒启动的常驻 tick：只在真的用到 runtime 的进程里跑，不阻塞进程退出。 */
+export function startRuntimeMaintenance(): void {
+  if (maintenanceTimer) return;
+  const config = getConfig();
+  if (!config.appRuntime.enabled) return;
+  maintenanceTimer = setInterval(() => {
+    void maintainRuntimeCapacity().catch(problem => log(`容量维护失败：${(problem as Error).message}`));
+  }, config.appRuntime.tickMs);
+  maintenanceTimer.unref?.();
+}
+
+/** 测试收尾用：停掉常驻 tick，避免配置跨用例串场。 */
+export function stopRuntimeMaintenance(): void {
+  if (!maintenanceTimer) return;
+  clearInterval(maintenanceTimer);
+  maintenanceTimer = undefined;
+}
+
+/**
+ * 容量快照（管理员视图与 system 测试共用）。内存口径是匿名内存：`memory.current` 会把可回收的
+ * page cache 算进来，不能当占用。容器没在跑时返回 null，不能当 0。
+ */
+export async function runtimeCapacitySnapshot(): Promise<{
+  slots: { used: number; reserved: number; limit: number };
+  queue: { waiting: number; limit: number };
+  idleTimeoutMs: number;
+}> {
+  const config = getConfig();
+  const usage = await runtimeSlotUsage();
+  return {
+    slots: { used: usage.used, reserved: usage.reserved, limit: config.appRuntime.maxSlots },
+    queue: { waiting: await activeQueueDepth(), limit: config.appRuntime.queueLimit },
+    idleTimeoutMs: config.appRuntime.idleTimeoutMs,
+  };
+}
+
+/** 单个 runtime 的匿名内存用量（字节），用于容量观察；读不到返回 null。 */
+export async function readRuntimeAnonymousMemory(app: RuntimeApp): Promise<number | null> {
+  const record = await readAppRuntime(app);
+  if (!record || record.status !== 'ready' || !record.containerId) return null;
+  const stat = await docker([
+    'exec', record.containerId, 'sh', '-lc',
+    'cat /sys/fs/cgroup/memory.stat 2>/dev/null || cat /sys/fs/cgroup/memory/memory.stat 2>/dev/null || true',
+  ], 10_000).catch(() => '');
+  return anonymousMemoryBytes(stat);
 }

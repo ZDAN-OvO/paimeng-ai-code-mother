@@ -55,6 +55,16 @@ export type ModelRegistryBindings = {
 
 export type ModelRegistry = {
   resolveBinding(alias: string): Promise<AliasModel>;
+  /**
+   * 跳过 epoch 缓存，直接重读一次配置快照再解析别名；**不写缓存、不推进 revision/epoch**。
+   * 生成入口的配置预检用它：管理端写配置会 bump refresh epoch，但直接改库的运维/测试不会，
+   * 暖快照会让「刚被禁用/删除的别名」短暂看起来仍然可用。只在入口调用一次，不进热路径，
+   * 也不把这次读取广播给其它调用方（否则引擎会误以为配置变更而重新准入）。
+   * 即：预检零副作用——不写缓存、不推进 epoch、不产生准入/上游请求。
+   *
+   * 只用于生成入口的一次性预检，**不得用于热路径/循环/工具调用**：每次调用都是一次 DB 读取。
+   */
+  resolveBindingFresh(alias: string): Promise<AliasModel>;
   resolveBindings(aliases: readonly string[]): Promise<Map<string, AliasModel>>;
   /**
    * 与 resolveBindings 使用同一份快照，并额外返回非必需别名的构建失败原因，
@@ -312,6 +322,20 @@ export function createModelRegistry(options: ModelRegistryOptions = {}): ModelRe
   return {
     async resolveBinding(alias) {
       return (await loadedFor(alias)).binding;
+    },
+    async resolveBindingFresh(alias) {
+      // 完全局部：只读一次 DB，在局部快照里校验并解析目标别名；不 install、不推进 revision/epoch，
+      // 避免一次「入口预检」被引擎误读成配置发生了变化而触发重复准入。
+      let snapshot: LoadedSnapshot;
+      try {
+        snapshot = await loadOnce();
+      } catch (error) {
+        if (isInvalidConfig(error)) throw unavailable(errorMessage(error));
+        throw error;
+      }
+      const binding = snapshot.models.bindings[alias];
+      if (!binding) throw unavailable(`模型别名 ${alias} 未配置或未启用`);
+      return binding;
     },
     /** 一次任务需要的多个别名固定在同一份快照上解析；缺失的别名不出现在结果里，由调用方决定回退策略。 */
     async resolveBindings(aliases) {

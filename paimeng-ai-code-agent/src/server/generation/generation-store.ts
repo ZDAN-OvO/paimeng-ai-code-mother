@@ -221,7 +221,7 @@ export async function lockGenerationControl(tx: Transaction, id: string): Promis
  */
 export async function generationFor(appId: string) {
   const [row] = await db().select().from(generations).where(eq(generations.appId, BigInt(appId))).orderBy(desc(generations.createTime), desc(generations.id)).limit(1);
-  return row ? { ...row, status: z.enum(['generating', 'building', 'ready', 'failed', 'cancelled']).parse(row.status), appId: String(row.appId), userId: String(row.userId) } : null;
+  return row ? { ...row, status: z.enum(['queued', 'generating', 'building', 'ready', 'failed', 'cancelled']).parse(row.status), appId: String(row.appId), userId: String(row.userId) } : null;
 }
 
 function effectiveStopReason(current: string | null, status: 'ready' | 'failed' | 'cancelled', proposed?: GenerationStopReason): GenerationStopReason | null {
