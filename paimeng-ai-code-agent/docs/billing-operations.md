@@ -1,6 +1,6 @@
-# Credit 计费的运行说明
+# 积分计费的运行说明
 
-Credit 的账务运维包括**月度配额**（发放、补发、查账）与**补结算/余额对账**（漏账补记、待处理重试、快照核对）；两者都没有常驻定时器，触发点在请求路径、Admin 入口或外部 cron 调的 CLI 上。模型售价在 `/admin/models` 管理，不再有独立 Rate card 维护入口。
+积分的账务运维包括**每月限时积分**（规则发放、补发、过期、查账）与**补结算/余额对账**（漏账补记、待处理重试、快照核对）；两者都没有常驻定时器，触发点在请求路径、Admin 入口或外部 cron 调的 CLI 上。模型售价在 `/admin/models` 管理，不再有独立 Rate card 维护入口。
 
 ## 模型单价与历史快照
 
@@ -42,17 +42,20 @@ Credit 的账务运维包括**月度配额**（发放、补发、查账）与**�
 
 回填失败先回滚该事务，保留预检报告，重新核对版本再重试。切换前旧程序仍以旧表为准；切换后旧表不跟随 JSON 修改，保留表本身不保证可直接回退。若还没有新配置或账务写入，可在确认旧配置与备份一致后成套回退 Next/harness；一旦有新 JSON 配置、价格或账务事实，暂停新提交，优先修复前进。确需回退时先核对并保全新增配置、账单和分录，不能恢复旧备份丢掉已发生的扣款/发放，也不能用旧代码重新解释新账单。删除旧表须另做迁移并确认一个发布周期的回滚窗口已结束。
 
-## 月度配额
+## 每月限时积分
 
-按 [ADR-0004](adr/0004-credit-billing.md) 的「Two pools, deducted quota first」与 [ADR-0005](adr/0005-configurable-monthly-quota.md) 的「versioned policy + issue fact」实现的月度配额。操作面仍是三件事：什么时候发、怎么补、怎么核对。代码在 `src/server/billing/quota.ts`、`quota-policy.ts`、`quota-adjustment.ts` 与 `quota-batch.ts`；原始设计与验收见[归档计划](plans/archive/admin-credit-quota.md)。
+模型见 [ADR-0006](adr/0006-single-credit-ledger.md)：积分只有一张追加式账本 `credit_ledger`，
+「限时 / 长期」是同一个可用额按 `expires_at` 切开的两段，不是两个池。代码在
+`src/server/billing/quota.ts`、`expiry.ts`、`quota-policy.ts` 与 `operations.ts`。
 
 ### 账期口径
 
 - 账期是**北京时间自然月**（UTC+8，没有夏令时），字符串形如 `2026-11`。北京时间每月 1 号 00:00 之后属于新账期，见 `src/server/billing/period.ts`。
-- 每个账期的**基础配额**由策略决定：全局默认 + 单用户覆盖。没有保存过全局策略时用 500 Credit 兜底（`monthlyQuotaCredits`，`src/shared/billing.ts`）。覆盖可以是 0；`inherit` 表示清除覆盖、回到全局默认，两者不是同一种事实。
-- 策略只能从**未来账期**生效；当月修改走单用户配额调整，不能追溯改已发放月份。每用户每账期一条 `credit_quota_issue` 固定基础金额、策略来源与版本；0 配额也写 issue，不写零金额 grant。
-- 配额**不累积、不结转、不折现**：新账期开始时配额池余额按账本事实重算成「当期 issue 基础 + 当期调整 − 当期扣减」，上一期没用完的部分直接失效。余额池与购买历史不受账期影响。
-- 幂等由 `credit_quota_issue (user_id, period)` 唯一索引与 `credit_grant` 的 `uk_credit_grant_monthly` 共同保证；迁移 `020_credit_quota_policy.sql` 回填已有 `monthly_quota` grant 为 `legacy` issue，金额原样保留。
+- 每月标准由策略决定：全局默认 + 单用户覆盖。没有保存过全局策略时用 500 积分兜底（`monthlyQuotaCredits`，`src/shared/billing.ts`）。覆盖可以是 0；`inherit` 表示清除覆盖、回到全局默认，两者不是同一种事实。
+- 每人每账期一条 `kind='quota'`、`origin='rule'` 的账本行；**金额 0 也写**（`credits=0`），所以「待发」= 本期没有规则行，不看余额、不看金额。用户侧账单隐藏 0 行，管理员流水保留并置灰。
+- 策略只能从**未来账期**生效；当月要改某个人，用「发放限时积分」追加一条 `origin='manual'` 条目，不改已发月份。
+- 限时积分**不累积、不结转、不折现**：账期结束时剩余部分写成一条 `kind='expire'` 的负行（`origin='expiry'`），金额 = 发放 − 消费净额 − 已过期。
+- 幂等由部分唯一索引保证：`(user_id, period) where kind='quota' and origin='rule'`。
 
 ### 什么时候会发
 
@@ -60,15 +63,15 @@ Credit 的账务运维包括**月度配额**（发放、补发、查账）与**�
 
 | 触发点 | 位置 | 说明 |
 | --- | --- | --- |
-| 注册 | `src/server/auth/auth.ts` 的 `register()` | 注册成功即发当月配额；发放失败只记日志，不影响注册 |
-| 读额度摘要 | `GET /api/billing/summary` | 返回前先确保当期配额，所以停机错过月初的用户打开页面就补上 |
-| 批量补发 | `npm run billing:quota-issue` | 见下节 |
+| 注册 | `src/server/auth/auth.ts` 的 `register()` | 注册成功即发当月规则；发放失败只记日志，不影响注册 |
+| 读额度摘要 | `GET /api/billing/summary` | 返回前先确保当期规则，所以停机错过月初的用户打开页面就补上 |
+| 补发待发 | `npm run billing:quota-issue` 或 Admin「补发待发」 | 见下节 |
 
 三者都调用 `ensurePeriodQuota`，并发或重跑都不会多发。
 
 ### 补发
 
-前提：产品库已经迁移到最新（`npm run db:migrate`），配额发放要用的 `credit_grant` / `credit_account` 才存在。
+前提：产品库已经迁移到最新（`npm run db:migrate`），`credit_ledger` / `credit_balance` 存在。
 
 ```bash
 cd paimeng-ai-code-agent
@@ -78,52 +81,41 @@ npm run billing:quota-issue -- --apply --limit=200
 ```
 
 - 默认试运行，`--apply` 才写库；脚本自己校验目标库只能是 `paimeng_app` 或 `paimeng_app_test`。
-- 一次最多处理 1000 个用户（`--limit` 可改），剩下的下一次继续——幂等所以不需要记录进度。「待发放用户」= 没有这一期 granted issue 且未删除的用户。0 配额用户也会被记为已发，不会每次都被重复扫描。
-- 输出分别给出「新建发放事实 / 实际 grant / 0 配额 / 合计 Credit」，避免把 0 配额算成失败。
+- 一次最多处理 1000 个用户（`--limit` 可改），剩下的下一次继续——幂等所以不需要记录进度。「待发放用户」= 本期没有规则行且未删除的用户。0 积分用户也会被记为已处理，不会每次都被重复扫描。
+- 输出给出「新建规则行 / 正数积分 / 0 积分 / 合计积分」与 `operationId`；Admin「最近操作」里能看到同一条摘要。
 - 需要每月自动跑时，用外部 cron / systemd timer 调这条命令（本仓不带 scheduler）：
   ```cron
   10 0 1 * * cd /path/to/paimeng-ai-code-agent && npm run billing:quota-issue -- --apply
   ```
   时间取北京时间 1 号 00:10；即使漏跑或重跑，下一次任何人读额度摘要时也会补当期。
 
-### 当月单用户调整
+### 过期扫描
 
-策略只管未来账期；当月少给/多给/需要统一到某个剩余时，走 Admin 的「配额管理 → 当月剩余调整」，代码在 `src/server/billing/quota-adjustment.ts`。
+```bash
+npm run billing:expire -- --dry-run   # 试运行：只报涉及人数
+npm run billing:expire                # 真正写过期行（幂等）
+```
 
-- 三种意图：`increase`（增加当月剩余）、`decrease`（扣回未使用部分）、`target`（把剩余设为目标值，服务端在锁内算差额）。
-- 只允许当前北京账期；已结束月份只读，未来账期不能提前调整。
-- 扣回不得超过当前有效剩余，配额池永不为负；调整不会改写已发生的 Charge 或 entry。
-- 每次调整写一行 `credit_quota_adjustment`，包含有符号差额、理由、操作者、`requestId` 与调整前后剩余。同 `requestId` 同载荷返回原回执，不同载荷返回 409。
-- 调整只属于该账期，月底随配额失效；下个月标准仍由策略决定。
-- 调整与结算使用同一对 `credit_account` 行锁；并发时先结算或先调整，最终都等于「基础 + 调整 − 消费」。
-
-### 批量发放
-
-Admin 的「配额管理 → 批量发放」提供预览 → 确认执行 → 失败重试，代码在 `src/server/billing/quota-batch.ts`。
-
-- `scope=pending` 选中当前账期所有没有 granted issue 的用户；`scope=users` 针对指定用户（已发项显示 skipped）。一次预览最多 1000 人，超出用 `scopeTotal` / `truncated` 明示，不能把第一批说成全库已发。
-- 预览只写 `credit_quota_batch` / `credit_quota_batch_item` 元数据，不发钱；每个 item 固定基础金额、策略来源与版本。
-- 确认执行需要预览返回的 `previewToken`。执行前重新解析所有待发项并比对快照；账期变化或策略变化会把批次标成 `superseded`，不写任何 issue/grant。
-- 每次执行最多 200 项（接口允许 1..500），剩余保持 `running`，Admin 可以点「继续执行」；部分失败逐项记录原因。
-- 失败重试只把 `failed` 改回 `pending`，`granted` / `skipped` 不动，所以成功项不会重复发。
-- 并发懒发放（注册、摘要、CLI）先落地时，批次项变成 `skipped`，最终仍只有一条 issue 与一笔 grant。
-- 没有常驻定时器；批量入口只是 Admin 主动操作，不会宣称月初自动全库发完。
+- 每个已结束账期写一条负行；`create_time` 记为该账期结束时刻，流水按时间读才对。
+- 懒触发已经覆盖单用户路径（摘要、管理员详情、结算、发放、冲正），这个命令用于停机跨月后一次性补齐，或交给外部 cron。
+- 扫描没跑也不会多算：列表与单人读模型会扣掉「已到期但还没写过期行」的余量（与写入共用同一段 SQL 定义）。
 
 ### 核对
 
-配额余额是余额快照（`credit_account.pool = 'quota'`），真值在 `credit_quota_issue`（基础发放）、`credit_quota_adjustment`（调整）与 `credit_entry`（扣减，归属看父 Charge 的 `create_time`）。查某个用户：
+真值是账本；`credit_balance` 只是锁点与可重算快照。查某个用户：
 
 ```bash
 docker exec -i zslm-postgres psql -U postgres -d paimeng_app -c \
-  "select period, base_credits, status, policy_source, grant_id from credit_quota_issue where user_id = 123 order by period"
+  "select id, kind, origin, credits, period, expires_at, reason, operator_id, create_time from credit_ledger where user_id = 123 order by create_time, id"
 docker exec -i zslm-postgres psql -U postgres -d paimeng_app -c \
-  "select period, mode, credits, before_credits, after_credits, reason from credit_quota_adjustment where user_id = 123 order by create_time"
+  "select available, next_expiry_at, update_time from credit_balance where user_id = 123"
 docker exec -i zslm-postgres psql -U postgres -d paimeng_app -c \
-  "select pool, balance, update_time from credit_account where user_id = 123 order by pool"
+  "select period, sum(credits) as remaining from credit_ledger where user_id = 123 and period is not null group by period order by period"
 ```
 
-- 一个用户在一个账期里最多一行 `credit_quota_issue`；多行说明有人绕过 `ensurePeriodQuota` 直接写库。
-- 当期配额池余额 = 当期 issue 的 `base_credits` + 当期调整净额 − 当期 Charge 的 `pool = 'quota'` entry 净额。已有迁移前的 `monthly_quota` grant 仍可追溯，但不能只用 grant 之和重算，否则会漏掉 0 配额与调整。
+- 可用额 = 所有条目之和；负数表示欠款。限时 = 未到期账期的剩余；长期 = 可用 − 限时。
+- 一个用户一个账期最多一条规则行、一条账期过期行；多行说明有人绕过 `ensurePeriodQuota` / `ensureExpiry` 直接写库。
+- 对账：`npm run billing:verify-ledger` 逐用户比较快照与账本求和，`--apply` 按账本重写快照（账本一行都不改）。
 - 有效期的展示口径：北京时间下一个 1 号 00:00，首页与对话页的额度条读的就是它。
 
 ## 补结算与余额对账
@@ -163,12 +155,12 @@ cd paimeng-ai-code-agent
 npm run billing:reconcile                          # 试运行：列出待补结算的记录与原因
 npm run billing:reconcile -- --apply               # 执行补结算
 npm run billing:reconcile -- --apply --limit=200   # 一次最多处理 200 条（默认 50，上限 200）
-npm run billing:reconcile -- --user 123            # 核对某个用户的两池余额
-npm run billing:reconcile -- --user 123 --apply    # 按账本事实重写该用户的余额快照
+npm run billing:reconcile -- --user 123            # 核对某个用户的可用积分
+npm run billing:reconcile -- --user 123 --apply    # 按账本重写该用户的余额快照
 ```
 
 - 默认试运行，`--apply` 才写库；脚本自己校验目标库只能是 `paimeng_app` 或 `paimeng_app_test`。
-- `--user` 只核对，不动账；带 `--apply` 时才重写 `credit_account` 快照（账本事实 `credit_grant` / `credit_entry` 永不 UPDATE/DELETE）。
+- `--user` 只核对，不动账；带 `--apply` 时才重写 `credit_balance` 快照（`credit_ledger` 永不 UPDATE/DELETE）。
 - 需要定期补时用外部 cron 调 CLI（本仓不带 scheduler），例如每小时一次：
   ```cron
   7 * * * * cd /path/to/paimeng-ai-code-agent && npm run billing:reconcile -- --apply
@@ -178,10 +170,10 @@ npm run billing:reconcile -- --user 123 --apply    # 按账本事实重写该用
 
 预期余额由账本事实推出（`ledger.ts` 的 `expectedBalancesOf`）：
 
-- 配额池 = 当前北京账期的基础发放（`credit_quota_issue.base_credits`，迁移前 grant 回退）+ 当期调整净额 − 当期 Charge 的 `quota` entry 净额（entry 归账期看父 Charge 的 `create_time`）；永不为负。
-- 余额池 = 全部 `balance` grant 之和 − 全部 `balance` entry 净额；可以是负数（欠款）。
+- 可用额 = `credit_ledger` 所有条目之和；可以是负数（欠款）。
+- 限时积分 = 到期时间还没到的账期剩余；长期积分 = 可用额 − 限时积分。过期行写入前，读模型会扣掉未写出的余量。
 
-`auditAccount(userId)` 只报告 `expected` / `actual` / `diff`（`diff = actual − expected`），不写库。修复用 `rebuildAccount(userId)`：先锁两池，再按事实重写快照——差异能由账本解释，账本事实本身一行都不改。手工改 `credit_account` 抹平差异属于事故，不是修复。
+`auditAccount(userId)` 只报告 `expected` / `actual` / `diff`（`diff = actual − expected`），不写库。修复用 `rebuildBalance(userId)`：先锁行、补过期，再按账本重写快照——差异能由账本解释，账本行本身一行都不改。手工改 `credit_balance` 抹平差异属于事故，不是修复。
 
 ### 排查
 

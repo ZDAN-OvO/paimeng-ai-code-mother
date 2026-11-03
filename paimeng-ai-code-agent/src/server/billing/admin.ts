@@ -1,77 +1,100 @@
 import 'server-only';
 import { and, eq } from 'drizzle-orm';
-import { db } from '@/server/infra/db';
+import { db, now } from '@/server/infra/db';
 import { BusinessError } from '@/server/infra/http';
 import { creditCharges, users } from '@/server/infra/schema';
 import { idSchema } from '@/shared/contracts';
 import {
-  maxGrantCredits, poolLabels, poolOfSource, sourceLabels,
-  type AdminUserUsage, type ChargeReversalReceipt, type ChargeStatus, type CreditGrantView, type CreditPool,
-  type GrantReceipt, type GrantSource,
+  type AdminIssueReceipt, type AdminIssueRequest, type AdminUserUsage, type ChargeReversalReceipt, type ChargeStatus,
+  type IssueFailure, maxIssueUsers,
 } from '@/shared/billing';
 import {
-  accountSnapshot, chargesOf, effectiveCreditsOf, entriesOfCharge, recordGrant, reverseCharge, type CreditGrantRow,
+  accountSnapshot, chargesOf, effectiveCreditsOf, entriesOfCharge, insertLedgerTx, reverseCharge,
 } from './ledger';
+import { ensureExpiryTx, lockBalance, rebuildBalanceTx } from './expiry';
+import { naiveTime, periodOf, periodRange } from './period';
 import { adminUserCreditDetail } from './overview';
+import { finishOperation, startOperation } from './operations';
 
-export type GrantCreditsInput = {
-  userId: string;
-  pool: CreditPool;
-  credits: number;
-  source: GrantSource;
-  note?: string | null;
-  requestId?: string | null;
-  grantedBy: string;
-};
+export type AdminIssueInput = AdminIssueRequest & { operatorId: string };
 
 /**
- * 管理员发放 Credit 的用例入口：先校验「发给谁、从哪来、进哪个池」，再交给账本入账。
- * 支付回调将来复用同一入口（source=purchase + externalRef），所以业务规则必须留在这里，不能只在 HTTP 层。
+ * 管理员发放：限时积分落在当前账期（月底过期），长期积分不过期。都只是账本里的一行。
+ *
+ * 单人发放的凭据就是那一行；批量才写一条 `credit_operation` 摘要。
+ * `requestId` 是幂等键：重试同一请求不会重复发钱。
  */
-export async function grantCredits(input: GrantCreditsInput): Promise<GrantReceipt> {
-  const userId = idSchema.parse(input.userId);
-  const [user] = await db().select({ id: users.id }).from(users)
-    .where(and(eq(users.id, BigInt(userId)), eq(users.isDelete, 0))).limit(1);
-  if (!user) throw new BusinessError(404, 40400, '用户不存在');
-  if (input.source === 'monthly_quota') throw new BusinessError(400, 40000, '月度配额按账期自动发放，不能手工发放');
-  const pool = poolOfSource(input.source);
-  if (input.pool !== pool) throw new BusinessError(400, 40000, `${sourceLabels[input.source]}只能进入${poolLabels[pool]}`);
-  if (!Number.isInteger(input.credits) || input.credits < 1 || input.credits > maxGrantCredits) {
-    throw new BusinessError(400, 40000, `发放金额必须是 1 到 ${maxGrantCredits} 之间的整数 Credit`);
+export async function issueCredits(input: AdminIssueInput): Promise<AdminIssueReceipt> {
+  const userIds = [...new Set(input.userId ? [idSchema.parse(input.userId)] : input.userIds ?? [])];
+  if (!userIds.length) throw new BusinessError(400, 40000, '请选择要发放的用户');
+  if (userIds.length > maxIssueUsers) throw new BusinessError(400, 40000, `一次最多发放给 ${maxIssueUsers} 个用户`);
+
+  const at = new Date();
+  const period = periodOf(at);
+  const expiresAt = input.kind === 'limited' ? naiveTime(periodRange(period).end) : null;
+  const operationId = userIds.length > 1
+    ? await startOperation({
+      kind: 'issue_users',
+      period: input.kind === 'limited' ? period : null,
+      operatorId: input.operatorId,
+      targetCount: userIds.length,
+    })
+    : null;
+
+  let created = 0;
+  let credits = 0;
+  const failures: IssueFailure[] = [];
+  const errors: unknown[] = [];
+  for (const userId of userIds) {
+    try {
+      const id = BigInt(userId);
+      // 每次重算都要看到同一个人的最新余额与过期行；单人一个事务，失败不拖累其他人。
+      await db().transaction(async tx => {
+        const [user] = await tx.select({ id: users.id }).from(users)
+          .where(and(eq(users.id, id), eq(users.isDelete, 0))).limit(1);
+        if (!user) throw new BusinessError(404, 40400, '用户不存在');
+        await lockBalance(tx, id);
+        await ensureExpiryTx(tx, userId, at);
+        const row = await insertLedgerTx(tx, {
+          userId: id,
+          kind: input.kind === 'limited' ? 'quota' : 'grant',
+          origin: 'manual',
+          credits: input.credits,
+          period: input.kind === 'limited' ? period : null,
+          expiresAt,
+          reason: input.reason,
+          operatorId: BigInt(input.operatorId),
+          requestId: input.requestId,
+          createTime: now(),
+        });
+        // 唯一键冲突说明这次请求已经发过（重放），不算失败也不算新增。
+        if (!row) return;
+        created += 1;
+        credits += row.credits;
+        await rebuildBalanceTx(tx, userId, at);
+      });
+    } catch (error) {
+      if (userIds.length === 1) throw error;
+      errors.push(error);
+      failures.push({ userId, reason: error instanceof Error ? error.message : String(error) });
+    }
   }
 
-  const { grant, created } = await recordGrant({
-    userId,
-    pool,
-    credits: input.credits,
-    source: input.source,
-    note: input.note ?? null,
-    requestId: input.requestId ?? null,
-    grantedBy: input.grantedBy,
-  });
-  return { grant: grantViewOf(grant), created };
-}
-
-/** 账本行 → 发放回执视图：id、时间与操作人都原样来自服务端那一行。 */
-function grantViewOf(row: CreditGrantRow): CreditGrantView {
-  return {
-    id: row.id,
-    userId: String(row.userId),
-    pool: row.pool,
-    credits: row.credits,
-    source: row.source,
-    note: row.note,
-    requestId: row.requestId,
-    grantedBy: row.grantedBy === null ? null : String(row.grantedBy),
-    period: row.period,
-    createTime: row.createTime,
-  };
+  if (operationId) {
+    await finishOperation(operationId, {
+      issuedCount: created,
+      skippedCount: userIds.length - created - failures.length,
+      failedCount: failures.length,
+      credits,
+      failures,
+    });
+  }
+  return { operationId, created, credits, failures };
 }
 
 /**
- * 后台查账（92）：一个用户的额度快照 + 最近账单，成本与估算质量一并返回。
- * 金额一律给有效金额（Σ entries），成本用 `costUsd` 的 null 表达「未知」——
- * 这里不做任何折算，界面也不需要自己算钱。
+ * 后台查账（92）：一个用户的积分快照 + 最近账单，成本与估算质量一并返回。
+ * 金额一律给有效金额，成本用 `costUsd` 的 null 表达「未知」。
  */
 export async function userUsage(input: { userId: string; limit: number }): Promise<AdminUserUsage> {
   const userId = idSchema.parse(input.userId);
@@ -94,17 +117,14 @@ export async function userUsage(input: { userId: string; limit: number }): Promi
   };
 }
 
-/** 按账单条数的比例，保留 4 位小数：界面乘 100 就是百分比，不把估算包装成精确金额。 */
+/** 按账单条数的比例，保留 4 位小数：界面乘 100 就是百分比。 */
 function ratioOf(matched: number, total: number): number {
   return total === 0 ? 0 : Math.round(matched / total * 10_000) / 10_000;
 }
 
 /**
- * 管理员整笔冲正（92）：复用 90 的 `reverseCharge`，不另写一套冲正逻辑，因此共享同一份幂等保护。
- * 三种结果必须能区分：
- * - 账单不存在 → 404；
- * - 已经整笔冲正过 → `reversed: false`（重复提交不再退款，界面提示「已冲正」）；
- * - 没有分录可退（`unpriced` / 0 Credit）→ 409 明确说「无需冲正」，不让按钮假装退了钱。
+ * 管理员整笔冲正：复用结算侧的 `reverseCharge`，共享同一份幂等保护。
+ * 三种结果必须能区分：账单不存在 404；已经整笔冲正 `reversed:false`；没有分录可退 409。
  */
 export async function reverseChargeByAdmin(input: {
   chargeId: string;
@@ -117,7 +137,7 @@ export async function reverseChargeByAdmin(input: {
 
   const result = await reverseCharge(input.chargeId, { reason: input.reason, operatorId: input.operatorId });
   if (!result.reversed && (await entriesOfCharge(input.chargeId)).length === 0) {
-    throw new BusinessError(409, 40900, '这笔账单没有可冲正的金额（待处理或 0 Credit），无需冲正');
+    throw new BusinessError(409, 40900, '这笔账单没有可冲正的金额（待处理或 0 积分），无需冲正');
   }
   const [projection] = await db().select({ status: creditCharges.status }).from(creditCharges)
     .where(eq(creditCharges.generationId, input.chargeId)).limit(1);

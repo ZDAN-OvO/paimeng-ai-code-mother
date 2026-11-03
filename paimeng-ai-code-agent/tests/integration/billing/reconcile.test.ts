@@ -10,9 +10,9 @@ import {
 import { db, getPool, type Transaction } from '@/server/infra/db';
 import * as schema from '@/server/infra/schema';
 import {
-  apps, creditAccounts, creditCharges, creditEntries, creditGrants, creditQuotaAdjustments, creditQuotaIssues, generationSteps, generations, sessions, users,
+  apps, creditBalance, creditCharges, creditLedger, generationSteps, generations, sessions, users,
 } from '@/server/infra/schema';
-import { effectiveCreditsOf, entriesOfCharge, rebuildAccount } from '@/server/billing/ledger';
+import { effectiveCreditsOf, entriesOfCharge, rebuildBalance } from '@/server/billing/ledger';
 import { auditAccount, pendingSettlements, reconcileSettlements, settleGenerationBilling, settleGenerationBillingTx } from '@/server/billing/settlement';
 import type { ReconcileRun } from '@/shared/billing';
 
@@ -27,8 +27,7 @@ const createdApps: bigint[] = [];
 const createdGenerations: string[] = [];
 
 beforeAll(async () => {
-  await applyBillingMigrations(
-    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '014_credit_entry_audit.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql', '023_app_config_model_config.sql');
+  await applyBillingMigrations('024_credit_ledger.sql');
 });
 
 afterAll(async () => {
@@ -36,7 +35,7 @@ afterAll(async () => {
     const generationIds = createdGenerations;
     const chargeIds = (await db().select({ generationId: creditCharges.generationId }).from(creditCharges)
       .where(inArray(creditCharges.generationId, generationIds))).map(row => row.generationId);
-    if (chargeIds.length) await db().delete(creditEntries).where(inArray(creditEntries.chargeId, chargeIds));
+    if (chargeIds.length) await db().delete(creditLedger).where(inArray(creditLedger.chargeId, chargeIds));
     await db().delete(creditCharges).where(inArray(creditCharges.generationId, generationIds));
     await db().delete(generationSteps).where(inArray(generationSteps.generationId, generationIds));
     await db().delete(generations).where(inArray(generations.id, generationIds));
@@ -44,10 +43,8 @@ afterAll(async () => {
   if (createdApps.length) await db().delete(apps).where(inArray(apps.id, createdApps));
   if (createdUsers.length) {
     const ids = createdUsers.map(id => BigInt(id));
-    await db().delete(creditQuotaAdjustments).where(inArray(creditQuotaAdjustments.userId, ids));
-    await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, ids));
-    await db().delete(creditGrants).where(inArray(creditGrants.userId, ids));
-    await db().delete(creditAccounts).where(inArray(creditAccounts.userId, ids));
+    await db().delete(creditLedger).where(inArray(creditLedger.userId, ids));
+    await db().delete(creditBalance).where(inArray(creditBalance.userId, ids));
     await db().delete(sessions).where(inArray(sessions.userId, ids));
     await db().delete(users).where(inArray(users.id, ids));
   }
@@ -81,10 +78,9 @@ const seedRate = seedBillingRate;
 const grant = grantBillingCredits;
 const balancesOf = billingBalancesOf;
 
-/** 两池合计：用例只关心「扣了多少」，用合计避免依赖扣减先配额的细节。 */
+/** 可用额合计：用例只关心「扣了多少」，用合计避免依赖扣减顺序的细节。 */
 async function totalCreditsOf(userId: string): Promise<number> {
-  const balances = await balancesOf(userId);
-  return balances.quota + balances.balance;
+  return (await balancesOf(userId)).available;
 }
 
 async function chargeRows(generationId: string) {
@@ -98,7 +94,7 @@ describe('对账扫描：终态漏账', () => {
   it('终态但没有 Charge 的 Generation 被补上，第二次扫描不再结算', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'reconcile-missing-charge' });
-    await grant(owner.id, 'balance', 100);
+    await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id, status: 'ready', stopReason: 'completed' });
     await seedStep(generationId, { modelName: 'reconcile-missing-charge', input: 100_000 });
@@ -134,7 +130,7 @@ describe('对账扫描：终态漏账', () => {
   it('管理员重试接口只对管理员开放，并按 generationId 限定范围', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'reconcile-route' });
-    await grant(owner.id, 'balance', 100);
+    await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
     await seedStep(generationId, { modelName: 'reconcile-route', input: 100_000 });
@@ -155,7 +151,7 @@ describe('对账扫描：终态漏账', () => {
 describe('对账扫描：待处理与后补', () => {
   it('缺费率时保持待处理并给出原因；补齐费率后只补一次差额', async () => {
     const owner = await newUser();
-    await grant(owner.id, 'balance', 100);
+    await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
     await seedStep(generationId, { providerId: 'billing-fixture', modelName: 'reconcile-late-rate', input: 100_000 });
@@ -179,7 +175,7 @@ describe('对账扫描：待处理与后补', () => {
     expect(await chargeRows(generationId)).toMatchObject([{ status: 'settled', credits: stepCredits }]);
     const entries = await entriesOfCharge(generationId);
     expect(entries).toHaveLength(1);
-    expect(entries[0]?.credits).toBe(stepCredits);
+    expect(entries[0]?.credits).toBe(-stepCredits);
     expect(await totalCreditsOf(owner.id)).toBe(before - stepCredits);
 
     const again = await reconcileSettlements({ userId: owner.id });
@@ -191,7 +187,7 @@ describe('对账扫描：待处理与后补', () => {
   it('晚到的步骤只按差额补记一次，快照保留两步身份', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'reconcile-late-step' });
-    await grant(owner.id, 'balance', 200);
+    await grant(owner.id, 'lasting', 200);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
     await seedStep(generationId, { modelName: 'reconcile-late-step', input: 100_000, stepNumber: 0 });
@@ -221,7 +217,7 @@ describe('对账扫描：待处理与后补', () => {
   it('estimated 账单加一个新步骤后补一次差额，第二次扫描不再新增', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'reconcile-estimated-late' });
-    await grant(owner.id, 'balance', 200);
+    await grant(owner.id, 'lasting', 200);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
     // 第一步有真实用量当样本，第二步缺用量：账单是 estimated，两步各按 60 Credit 计。
@@ -248,7 +244,7 @@ describe('对账扫描：待处理与后补', () => {
   it('并发扫描同一批只产生一次有效扣减', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'reconcile-race' });
-    await grant(owner.id, 'balance', 100);
+    await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
     await seedStep(generationId, { modelName: 'reconcile-race', input: 100_000 });
@@ -304,7 +300,7 @@ describe('进程中断后的恢复', () => {
   it('结算事务被中断时 Charge、分录、余额都不留半成品，重试后照常结算', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'reconcile-interrupt' });
-    await grant(owner.id, 'balance', 100);
+    await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
     await seedStep(generationId, { modelName: 'reconcile-interrupt', input: 100_000 });
@@ -326,7 +322,7 @@ describe('进程中断后的恢复', () => {
   it('平台故障的自动冲正被中断时同样不留半成品，重试后是一笔已退还账单', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'reconcile-interrupt-reverse' });
-    await grant(owner.id, 'balance', 100);
+    await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id, status: 'failed', stopReason: 'initialization-failed' });
     await seedStep(generationId, { modelName: 'reconcile-interrupt-reverse', input: 100_000 });
@@ -350,35 +346,33 @@ describe('余额核对', () => {
   it('auditAccount 报告快照漂移但不改账本事实', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'reconcile-audit' });
-    await grant(owner.id, 'balance', 100);
+    await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
     await seedStep(generationId, { modelName: 'reconcile-audit', input: 100_000 });
     await settleGenerationBilling(generationId);
 
     const clean = await auditAccount(owner.id);
-    expect(clean.expected).toEqual(clean.actual);
-    expect(clean.diff).toEqual({ quota: 0, balance: 0 });
+    expect(clean.expected).toBe(clean.actual);
+    expect(clean.diff).toBe(0);
 
-    const before = await balancesOf(owner.id);
     const entriesBefore = await entriesOfCharge(generationId);
-    const grantsBefore = await db().select().from(creditGrants).where(eq(creditGrants.userId, BigInt(owner.id)));
-    await db().update(creditAccounts).set({ balance: before.balance + 7 })
-      .where(and(eq(creditAccounts.userId, BigInt(owner.id)), eq(creditAccounts.pool, 'balance')));
+    const rowsBefore = await db().select().from(creditLedger).where(eq(creditLedger.userId, BigInt(owner.id)));
+    await db().update(creditBalance).set({ available: clean.actual + 7 })
+      .where(eq(creditBalance.userId, BigInt(owner.id)));
 
     const drifted = await auditAccount(owner.id);
-    expect(drifted.expected).toEqual(clean.expected);
-    expect(drifted.actual).toEqual({ ...before, balance: before.balance + 7 });
-    expect(drifted.diff).toEqual({ quota: 0, balance: 7 });
-    // 只读：账本事实与快照都保持原样，等运维决定怎么修
+    expect(drifted.expected).toBe(clean.expected);
+    expect(drifted.actual).toBe(clean.actual + 7);
+    expect(drifted.diff).toBe(7);
+    // 只读：账本与流水保持原样，等运维决定怎么修
     expect(await entriesOfCharge(generationId)).toEqual(entriesBefore);
-    expect(await db().select().from(creditGrants).where(eq(creditGrants.userId, BigInt(owner.id)))).toEqual(grantsBefore);
-    expect(await balancesOf(owner.id)).toEqual({ ...before, balance: before.balance + 7 });
+    expect(await db().select().from(creditLedger).where(eq(creditLedger.userId, BigInt(owner.id)))).toEqual(rowsBefore);
 
-    // 修复走「按账本事实重算快照」，不 UPDATE/DELETE entry 或 grant
-    expect(await rebuildAccount(owner.id)).toEqual(clean.expected);
-    expect(await balancesOf(owner.id)).toEqual(clean.expected);
-    expect(await entriesOfCharge(generationId)).toEqual(entriesBefore);
-    expect(await db().select().from(creditGrants).where(eq(creditGrants.userId, BigInt(owner.id)))).toEqual(grantsBefore);
+    // 修复走「按账本重算快照」，不 UPDATE/DELETE 账本行
+    const repaired = await rebuildBalance(owner.id);
+    expect(repaired.available).toBe(clean.expected);
+    expect(await db().select().from(creditLedger).where(eq(creditLedger.userId, BigInt(owner.id)))).toEqual(rowsBefore);
+    expect((await auditAccount(owner.id)).diff).toBe(0);
   });
 });

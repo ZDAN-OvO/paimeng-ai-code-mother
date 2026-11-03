@@ -9,7 +9,7 @@ import {
   type AdminCreditUser, type AdminUserUsage, type BillingChargeView, type ChargeReversalReceipt, type ChargeStatus,
 } from '@/shared/billing';
 import { formatStoredTime } from '@/shared/display';
-import { AdminUserIdentity } from './admin-credit-overview';
+import { AdminUserIdentity } from './credit-identity';
 import styles from '@/components/admin-view.module.css';
 
 type ReversalForm = { reason: string };
@@ -58,7 +58,7 @@ export function AdminUsagePanel({ user }: { user: AdminCreditUser }) {
         `admin/billing/charge/${encodeURIComponent(target.generationId)}/reverse`,
         { reason: values.reason },
       );
-      message.success(receipt.reversed ? '已冲正：反向分录已按原分池记入账本' : '这笔账单之前已经冲正过，没有重复退款');
+      message.success(receipt.reversed ? '已冲正：反向分录已按原积分种类记入账本' : '这笔账单之前已经冲正过，没有重复退款');
       setTarget(null);
       form.resetFields();
       await load();
@@ -78,7 +78,7 @@ export function AdminUsagePanel({ user }: { user: AdminCreditUser }) {
       dataIndex: 'effectiveCredits',
       width: 160,
       render: (credits: number, charge) => <span>
-        {credits} Credit
+        {credits} 积分
         {credits !== charge.credits && <span className={styles.statusHint}>（原扣 {charge.credits}）</span>}
       </span>,
     },
@@ -140,11 +140,11 @@ export function AdminUsagePanel({ user }: { user: AdminCreditUser }) {
     {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 12 }} />}
     {usage && <>
       <Descriptions bordered size="small" column={{ xs: 1, sm: 2 }} items={[
-        { key: 'total', label: '合计可用', children: `${usage.credit.total} Credit` },
-        { key: 'quota', label: '配额池（有效剩余）', children: `${usage.credit.quota.remainingCredits} Credit` },
-        { key: 'balance', label: '余额池', children: `${usage.credit.balance} Credit` },
-        { key: 'purchased', label: '近 60 天购买', children: `${usage.credit.purchasedCredits60d} Credit` },
-        { key: 'overdraft', label: '当前透支线', children: `${usage.credit.overdraft} Credit` },
+        { key: 'total', label: '可用积分', children: `${usage.credit.account.available} 积分` },
+        { key: 'limited', label: '限时积分', children: `${usage.credit.account.limited} 积分` },
+        { key: 'lasting', label: '长期积分', children: `${usage.credit.account.lasting} 积分` },
+        { key: 'purchased', label: '近 60 天充值', children: `${usage.credit.purchasedCredits60d} 积分` },
+        { key: 'overdraft', label: '当前透支线', children: `${usage.credit.overdraft} 积分` },
       ]} />
       <div className={styles.usageLegend}>
         <span>最近 {usage.charges.length} 笔账单</span>
@@ -172,9 +172,9 @@ export function AdminUsagePanel({ user }: { user: AdminCreditUser }) {
       onOk={() => form.submit()}
       onCancel={() => { setTarget(null); form.resetFields(); }}
     >
-      <p>整笔退还这次生成消耗的 Credit：按原分录分池反向、写入操作人与理由，原账单与扣减记录不会被修改。</p>
+      <p>整笔退还这次生成消耗的积分：按原积分种类反向、写入操作人与理由，原账单与扣减记录不会被修改。</p>
       {target && <p className={styles.statusHint}>
-        Generation {target.generationId}，有效金额 {target.effectiveCredits} Credit
+        Generation {target.generationId}，有效金额 {target.effectiveCredits} 积分
       </p>}
       <Form form={form} layout="vertical" preserve={false} onFinish={submitReversal}>
         <Form.Item

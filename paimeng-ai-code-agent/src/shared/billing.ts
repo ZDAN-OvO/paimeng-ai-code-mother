@@ -16,10 +16,10 @@ import { idSchema, type GenerationStatus, type GenerationStopReason } from './co
 export const SELL_UNIT = { creditPerYuan: 100, tokensPerMillion: 1_000_000 } as const;
 
 /** 费率的单位文案：接口响应与后台界面都读这一处，不在两边各写一遍。 */
-export const rateCardUnitLabel = 'Credit / 1M tokens';
+export const rateCardUnitLabel = '积分 / 1M tokens';
 
 /** 面额文案由 SELL_UNIT 推出，改面额时文案自动跟随。 */
-export const creditDenominationLabel = `1 Credit = ¥${(1 / SELL_UNIT.creditPerYuan).toFixed(2)}`;
+export const creditDenominationLabel = `1 积分 = ¥${(1 / SELL_UNIT.creditPerYuan).toFixed(2)}`;
 
 /** 上游成本口径：峰时/谷时价才可追溯，不知道就记 unknown，不拿售价折算。 */
 export const costBases = ['peak', 'off-peak', 'unknown'] as const;
@@ -55,7 +55,7 @@ const naiveTimestamp = z
   .regex(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/u, '生效时间必须形如 2026-10-01 00:00:00.000（UTC）')
   .refine((value) => !Number.isNaN(Date.parse(`${value.replace(' ', 'T')}Z`)), '生效时间不是合法时刻');
 
-const creditRate = z.number().int('费率必须是整数 Credit').min(0, '费率不能是负数');
+const creditRate = z.number().int('费率必须是整数积分').min(0, '费率不能是负数');
 
 /** 上游成本是可空的定点字符串，最多 6 位小数；空值表示未知，不用 0 代替。 */
 const optionalUsdRate = z
@@ -93,7 +93,7 @@ export const rateCardInputSchema = z
   })
   .refine(
     (value) => value.creditInputMiss > 0 || value.creditInputHit > 0 || value.creditOutput > 0,
-    '三个费率不能同时为 0：那会让这个模型的每次生成都收 0 Credit',
+    '三个费率不能同时为 0：那会让这个模型的每次生成都收 0 积分',
   );
 
 export type RateCardInput = z.infer<typeof rateCardInputSchema>;
@@ -141,98 +141,81 @@ export const rateCardListSchema = z.object({
 
 export type RateCardList = z.infer<typeof rateCardListSchema>;
 
-// ---- Credit pool 与 Credit grant（migrations/010_credit_grant_account.sql）----
-
-/** Credit pool：配额池按周期发放并重置，余额池由购买或发放而来且不重置；扣减总是先配额池、后余额池。 */
-export const creditPools = ['quota', 'balance'] as const;
-export type CreditPool = typeof creditPools[number];
-export const creditPoolSchema = z.enum(creditPools);
-
-/** Credit grant 的来源：只有 purchase 计入 Overdraft 基数。 */
-export const grantSources = ['purchase', 'admin_grant', 'monthly_quota'] as const;
-export type GrantSource = typeof grantSources[number];
-export const grantSourceSchema = z.enum(grantSources);
-
-export const poolLabels: Record<CreditPool, string> = { quota: '配额池', balance: '余额池' };
-export const sourceLabels: Record<GrantSource, string> = { purchase: '购买', admin_grant: '管理员补偿', monthly_quota: '月度配额' };
-
-/** 单笔手工发放上限：挡住表单里多打一个零变成巨额入账。 */
-export const maxGrantCredits = 1_000_000;
-
-/** 来源决定池；`credit_grant_pool_of_source` 这个数据库 CHECK 是同一规则的另一处表达。 */
-export function poolOfSource(source: GrantSource): CreditPool {
-  return source === 'monthly_quota' ? 'quota' : 'balance';
-}
+// ---- 积分账本（migrations/024_credit_ledger.sql）----
 
 /**
- * `POST admin/billing/grant` 的请求体。requestId 是幂等键：同一次提交的重试复用它，成功后才换新的。
- * `pool` 可省略——来源决定池（`poolOfSource`），带上来只作为一致性校验，界面不必自己维护第二份映射。
+ * 一条账本记录的类型。`quota` 是带到期时间的发放（限时积分）；`topup` / `grant` 不过期（长期积分）；
+ * `consume` 是生成扣费；`refund` 是冲正退回；`expire` 是账期边界把上期剩余清零。
  */
-export const grantRequestSchema = z.object({
-  userId: idSchema,
-  pool: creditPoolSchema.optional(),
-  credits: z.number().refine(
-    value => Number.isInteger(value) && value >= 1 && value <= maxGrantCredits,
-    `发放金额必须是 1 到 ${maxGrantCredits} 之间的整数 Credit`,
-  ),
-  source: grantSourceSchema,
-  note: z.string().trim().max(500).optional(),
-  requestId: z.string().trim().min(1).max(128).optional(),
-});
-export type GrantRequest = z.infer<typeof grantRequestSchema>;
-
-/**
- * 发放接口的回执：`created=false` 表示这次是重放，账本没有新增行。
- * `grant` 是服务端刚落库（或重放命中的）那一行的完整视图——时间、操作人、池与来源都来自账本，
- * 界面不再用浏览器时钟或表单值拼一份回执。
- */
-export type GrantReceipt = { created: boolean; grant: CreditGrantView };
-
-/** 一笔 Credit grant 的可追溯形状，管理界面的发放回执用它展示。 */
-export type CreditGrantView = {
-  id: string;
-  userId: string;
-  pool: CreditPool;
-  credits: number;
-  source: GrantSource;
-  note: string | null;
-  requestId: string | null;
-  grantedBy: string | null;
-  period: string | null;
-  createTime: string;
+export const creditEntryKinds = ['quota', 'topup', 'grant', 'consume', 'refund', 'expire'] as const;
+export type CreditEntryKind = (typeof creditEntryKinds)[number];
+export const creditEntryKindLabels: Record<CreditEntryKind, string> = {
+  quota: '限时积分',
+  topup: '充值',
+  grant: '发放积分',
+  consume: '生成消费',
+  refund: '冲正退回',
+  expire: '过期清零',
 };
 
-/** `GET billing/summary`：Owner 自己的双池余额、近 60 天购买额与由此推导的透支线。 */
+/** 谁写的这一行：规则、人工、支付、结算、过期扫描、冲正。 */
+export const creditEntryOrigins = ['rule', 'manual', 'payment', 'charge', 'expiry', 'reversal'] as const;
+export type CreditEntryOrigin = (typeof creditEntryOrigins)[number];
+export const creditEntryOriginLabels: Record<CreditEntryOrigin, string> = {
+  rule: '每月规则',
+  manual: '人工操作',
+  payment: '购买',
+  charge: '自动结算',
+  expiry: '到期清零',
+  reversal: '冲正',
+};
+
+/** 一笔发放（单人或批量）的数量上限；挡住表单里多打一个零变成巨额入账。 */
+export const maxIssueCredits = 1_000_000;
+/** 一次批量最多处理多少个用户；超出的留到下一次（幂等，不需要记录进度）。 */
+export const maxIssueUsers = 1000;
+
+/**
+ * 账本一行。`credits` 有符号：消费与过期为负，退回为正。
+ * `balanceAfter` 只在按用户回放流水时由服务端补上，是「这一行之后这个人还剩多少」。
+ */
+export type CreditLedgerEntryView = {
+  id: string;
+  userId: string;
+  kind: CreditEntryKind;
+  origin: CreditEntryOrigin;
+  credits: number;
+  period: string | null;
+  expiresAt: string | null;
+  chargeId: string | null;
+  reversalOf: string | null;
+  reason: string | null;
+  operatorId: string | null;
+  requestId: string | null;
+  ref: string | null;
+  createTime: string;
+  balanceAfter?: number;
+};
+
+/**
+ * `GET billing/summary`：一个数加两种口径。`available` 是账本求和（可以为负）；
+ * `limited` 是还没过期的部分，`lasting` 是剩下的；两者相加永远等于 `available`。
+ */
 export type AccountSnapshot = {
-  quota: number;
-  balance: number;
-  total: number;
+  available: number;
+  limited: number;
+  lasting: number;
+  limitedExpiresAt: string | null;
   purchasedCredits60d: number;
   overdraft: number;
 };
 
-// ---- 月度配额（migrations/010_credit_grant_account.sql 的 (user_id, period) 唯一索引）----
+export type AccountSummary = AccountSnapshot & { period: string };
 
-/** 每个北京自然月发放到配额池的 Credit。配额不累积、不结转、不折现，过期即失效。 */
+/** 每月自动发放的限时积分（默认 500）；规则版本见 `credit_quota_policy`。 */
 export const monthlyQuotaCredits = 500;
 
-/**
- * `GET billing/summary` 的响应：双池快照 + 这份配额属于哪个账期、什么时候失效。
- * `period` 是北京自然月 `YYYY-MM`（`billing/period.ts`）；`quotaExpiresAt` 是账期半开区间的终点，
- * UTC 朴素时间戳，界面按北京时间显示。
- */
-export type AccountSummary = AccountSnapshot & {
-  period: string;
-  quotaExpiresAt: string;
-  /** 当期基础发放、调整净额与已用，界面据此解释配额池余额，不再假设固定 500。 */
-  quotaBase: number;
-  quotaAdjustments: number;
-  quotaUsed: number;
-  quotaPolicySource: QuotaPolicySource;
-  quotaPolicyVersion: number | null;
-};
-
-// ---- 可配置月度配额策略（migrations/020_credit_quota_policy.sql）----
+// ---- 可配置的每月规则（migrations/020_credit_quota_policy.sql）----
 
 /** 策略范围：global 是默认值，user 是单用户覆盖或显式恢复继承。 */
 export const quotaPolicyScopes = ['global', 'user'] as const;
@@ -246,9 +229,8 @@ export const quotaPolicyModeLabels: Record<QuotaPolicyMode, string> = {
   override: '覆盖金额',
 };
 
-/** 月度标准与单次调整的上限；共享契约校验，前端表单与服务端都读这一处。 */
+/** 每月标准的上限；共享契约校验，前端表单与服务端都读这一处。 */
 export const maxMonthlyQuotaCredits = 1_000_000;
-export const maxQuotaAdjustmentCredits = 1_000_000;
 
 /** 策略版本的一行；只追加，不改旧行。 */
 export type QuotaPolicyView = {
@@ -283,14 +265,14 @@ export type QuotaPolicyAdminView = {
   period: string;
   nextPeriod: string;
   defaultCredits: number;
-  limits: { maxMonthlyQuotaCredits: number; maxQuotaAdjustmentCredits: number };
+  limits: { maxMonthlyQuotaCredits: number; maxIssueCredits: number };
   global: QuotaPolicyRange;
   user: (QuotaPolicyRange & {
     userId: string;
     userAccount: string;
     userName: string | null;
-    /** 当前账期的配额事实，供调整表单显示调整前剩余。 */
-    quota: AdminQuotaDetail;
+    /** 当前账期的积分事实，供发放表单显示发放前可用。 */
+    account: AdminCreditAccount;
   }) | null;
 };
 
@@ -303,7 +285,7 @@ export const quotaPolicySaveSchema = z
     userId: idSchema.optional(),
     effectivePeriod: quotaPeriod,
     mode: z.enum(quotaPolicyModes),
-    credits: z.number().int('配额必须是整数 Credit').min(0, '配额不能是负数').max(maxMonthlyQuotaCredits, `单月配额不能超过 ${maxMonthlyQuotaCredits}`).nullish(),
+    credits: z.number().int('每月额度必须是整数积分').min(0, '每月额度不能是负数').max(maxMonthlyQuotaCredits, `每月额度不能超过 ${maxMonthlyQuotaCredits}`).nullish(),
     expectedRevision: z.number().int().min(1).nullish(),
     note: z.string().trim().max(500).nullish(),
   })
@@ -329,178 +311,105 @@ export type QuotaPolicySaveReceipt = {
   effective: EffectiveQuotaPolicy;
 };
 
-/** 每用户每账期一条基础发放事实；零配额也记一行。 */
-export type QuotaIssueView = {
-  id: string;
-  userId: string;
-  period: string;
-  baseCredits: number;
-  status: 'granted' | 'failed';
-  policySource: QuotaPolicySource;
-  policyVersion: number | null;
-  policyId: string | null;
-  grantId: string | null;
-  reason: string | null;
-  createTime: string;
-  updateTime: string;
+// ---- 管理员发放（单人与批量）----
+
+/** 发放种类：`limited` 落在当前账期、月底过期；`lasting` 不过期。 */
+export const issueKinds = ['limited', 'lasting'] as const;
+export type IssueKind = (typeof issueKinds)[number];
+export const issueKindLabels: Record<IssueKind, string> = {
+  limited: '限时积分',
+  lasting: '长期积分',
 };
 
-// ---- 单用户当月配额调整（migrations/021_credit_quota_adjustment.sql）----
-
-export const quotaAdjustmentModes = ['increase', 'decrease', 'target'] as const;
-export type QuotaAdjustmentMode = (typeof quotaAdjustmentModes)[number];
-export const quotaAdjustmentModeLabels: Record<QuotaAdjustmentMode, string> = {
-  increase: '增加当月剩余',
-  decrease: '扣回当月剩余',
-  target: '设为目标剩余',
-};
-
-/** 调整请求：金额对 increase/decrease 是差额，对 target 是目标剩余。 */
-export const quotaAdjustmentRequestSchema = z
+/** 一次发给一个人或一批人；`requestId` 是幂等键，重试复用，成功后换新的。 */
+export const adminIssueRequestSchema = z
   .object({
-    userId: idSchema,
-    /** 只允许当前账期；省略时由服务端取当前账期。 */
-    period: z.string().trim().regex(/^\d{4}-(0[1-9]|1[0-2])$/u, '账期必须形如 2026-11').optional(),
-    mode: z.enum(quotaAdjustmentModes),
-    amount: z.number().int('金额必须是整数 Credit').min(0, '金额不能是负数').max(maxQuotaAdjustmentCredits, `单次调整不能超过 ${maxQuotaAdjustmentCredits} Credit`),
-    reason: z.string().trim().min(1, '请填写调整理由').max(500, '调整理由最多 500 字'),
+    userId: idSchema.optional(),
+    userIds: z.array(idSchema).min(1).max(maxIssueUsers).optional(),
+    kind: z.enum(issueKinds),
+    credits: z.number().int(`发放数量必须是整数积分`).min(1, '发放数量必须大于 0').max(maxIssueCredits, `单次发放不能超过 ${maxIssueCredits} 积分`),
+    reason: z.string().trim().min(1, '请填写发放理由').max(500, '发放理由最多 500 字'),
     requestId: z.string().trim().min(1).max(128),
   })
   .superRefine((value, ctx) => {
-    if (value.mode !== 'target' && value.amount < 1) {
-      ctx.addIssue({ code: 'custom', message: '增加或扣回金额必须大于 0' });
-    }
+    const single = value.userId !== undefined;
+    const batch = value.userIds !== undefined && value.userIds.length > 0;
+    if (single === batch) ctx.addIssue({ code: 'custom', message: '必须且只能指定 userId 或 userIds 之一' });
   });
-export type QuotaAdjustmentRequest = z.infer<typeof quotaAdjustmentRequestSchema>;
+export type AdminIssueRequest = z.infer<typeof adminIssueRequestSchema>;
 
-export type QuotaAdjustmentView = {
-  id: string;
-  userId: string;
-  period: string;
-  mode: QuotaAdjustmentMode;
-  /** 有符号差额：增加为正，扣回为负；不会为 0。 */
+/** 逐用户失败原因：成功的人不在这里，去账本里按 requestId 查。 */
+export type IssueFailure = { userId: string; reason: string };
+
+export type AdminIssueReceipt = {
+  /** 批量才有操作日志；单人发放返回 null，凭据就是账本那一行。 */
+  operationId: string | null;
+  created: number;
   credits: number;
-  reason: string;
-  operatorId: string;
-  requestId: string;
-  beforeCredits: number;
-  afterCredits: number;
-  createTime: string;
+  failures: IssueFailure[];
 };
 
-/** 调整回执：`created=false` 表示同键同载荷的重放，没有再改余额。 */
-export type QuotaAdjustmentReceipt = {
-  created: boolean;
-  adjustment: QuotaAdjustmentView;
-  period: string;
-  beforeCredits: number;
-  afterCredits: number;
-  expiresAt: string;
+/** 补发待发：按规则给本期还没有规则条目的用户发放。 */
+export const adminIssuePendingSchema = z.object({
+  period: quotaPeriod.optional(),
+  requestId: z.string().trim().min(1).max(128).optional(),
+  limit: z.number().int().min(1).max(maxIssueUsers).optional(),
+  userIds: z.array(idSchema).min(1).max(maxIssueUsers).optional(),
+});
+export type AdminIssuePendingRequest = z.infer<typeof adminIssuePendingSchema>;
+
+// ---- 操作日志（批量与扫描的摘要，不是钱）----
+
+export const creditOperationKinds = ['issue_pending', 'issue_users', 'expire_sweep'] as const;
+export type CreditOperationKind = (typeof creditOperationKinds)[number];
+export const creditOperationKindLabels: Record<CreditOperationKind, string> = {
+  issue_pending: '补发待发',
+  issue_users: '批量发放',
+  expire_sweep: '过期扫描',
 };
 
-// ---- Admin 月度批量发放（migrations/022_credit_quota_batch.sql）----
-
-export const quotaBatchScopes = ['pending', 'users'] as const;
-export type QuotaBatchScope = (typeof quotaBatchScopes)[number];
-export const quotaBatchScopeLabels: Record<QuotaBatchScope, string> = {
-  pending: '全部待发',
-  users: '指定用户',
-};
-
-export const quotaBatchStatuses = ['previewed', 'running', 'completed', 'failed', 'superseded'] as const;
-export type QuotaBatchStatus = (typeof quotaBatchStatuses)[number];
-export const quotaBatchStatusLabels: Record<QuotaBatchStatus, string> = {
-  previewed: '待确认',
+export const creditOperationStatuses = ['running', 'completed', 'partial', 'failed'] as const;
+export type CreditOperationStatus = (typeof creditOperationStatuses)[number];
+export const creditOperationStatusLabels: Record<CreditOperationStatus, string> = {
   running: '执行中',
   completed: '已完成',
-  failed: '失败',
-  superseded: '已过期',
-};
-export const quotaBatchStatusColors: Record<QuotaBatchStatus, string> = {
-  previewed: 'gold',
-  running: 'blue',
-  completed: 'green',
-  failed: 'red',
-  superseded: 'default',
-};
-
-export const quotaBatchItemStatuses = ['pending', 'granted', 'skipped', 'failed'] as const;
-export type QuotaBatchItemStatus = (typeof quotaBatchItemStatuses)[number];
-export const quotaBatchItemStatusLabels: Record<QuotaBatchItemStatus, string> = {
-  pending: '待发',
-  granted: '已发',
-  skipped: '跳过',
+  partial: '部分失败',
   failed: '失败',
 };
 
-export const maxQuotaBatchUsers = 1000;
-export const maxQuotaBatchChunk = 500;
-
-export const quotaBatchPreviewSchema = z
-  .object({
-    period: z.string().trim().regex(/^\d{4}-(0[1-9]|1[0-2])$/u, '账期必须形如 2026-11').optional(),
-    scope: z.enum(quotaBatchScopes),
-    userIds: z.array(idSchema).min(1).max(maxQuotaBatchUsers).optional(),
-    limit: z.number().int().min(1).max(maxQuotaBatchUsers).optional(),
-  })
-  .superRefine((value, ctx) => {
-    if (value.scope === 'users' && (!value.userIds || value.userIds.length === 0)) {
-      ctx.addIssue({ code: 'custom', message: '指定用户批量发放必须给 userIds' });
-    }
-  });
-export type QuotaBatchPreviewRequest = z.infer<typeof quotaBatchPreviewSchema>;
-
-export const quotaBatchExecuteSchema = z.object({
-  batchId: z.string().trim().min(1).max(36),
-  previewToken: z.string().trim().min(1).max(64),
-  limit: z.number().int().min(1).max(maxQuotaBatchChunk).optional(),
-});
-export type QuotaBatchExecuteRequest = z.infer<typeof quotaBatchExecuteSchema>;
-
-export const quotaBatchRetrySchema = z.object({
-  batchId: z.string().trim().min(1).max(36),
-});
-export type QuotaBatchRetryRequest = z.infer<typeof quotaBatchRetrySchema>;
-
-/** 逐用户回执；userAccount/userName 为用户被删/预览时不存在时的可空展示。 */
-export type QuotaBatchItemView = {
-  userId: string;
-  userAccount: string | null;
-  userName: string | null;
-  baseCredits: number;
-  policySource: QuotaPolicySource;
-  policyVersion: number | null;
-  status: QuotaBatchItemStatus;
-  issueId: string | null;
-  reason: string | null;
-  updateTime: string;
-};
-
-/** 批次视图；`previewToken` 只在新建预览的响应里出现，列表/详情不返回。 */
-export type QuotaBatchView = {
+export type CreditOperationView = {
   id: string;
-  period: string;
-  scope: QuotaBatchScope;
-  status: QuotaBatchStatus;
-  previewToken?: string;
+  kind: CreditOperationKind;
+  requestId: string;
+  period: string | null;
+  operatorId: string | null;
+  operatorName: string | null;
   targetCount: number;
-  pendingCount: number;
-  grantedCount: number;
-  zeroCount: number;
+  issuedCount: number;
   skippedCount: number;
   failedCount: number;
-  totalCredits: number;
-  issuedCredits: number;
-  scopeTotal: number;
-  truncated: boolean;
-  createdBy: string;
+  credits: number;
+  status: CreditOperationStatus;
+  detail: IssueFailure[];
   createTime: string;
-  startedTime: string | null;
-  finishedTime: string | null;
-  items?: QuotaBatchItemView[];
+  finishTime: string | null;
 };
 
-export type QuotaBatchList = { batches: QuotaBatchView[] };
+export type CreditOperationList = { operations: CreditOperationView[] };
+
+/** 管理面查账：一个用户的账本页，按时间倒序，带累计可用额。 */
+export type CreditLedgerPage = {
+  entries: CreditLedgerEntryView[];
+  /** 是否还有更早的记录；界面据此显示「加载更早」。 */
+  hasMore: boolean;
+};
+
+export const adminCreditLedgerQuerySchema = z.object({
+  userId: idSchema,
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  beforeId: z.coerce.number().int().min(1).optional(),
+});
+export type AdminCreditLedgerQuery = z.infer<typeof adminCreditLedgerQuerySchema>;
 // ---- Credit Charge（migrations/012_credit_charge_entry.sql）----
 
 /**
@@ -552,14 +461,19 @@ export type UsageSnapshotStep = {
   rate: RateCardVersionKey | null;
 };
 
-/** 一笔 Charge 的原始扣减分录（按池拆分）：正数为扣减金额。 */
-export type ChargeEntryView = { pool: CreditPool; credits: number };
+/** 扣减落在哪种积分上：`limited` 是限时积分（有到期时间），`lasting` 是长期积分。 */
+export const creditBuckets = ['limited', 'lasting'] as const;
+export type CreditBucket = (typeof creditBuckets)[number];
+export const creditBucketLabels: Record<CreditBucket, string> = { limited: '限时积分', lasting: '长期积分' };
+
+/** 一笔 Charge 的原始扣减分录（按积分种类拆分）：正数为扣减金额。 */
+export type ChargeEntryView = { bucket: CreditBucket; credits: number };
 
 /**
- * 一条冲正分录：按原分录的池同额退回，`credits` 为负数（退了多少），`reason` 说明退还原因
+ * 一条冲正分录：按原分录的积分种类同额退回，`credits` 为负数（退了多少），`reason` 说明退还原因
  * ——自动冲正固定写 `platformReversalReason`，人工冲正写管理员填的原因（92）。
  */
-export type ChargeReversalView = { pool: CreditPool; credits: number; reason: string | null; createTime: string };
+export type ChargeReversalView = { bucket: CreditBucket; credits: number; reason: string | null; createTime: string };
 
 /**
  * 平台自身故障导致的终止：先按实收结算，再自动整笔冲正，用户实际不承担费用
@@ -686,11 +600,11 @@ export type PendingSettlementItem = {
 
 export type PendingSettlementList = { items: PendingSettlementItem[] };
 
-/** 余额核对结果：`diff = actual - expected`。只报告，不改账本事实；修复见 `rebuildAccount`。 */
+/** 余额核对结果：`diff = actual - expected`。只报告，不改账本事实；修复见 `rebuildBalance`。 */
 export type AccountAudit = {
-  expected: { quota: number; balance: number };
-  actual: { quota: number; balance: number };
-  diff: { quota: number; balance: number };
+  expected: number;
+  actual: number;
+  diff: number;
 };
 
 // ---- 准入（票 94；不需要迁移）----
@@ -708,32 +622,31 @@ export const insufficientCreditsCode = 40201;
  * 支付通道尚未开通，所以唯一可执行的下一步是「联系管理员补充 Credit」——不给充值/购买入口，
  * 那是兑现不了的按钮。
  */
-export function insufficientCreditsMessage(available: { quota: number; balance: number; total: number }): string {
-  return `当前可用 Credit 为 ${available.total}（${poolLabels.quota} ${available.quota} + ${poolLabels.balance} ${available.balance}），`
-    + '不足以开始新的生成。请联系管理员补充 Credit 后再提交。';
+export function insufficientCreditsMessage(available: { available: number; limited: number; lasting: number }): string {
+  return `当前可用积分为 ${available.available}（限时 ${available.limited} + 长期 ${available.lasting}），`
+    + '不足以开始新的生成。请联系管理员补充积分后再提交。';
 }
 
-// ---- Admin 全用户额度总览（admin-credit-quota C1）----
+// ---- Admin 全用户额度总览 ----
 
-/** 总览筛选：待发、欠款、零可用；`all` 不额外过滤。 */
-export const adminCreditFilters = ['all', 'pending', 'debt', 'zero'] as const;
+/** 总览筛选：待发、欠款；`all` 不额外过滤。 */
+export const adminCreditFilters = ['all', 'pending', 'debt'] as const;
 export type AdminCreditFilter = (typeof adminCreditFilters)[number];
 export const adminCreditFilterLabels: Record<AdminCreditFilter, string> = {
-  all: '全部用户',
-  pending: '配额待发',
-  debt: '余额欠款',
-  zero: '零可用',
+  all: '全部',
+  pending: '待发',
+  debt: '欠款',
 };
 
-/** 列表排序；金额字段是「合计可用」与「余额池」。 */
-export const adminCreditSorts = ['id_desc', 'total_desc', 'total_asc', 'balance_desc', 'balance_asc'] as const;
+/** 列表排序；金额字段是可用额与限时积分。 */
+export const adminCreditSorts = ['id_desc', 'available_desc', 'available_asc', 'limited_desc', 'limited_asc'] as const;
 export type AdminCreditSort = (typeof adminCreditSorts)[number];
 export const adminCreditSortLabels: Record<AdminCreditSort, string> = {
   id_desc: '用户 ID（新到旧）',
-  total_desc: '合计可用（高到低）',
-  total_asc: '合计可用（低到高）',
-  balance_desc: '余额池（高到低）',
-  balance_asc: '余额池（低到高）',
+  available_desc: '可用积分（高到低）',
+  available_asc: '可用积分（低到高）',
+  limited_desc: '限时积分（高到低）',
+  limited_asc: '限时积分（低到高）',
 };
 
 export const adminCreditOverviewQuerySchema = z.object({
@@ -748,16 +661,15 @@ export type AdminCreditOverviewQuery = z.infer<typeof adminCreditOverviewQuerySc
 /** 管理面识别一个用户的三个字段；用户名为空时界面必须给占位，不能显示成空白。 */
 export type AdminCreditUser = { userId: string; userAccount: string; userName: string | null };
 
-/** 当前账期的发放状态：没有记录或失败是待发，零配额发放成功也算已发。 */
-export const adminQuotaStatuses = ['pending', 'granted', 'failed'] as const;
+/** 当前账期的发放状态：本期没有规则条目就是待发；0 额度也有条目，所以算已发。 */
+export const adminQuotaStatuses = ['pending', 'granted'] as const;
 export type AdminQuotaStatus = (typeof adminQuotaStatuses)[number];
 export const adminQuotaStatusLabels: Record<AdminQuotaStatus, string> = {
   pending: '待发',
   granted: '已发',
-  failed: '发放失败',
 };
 
-/** 配额的来源：全局默认、用户覆盖、迁移前旧 grant、代码兜底。 */
+/** 配额的来源：全局默认、用户覆盖、迁移前旧数据、代码兜底。 */
 export const quotaPolicySources = ['global', 'user', 'legacy', 'fallback'] as const;
 export type QuotaPolicySource = (typeof quotaPolicySources)[number];
 export const quotaPolicySourceLabels: Record<QuotaPolicySource, string> = {
@@ -767,32 +679,44 @@ export const quotaPolicySourceLabels: Record<QuotaPolicySource, string> = {
   fallback: '系统默认',
 };
 
-/** 总览一行：金额全部由服务端按账期事实算出，界面不重算。 */
-export type AdminCreditOverviewItem = AdminCreditUser & {
+/** 一个用户的积分事实：可用额与两种口径，界面不重算。 */
+export type AdminCreditAccount = {
   period: string;
-  quotaBase: number;
-  quotaAdjustments: number;
-  quotaUsed: number;
-  quotaRemaining: number;
-  balance: number;
-  total: number;
+  available: number;
+  limited: number;
+  lasting: number;
+  limitedExpiresAt: string | null;
   debt: number;
-  issueStatus: AdminQuotaStatus;
+  issued: number;
+  spent: number;
+  status: AdminQuotaStatus;
   policySource: QuotaPolicySource;
   policyVersion: number | null;
-  expiresAt: string;
-  /** 已发状态下快照与账本事实不一致；未发用户的旧快照不视为异常。 */
-  snapshotAnomaly: boolean;
+};
+
+/** 总览一行：金额全部由服务端按账本算出。 */
+export type AdminCreditOverviewItem = AdminCreditUser & {
+  period: string;
+  available: number;
+  limited: number;
+  lasting: number;
+  limitedExpiresAt: string | null;
+  debt: number;
+  issued: number;
+  spent: number;
+  status: AdminQuotaStatus;
 };
 
 /** 总览统计只覆盖当前筛选范围，不是当前页。 */
 export type AdminCreditOverviewStats = {
   userCount: number;
   pendingCount: number;
-  quotaRemainingTotal: number;
-  balanceNetTotal: number;
   debtorCount: number;
   debtTotal: number;
+  limitedTotal: number;
+  lastingTotal: number;
+  issuedTotal: number;
+  spentTotal: number;
 };
 
 export type AdminCreditOverview = {
@@ -808,39 +732,17 @@ export type AdminCreditOverview = {
 /** 用户搜索下拉的候选：服务端按账号/用户名 OR 匹配，完整 ID 精确命中。 */
 export type AdminUserSearchResult = { users: AdminCreditUser[] };
 
-/** 当前账期的配额拆解。`remainingCredits = max(0, base + adjustments - used)`。 */
-export type AdminQuotaDetail = {
-  period: string;
-  baseCredits: number;
-  adjustmentCredits: number;
-  usedCredits: number;
-  remainingCredits: number;
-  issueStatus: AdminQuotaStatus;
-  policySource: QuotaPolicySource;
-  policyVersion: number | null;
-  expiresAt: string;
-};
-
-/** 用户详情：身份、两池事实、快照核对与最近流水。 */
+/** 用户详情：身份、积分事实、规则、最近流水与快照核对。 */
 export type AdminUserCreditDetail = {
   user: AdminCreditUser;
-  period: string;
-  quota: AdminQuotaDetail;
-  balance: number;
+  account: AdminCreditAccount;
   purchasedCredits: number;
   purchasedCredits60d: number;
   adminGrantedCredits: number;
-  total: number;
-  debt: number;
   overdraft: number;
-  snapshot: { quota: number; balance: number; updateTime: string | null };
+  snapshot: { available: number; nextExpiryAt: string | null; updateTime: string | null };
   snapshotAnomaly: boolean;
-  grants: CreditGrantView[];
-  /** 当前/下一账期的有效规则；用户覆盖会改变 source 与金额。 */
   rule: { current: EffectiveQuotaPolicy; next: EffectiveQuotaPolicy };
-  /** 最近的基础发放事实，含 0 配额；与 grant 流水分开。 */
-  issues: QuotaIssueView[];
-  /** 最近当月配额调整；金额是有符号差额。 */
-  adjustments: QuotaAdjustmentView[];
+  entries: CreditLedgerEntryView[];
   asOf: string;
 };

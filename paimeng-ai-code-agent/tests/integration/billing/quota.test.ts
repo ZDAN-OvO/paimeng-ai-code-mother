@@ -1,26 +1,22 @@
-import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import {
-  applyBillingMigrations,
-  billingRequest,
-  createBillingUser,
-  envelopeOf,
-  loadBillingDatabase,
+  applyBillingMigrations, billingRequest, createBillingUser, envelopeOf, loadBillingDatabase,
   type BillingTestUser,
 } from '../../support/billing';
-import { db, getPool, now } from '@/server/infra/db';
-import { creditAccounts, creditGrants, creditQuotaAdjustments, creditQuotaIssues, sessions, users } from '@/server/infra/schema';
+import { db, getPool } from '@/server/infra/db';
+import { creditBalance, creditLedger, sessions, users } from '@/server/infra/schema';
 import { naiveTime, nextPeriodStart, periodOf, periodRange } from '@/server/billing/period';
-import { ensureCurrentPeriod, ensurePeriodQuota, issueMonthlyQuota } from '@/server/billing/quota';
+import { ensureCurrentPeriod, ensurePeriodQuota, issuePendingQuota, ruleEntryOf } from '@/server/billing/quota';
+import { balanceFactsOf, ensureExpiry } from '@/server/billing/expiry';
+import { rebuildBalance } from '@/server/billing/ledger';
 import { monthlyQuotaCredits, type AccountSummary } from '@/shared/billing';
 
 /**
- * 月度配额：北京时间自然月、每月 500、幂等、不结转。
+ * 每月限时积分：北京时间自然月、规则一行、幂等、不结转。
  * 触发点是注册、读取摘要与批量补发（无常驻定时器）。
  */
-
-const chargeEntryMigration = '012_credit_charge_entry.sql';
 
 const created: BillingTestUser[] = [];
 
@@ -32,34 +28,14 @@ const createUser = async () => {
 
 const idOf = (user: BillingTestUser) => BigInt(user.id);
 
-async function monthlyGrantsOf(user: BillingTestUser) {
-  return db().select().from(creditGrants)
-    .where(and(eq(creditGrants.userId, idOf(user)), eq(creditGrants.source, 'monthly_quota')))
-    .orderBy(asc(creditGrants.period));
-}
-
-async function quotaBalanceOf(user: BillingTestUser): Promise<number> {
-  const [row] = await db().select({ balance: creditAccounts.balance }).from(creditAccounts)
-    .where(and(eq(creditAccounts.userId, idOf(user)), eq(creditAccounts.pool, 'quota')));
-  return row?.balance ?? 0;
-}
-
-/** 直接改快照，模拟结算已经扣掉一部分配额；配额消耗的写入路径属于结算票。 */
-async function setQuotaBalance(user: BillingTestUser, balance: number) {
-  await db().insert(creditAccounts)
-    .values({ userId: idOf(user), pool: 'quota', balance, updateTime: now() })
-    .onConflictDoUpdate({ target: [creditAccounts.userId, creditAccounts.pool], set: { balance, updateTime: now() } });
-}
-
-async function removeCurrentGrant(user: BillingTestUser) {
-  const period = periodOf(new Date());
-  await db().delete(creditGrants)
-    .where(and(eq(creditGrants.userId, idOf(user)), eq(creditGrants.period, period)));
-  // C2 起发放状态以 issue 为准：模拟「停机错过当月」时两件事都要回到未发。
-  await db().delete(creditQuotaAdjustments)
-    .where(and(eq(creditQuotaAdjustments.userId, idOf(user)), eq(creditQuotaAdjustments.period, period)));
-  await db().delete(creditQuotaIssues)
-    .where(and(eq(creditQuotaIssues.userId, idOf(user)), eq(creditQuotaIssues.period, period)));
+async function ruleRowsOf(user: BillingTestUser) {
+  return db().select().from(creditLedger)
+    .where(and(
+      eq(creditLedger.userId, idOf(user)),
+      eq(creditLedger.kind, 'quota'),
+      eq(creditLedger.origin, 'rule'),
+    ))
+    .orderBy(asc(creditLedger.period));
 }
 
 async function summaryOf(user: BillingTestUser): Promise<AccountSummary> {
@@ -68,141 +44,196 @@ async function summaryOf(user: BillingTestUser): Promise<AccountSummary> {
   return response.data;
 }
 
+async function removeCurrentRule(user: BillingTestUser, period: string) {
+  await db().delete(creditLedger).where(and(
+    eq(creditLedger.userId, idOf(user)),
+    eq(creditLedger.kind, 'quota'),
+    eq(creditLedger.origin, 'rule'),
+    eq(creditLedger.period, period),
+  ));
+  await rebuildBalance(user.id);
+}
+
+/** 造一条真实 Charge 与它的消费/退回行（consume/refund 必须有 charge_id）。 */
+async function seedChargeRows(user: BillingTestUser, input: {
+  credits: number; period: string; at: string; kind?: 'consume' | 'refund';
+}): Promise<string> {
+  const id = randomUUID();
+  await db().execute(sql`insert into credit_charge
+    (generation_id, app_id, user_id, credits, rate_card_snapshot, usage_snapshot, status, estimated_steps, create_time)
+    values (${id}, 0, ${idOf(user)}, 0, '[]'::jsonb, '[]'::jsonb, 'reversed', 0, ${input.at})`);
+  await db().insert(creditLedger).values({
+    userId: idOf(user),
+    kind: input.kind ?? 'consume',
+    origin: 'charge',
+    credits: input.kind === 'refund' ? -input.credits : input.credits,
+    period: input.period,
+    expiresAt: naiveTime(periodRange(input.period).end),
+    chargeId: id,
+    createTime: input.at,
+  });
+  return id;
+}
+
 beforeAll(async () => {
   loadBillingDatabase();
-  // 配额余额是「当期 grant − 当期 quota entry」的重算（`quotaUsageOfPeriod` 直接查 `credit_entry`，
-  // 缺表就是部署没迁移到位），所以配额用例必须把结算表一起应用上。
-  await applyBillingMigrations('010_credit_grant_account.sql', chargeEntryMigration, '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql', '023_app_config_model_config.sql');
+  await applyBillingMigrations('024_credit_ledger.sql');
 });
 
 afterAll(async () => {
   const ids = created.map(idOf);
   if (ids.length > 0) {
     const scope = sql.join(ids.map(id => sql`${id}`), sql`, `);
-    await db().execute(sql`delete from credit_entry
-      where charge_id in (select generation_id from credit_charge where user_id in (${scope}))`);
+    await db().execute(sql`delete from credit_ledger where charge_id in (select generation_id from credit_charge where user_id in (${scope}))`);
     await db().execute(sql`delete from credit_charge where user_id in (${scope})`);
-    await db().delete(creditGrants).where(inArray(creditGrants.userId, ids));
-    await db().delete(creditAccounts).where(inArray(creditAccounts.userId, ids));
+    await db().delete(creditLedger).where(inArray(creditLedger.userId, ids));
+    await db().delete(creditBalance).where(inArray(creditBalance.userId, ids));
     await db().delete(sessions).where(inArray(sessions.userId, ids));
     await db().delete(users).where(inArray(users.id, ids));
   }
   await getPool().end();
 });
 
-describe('月度配额发放', () => {
-  it('注册即得当期 500 Credit，摘要带出账期与北京时间有效期', async () => {
+describe('每月限时积分', () => {
+  it('注册即得当期 500，摘要带出账期与北京时间到期时刻', async () => {
     const user = await createUser();
     const period = periodOf(new Date());
     const summary = await summaryOf(user);
-    expect(summary.quota).toBe(monthlyQuotaCredits);
-    expect(summary.balance).toBe(0);
-    expect(summary.period).toBe(period);
-    // 有效期是半开区间的端点：北京时间的次月 1 号 00:00。
-    expect(summary.quotaExpiresAt).toBe(naiveTime(periodRange(period).end));
+    expect(summary).toMatchObject({ limited: monthlyQuotaCredits, lasting: 0, available: monthlyQuotaCredits, period });
+    expect(summary.limitedExpiresAt?.slice(0, 19)).toBe(naiveTime(periodRange(period).end).slice(0, 19));
 
-    const grants = await monthlyGrantsOf(user);
-    expect(grants).toHaveLength(1);
-    expect(grants[0]).toMatchObject({ pool: 'quota', credits: monthlyQuotaCredits, period });
+    const rows = await ruleRowsOf(user);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ credits: monthlyQuotaCredits, period, origin: 'rule' });
   });
 
-  it('重复 ensured 同一账期只有一条 grant，余额不翻倍', async () => {
+  it('重复 ensure 同一账期只有一行，余额不翻倍', async () => {
     const user = await createUser();
     const at = new Date();
     expect(await ensurePeriodQuota(user.id, at)).toMatchObject({ granted: false, period: periodOf(at) });
-    expect(await monthlyGrantsOf(user)).toHaveLength(1);
-    expect(await quotaBalanceOf(user)).toBe(monthlyQuotaCredits);
+    expect(await ruleRowsOf(user)).toHaveLength(1);
+    expect((await balanceFactsOf(user.id)).available).toBe(monthlyQuotaCredits);
   });
 
-  it('并发 ensured 同一账期也只落一行', async () => {
+  it('并发 ensure 下一账期也只落一行', async () => {
     const user = await createUser();
-    // 下一账期还没有任何 grant：两个并发调用抢同一个 (user_id, period)。
     const at = nextPeriodStart(new Date());
     const results = await Promise.all([ensurePeriodQuota(user.id, at), ensurePeriodQuota(user.id, at)]);
     expect(results.filter(result => result.granted)).toHaveLength(1);
-
-    const period = periodOf(at);
-    const grants = (await monthlyGrantsOf(user)).filter(grant => grant.period === period);
-    expect(grants).toHaveLength(1);
-    expect(await quotaBalanceOf(user)).toBe(monthlyQuotaCredits);
+    expect((await ruleRowsOf(user)).filter(row => row.period === periodOf(at))).toHaveLength(1);
+    expect((await balanceFactsOf(user.id, at)).limited).toBe(monthlyQuotaCredits);
   });
 
-  it('换月按账本事实重算：上月没用完的额度不结转，旧 grant 仍可追溯', async () => {
+  it('换月不结转：上月剩余写一条过期行，新账期重新发 500', async () => {
     const user = await createUser();
-    // 当期用掉 200，只剩 300。
-    await setQuotaBalance(user, monthlyQuotaCredits - 200);
+    // 当期消费 200，只剩 300。
+    const period = periodOf(new Date());
+    const end = naiveTime(periodRange(period).end);
+    await seedChargeRows(user, { credits: -200, period, at: naiveTime(new Date()) });
+    await rebuildBalance(user.id);
 
     const nextAt = nextPeriodStart(new Date());
     const summary = await ensureCurrentPeriod(user.id, nextAt);
     expect(summary.period).toBe(periodOf(nextAt));
-    expect(summary.quota).toBe(monthlyQuotaCredits);
-    expect(await quotaBalanceOf(user)).toBe(monthlyQuotaCredits);
+    expect(summary.limited).toBe(monthlyQuotaCredits);
 
-    const periods = (await monthlyGrantsOf(user)).map(grant => grant.period);
-    expect(periods).toEqual([periodOf(new Date()), periodOf(nextAt)]);
+    const expired = await db().select().from(creditLedger).where(and(
+      eq(creditLedger.userId, idOf(user)), eq(creditLedger.kind, 'expire'), eq(creditLedger.period, period),
+    ));
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({ origin: 'expiry', credits: -300 });
+    expect((await ruleRowsOf(user)).map(row => row.period)).toEqual([period, periodOf(nextAt)]);
   });
 
-  it('读摘要会补发停机错过的当月配额，重复读取不再加', async () => {
+  it('扫过期是幂等的：再调一次不写第二条', async () => {
+    const user = await createUser();
+    const nextAt = nextPeriodStart(new Date());
+    await ensureExpiry(user.id, nextAt);
+    const first = (await db().select().from(creditLedger).where(and(
+      eq(creditLedger.userId, idOf(user)), eq(creditLedger.kind, 'expire'),
+    ))).length;
+    await ensureExpiry(user.id, nextAt);
+    const second = (await db().select().from(creditLedger).where(and(
+      eq(creditLedger.userId, idOf(user)), eq(creditLedger.kind, 'expire'),
+    ))).length;
+    expect(first).toBeGreaterThan(0);
+    expect(second).toBe(first);
+  });
+
+  it('读摘要会补发停机错过的当月规则，重复读取不再加', async () => {
     const user = await createUser();
     const period = periodOf(new Date());
-    await removeCurrentGrant(user);
-    await setQuotaBalance(user, 0);
+    await removeCurrentRule(user, period);
 
     const first = await summaryOf(user);
-    expect(first).toMatchObject({ period, quota: monthlyQuotaCredits });
-
+    expect(first).toMatchObject({ period, limited: monthlyQuotaCredits });
     const second = await summaryOf(user);
-    expect(second.quota).toBe(monthlyQuotaCredits);
-    expect(await monthlyGrantsOf(user)).toHaveLength(1);
+    expect(second.limited).toBe(monthlyQuotaCredits);
+    expect(await ruleRowsOf(user)).toHaveLength(1);
   });
 
-  it('批量补发默认试运行不写库，apply 才发放', async () => {
-    const user = await createUser();
+  it('批量补发：dry-run 不写库，apply 才写；0 积分也有回执行', async () => {
+    const zero = await createUser();
     const period = periodOf(new Date());
-    await removeCurrentGrant(user);
-    await setQuotaBalance(user, 0);
+    await removeCurrentRule(zero, period);
+    // 规则为 0：写一条 credits=0 的规则行，之后不会每次都被扫到。
+    await db().insert(creditLedger).values({
+      userId: idOf(zero), kind: 'quota', origin: 'rule', credits: 0, period,
+      expiresAt: naiveTime(periodRange(period).end), reason: '暂停发放', createTime: naiveTime(new Date()),
+    });
+    await rebuildBalance(zero.id);
 
-    const dryRun = await issueMonthlyQuota({ at: new Date(), dryRun: true, userIds: [user.id] });
-    expect(dryRun).toMatchObject({ period, dryRun: true, scanned: 1, granted: 0 });
-    expect(await monthlyGrantsOf(user)).toHaveLength(0);
+    const normal = await createUser();
+    await removeCurrentRule(normal, period);
 
-    const applied = await issueMonthlyQuota({ at: new Date(), userIds: [user.id] });
-    expect(applied).toMatchObject({ period, dryRun: false, scanned: 1, granted: 1 });
-    expect((await monthlyGrantsOf(user)).map(grant => grant.period)).toEqual([period]);
-    expect(await quotaBalanceOf(user)).toBe(monthlyQuotaCredits);
+    const dryRun = await issuePendingQuota({ dryRun: true, userIds: [normal.id] });
+    expect(dryRun).toMatchObject({ period, dryRun: true, scanned: 1, issued: 0 });
+    expect(await ruleRowsOf(normal)).toHaveLength(0);
+
+    const applied = await issuePendingQuota({ userIds: [normal.id] });
+    expect(applied).toMatchObject({ period, scanned: 1, issued: 1, granted: 1, zero: 0, credits: monthlyQuotaCredits });
+    expect(applied.operationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect((await ruleRowsOf(normal))[0]?.period).toBe(period);
+
+    // 0 积分用户已有规则行，不会进入待发名单。
+    const zeroRun = await issuePendingQuota({ dryRun: true, userIds: [zero.id] });
+    expect(zeroRun.scanned).toBe(0);
   });
 });
 
-describe('配额的账期归属', () => {
-  /** 造一条 Charge 与它的配额 entry；金额为负代表冲正。 */
-  async function insertCharge(user: BillingTestUser, at: Date, credits: number[]) {
-    const id = randomUUID();
-    await db().execute(sql`insert into credit_charge
-      (generation_id, app_id, user_id, credits, rate_card_snapshot, usage_snapshot, status, estimated_steps, create_time)
-      values (${id}, 0, ${idOf(user)}, 0, '[]'::jsonb, '[]'::jsonb, 'reversed', 0, ${naiveTime(at)})`);
-    for (const credit of credits) {
-      await db().execute(sql`insert into credit_entry (charge_id, pool, credits, create_time)
-        values (${id}, 'quota', ${credit}, ${naiveTime(at)})`);
-    }
-  }
-
-  it('旧账期的配额扣减与冲正都留在旧账期，不会让过期额度复活', async () => {
+describe('账期归属', () => {
+  it('旧账期的消费与冲正留在旧账期，不让过期额度复活', async () => {
     const user = await createUser();
-    const oldAt = new Date('2020-03-15T04:00:00.000Z');
-    // 老账期扣了 100 又整笔冲正：净额 0，且两笔都归属 2020-03。
-    await insertCharge(user, oldAt, [100, -100]);
+    const oldPeriod = '2020-03';
+    const end = naiveTime(periodRange(oldPeriod).end);
+    await db().insert(creditLedger).values({
+      userId: idOf(user), kind: 'quota', origin: 'manual', credits: 100, period: oldPeriod,
+      expiresAt: end, createTime: '2020-03-01 00:00:00.000',
+    });
+    const chargeId = await seedChargeRows(user, { credits: -100, period: oldPeriod, at: '2020-03-15 04:00:00.000' });
+    await db().insert(creditLedger).values([
+      { userId: idOf(user), kind: 'refund', origin: 'reversal', credits: 100, period: oldPeriod, expiresAt: end, chargeId, createTime: '2020-04-01 04:00:00.000' },
+      { userId: idOf(user), kind: 'expire', origin: 'reversal', credits: -100, period: oldPeriod, expiresAt: end, createTime: '2020-04-01 04:00:00.000' },
+    ]);
+    await rebuildBalance(user.id);
 
     const summary = await ensureCurrentPeriod(user.id, nextPeriodStart(new Date()));
-    expect(summary.quota).toBe(monthlyQuotaCredits);
+    expect(summary.limited).toBe(monthlyQuotaCredits);
+    // 旧账期净额为 0，不产生额外的过期行。
+    const oldExpire = await db().select().from(creditLedger).where(and(
+      eq(creditLedger.userId, idOf(user)), eq(creditLedger.kind, 'expire'), eq(creditLedger.period, oldPeriod),
+      eq(creditLedger.origin, 'expiry'),
+    ));
+    expect(oldExpire).toHaveLength(0);
   });
 
-  it('当期 Charge 的 quota entry 从当期配额里扣，不碰下一期', async () => {
+  it('当期消费从限时积分扣，下一次规则发放前就少了', async () => {
     const user = await createUser();
-    const nextAt = nextPeriodStart(new Date());
-    await insertCharge(user, nextAt, [100]);
+    const period = periodOf(new Date());
+    await seedChargeRows(user, { credits: -100, period, at: naiveTime(new Date()) });
+    await rebuildBalance(user.id);
 
-    const summary = await ensureCurrentPeriod(user.id, nextAt);
-    expect(summary.quota).toBe(monthlyQuotaCredits - 100);
-    expect(await quotaBalanceOf(user)).toBe(monthlyQuotaCredits - 100);
+    expect((await summaryOf(user)).limited).toBe(monthlyQuotaCredits - 100);
+    expect((await ruleEntryOf(db(), idOf(user), period))?.credits).toBe(monthlyQuotaCredits);
   });
 });

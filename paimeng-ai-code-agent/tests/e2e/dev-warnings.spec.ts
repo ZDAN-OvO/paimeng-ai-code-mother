@@ -68,8 +68,8 @@ test('管理端与模型配置弹窗在 dev 模式下没有告警', async ({ pag
     await page.goto(path);
     await expect(page.locator('body')).toBeVisible();
   }
-  await page.getByRole('tab', { name: '配额管理' }).click();
-  await expect(page.getByRole('heading', { name: '月度配额策略' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '积分管理' })).toBeVisible();
+  await expect(page.getByLabel('搜索用户')).toBeVisible();
 
   await page.goto('/admin/modelManage');
   await page.getByRole('button', { name: '新增提供商' }).click();

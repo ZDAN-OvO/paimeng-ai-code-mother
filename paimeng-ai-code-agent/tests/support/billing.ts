@@ -7,10 +7,11 @@ import { GET, POST } from '@/app/api/[...path]/route';
 import { db, getPool, now } from '@/server/infra/db';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import {
-  appConfig, apps, creditAccounts, creditGrants, creditQuotaAdjustments, creditQuotaIssues, generationSteps, generations, users,
+  appConfig, apps, creditBalance, creditLedger, generationSteps, generations, users,
 } from '@/server/infra/schema';
-import { rebuildAccount, recordGrant } from '@/server/billing/ledger';
-import type { CreditPool } from '@/shared/billing';
+import { rebuildBalance } from '@/server/billing/ledger';
+import { balanceFactsOf } from '@/server/billing/expiry';
+import { naiveTime, periodOf, periodRange } from '@/server/billing/period';
 import { requiredModelAliases } from '@/shared/model-config';
 import { emptyModelConfigDocument, modelConfigDocumentSchema, modelConfigKey, type ModelConfigDocument } from '@/shared/model-document';
 import type { WorkspaceApp } from '@/server/workspace/workspace';
@@ -234,35 +235,65 @@ export async function seedBillingRate(input: {
   });
 }
 
-/** 造余额：quota 池走月度配额来源，balance 池走管理员发放。 */
-export async function grantBillingCredits(userId: string, pool: CreditPool, credits: number): Promise<void> {
-  await recordGrant({
-    userId, pool, credits,
-    source: pool === 'quota' ? 'monthly_quota' : 'admin_grant',
-    period: pool === 'quota' ? '2026-01' : null,
+export type BillingBucket = 'limited' | 'lasting';
+
+/** 造余额：`limited` 记在当前账期（月底到期），`lasting` 不过期。 */
+export async function grantBillingCredits(userId: string, bucket: BillingBucket, credits: number, at: Date = new Date()): Promise<void> {
+  const period = bucket === 'limited' ? periodOf(at) : null;
+  await db().insert(creditLedger).values({
+    userId: BigInt(userId),
+    kind: bucket === 'limited' ? 'quota' : 'grant',
+    origin: 'manual',
+    credits,
+    period,
+    expiresAt: period === null ? null : naiveTime(periodRange(period).end),
+    reason: 'fixture',
+    createTime: now(),
   });
+  await rebuildBalance(userId, at);
 }
 
-export async function billingBalancesOf(userId: string): Promise<{ quota: number; balance: number }> {
-  const rows = await db().select().from(creditAccounts).where(eq(creditAccounts.userId, BigInt(userId)));
-  return {
-    quota: rows.find(row => row.pool === 'quota')?.balance ?? 0,
-    balance: rows.find(row => row.pool === 'balance')?.balance ?? 0,
-  };
+/** 直接写一条历史流水（用于跨账期/窗口用例）；写完按账本重算快照。 */
+export async function seedLedgerEntry(input: {
+  userId: string;
+  kind: 'quota' | 'topup' | 'grant' | 'consume' | 'refund' | 'expire';
+  origin: 'rule' | 'manual' | 'payment' | 'charge' | 'expiry' | 'reversal';
+  credits: number;
+  period?: string | null;
+  expiresAt?: string | null;
+  chargeId?: string | null;
+  reversalOf?: bigint | null;
+  reason?: string | null;
+  createTime: string;
+}): Promise<bigint> {
+  const [row] = await db().insert(creditLedger).values({
+    userId: BigInt(input.userId),
+    kind: input.kind,
+    origin: input.origin,
+    credits: input.credits,
+    period: input.period ?? null,
+    expiresAt: input.expiresAt ?? null,
+    chargeId: input.chargeId ?? null,
+    reversalOf: input.reversalOf ?? null,
+    reason: input.reason ?? null,
+    createTime: input.createTime,
+  }).returning({ id: creditLedger.id });
+  return row.id;
+}
+
+export async function billingBalancesOf(userId: string): Promise<{ available: number; limited: number; lasting: number }> {
+  const facts = await balanceFactsOf(userId);
+  return { available: facts.available, limited: facts.limited, lasting: facts.lasting };
 }
 
 /**
- * 退掉注册时发的当期配额（票 91）并按账本重算两池，让用例从「配额池为 0」的已知状态出发。
- * 只有需要配额池恰好见底的分池用例才用：注册即得 500 配额这件事本身由 `quota.test.ts`
- * 与 `grants.test.ts` 覆盖。必须在造数发放之前调用（`rebuildAccount` 只按已有 grant 重算）。
+ * 清空一个用户的账本，让用例从「0 积分」的已知状态出发。
+ * 注册时会自动发当期规则积分；需要看分桶扣减的用例先调这里。
  */
 export async function withoutMonthlyQuota(owner: BillingTestUser): Promise<BillingTestUser> {
-  await db().delete(creditGrants)
-    .where(and(eq(creditGrants.userId, BigInt(owner.id)), eq(creditGrants.source, 'monthly_quota')));
-  // C2 起发放事实以 issue 为准：只删 grant 会让 fixture 看起来仍然「已发」。
-  await db().delete(creditQuotaAdjustments).where(eq(creditQuotaAdjustments.userId, BigInt(owner.id)));
-  await db().delete(creditQuotaIssues).where(eq(creditQuotaIssues.userId, BigInt(owner.id)));
-  await rebuildAccount(owner.id);
+  await db().delete(creditLedger).where(eq(creditLedger.userId, BigInt(owner.id)));
+  await db().delete(creditBalance).where(eq(creditBalance.userId, BigInt(owner.id)));
+  await rebuildBalance(owner.id);
   return owner;
 }
 

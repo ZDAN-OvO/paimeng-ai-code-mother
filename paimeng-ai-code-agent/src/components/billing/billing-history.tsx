@@ -7,7 +7,7 @@ import { api } from '@/client/api';
 import { useAuth } from '@/components/providers';
 import { stopReasonLabels } from '@/components/chat/generation-usage';
 import {
-  chargeStatusColors, chargeStatusLabels, creditDenominationLabel, poolLabels,
+  chargeStatusColors, chargeStatusLabels, creditBucketLabels, creditDenominationLabel,
   type BillingChargeView, type ChargeStatus,
 } from '@/shared/billing';
 import type { AppInfo, Page } from '@/shared/contracts';
@@ -18,16 +18,16 @@ import styles from './billing-history.module.css';
 /** 服务端一次最多返回 20 条：账单页只展示最近的，不做分页。 */
 const chargeLimit = 20;
 
-function splitOf(entries: { pool: keyof typeof poolLabels; credits: number }[], sign: 1 | -1): string {
+function splitOf(entries: { bucket: BillingChargeView['entries'][number]['bucket']; credits: number }[], sign: 1 | -1): string {
   return entries
     .filter(entry => entry.credits * sign > 0)
-    .map(entry => `${poolLabels[entry.pool]} ${Math.abs(entry.credits)}`)
+    .map(entry => `${creditBucketLabels[entry.bucket]} ${Math.abs(entry.credits)}`)
     .join(' + ');
 }
 
 /**
- * Owner 查账（92）：自己的双池 Credit balance + 最近账单。
- * 金额一律显示有效金额（Σ entries）：「原扣多少 / 退了多少 / 分哪个池」都来自服务端的分录投影，
+ * Owner 查账：自己的积分余额 + 最近账单。
+ * 金额一律显示有效金额（Σ entries）：「原扣多少 / 退了多少 / 扣的是哪种积分」都来自服务端的分录投影，
  * 界面不自己相加，也不把示例金额说成「还能生成几次」的承诺。
  */
 export function BillingHistory() {
@@ -86,15 +86,15 @@ export function BillingHistory() {
     },
     { title: 'Generation', dataIndex: 'generationId', width: 220, render: (id: string) => <span className={styles.mono}>{id}</span> },
     {
-      title: 'Credit（有效金额）',
+      title: '积分（有效金额）',
       dataIndex: 'effectiveCredits',
       width: 240,
       render: (credits: number, charge) => {
         const charged = splitOf(charge.entries, 1);
         const refunded = splitOf(charge.reversals, -1);
         return <div className={styles.detail}>
-          <strong>{credits} Credit</strong>
-          {credits !== charge.credits && <span>原扣 {charge.credits} Credit</span>}
+          <strong>{credits} 积分</strong>
+          {credits !== charge.credits && <span>原扣 {charge.credits} 积分</span>}
           {charged && <span>扣除：{charged}</span>}
           {refunded && <span>退还：{refunded}</span>}
         </div>;
@@ -122,7 +122,7 @@ export function BillingHistory() {
   if (!user) {
     return <main className="page-container">
       <div className={styles.login}>
-        <Empty description="登录后可查看自己的 Credit 与账单" />
+        <Empty description="登录后可查看自己的积分与账单" />
         <Link href="/user/login?redirect=%2Fbilling"><Button type="primary">去登录</Button></Link>
       </div>
     </main>;

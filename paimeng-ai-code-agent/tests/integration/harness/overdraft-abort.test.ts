@@ -7,11 +7,11 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { db, getPool, now } from '@/server/infra/db';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import {
-  appAuthority, apps, creditAccounts, creditCharges, creditEntries, creditGrants, generationExecutions,
+  appAuthority, apps, creditBalance, creditCharges, creditLedger, generationExecutions,
   generationInputs, generationSteps, generationTransitions, generations, sessions, users, versionRecords,
 } from '@/server/infra/schema';
 import { publicUser } from '@/server/auth/auth';
-import { recordGrant } from '@/server/billing/ledger';
+import { rebuildBalance } from '@/server/billing/ledger';
 import { harnessChatResponse } from '@/server/generation/durable-engine';
 import { generationFor } from '@/server/generation/generation-store';
 import { testDatabaseUrl } from '../../support/test-database-url';
@@ -46,9 +46,7 @@ const createdGenerations: string[] = [];
 let runDir = '';
 
 beforeAll(async () => {
-  await applyBillingMigrations(
-    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql',
-    '014_credit_entry_audit.sql', '018_credit_entry_reason_length.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql', '023_app_config_model_config.sql');
+  await applyBillingMigrations('024_credit_ledger.sql');
   userId = await nextSnowflakeId();
   appId = await nextSnowflakeId();
   await db().insert(users).values({
@@ -60,7 +58,10 @@ beforeAll(async () => {
     userId, createTime: now(), updateTime: now(),
   });
   // 准入要求可用额度 > 0；透支线来自购买，这里没有 purchase，所以透支线是 0。
-  await recordGrant({ userId: String(userId), pool: 'balance', credits: 500, source: 'admin_grant' });
+  await db().insert(creditLedger).values({
+    userId, kind: 'grant', origin: 'manual', credits: 500, reason: '透支熔断验收', createTime: now(),
+  });
+  await rebuildBalance(String(userId));
   await seedBillingRate({ modelName: rateModel });
   runDir = await mkdtemp(join(tmpdir(), 'overdraft-abort-'));
 });
@@ -70,7 +71,7 @@ afterAll(async () => {
     await db().delete(versionRecords).where(inArray(versionRecords.generationId, createdGenerations));
     await db().delete(generationTransitions).where(inArray(generationTransitions.generationId, createdGenerations));
     await db().delete(generationSteps).where(inArray(generationSteps.generationId, createdGenerations));
-    await db().delete(creditEntries).where(inArray(creditEntries.chargeId, createdGenerations));
+    await db().delete(creditLedger).where(inArray(creditLedger.chargeId, createdGenerations));
     await db().delete(creditCharges).where(inArray(creditCharges.generationId, createdGenerations));
     await db().delete(generations).where(inArray(generations.id, createdGenerations));
   }
@@ -78,8 +79,8 @@ afterAll(async () => {
   await db().delete(generationExecutions).where(eq(generationExecutions.appId, appId));
   await db().delete(appAuthority).where(eq(appAuthority.appId, appId));
   await db().delete(apps).where(eq(apps.id, appId));
-  await db().delete(creditGrants).where(eq(creditGrants.userId, userId));
-  await db().delete(creditAccounts).where(eq(creditAccounts.userId, userId));
+  await db().delete(creditLedger).where(eq(creditLedger.userId, userId));
+  await db().delete(creditBalance).where(eq(creditBalance.userId, userId));
   await db().delete(sessions).where(eq(sessions.userId, userId));
   await db().delete(users).where(eq(users.id, userId));
   await purgeBillingRateCards();
@@ -153,8 +154,8 @@ describe.skipIf(!available)('运行期透支熔断：真实 harness 子进程', 
       const [charge] = await db().select().from(creditCharges).where(eq(creditCharges.generationId, requestId));
       expect(charge).toBeDefined();
       expect(charge.credits).toBe(1200);
-      expect((await db().select().from(creditEntries).where(eq(creditEntries.chargeId, requestId)))
-        .reduce((sum, entry) => sum + entry.credits, 0)).toBe(1200);
+      expect((await db().select().from(creditLedger).where(eq(creditLedger.chargeId, requestId)))
+        .reduce((sum, entry) => sum + entry.credits, 0)).toBe(-1200);
 
       // harness 侧真的停了：中断之后不该还有活着的 run。
       const runtime = await fetch(`${base}/runtime?conversationId=${await conversationIdOfApp()}`).then(res => res.json()) as { live: { run?: unknown } };

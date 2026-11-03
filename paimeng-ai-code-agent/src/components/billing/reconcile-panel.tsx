@@ -96,7 +96,7 @@ export function ReconcilePanel({ embedded = false }: { embedded?: boolean }) {
           title: '账单',
           dataIndex: 'chargeStatus',
           render: (value: PendingSettlementItem['chargeStatus'], row) =>
-            value === null ? '缺账' : `${chargeStatusLabels[value]}（${row.credits ?? 0} Credit）`,
+            value === null ? '缺账' : `${chargeStatusLabels[value]}（${row.credits ?? 0} 积分）`,
         },
         {
           title: '待处理原因',

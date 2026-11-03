@@ -36,7 +36,7 @@ export default function Home(){
    // 「创建并生成」是一件事：先按准入的同一条规则预检一次，额度不足就地拦住，
    // 不然会先建一个注定生成不了的空应用。真正的判定仍在服务端 startGeneration 里。
    const summary=await api<AccountSummary>('billing/summary');
-   if(summary.total<=0){setCreditError(insufficientCreditsMessage(summary));return;}
+   if(summary.available<=0){setCreditError(insufficientCreditsMessage(summary));return;}
    setCreditError('');
    const id=await api<string>('app/add',{initPrompt:prompt.trim(),...(templateId==='auto'?{}:{templateId})});
    router.push('/app/chat/'+id);
