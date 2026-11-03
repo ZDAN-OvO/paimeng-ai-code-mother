@@ -173,31 +173,28 @@ function ModelConfigManager() {
   useEffect(() => {
     if (!providerEditor) return;
     setProbeText(null);
-    providerForm.setFieldsValue(providerEditor.mode === 'edit' ? providerFormValues(providerEditor.original) : emptyProviderValues());
+    const values = providerEditor.mode === 'edit' ? providerFormValues(providerEditor.original) : emptyProviderValues();
+    const timer = window.setTimeout(() => providerForm.setFieldsValue(values), 0);
+    return () => window.clearTimeout(timer);
   }, [providerEditor, providerForm]);
 
   useEffect(() => {
     if (!addModelFor) return;
     setProbeText(null);
-    addModelForm.setFieldsValue({
-      upstream: '',
-      displayName: '',
-      capabilities: { ...emptyCapabilities },
-      enabled: true,
-      inputMissYuan: null,
-      inputHitYuan: null,
-      outputYuan: null,
-    });
+    const timer = window.setTimeout(() => addModelForm.setFieldsValue(emptyAddModelValues()), 0);
+    return () => window.clearTimeout(timer);
   }, [addModelFor, addModelForm]);
 
   useEffect(() => {
     if (!modelEditor) return;
-    priceForm.setFieldsValue(priceFormValues(modelEditor));
+    const timer = window.setTimeout(() => priceForm.setFieldsValue(priceFormValues(modelEditor)), 0);
+    return () => window.clearTimeout(timer);
   }, [modelEditor, priceForm]);
 
   useEffect(() => {
     if (!slotEditor) return;
-    slotForm.setFieldsValue(slotFormValues(slotEditor.assignment));
+    const timer = window.setTimeout(() => slotForm.setFieldsValue(slotFormValues(slotEditor.assignment)), 0);
+    return () => window.clearTimeout(timer);
   }, [slotEditor, slotForm]);
 
   async function runMutation(
@@ -229,11 +226,13 @@ function ModelConfigManager() {
 
   function openCreateProvider() {
     setConflict(null);
+    setProbeText(null);
     setProviderEditor({ mode: 'create' });
   }
 
   function openEditProvider(provider: ModelAdminProviderView) {
     setConflict(null);
+    setProbeText(null);
     setProviderEditor({ mode: 'edit', original: provider });
   }
 
@@ -311,6 +310,7 @@ function ModelConfigManager() {
 
   function openAddModel(provider: ModelAdminProviderView) {
     setConflict(null);
+    setProbeText(null);
     setUpstreamModels([]);
     setAddModelFor(provider);
   }
@@ -765,7 +765,13 @@ function ModelConfigManager() {
           }
         >
           {conflict ? <ConflictAlert message={conflict} onReload={() => void reload()} /> : null}
-          <Form form={providerForm} layout="vertical" preserve={false}>
+          <Form
+            key={providerEditor.mode === 'edit' ? `edit:${providerEditor.original.id}` : 'create'}
+            form={providerForm}
+            layout="vertical"
+            preserve={false}
+            initialValues={providerEditor.mode === 'edit' ? providerFormValues(providerEditor.original) : emptyProviderValues()}
+          >
             <Form.Item name="id" label="提供商 ID" tooltip="稳定标识，创建后不可修改" rules={[
               { required: true, message: '请输入提供商 ID' },
               { max: 64, message: '最多 64 个字符' },
@@ -905,7 +911,13 @@ function ModelConfigManager() {
           }
         >
           {conflict ? <ConflictAlert message={conflict} onReload={() => void reload()} /> : null}
-          <Form form={addModelForm} layout="vertical" preserve={false}>
+          <Form
+            key={addModelFor.id}
+            form={addModelForm}
+            layout="vertical"
+            preserve={false}
+            initialValues={emptyAddModelValues()}
+          >
             <Descriptions size="small" column={1} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="提供商">{addModelFor.displayName}（{addModelFor.id}）</Descriptions.Item>
             </Descriptions>
@@ -957,7 +969,7 @@ function ModelConfigManager() {
       <Drawer
         open={Boolean(modelEditor)}
         title={modelEditor ? `配置模型 · ${modelEditor.displayName}` : '配置模型'}
-        width={620}
+        size={620}
         destroyOnHidden
         onClose={() => { if (!saving) setModelEditor(null); }}
         extra={modelEditor ? (
@@ -985,7 +997,13 @@ function ModelConfigManager() {
                   : <Tag color="red">未定价</Tag>}
               </Descriptions.Item>
             </Descriptions>
-            <Form form={priceForm} layout="vertical" preserve={false}>
+            <Form
+              key={modelEditor.id}
+              form={priceForm}
+              layout="vertical"
+              preserve={false}
+              initialValues={priceFormValues(modelEditor)}
+            >
               <Form.Item name="displayName" label="显示名称" rules={[{ required: true, message: '请输入显示名称' }, { max: 256, message: '最多 256 个字符' }]}>
                 <Input aria-label="显示名称" />
               </Form.Item>
@@ -1061,7 +1079,13 @@ function ModelConfigManager() {
             <Descriptions.Item label="用途">{slotEditor.slot.purpose}</Descriptions.Item>
             <Descriptions.Item label="要求能力">{slotEditor.slot.requires.length ? slotEditor.slot.requires.map(item => modelCapabilityLabels[item]).join('、') : '无硬性要求'}</Descriptions.Item>
           </Descriptions>
-          <Form form={slotForm} layout="vertical" preserve={false}>
+          <Form
+            key={slotEditor.slot.slot}
+            form={slotForm}
+            layout="vertical"
+            preserve={false}
+            initialValues={slotFormValues(slotEditor.assignment)}
+          >
             {slotEditor.assignment ? (() => {
               const found = modelById.get(slotEditor.assignment.modelId);
               const issue = found ? modelEligibilityIssue(found.provider, found.model, slotEditor.slot) : '模型已不存在';
@@ -1263,6 +1287,18 @@ async function adminPost<T>(path: string, payload: unknown, parse: (data: unknow
     if (error instanceof ApiResponseError) return { ok: false, status: error.status, code: error.code, message: error.message };
     return { ok: false, status: 0, code: 0, message: '网络请求失败，请稍后重试' };
   }
+}
+
+function emptyAddModelValues(): AddModelFormValues {
+  return {
+    upstream: '',
+    displayName: '',
+    capabilities: { ...emptyCapabilities },
+    enabled: true,
+    inputMissYuan: null,
+    inputHitYuan: null,
+    outputYuan: null,
+  };
 }
 
 function emptyProviderValues(): ProviderFormValues {
