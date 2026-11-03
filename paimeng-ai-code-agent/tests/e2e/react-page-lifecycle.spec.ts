@@ -159,12 +159,19 @@ test('保存后的刷新读落后于下一次保存时，不会把新名称改�
   await page.goto('/app/edit/' + appId);
   await expect(page.getByLabel('应用名称', { exact: true })).toHaveValue(originalName);
 
+  const saved = () =>
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/app/update') && response.request().method() === 'POST',
+    );
   await page.getByLabel('应用名称', { exact: true }).fill(firstSave);
+  const firstSaved = saved();
   await page.getByRole('button', { name: '保存修改' }).click();
-  await expect(page.getByText('修改成功').first()).toBeVisible();
+  expect((await firstSaved).ok()).toBe(true);
   await page.getByLabel('应用名称', { exact: true }).fill(secondSave);
+  const secondSaved = saved();
   await page.getByRole('button', { name: '保存修改' }).click();
-  await expect(page.getByText('修改成功').nth(1)).toBeVisible();
+  expect((await secondSaved).ok()).toBe(true);
 
   await page.waitForTimeout(2500);
   await expect(page.getByLabel('应用名称', { exact: true })).toHaveValue(secondSave);
