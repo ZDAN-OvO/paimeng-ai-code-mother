@@ -64,7 +64,12 @@ export function encryptModelSecret(plaintext: string): string {
   const iv = randomBytes(secretIvLength);
   const cipher = createCipheriv(secretAlgorithm, masterKey(), iv);
   const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
-  return [secretVersion, iv.toString('base64url'), cipher.getAuthTag().toString('base64url'), ciphertext.toString('base64url')].join(':');
+  return [
+    secretVersion,
+    iv.toString('base64url'),
+    cipher.getAuthTag().toString('base64url'),
+    ciphertext.toString('base64url'),
+  ].join(':');
 }
 
 /** 解密直接输入的密钥；格式不可识别、认证失败或主密钥变了都归一化为配置无效错误，且不回显密文。 */
@@ -74,9 +79,16 @@ export function decryptModelSecret(ciphertext: string): string {
     throw new ModelConfigInvalidError('密钥密文格式无法识别，请重新保存密钥');
   }
   try {
-    const decipher = createDecipheriv(secretAlgorithm, masterKey(), Buffer.from(parts[1], 'base64url'));
+    const decipher = createDecipheriv(
+      secretAlgorithm,
+      masterKey(),
+      Buffer.from(parts[1], 'base64url'),
+    );
     decipher.setAuthTag(Buffer.from(parts[2], 'base64url'));
-    return Buffer.concat([decipher.update(Buffer.from(parts[3], 'base64url')), decipher.final()]).toString('utf8');
+    return Buffer.concat([
+      decipher.update(Buffer.from(parts[3], 'base64url')),
+      decipher.final(),
+    ]).toString('utf8');
   } catch (error) {
     if (error instanceof ModelConfigInvalidError) throw error;
     throw new ModelConfigInvalidError('密钥无法解密，请重新保存密钥');

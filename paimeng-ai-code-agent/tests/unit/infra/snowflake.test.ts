@@ -7,8 +7,12 @@ describe('MyBatis Flex 1.11.1 雪花位布局与时间边界', () => {
   it('保留原 epoch、41 位时间和低 22 位节点序列布局', () => {
     expect(SNOWFLAKE_EPOCH).toBe(1680411660000n);
     expect(snowflakeCandidate(0n, time(123456789n))).toEqual({ id: 517815303929856n });
-    expect(snowflakeCandidate(517815303929856n, time(123456789n))).toEqual({ id: 517815303929857n });
-    expect(snowflakeCandidate(517815303929857n, time(123456790n))).toEqual({ id: 517815308124160n });
+    expect(snowflakeCandidate(517815303929856n, time(123456789n))).toEqual({
+      id: 517815303929857n,
+    });
+    expect(snowflakeCandidate(517815303929857n, time(123456790n))).toEqual({
+      id: 517815308124160n,
+    });
   });
 
   it('同毫秒 12 位序列耗尽后等待下一毫秒，不回绕复用 ID', () => {
@@ -23,7 +27,8 @@ describe('MyBatis Flex 1.11.1 雪花位布局与时间边界', () => {
     for (let index = 0; index < 4096; index++) {
       const result = snowflakeCandidate(previous, time(1n));
       if (!('id' in result)) throw new Error('序列提前耗尽');
-      previous = result.id; ids.push(previous);
+      previous = result.id;
+      ids.push(previous);
     }
     expect(new Set(ids).size).toBe(4096);
     expect(ids[0]).toBe(4194304n);

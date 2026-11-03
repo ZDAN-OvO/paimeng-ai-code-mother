@@ -1,2 +1,12 @@
-.userInfo{display:flex;align-items:center;gap:8px}
-.userName{font-size:14px;color:#1a1a1a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.userInfo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.userName {
+  font-size: 14px;
+  color: #1a1a1a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

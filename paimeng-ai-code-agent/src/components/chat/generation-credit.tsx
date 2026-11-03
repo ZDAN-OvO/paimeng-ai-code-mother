@@ -12,12 +12,12 @@ import { stopReasonLabels } from './generation-usage';
  */
 export function GenerationCredit({ charge }: { charge: BillingChargeView }) {
   const chargedSplit = charge.entries
-    .filter(entry => entry.credits > 0)
-    .map(entry => `${creditBucketLabels[entry.bucket]} ${entry.credits}`)
+    .filter((entry) => entry.credits > 0)
+    .map((entry) => `${creditBucketLabels[entry.bucket]} ${entry.credits}`)
     .join(' + ');
   const refundSplit = charge.reversals
-    .filter(entry => entry.credits < 0)
-    .map(entry => `${creditBucketLabels[entry.bucket]} ${-entry.credits}`)
+    .filter((entry) => entry.credits < 0)
+    .map((entry) => `${creditBucketLabels[entry.bucket]} ${-entry.credits}`)
     .join(' + ');
   const chargedDetail = chargedSplit ? `（${chargedSplit}）` : '';
   const refundDetail = refundSplit ? `（${refundSplit}）` : '';
@@ -25,7 +25,11 @@ export function GenerationCredit({ charge }: { charge: BillingChargeView }) {
   const used = charge.effectiveCredits;
   const estimateNote = charge.estimatedSteps > 0 ? '（含估算步骤）' : '';
   const reason = charge.stopReason ? stopReasonLabels[charge.stopReason] : null;
-  const line = (text: string) => <p className="generation-credit" role="status">{text}</p>;
+  const line = (text: string) => (
+    <p className="generation-credit" role="status">
+      {text}
+    </p>
+  );
 
   // 平台故障的冲正与结算在同一事务里完成，所以「判成平台故障」与「已退款」是一回事；
   // 唯一没有分录可冲的情况是这次生成根本没调用模型。
@@ -34,22 +38,28 @@ export function GenerationCredit({ charge }: { charge: BillingChargeView }) {
       ? line(`本次生成因平台故障中止，已全额退还 ${refunded} 积分${refundDetail}`)
       : line('本次生成因平台故障中止，未产生费用');
   }
-  if (charge.status === 'reversed') return line(`本次生成已全额退还 ${refunded} 积分${refundDetail}`);
+  if (charge.status === 'reversed')
+    return line(`本次生成已全额退还 ${refunded} 积分${refundDetail}`);
   if (charge.status === 'unpriced') return line('本次消耗待结算：缺少费率或用量，暂未扣费');
-  if (charge.status === 'partial') return line(`本次消耗 ${used} 积分，另有步骤待结算${chargedDetail}`);
+  if (charge.status === 'partial')
+    return line(`本次消耗 ${used} 积分，另有步骤待结算${chargedDetail}`);
   if (charge.stopReason === 'question') {
     return line(`本轮暂停等待回答，已按实际用量收费 ${used} 积分${chargedDetail}${estimateNote}`);
   }
   // 运行期熔断（95）：和「生成失败」分开说，否则用户只会看到一句「失败」而不知道为什么被掐断。
   // 单次响应可能已越过透支线，账单照实记录，所以这里不承诺「最多只收到透支线」。
   if (charge.stopReason === 'overdraft') {
-    return line(`本次生成因超出透支线被中止，已按实际用量扣费 ${used} 积分${chargedDetail}${estimateNote}`);
+    return line(
+      `本次生成因超出透支线被中止，已按实际用量扣费 ${used} 积分${chargedDetail}${estimateNote}`,
+    );
   }
   if (charge.generationStatus === 'cancelled') {
     return line(`用户取消，已按实际用量收费 ${used} 积分${chargedDetail}${estimateNote}`);
   }
   if (charge.generationStatus === 'failed') {
-    return line(`生成失败${reason ? `（${reason}）` : ''}，已按实际用量收费 ${used} 积分${chargedDetail}${estimateNote}`);
+    return line(
+      `生成失败${reason ? `（${reason}）` : ''}，已按实际用量收费 ${used} 积分${chargedDetail}${estimateNote}`,
+    );
   }
   if (charge.status === 'estimated') return line(`本次消耗约 ${used} 积分（估算）${chargedDetail}`);
   return line(`本次消耗 ${used} 积分${chargedDetail}`);

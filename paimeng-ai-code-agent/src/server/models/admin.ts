@@ -18,7 +18,6 @@ import {
 } from '@/shared/model-config';
 import {
   currentPriceOf,
-  modelAdminConfigViewSchema,
   modelConfigMutatePayloadSchema,
   type ModelAdminConfigView,
   type ModelAdminModelView,
@@ -28,11 +27,7 @@ import type { ModelConfigProvider } from '@/shared/model-document';
 import { modelRegistry } from './registry';
 import { fetchProviderModels } from './probe';
 import { decryptModelSecret } from './secrets';
-import {
-  applyModelConfig,
-  mutateModelConfig,
-  readModelConfigDocumentState,
-} from './store';
+import { applyModelConfig, mutateModelConfig, readModelConfigDocumentState } from './store';
 
 /**
  * 管理 API 的服务层：读取一份 JSON 文档视图，或执行一次带 expectedRevision 的变更。
@@ -48,13 +43,16 @@ async function storageGuarded<T>(operation: () => Promise<T>): Promise<T> {
     return await operation();
   } catch (error) {
     if (error instanceof BusinessError) throw error;
-    console.error('Model config storage failure:', error instanceof Error ? error.name : typeof error);
+    console.error(
+      'Model config storage failure:',
+      error instanceof Error ? error.name : typeof error,
+    );
     throw unavailable();
   }
 }
 
 function providerView(providerState: ModelConfigProvider): ModelAdminProviderView {
-  const models: ModelAdminModelView[] = providerState.models.map(model => ({
+  const models: ModelAdminModelView[] = providerState.models.map((model) => ({
     id: model.id,
     providerId: providerState.id,
     upstream: model.upstream,
@@ -77,7 +75,8 @@ function providerView(providerState: ModelConfigProvider): ModelAdminProviderVie
     enabled: providerState.enabled,
     createTime: providerState.createTime,
     updateTime: providerState.updateTime,
-    apiKeyConfigured: providerState.apiKey.source === 'inline' || Boolean(process.env[providerState.apiKey.env]),
+    apiKeyConfigured:
+      providerState.apiKey.source === 'inline' || Boolean(process.env[providerState.apiKey.env]),
     models,
   };
   return providerState.apiKey.source === 'env'
@@ -96,7 +95,7 @@ export async function readModelAdminConfig(raw: unknown): Promise<ModelAdminConf
     documentBytes: Buffer.byteLength(JSON.stringify(state.document), 'utf8'),
     providers: state.document.providers.map(providerView),
     assignments: state.document.slots,
-    slotDefinitions: modelSlots.map(slot => ({ ...slot, requires: [...slot.requires] })),
+    slotDefinitions: modelSlots.map((slot) => ({ ...slot, requires: [...slot.requires] })),
     providerFormats: [...modelProviderFormatViews],
     allowedApiKeyEnvs: [...allowedModelApiKeyEnvs(config.modelApiKeyEnvAllowlist)],
     instance: modelRegistry().status(),
@@ -117,26 +116,38 @@ export async function applyModelConfigNow(raw: unknown): Promise<ModelConfigVers
  * 探测用密钥：inline 且表单留空时沿用库里已保存的密文，env 必须命中部署允许名单。
  * 参数错误抛 400；错误信息只出现环境变量名，绝不回显密钥值。
  */
-async function probeApiKey(provider: ModelProviderWriteInput, policy: ModelConfigPolicy): Promise<string> {
+async function probeApiKey(
+  provider: ModelProviderWriteInput,
+  policy: ModelConfigPolicy,
+): Promise<string> {
   if (provider.apiKeySource === 'env') {
     if (!isAllowedModelApiKeyEnv(provider.apiKeyEnv, policy.allowedApiKeyEnvs)) {
       throw new BusinessError(400, 40000, `引用了未允许的环境变量 ${provider.apiKeyEnv}`);
     }
     const value = process.env[provider.apiKeyEnv];
-    if (!value) throw new BusinessError(400, 40000, `环境变量 ${provider.apiKeyEnv} 没有值，请先在部署环境配置`);
+    if (!value)
+      throw new BusinessError(
+        400,
+        40000,
+        `环境变量 ${provider.apiKeyEnv} 没有值，请先在部署环境配置`,
+      );
     return value;
   }
   const submitted = provider.apiKey.trim();
   if (submitted) return submitted;
   const state = await readModelConfigDocumentState();
-  const stored = state.document.providers.find(candidate => candidate.id === provider.id);
+  const stored = state.document.providers.find((candidate) => candidate.id === provider.id);
   if (!stored || stored.apiKey.source !== 'inline') {
     throw new BusinessError(400, 40000, '请填写直接输入的密钥');
   }
   try {
     return decryptModelSecret(stored.apiKey.ciphertext);
   } catch (error) {
-    throw new BusinessError(400, 40000, error instanceof Error ? error.message : '已保存的密钥无法解密，请重新保存');
+    throw new BusinessError(
+      400,
+      40000,
+      error instanceof Error ? error.message : '已保存的密钥无法解密，请重新保存',
+    );
   }
 }
 
@@ -152,6 +163,15 @@ export async function probeProviderModels(raw: unknown): Promise<ProviderModelsV
     const urlIssue = modelBaseUrlIssue(provider.baseUrl, policy);
     if (urlIssue) throw new BusinessError(400, 40000, `模型地址不合法：${urlIssue}`);
     const apiKey = await probeApiKey(provider, policy);
-    return { models: await fetchProviderModels({ apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, headers: provider.headers ?? {} }, apiKey) };
+    return {
+      models: await fetchProviderModels(
+        {
+          apiFormat: provider.apiFormat,
+          baseUrl: provider.baseUrl,
+          headers: provider.headers ?? {},
+        },
+        apiKey,
+      ),
+    };
   });
 }

@@ -2,11 +2,27 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, getPool, now } from '@/server/infra/db';
-import { creditBalance, creditCharges, creditLedger, generationSteps, generations, sessions, users } from '@/server/infra/schema';
+import {
+  creditBalance,
+  creditCharges,
+  creditLedger,
+  generationSteps,
+  generations,
+  sessions,
+  users,
+} from '@/server/infra/schema';
 import { evaluateRunningOverdraft, settleGenerationBilling } from '@/server/billing/settlement';
 import {
-  applyBillingMigrations, createBillingUser, loadBillingDatabase, purgeBillingRateCards, seedBillingApp,
-  seedBillingGeneration, seedBillingRate, seedBillingStep, withoutMonthlyQuota, type BillingTestUser,
+  applyBillingMigrations,
+  createBillingUser,
+  loadBillingDatabase,
+  purgeBillingRateCards,
+  seedBillingApp,
+  seedBillingGeneration,
+  seedBillingRate,
+  seedBillingStep,
+  withoutMonthlyQuota,
+  type BillingTestUser,
 } from '../../support/billing';
 import { balanceFactsOf } from '@/server/billing/expiry';
 import { rebuildBalance } from '@/server/billing/ledger';
@@ -33,23 +49,33 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (createdGenerations.length) {
-    const chargeIds = (await db().select({ generationId: creditCharges.generationId }).from(creditCharges)
-      .where(inArray(creditCharges.generationId, createdGenerations))).map(row => row.generationId);
-    if (chargeIds.length) await db().delete(creditLedger).where(inArray(creditLedger.chargeId, chargeIds));
+    const chargeIds = (
+      await db()
+        .select({ generationId: creditCharges.generationId })
+        .from(creditCharges)
+        .where(inArray(creditCharges.generationId, createdGenerations))
+    ).map((row) => row.generationId);
+    if (chargeIds.length)
+      await db().delete(creditLedger).where(inArray(creditLedger.chargeId, chargeIds));
     await db().delete(creditCharges).where(inArray(creditCharges.generationId, createdGenerations));
-    await db().delete(generationSteps).where(inArray(generationSteps.generationId, createdGenerations));
+    await db()
+      .delete(generationSteps)
+      .where(inArray(generationSteps.generationId, createdGenerations));
     await db().delete(generations).where(inArray(generations.id, createdGenerations));
   }
-  if (createdApps.length) await db().delete(creditCharges).where(inArray(creditCharges.appId, createdApps));
+  if (createdApps.length)
+    await db().delete(creditCharges).where(inArray(creditCharges.appId, createdApps));
   if (createdUsers.length) {
-    const ids = createdUsers.map(id => BigInt(id));
+    const ids = createdUsers.map((id) => BigInt(id));
     await db().delete(creditLedger).where(inArray(creditLedger.userId, ids));
     await db().delete(creditBalance).where(inArray(creditBalance.userId, ids));
     await db().delete(sessions).where(inArray(sessions.userId, ids));
     await db().delete(users).where(inArray(users.id, ids));
   }
   await purgeBillingRateCards();
-  await getPool().end().catch(() => undefined);
+  await getPool()
+    .end()
+    .catch(() => undefined);
 });
 
 /** 注册即得当期配额会把「可用余额」推到 500 以上，需要精确数字的用例先退掉它再写死快照。 */
@@ -66,19 +92,30 @@ async function newOwner(): Promise<BillingTestUser> {
  */
 async function setBalances(userId: string, limited: number, lasting: number): Promise<void> {
   const id = BigInt(userId);
-  const [purchased] = await db().select({ credits: sql<string>`coalesce(sum(${creditLedger.credits}), 0)` })
-    .from(creditLedger).where(and(eq(creditLedger.userId, id), eq(creditLedger.kind, 'topup')));
+  const [purchased] = await db()
+    .select({ credits: sql<string>`coalesce(sum(${creditLedger.credits}), 0)` })
+    .from(creditLedger)
+    .where(and(eq(creditLedger.userId, id), eq(creditLedger.kind, 'topup')));
   await db().execute(sql`delete from credit_ledger where user_id = ${id} and kind <> 'topup'`);
   if (limited !== 0) {
     const period = periodOf(new Date());
-    await db().insert(creditLedger).values({
-      userId: id, kind: 'quota', origin: 'manual', credits: limited,
-      period, expiresAt: naiveTime(periodRange(period).end), createTime: now(),
-    });
+    await db()
+      .insert(creditLedger)
+      .values({
+        userId: id,
+        kind: 'quota',
+        origin: 'manual',
+        credits: limited,
+        period,
+        expiresAt: naiveTime(periodRange(period).end),
+        createTime: now(),
+      });
   }
   const gap = lasting - Number(purchased?.credits ?? 0);
   if (gap !== 0) {
-    await db().insert(creditLedger).values({ userId: id, kind: 'grant', origin: 'manual', credits: gap, createTime: now() });
+    await db()
+      .insert(creditLedger)
+      .values({ userId: id, kind: 'grant', origin: 'manual', credits: gap, createTime: now() });
   }
   await rebuildBalance(userId);
 }
@@ -89,10 +126,20 @@ async function balanceOf(userId: string, pool: 'quota' | 'balance'): Promise<num
 }
 
 /** 充值入账：只写账本事实，用完再结算时由 `setBalances` 把可用额调到用例想要的值。 */
-async function seedPurchase(userId: string, credits: number, createTime: string = now()): Promise<void> {
-  await db().insert(creditLedger).values({
-    userId: BigInt(userId), kind: 'topup', origin: 'payment', credits, createTime,
-  });
+async function seedPurchase(
+  userId: string,
+  credits: number,
+  createTime: string = now(),
+): Promise<void> {
+  await db()
+    .insert(creditLedger)
+    .values({
+      userId: BigInt(userId),
+      kind: 'topup',
+      origin: 'payment',
+      credits,
+      createTime,
+    });
 }
 
 async function newApp(owner: BillingTestUser) {
@@ -102,7 +149,10 @@ async function newApp(owner: BillingTestUser) {
 }
 
 async function newGeneration(input: {
-  appId: string; userId: string; status?: string; stopReason?: string | null;
+  appId: string;
+  userId: string;
+  status?: string;
+  stopReason?: string | null;
 }): Promise<string> {
   const id = await seedBillingGeneration(input);
   createdGenerations.push(id);
@@ -113,13 +163,18 @@ async function newGeneration(input: {
 const step = seedBillingStep;
 
 async function chargeOf(generationId: string) {
-  const [row] = await db().select().from(creditCharges).where(eq(creditCharges.generationId, generationId));
+  const [row] = await db()
+    .select()
+    .from(creditCharges)
+    .where(eq(creditCharges.generationId, generationId));
   return row;
 }
 
 /** 把一次运行中的生成收成终态并结算，模拟「中止之后按实际用量出账」。 */
 async function settleAsStopped(generationId: string, stopReason: string): Promise<void> {
-  await db().update(generations).set({ status: 'failed', stopReason, updateTime: now() })
+  await db()
+    .update(generations)
+    .set({ status: 'failed', stopReason, updateTime: now() })
     .where(eq(generations.id, generationId));
   await settleGenerationBilling(generationId);
 }
@@ -130,20 +185,40 @@ describe('运行中未结算消耗：按 Owner 汇总所有活跃 Generation', (
     await setBalances(owner.id, 0, 500);
     const first = await newApp(owner);
     const second = await newApp(owner);
-    const running = await newGeneration({ appId: first.id, userId: owner.id, status: 'generating', stopReason: null });
-    const building = await newGeneration({ appId: second.id, userId: owner.id, status: 'building', stopReason: null });
+    const running = await newGeneration({
+      appId: first.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
+    const building = await newGeneration({
+      appId: second.id,
+      userId: owner.id,
+      status: 'building',
+      stopReason: null,
+    });
     await step(running, { modelName: rateModel, input: 500_000 });
     await step(building, { modelName: rateModel, input: 500_000 });
 
     expect(await evaluateRunningOverdraft(running)).toMatchObject({
-      userId: owner.id, available: 500, runningCredits: 600, projected: -100, overdraft: 0, exceeded: true,
+      userId: owner.id,
+      available: 500,
+      runningCredits: 600,
+      projected: -100,
+      overdraft: 0,
+      exceeded: true,
     });
 
     // 另一个 App 的那笔收成终态之后只剩自己的 300：超线消失，证明汇总的是 Owner 的**全部**活跃执行。
-    await db().update(generations).set({ status: 'cancelled', stopReason: 'cancelled', updateTime: now() })
+    await db()
+      .update(generations)
+      .set({ status: 'cancelled', stopReason: 'cancelled', updateTime: now() })
       .where(eq(generations.id, building));
     expect(await evaluateRunningOverdraft(running)).toMatchObject({
-      available: 500, runningCredits: 300, projected: 200, exceeded: false,
+      available: 500,
+      runningCredits: 300,
+      projected: 200,
+      exceeded: false,
     });
   });
 
@@ -152,8 +227,18 @@ describe('运行中未结算消耗：按 Owner 汇总所有活跃 Generation', (
     await setBalances(owner.id, 0, 1000);
     const first = await newApp(owner);
     const second = await newApp(owner);
-    const kept = await newGeneration({ appId: first.id, userId: owner.id, status: 'generating', stopReason: null });
-    const settled = await newGeneration({ appId: second.id, userId: owner.id, status: 'generating', stopReason: null });
+    const kept = await newGeneration({
+      appId: first.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
+    const settled = await newGeneration({
+      appId: second.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
     await step(kept, { modelName: rateModel, input: 500_000 });
     await step(settled, { modelName: rateModel, input: 500_000 });
 
@@ -173,22 +258,53 @@ describe('运行中未结算消耗：按 Owner 汇总所有活跃 Generation', (
     const owner = await newOwner();
     await setBalances(owner.id, 0, 100);
     const app = await newApp(owner);
-    const running = await newGeneration({ appId: app.id, userId: owner.id, status: 'generating', stopReason: null });
-    const stopped = await newGeneration({ appId: app.id, userId: owner.id, status: 'failed', stopReason: 'overdraft' });
+    const running = await newGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
+    const stopped = await newGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'failed',
+      stopReason: 'overdraft',
+    });
     await step(running, { modelName: rateModel, input: 100_000 });
     await step(stopped, { modelName: rateModel, input: 900_000 });
 
-    expect(await evaluateRunningOverdraft(running)).toMatchObject({ runningCredits: 60, projected: 40, exceeded: false });
+    expect(await evaluateRunningOverdraft(running)).toMatchObject({
+      runningCredits: 60,
+      projected: 40,
+      exceeded: false,
+    });
   });
 
   it('summary 与 build 步骤不计费：只算 kind=model', async () => {
     const owner = await newOwner();
     await setBalances(owner.id, 0, 1000);
     const app = await newApp(owner);
-    const generationId = await newGeneration({ appId: app.id, userId: owner.id, status: 'generating', stopReason: null });
+    const generationId = await newGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
     await step(generationId, { modelName: rateModel, input: 500_000 });
-    await step(generationId, { kind: 'summary', modelName: rateModel, input: 1_000_000, output: 1_000_000, stepNumber: 1 });
-    await step(generationId, { kind: 'build', modelName: rateModel, input: 1_000_000, output: 1_000_000, stepNumber: 2 });
+    await step(generationId, {
+      kind: 'summary',
+      modelName: rateModel,
+      input: 1_000_000,
+      output: 1_000_000,
+      stepNumber: 1,
+    });
+    await step(generationId, {
+      kind: 'build',
+      modelName: rateModel,
+      input: 1_000_000,
+      output: 1_000_000,
+      stepNumber: 2,
+    });
 
     expect(await evaluateRunningOverdraft(generationId)).toMatchObject({ runningCredits: 300 });
   });
@@ -199,17 +315,30 @@ describe('透支线：无购买为零，有购买按 2% 且封顶 500', () => {
     const owner = await newOwner();
     await setBalances(owner.id, 0, 500);
     const app = await newApp(owner);
-    const generationId = await newGeneration({ appId: app.id, userId: owner.id, status: 'generating', stopReason: null });
+    const generationId = await newGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
     await step(generationId, { modelName: rateModel, input: 833_333 });
 
     expect(await evaluateRunningOverdraft(generationId)).toMatchObject({
-      available: 500, runningCredits: 500, projected: 0, overdraft: 0, exceeded: false,
+      available: 500,
+      runningCredits: 500,
+      projected: 0,
+      overdraft: 0,
+      exceeded: false,
     });
 
     await step(generationId, { modelName: rateModel, input: 1_667, stepNumber: 1 });
 
     expect(await evaluateRunningOverdraft(generationId)).toMatchObject({
-      available: 500, runningCredits: 501, projected: -1, overdraft: 0, exceeded: true,
+      available: 500,
+      runningCredits: 501,
+      projected: -1,
+      overdraft: 0,
+      exceeded: true,
     });
   });
 
@@ -218,16 +347,29 @@ describe('透支线：无购买为零，有购买按 2% 且封顶 500', () => {
     await seedPurchase(owner.id, 10_000);
     await setBalances(owner.id, 0, 100);
     const app = await newApp(owner);
-    const generationId = await newGeneration({ appId: app.id, userId: owner.id, status: 'generating', stopReason: null });
+    const generationId = await newGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
     await step(generationId, { modelName: rateModel, input: 500_000 });
 
     expect(await evaluateRunningOverdraft(generationId)).toMatchObject({
-      available: 100, runningCredits: 300, projected: -200, overdraft: 200, exceeded: false,
+      available: 100,
+      runningCredits: 300,
+      projected: -200,
+      overdraft: 200,
+      exceeded: false,
     });
 
     await step(generationId, { modelName: rateModel, input: 1_667, stepNumber: 1 });
 
-    expect(await evaluateRunningOverdraft(generationId)).toMatchObject({ projected: -201, overdraft: 200, exceeded: true });
+    expect(await evaluateRunningOverdraft(generationId)).toMatchObject({
+      projected: -201,
+      overdraft: 200,
+      exceeded: true,
+    });
   });
 
   it('购买额很大时透支线封顶 500，不随购买量无限放大', async () => {
@@ -235,15 +377,28 @@ describe('透支线：无购买为零，有购买按 2% 且封顶 500', () => {
     await seedPurchase(owner.id, 1_000_000);
     await setBalances(owner.id, 0, 0);
     const app = await newApp(owner);
-    const generationId = await newGeneration({ appId: app.id, userId: owner.id, status: 'generating', stopReason: null });
+    const generationId = await newGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
     // 可用为 0、未结算 500：预计 −500 恰好等于负透支线，不超线。
     await step(generationId, { modelName: rateModel, input: 833_333 });
 
-    expect(await evaluateRunningOverdraft(generationId)).toMatchObject({ projected: -500, overdraft: 500, exceeded: false });
+    expect(await evaluateRunningOverdraft(generationId)).toMatchObject({
+      projected: -500,
+      overdraft: 500,
+      exceeded: false,
+    });
 
     await step(generationId, { modelName: rateModel, input: 1_667, stepNumber: 1 });
 
-    expect(await evaluateRunningOverdraft(generationId)).toMatchObject({ projected: -501, overdraft: 500, exceeded: true });
+    expect(await evaluateRunningOverdraft(generationId)).toMatchObject({
+      projected: -501,
+      overdraft: 500,
+      exceeded: true,
+    });
   });
 
   it('余额充足的长生成不会只因消耗超过 500 Credit 被掐断', async () => {
@@ -251,32 +406,59 @@ describe('透支线：无购买为零，有购买按 2% 且封顶 500', () => {
     await seedPurchase(owner.id, 100_000);
     await setBalances(owner.id, 0, 5000);
     const app = await newApp(owner);
-    const generationId = await newGeneration({ appId: app.id, userId: owner.id, status: 'generating', stopReason: null });
+    const generationId = await newGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
     await step(generationId, { modelName: rateModel, input: 2_000_000 });
 
     // 已消耗 1200（超过封顶的 500），但余额还剩 3800：不超线。
     expect(await evaluateRunningOverdraft(generationId)).toMatchObject({
-      available: 5000, runningCredits: 1200, projected: 3800, overdraft: 500, exceeded: false,
+      available: 5000,
+      runningCredits: 1200,
+      projected: 3800,
+      overdraft: 500,
+      exceeded: false,
     });
   });
 
   it('购买窗口滚动到期时判定跟着变：透支线归零，余额与消耗不变', async () => {
     const owner = await newOwner();
     const nowMs = Date.parse(`${now().replace(' ', 'T')}Z`);
-    const thirtyDaysAgo = new Date(nowMs - 30 * 86_400_000).toISOString().slice(0, 23).replace('T', ' ');
+    const thirtyDaysAgo = new Date(nowMs - 30 * 86_400_000)
+      .toISOString()
+      .slice(0, 23)
+      .replace('T', ' ');
     await seedPurchase(owner.id, 10_000, thirtyDaysAgo);
     await setBalances(owner.id, 0, 400);
     const app = await newApp(owner);
-    const generationId = await newGeneration({ appId: app.id, userId: owner.id, status: 'generating', stopReason: null });
+    const generationId = await newGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
     await step(generationId, { modelName: rateModel, input: 1_000_000 });
 
     // 30 天前的购买还在窗口内：透支线 200，预计 −200 恰好不超线。
     expect(await evaluateRunningOverdraft(generationId)).toMatchObject({
-      available: 400, runningCredits: 600, projected: -200, overdraft: 200, exceeded: false,
+      available: 400,
+      runningCredits: 600,
+      projected: -200,
+      overdraft: 200,
+      exceeded: false,
     });
     // 时间推到 31 天后（同一笔购买已出 60 天窗口）：透支线归零、判定立刻变成超线，余额与消耗不变。
-    expect(await evaluateRunningOverdraft(generationId, new Date(nowMs + 31 * 86_400_000))).toMatchObject({
-      available: 400, runningCredits: 600, projected: -200, overdraft: 0, exceeded: true,
+    expect(
+      await evaluateRunningOverdraft(generationId, new Date(nowMs + 31 * 86_400_000)),
+    ).toMatchObject({
+      available: 400,
+      runningCredits: 600,
+      projected: -200,
+      overdraft: 0,
+      exceeded: true,
     });
     expect(await balanceOf(owner.id, 'balance')).toBe(400);
   });
@@ -287,9 +469,20 @@ describe('用量口径与结算一致', () => {
     const owner = await newOwner();
     await setBalances(owner.id, 0, 1000);
     const app = await newApp(owner);
-    const generationId = await newGeneration({ appId: app.id, userId: owner.id, status: 'generating', stopReason: null });
+    const generationId = await newGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
     await step(generationId, { modelName: rateModel, input: 1_000, output: 400, stepNumber: 0 });
-    await step(generationId, { modelName: rateModel, input: null, cacheRead: null, output: null, stepNumber: 1 });
+    await step(generationId, {
+      modelName: rateModel,
+      input: null,
+      cacheRead: null,
+      output: null,
+      stepNumber: 1,
+    });
 
     const verdict = await evaluateRunningOverdraft(generationId);
     // 两步同价：(1.6 + 1.6) Credit → 四舍五入 3，与结算完全同一个数。
@@ -303,7 +496,12 @@ describe('用量口径与结算一致', () => {
     const owner = await newOwner();
     await setBalances(owner.id, 0, 800);
     const app = await newApp(owner);
-    const generationId = await newGeneration({ appId: app.id, userId: owner.id, status: 'generating', stopReason: null });
+    const generationId = await newGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
     await step(generationId, { modelName: rateModel, input: 500_000 });
 
     const first = await evaluateRunningOverdraft(generationId);
@@ -320,12 +518,21 @@ describe('一次响应越线：中止后账单照实记录', () => {
     const owner = await newOwner();
     await setBalances(owner.id, 0, 500);
     const app = await newApp(owner);
-    const generationId = await newGeneration({ appId: app.id, userId: owner.id, status: 'generating', stopReason: null });
+    const generationId = await newGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
     // 一次响应就烧掉 900 Credit：观察者要到下一个步骤边界才发现，账单按实际用量记。
     await step(generationId, { modelName: rateModel, input: 1_500_000 });
 
     expect(await evaluateRunningOverdraft(generationId)).toMatchObject({
-      available: 500, runningCredits: 900, projected: -400, overdraft: 0, exceeded: true,
+      available: 500,
+      runningCredits: 900,
+      projected: -400,
+      overdraft: 0,
+      exceeded: true,
     });
 
     await settleAsStopped(generationId, 'overdraft');
@@ -334,10 +541,17 @@ describe('一次响应越线：中止后账单照实记录', () => {
     // 余额池被扣成欠款：照实记 900，不是截到 500。
     expect(await balanceOf(owner.id, 'balance')).toBe(-400);
     // 结算之后不再有活跃 Generation，欠款只由余额体现。
-    expect(await evaluateRunningOverdraft(generationId)).toMatchObject({ runningCredits: 0, projected: -400, exceeded: true });
+    expect(await evaluateRunningOverdraft(generationId)).toMatchObject({
+      runningCredits: 0,
+      projected: -400,
+      exceeded: true,
+    });
   });
 
   it('生成不存在时明确报错，不把未知当作「没超线」', async () => {
-    await expect(evaluateRunningOverdraft(randomUUID())).rejects.toMatchObject({ status: 404, code: 40400 });
+    await expect(evaluateRunningOverdraft(randomUUID())).rejects.toMatchObject({
+      status: 404,
+      code: 40400,
+    });
   });
 });

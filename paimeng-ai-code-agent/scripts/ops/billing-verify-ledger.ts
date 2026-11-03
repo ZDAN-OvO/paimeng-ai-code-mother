@@ -17,7 +17,8 @@ const userId = userIndex >= 0 ? args[userIndex + 1] : undefined;
 if (userId !== undefined && !/^\d+$/u.test(userId)) throw new Error('--user 需要数字用户 ID');
 
 const url = new URL(process.env.DATABASE_URL ?? '');
-if (!/^paimeng_app(?:_test)?$/.test(url.pathname.slice(1))) throw new Error('仅允许对独立的 paimeng_app 库做对账');
+if (!/^paimeng_app(?:_test)?$/.test(url.pathname.slice(1)))
+  throw new Error('仅允许对独立的 paimeng_app 库做对账');
 
 const rows = await db().execute(sql`
   select t.user_id, t.expected, coalesce(b.available, 0) as actual
@@ -25,10 +26,12 @@ const rows = await db().execute(sql`
   left join credit_balance b on b.user_id = t.user_id
   where (${userId ?? null}::bigint is null or t.user_id = ${userId ?? null})
   order by t.user_id`);
-const drift = rows.rows.filter(row => Number(row.expected) !== Number(row.actual));
+const drift = rows.rows.filter((row) => Number(row.expected) !== Number(row.actual));
 console.log(`对账 ${rows.rows.length} 人，漂移 ${drift.length} 人`);
 for (const row of drift) {
-  console.log(`- 用户 ${row.user_id}：账本 ${row.expected}，快照 ${row.actual}，差异 ${Number(row.actual) - Number(row.expected)}`);
+  console.log(
+    `- 用户 ${row.user_id}：账本 ${row.expected}，快照 ${row.actual}，差异 ${Number(row.actual) - Number(row.expected)}`,
+  );
 }
 if (apply && drift.length) {
   for (const row of drift) await rebuildBalance(String(row.user_id));

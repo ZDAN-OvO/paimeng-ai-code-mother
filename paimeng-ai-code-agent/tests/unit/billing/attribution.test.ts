@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { generationStopReasons, type GenerationStopReason } from '@/shared/contracts';
-import { isPlatformFault, platformFaultStopReasons, platformReversalReason } from '@/shared/billing';
+import {
+  isPlatformFault,
+  platformFaultStopReasons,
+  platformReversalReason,
+} from '@/shared/billing';
 
 /**
  * 终态归责表（`docs/adr/0004-credit-billing.md`「Outcome decides reversibility, not amount」）：
@@ -14,13 +18,13 @@ describe('终态归责', () => {
   });
 
   it('词汇表里每个停止原因都落在明确的一侧', () => {
-    const platform = generationStopReasons.filter(reason => isPlatformFault(reason));
+    const platform = generationStopReasons.filter((reason) => isPlatformFault(reason));
     expect(platform).toEqual(['lease-lost', 'initialization-failed']);
     // interrupted 按实收：进程崩溃时 token 确实烧掉了，规格把它排除在平台故障之外
     expect(isPlatformFault('interrupted')).toBe(false);
     expect(isPlatformFault('cancelled')).toBe(false);
     expect(isPlatformFault('question')).toBe(false);
-    const charged = generationStopReasons.filter(reason => !isPlatformFault(reason));
+    const charged = generationStopReasons.filter((reason) => !isPlatformFault(reason));
     expect(charged).toHaveLength(generationStopReasons.length - platformFaultStopReasons.length);
   });
 

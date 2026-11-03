@@ -34,7 +34,13 @@ const stageLabels: Record<string, string> = {
 
 const statusLabels: Record<string, string> = { ok: '通过', error: '未通过', cancelled: '已取消' };
 /** 生成状态的中文文案：对话页用量块与 Admin 待处理列表共用。 */
-export const generationStatusLabels: Record<string, string> = { generating: '生成中', building: '构建中', ready: '已完成', failed: '失败', cancelled: '已取消' };
+export const generationStatusLabels: Record<string, string> = {
+  generating: '生成中',
+  building: '构建中',
+  ready: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
+};
 
 export function formatDuration(ms: number | null) {
   if (ms === null) return '—';
@@ -45,44 +51,78 @@ export function formatDuration(ms: number | null) {
   return `${minutes}m${Math.round(seconds - minutes * 60)}s`;
 }
 
-const formatCount = (value: number | null) => value === null ? '未返回' : value.toLocaleString('zh-CN');
+const formatCount = (value: number | null) =>
+  value === null ? '未返回' : value.toLocaleString('zh-CN');
 
 function stepLabel(step: AccountStep) {
-  if (step.kind === 'build') return `第 ${step.round} 轮构建${step.stage ? ` · ${stageLabels[step.stage] ?? step.stage}` : ''}`;
+  if (step.kind === 'build')
+    return `第 ${step.round} 轮构建${step.stage ? ` · ${stageLabels[step.stage] ?? step.stage}` : ''}`;
   if (step.kind === 'summary') return '整理历史上下文';
   return `第 ${step.round} 轮 · 第 ${step.stepNumber + 1} 步`;
 }
 
 function stepTools(step: AccountStep) {
   if (!step.toolCalls.length) return null;
-  return <span className="generation-usage-tools">
-    {step.toolCalls.map((call, index) => <span key={index} className={call.ok ? undefined : 'generation-usage-tool-failed'}>
-      {call.name}{call.ok ? '' : ' 失败'} {formatDuration(call.ms)}
-    </span>)}
-  </span>;
+  return (
+    <span className="generation-usage-tools">
+      {step.toolCalls.map((call, index) => (
+        <span key={index} className={call.ok ? undefined : 'generation-usage-tool-failed'}>
+          {call.name}
+          {call.ok ? '' : ' 失败'} {formatDuration(call.ms)}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 function stepOutcome(step: AccountStep) {
-  if (step.kind === 'build') return <>{statusLabels[step.status] ?? step.status}{step.detail ? <span className="generation-usage-detail" title={step.detail}>{step.detail.slice(0, 120)}</span> : null}</>;
-  if (step.kind === 'summary') return <>{statusLabels[step.status] ?? step.status}{step.detail ? <span className="generation-usage-detail" title={step.detail}>{step.detail.slice(0, 120)}</span> : null}</>;
-  return <>{step.finishReason ? finishReasonLabels[step.finishReason] ?? step.finishReason : '—'}</>;
+  if (step.kind === 'build')
+    return (
+      <>
+        {statusLabels[step.status] ?? step.status}
+        {step.detail ? (
+          <span className="generation-usage-detail" title={step.detail}>
+            {step.detail.slice(0, 120)}
+          </span>
+        ) : null}
+      </>
+    );
+  if (step.kind === 'summary')
+    return (
+      <>
+        {statusLabels[step.status] ?? step.status}
+        {step.detail ? (
+          <span className="generation-usage-detail" title={step.detail}>
+            {step.detail.slice(0, 120)}
+          </span>
+        ) : null}
+      </>
+    );
+  return (
+    <>{step.finishReason ? (finishReasonLabels[step.finishReason] ?? step.finishReason) : '—'}</>
+  );
 }
 
 function stepTokens(step: AccountStep) {
   if (step.kind === 'build') return '—';
-  const cache = step.cacheReadTokens ? `（缓存读 ${step.cacheReadTokens.toLocaleString('zh-CN')}）` : '';
+  const cache = step.cacheReadTokens
+    ? `（缓存读 ${step.cacheReadTokens.toLocaleString('zh-CN')}）`
+    : '';
   return `输入 ${formatCount(step.inputTokens)} / 输出 ${formatCount(step.outputTokens)}${cache}`;
 }
 
 /** 本次生成的用量明细（D2 记账）。只在任务结束后展示，生成中不轮询。 */
 export function GenerationUsage({ usage }: { usage: GenerationAccount }) {
   const { model, summary, build, totalMs, rounds } = usage.totals;
-  const tokens = model.usageUnknown || model.inputTokens === null
-    ? '用量未返回'
-    : `输入 ${model.inputTokens.toLocaleString('zh-CN')} / 输出 ${(model.outputTokens ?? 0).toLocaleString('zh-CN')} tokens`;
-  const upstream = usage.steps.find(step => step.upstreamModelId);
+  const tokens =
+    model.usageUnknown || model.inputTokens === null
+      ? '用量未返回'
+      : `输入 ${model.inputTokens.toLocaleString('zh-CN')} / 输出 ${(model.outputTokens ?? 0).toLocaleString('zh-CN')} tokens`;
+  const upstream = usage.steps.find((step) => step.upstreamModelId);
   const brief = [
-    usage.stopReason ? stopReasonLabels[usage.stopReason] : generationStatusLabels[usage.status] ?? usage.status,
+    usage.stopReason
+      ? stopReasonLabels[usage.stopReason]
+      : (generationStatusLabels[usage.status] ?? usage.status),
     `${model.steps} 步模型调用${rounds > 1 ? `（${rounds} 轮）` : ''}`,
     `模型 ${formatDuration(model.modelMs)}`,
     model.toolMs > 0 ? `工具 ${formatDuration(model.toolMs)}` : null,
@@ -90,27 +130,52 @@ export function GenerationUsage({ usage }: { usage: GenerationAccount }) {
     summary.calls > 0 ? `整理历史 ${summary.calls} 次 ${formatDuration(summary.summaryMs)}` : null,
     tokens,
     totalMs !== null ? `总用时 ${formatDuration(totalMs)}` : null,
-  ].filter(Boolean).join(' · ');
-  return <details className="generation-usage">
-    <summary><span className="generation-usage-title">本次生成用量</span><span className="generation-usage-brief">{brief}</span></summary>
-    <div className="generation-usage-body">
-      <p className="generation-usage-model">
-        模型绑定 {usage.model.alias ?? '未知'}
-        {upstream ? ` · 上游 ${upstream.upstreamProvider ?? '未知'}/${upstream.upstreamModelId ?? '未知'}` : ''}
-        {usage.error ? ` · 失败原因 ${usage.error}` : ''}
-      </p>
-      <table className="generation-usage-table">
-        <thead><tr><th scope="col">步骤</th><th scope="col">耗时</th><th scope="col">用量</th><th scope="col">结果</th></tr></thead>
-        <tbody>
-          {usage.steps.map(step => <tr key={step.id}>
-            <td><span className="generation-usage-step">{stepLabel(step)}</span>{stepTools(step)}</td>
-            <td>{formatDuration(step.durationMs)}</td>
-            <td>{stepTokens(step)}</td>
-            <td>{stepOutcome(step)}</td>
-          </tr>)}
-          {!usage.steps.length && <tr><td colSpan={4}>这次任务没有留下步骤记录。</td></tr>}
-        </tbody>
-      </table>
-    </div>
-  </details>;
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  return (
+    <details className="generation-usage">
+      <summary>
+        <span className="generation-usage-title">本次生成用量</span>
+        <span className="generation-usage-brief">{brief}</span>
+      </summary>
+      <div className="generation-usage-body">
+        <p className="generation-usage-model">
+          模型绑定 {usage.model.alias ?? '未知'}
+          {upstream
+            ? ` · 上游 ${upstream.upstreamProvider ?? '未知'}/${upstream.upstreamModelId ?? '未知'}`
+            : ''}
+          {usage.error ? ` · 失败原因 ${usage.error}` : ''}
+        </p>
+        <table className="generation-usage-table">
+          <thead>
+            <tr>
+              <th scope="col">步骤</th>
+              <th scope="col">耗时</th>
+              <th scope="col">用量</th>
+              <th scope="col">结果</th>
+            </tr>
+          </thead>
+          <tbody>
+            {usage.steps.map((step) => (
+              <tr key={step.id}>
+                <td>
+                  <span className="generation-usage-step">{stepLabel(step)}</span>
+                  {stepTools(step)}
+                </td>
+                <td>{formatDuration(step.durationMs)}</td>
+                <td>{stepTokens(step)}</td>
+                <td>{stepOutcome(step)}</td>
+              </tr>
+            ))}
+            {!usage.steps.length && (
+              <tr>
+                <td colSpan={4}>这次任务没有留下步骤记录。</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
 }

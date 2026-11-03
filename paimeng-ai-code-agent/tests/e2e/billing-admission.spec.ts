@@ -15,48 +15,96 @@ import { evidencePath } from './support/evidence';
 
 const origin = appOrigin();
 const prompt = '额度不足的准入测试';
-const zeroMessage = '当前可用积分为 0（限时 0 + 长期 0），不足以开始新的生成。请联系管理员补充积分后再提交。';
+const zeroMessage =
+  '当前可用积分为 0（限时 0 + 长期 0），不足以开始新的生成。请联系管理员补充积分后再提交。';
 
 const summary = (total: number) => ({
-  available: total, limited: total, lasting: 0, limitedExpiresAt: '2026-01-31 16:00:00.000',
-  purchasedCredits60d: 0, overdraft: 0, period: '2026-01',
+  available: total,
+  limited: total,
+  lasting: 0,
+  limitedExpiresAt: '2026-01-31 16:00:00.000',
+  purchasedCredits60d: 0,
+  overdraft: 0,
+  period: '2026-01',
 });
 
 /** 一条最小的 UI 消息流：额度到账后重试时，发送要真的成功。 */
 function chatStream(text: string) {
-  const stream = createUIMessageStream({ execute: ({ writer }) => {
-    writer.write({ type: 'start', messageId: 'admission-assistant' });
-    writer.write({ type: 'text-start', id: 'admission-text' });
-    writer.write({ type: 'text-delta', id: 'admission-text', delta: text });
-    writer.write({ type: 'text-end', id: 'admission-text' });
-    writer.setOutcome({ status: 'completed' });
-  } });
+  const stream = createUIMessageStream({
+    execute: ({ writer }) => {
+      writer.write({ type: 'start', messageId: 'admission-assistant' });
+      writer.write({ type: 'text-start', id: 'admission-text' });
+      writer.write({ type: 'text-delta', id: 'admission-text', delta: text });
+      writer.write({ type: 'text-end', id: 'admission-text' });
+      writer.setOutcome({ status: 'completed' });
+    },
+  });
   return createUIMessageStreamResponse({ stream });
 }
 
 /** 注册并登录一个真实用户，再建一个 App（生成入口本身仍然被 mock，不调用真实模型）。 */
-async function loginWithApp(page: Page, options: { task?: object | null; runtime?: object } = {}): Promise<string> {
+async function loginWithApp(
+  page: Page,
+  options: { task?: object | null; runtime?: object } = {},
+): Promise<string> {
   const userAccount = 'ts_admission_' + randomUUID().slice(0, 8);
-  const credentials = { userAccount, userPassword: 'admission-password', checkPassword: 'admission-password' };
-  expect((await page.request.post('/api/user/register', { headers: { origin }, data: credentials })).status()).toBe(200);
-  expect((await page.request.post('/api/user/login', { headers: { origin }, data: credentials })).status()).toBe(200);
-  const created = await page.request.post('/api/app/add', { headers: { origin }, data: { initPrompt: prompt, codeGenType: 'html' } });
+  const credentials = {
+    userAccount,
+    userPassword: 'admission-password',
+    checkPassword: 'admission-password',
+  };
+  expect(
+    (
+      await page.request.post('/api/user/register', { headers: { origin }, data: credentials })
+    ).status(),
+  ).toBe(200);
+  expect(
+    (
+      await page.request.post('/api/user/login', { headers: { origin }, data: credentials })
+    ).status(),
+  ).toBe(200);
+  const created = await page.request.post('/api/app/add', {
+    headers: { origin },
+    data: { initPrompt: prompt, codeGenType: 'html' },
+  });
   expect(created.status()).toBe(200);
-  const appId = (await created.json() as { data: string }).data;
+  const appId = ((await created.json()) as { data: string }).data;
   const task = options.task ?? { id: 'admission-task', status: 'cancelled' };
-  await page.route('**/api/app/generation?*', route => route.fulfill({ json: { code: 0, data: task, message: 'ok' } }));
-  await page.route('**/api/app/chat/runtime?*', route => route.fulfill({
-    json: { code: 0, data: { generation: task, busy: false, pending: [], messages: [], ...options.runtime }, message: 'ok' },
-  }));
+  await page.route('**/api/app/generation?*', (route) =>
+    route.fulfill({ json: { code: 0, data: task, message: 'ok' } }),
+  );
+  await page.route('**/api/app/chat/runtime?*', (route) =>
+    route.fulfill({
+      json: {
+        code: 0,
+        data: { generation: task, busy: false, pending: [], messages: [], ...options.runtime },
+        message: 'ok',
+      },
+    }),
+  );
   return appId;
 }
 
 test('积分不足时首页就地拦住「创建并生成」，积分到账后重新提交即可', async ({ page }) => {
   const userAccount = 'ts_admission_home_' + randomUUID().slice(0, 8);
-  const credentials = { userAccount, userPassword: 'admission-password', checkPassword: 'admission-password' };
-  expect((await page.request.post('/api/user/register', { headers: { origin }, data: credentials })).status()).toBe(200);
-  expect((await page.request.post('/api/user/login', { headers: { origin }, data: credentials })).status()).toBe(200);
-  await page.route('**/api/billing/summary', route => route.fulfill({ json: { code: 0, data: summary(0), message: 'ok' } }));
+  const credentials = {
+    userAccount,
+    userPassword: 'admission-password',
+    checkPassword: 'admission-password',
+  };
+  expect(
+    (
+      await page.request.post('/api/user/register', { headers: { origin }, data: credentials })
+    ).status(),
+  ).toBe(200);
+  expect(
+    (
+      await page.request.post('/api/user/login', { headers: { origin }, data: credentials })
+    ).status(),
+  ).toBe(200);
+  await page.route('**/api/billing/summary', (route) =>
+    route.fulfill({ json: { code: 0, data: summary(0), message: 'ok' } }),
+  );
 
   await page.goto('/');
   await page.getByLabel('应用描述').fill(prompt);
@@ -67,14 +115,19 @@ test('积分不足时首页就地拦住「创建并生成」，积分到账后�
   await expect(blocked).toContainText('积分不足，无法开始新的生成');
   await expect(blocked).toContainText('当前可用积分为 0');
   await expect(blocked).toContainText('联系管理员补充积分');
-  await expect(blocked.getByRole('link', { name: '查看我的积分与账单' })).toHaveAttribute('href', '/billing');
+  await expect(blocked.getByRole('link', { name: '查看我的积分与账单' })).toHaveAttribute(
+    'href',
+    '/billing',
+  );
   // 钱没到账就不该建出一个注定生成不了的空应用，用户写的需求留在输入框里。
   await expect.poll(() => new URL(page.url()).pathname).toBe('/');
   await expect(page.getByLabel('应用描述')).toHaveValue(prompt);
   await page.screenshot({ path: evidencePath('billing', 'admission-home.png'), fullPage: true });
 
   await page.unroute('**/api/billing/summary');
-  await page.route('**/api/billing/summary', route => route.fulfill({ json: { code: 0, data: summary(300), message: 'ok' } }));
+  await page.route('**/api/billing/summary', (route) =>
+    route.fulfill({ json: { code: 0, data: summary(300), message: 'ok' } }),
+  );
   await page.getByRole('button', { name: '创建应用', exact: true }).click();
   await expect(page).toHaveURL(/\/app\/chat\/\d+/);
   await expect(page.locator('.insufficient-credits')).toHaveCount(0);
@@ -82,9 +135,12 @@ test('积分不足时首页就地拦住「创建并生成」，积分到账后�
 
 test('App chat 新请求积分不足时给出提示，并保留刚才写的消息', async ({ page }) => {
   const appId = await loginWithApp(page);
-  await page.route('**/api/app/chat/gen/code', route => route.fulfill({
-    status: 402, json: { code: 40201, data: null, message: zeroMessage },
-  }));
+  await page.route('**/api/app/chat/gen/code', (route) =>
+    route.fulfill({
+      status: 402,
+      json: { code: 40201, data: null, message: zeroMessage },
+    }),
+  );
 
   await page.goto('/app/chat/' + appId);
   // 进页自动发送初始需求的行为由 chat-initial-prompt.spec.ts 覆盖；这里验证「用户发出的新请求」被准入拦下。
@@ -100,9 +156,13 @@ test('App chat 新请求积分不足时给出提示，并保留刚才写的消�
 
   // 积分到账后再发一次：错误条收起，消息真的发出去了。
   await page.unroute('**/api/app/chat/gen/code');
-  await page.route('**/api/app/chat/gen/code', async route => {
+  await page.route('**/api/app/chat/gen/code', async (route) => {
     const response = chatStream('已收到');
-    await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: await response.text() });
+    await route.fulfill({
+      status: response.status,
+      headers: Object.fromEntries(response.headers),
+      body: await response.text(),
+    });
   });
   await page.getByRole('button', { name: /^发\s*送$/ }).click();
   await expect(page.locator('.insufficient-credits')).toHaveCount(0);
@@ -110,14 +170,21 @@ test('App chat 新请求积分不足时给出提示，并保留刚才写的消�
 });
 
 test('回答提问时积分不足同样给出提示，问题继续等着回答', async ({ page }) => {
-  const question = { id: 'admission-question', prompt: '这一版要保留深色页头吗？', generationId: 'admission-asked' };
+  const question = {
+    id: 'admission-question',
+    prompt: '这一版要保留深色页头吗？',
+    generationId: 'admission-asked',
+  };
   const appId = await loginWithApp(page, {
     task: { id: 'admission-asked', status: 'failed', stopReason: 'question' },
     runtime: { question },
   });
-  await page.route('**/api/app/chat/gen/code', route => route.fulfill({
-    status: 402, json: { code: 40201, data: null, message: zeroMessage },
-  }));
+  await page.route('**/api/app/chat/gen/code', (route) =>
+    route.fulfill({
+      status: 402,
+      json: { code: 40201, data: null, message: zeroMessage },
+    }),
+  );
 
   await page.goto('/app/chat/' + appId);
   await expect(page.locator('.message-question')).toContainText(question.prompt);

@@ -2,18 +2,84 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, realpath, rm, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildApp, buildIsCurrent, deployApp, downloadApp, hasPreview, loadBuildState, saveBuildState, sourceDigest, workspace, deployedUrl } from '@/server/delivery/artifacts';
+import {
+  buildApp,
+  buildIsCurrent,
+  deployApp,
+  downloadApp,
+  hasPreview,
+  loadBuildState,
+  saveBuildState,
+  sourceDigest,
+  workspace,
+  deployedUrl,
+} from '@/server/delivery/artifacts';
 import { projectAt, writeProjectFile } from '@/server/workspace/workspace';
 import { fixtureFiles } from '@/server/generation/durable/fixture-content';
 import { getConfig } from '@/server/infra/config';
-const html={id:String(Date.now()+1),codeGenType:'html' as const};const vue={id:String(Date.now()+2),codeGenType:'vue_project' as const};let published='';
-afterAll(async()=>{await rm(workspace(html),{recursive:true,force:true});await rm(workspace(vue),{recursive:true,force:true});if(published)await rm(join(getConfig().runtimeRoot,'deploy',published),{recursive:true,force:true});});
-describe('真实产物与受限构建',()=>{
- it('HTML 必须存在并通过真实文件校验',async()=>{await expect(buildApp(html)).rejects.toThrow();await writeProjectFile(html,'index.html','<!doctype html><html><body><h1>产物验收</h1></body></html>');await expect(buildApp(html)).resolves.toBeUndefined();published=await deployApp(html);expect(await readFile(join(getConfig().runtimeRoot,'deploy',published,'index.html'),'utf8')).toContain('<h1>产物验收</h1>');expect(deployedUrl(published)).toContain('/deploy/');});
- it('下载包含真实源文件且具有 ZIP 文件头',async()=>{await writeProjectFile(html,'index.html','<!doctype html><html><body>独立下载验收</body></html>');const response=await downloadApp(html);const bytes=Buffer.from(await response.arrayBuffer());expect(bytes.subarray(0,2).toString()).toBe('PK');expect(bytes.toString()).toContain('index.html');expect(response.headers.get('content-disposition')).toContain(html.id);});
- it('按给定源码根打包，并排除平台快照清单',async()=>{const root=await realpath(await mkdtemp(join(tmpdir(),'paimeng-download-')));try{await mkdir(join(root,'src'));await writeFile(join(root,'index.html'),'<!doctype html><html><body>快照下载</body></html>');await writeFile(join(root,'src','app.js'),'console.log("snapshot")');await writeFile(join(root,'manifest.json'),'{"version":1}');const archive=Buffer.from(await(await downloadApp(projectAt(html,root),{excludePaths:['manifest.json']})).arrayBuffer()).toString();expect(archive).toContain('index.html');expect(archive).toContain('src/app.js');expect(archive).not.toContain('manifest.json');}finally{await rm(root,{recursive:true,force:true});}});
- it('构建入口拒绝外部依赖，错误提供允许版本供模型重试',async()=>{const content=JSON.stringify({dependencies:{vue:'https://evil.invalid/package.tgz'}});await expect(writeProjectFile(vue,'package.json',content)).resolves.toBeUndefined();await expect(buildApp(vue)).rejects.toThrow('不允许的构建依赖');});
-
+const html = { id: String(Date.now() + 1), codeGenType: 'html' as const };
+const vue = { id: String(Date.now() + 2), codeGenType: 'vue_project' as const };
+let published = '';
+afterAll(async () => {
+  await rm(workspace(html), { recursive: true, force: true });
+  await rm(workspace(vue), { recursive: true, force: true });
+  if (published)
+    await rm(join(getConfig().runtimeRoot, 'deploy', published), { recursive: true, force: true });
+});
+describe('真实产物与受限构建', () => {
+  it('HTML 必须存在并通过真实文件校验', async () => {
+    await expect(buildApp(html)).rejects.toThrow();
+    await writeProjectFile(
+      html,
+      'index.html',
+      '<!doctype html><html><body><h1>产物验收</h1></body></html>',
+    );
+    await expect(buildApp(html)).resolves.toBeUndefined();
+    published = await deployApp(html);
+    expect(
+      await readFile(join(getConfig().runtimeRoot, 'deploy', published, 'index.html'), 'utf8'),
+    ).toContain('<h1>产物验收</h1>');
+    expect(deployedUrl(published)).toContain('/deploy/');
+  });
+  it('下载包含真实源文件且具有 ZIP 文件头', async () => {
+    await writeProjectFile(
+      html,
+      'index.html',
+      '<!doctype html><html><body>独立下载验收</body></html>',
+    );
+    const response = await downloadApp(html);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    expect(bytes.subarray(0, 2).toString()).toBe('PK');
+    expect(bytes.toString()).toContain('index.html');
+    expect(response.headers.get('content-disposition')).toContain(html.id);
+  });
+  it('按给定源码根打包，并排除平台快照清单', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'paimeng-download-')));
+    try {
+      await mkdir(join(root, 'src'));
+      await writeFile(
+        join(root, 'index.html'),
+        '<!doctype html><html><body>快照下载</body></html>',
+      );
+      await writeFile(join(root, 'src', 'app.js'), 'console.log("snapshot")');
+      await writeFile(join(root, 'manifest.json'), '{"version":1}');
+      const archive = Buffer.from(
+        await (
+          await downloadApp(projectAt(html, root), { excludePaths: ['manifest.json'] })
+        ).arrayBuffer(),
+      ).toString();
+      expect(archive).toContain('index.html');
+      expect(archive).toContain('src/app.js');
+      expect(archive).not.toContain('manifest.json');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  it('构建入口拒绝外部依赖，错误提供允许版本供模型重试', async () => {
+    const content = JSON.stringify({ dependencies: { vue: 'https://evil.invalid/package.tgz' } });
+    await expect(writeProjectFile(vue, 'package.json', content)).resolves.toBeUndefined();
+    await expect(buildApp(vue)).rejects.toThrow('不允许的构建依赖');
+  });
 });
 
 describe('稳定发布地址与实际产物判定', () => {
@@ -23,25 +89,45 @@ describe('稳定发布地址与实际产物判定', () => {
   afterAll(async () => {
     await rm(workspace(stable), { recursive: true, force: true });
     await rm(workspace(variants), { recursive: true, force: true });
-    for (const key of keys) await rm(join(getConfig().runtimeRoot, 'deploy', key), { recursive: true, force: true });
+    for (const key of keys)
+      await rm(join(getConfig().runtimeRoot, 'deploy', key), { recursive: true, force: true });
   });
 
   it('复用同一 deployKey 在原地址更新内容，失败时保留旧发布', async () => {
-    await writeProjectFile(stable, 'index.html', '<!doctype html><html><body>第一版发布</body></html>');
-    const first = await deployApp(stable); keys.push(first);
-    expect(await readFile(join(getConfig().runtimeRoot, 'deploy', first, 'index.html'), 'utf8')).toContain('第一版发布');
-    await writeProjectFile(stable, 'index.html', '<!doctype html><html><body>第二版发布</body></html>');
+    await writeProjectFile(
+      stable,
+      'index.html',
+      '<!doctype html><html><body>第一版发布</body></html>',
+    );
+    const first = await deployApp(stable);
+    keys.push(first);
+    expect(
+      await readFile(join(getConfig().runtimeRoot, 'deploy', first, 'index.html'), 'utf8'),
+    ).toContain('第一版发布');
+    await writeProjectFile(
+      stable,
+      'index.html',
+      '<!doctype html><html><body>第二版发布</body></html>',
+    );
     const second = await deployApp({ ...stable, deployKey: first });
     expect(second).toBe(first);
-    expect(await readFile(join(getConfig().runtimeRoot, 'deploy', first, 'index.html'), 'utf8')).toContain('第二版发布');
+    expect(
+      await readFile(join(getConfig().runtimeRoot, 'deploy', first, 'index.html'), 'utf8'),
+    ).toContain('第二版发布');
     await rm(join(workspace(stable), 'index.html'));
     await expect(deployApp({ ...stable, deployKey: first })).rejects.toThrow();
-    expect(await readFile(join(getConfig().runtimeRoot, 'deploy', first, 'index.html'), 'utf8')).toContain('第二版发布');
+    expect(
+      await readFile(join(getConfig().runtimeRoot, 'deploy', first, 'index.html'), 'utf8'),
+    ).toContain('第二版发布');
   });
 
   it('hasPreview 只认可真实普通产物，拒绝缺失、软链接与非 HTML', async () => {
     expect(await hasPreview(variants)).toBe(false);
-    await writeProjectFile(variants, 'index.html', '<!doctype html><html><body>真实产物</body></html>');
+    await writeProjectFile(
+      variants,
+      'index.html',
+      '<!doctype html><html><body>真实产物</body></html>',
+    );
     expect(await hasPreview(variants)).toBe(true);
     await rm(join(workspace(variants), 'index.html'));
     await symlink('/etc/passwd', join(workspace(variants), 'index.html'));
@@ -74,7 +160,8 @@ describe('源码没变时复用上次构建产物', () => {
   });
 
   it('产物新鲜时 buildApp 直接复用，不进容器（所以本机没有 Docker 也能通过）', async () => {
-    for (const file of fixtureFiles('vue_project', '复用验收')) await writeProjectFile(reuse, file.path, file.content);
+    for (const file of fixtureFiles('vue_project', '复用验收'))
+      await writeProjectFile(reuse, file.path, file.content);
     expect(await buildIsCurrent(reuse)).toBe(false);
     await saveBuildState(reuse, await sourceDigest(reuse));
     expect(await buildIsCurrent(reuse)).toBe(false);

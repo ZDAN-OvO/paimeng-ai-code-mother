@@ -32,7 +32,6 @@ let db: pg.Client;
 const appIds: string[] = [];
 const workspaceApps: { id: string; codeGenType: 'html' }[] = [];
 
-
 async function createApp(page: Page, prompt: string): Promise<string> {
   const response = await page.request.post('/api/app/add', {
     headers: { origin },
@@ -58,7 +57,10 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   for (const app of workspaceApps) {
-    await rm(join(workspaceRoot, 'runtime/code_output', `${app.codeGenType}_${app.id}`), { recursive: true, force: true }).catch(() => undefined);
+    await rm(join(workspaceRoot, 'runtime/code_output', `${app.codeGenType}_${app.id}`), {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
   }
   if (appIds.length) {
     await db.query('delete from app where id = any($1::bigint[])', [appIds]).catch(() => undefined);
@@ -68,7 +70,7 @@ test.afterAll(async () => {
 
 test('生成、下载源码快照、部署幂等与版本恢复', async ({ page }) => {
   const errors: string[] = [];
-  page.on('pageerror', error => errors.push(error.message));
+  page.on('pageerror', (error) => errors.push(error.message));
 
   const proofUser = await loginAsProofAccount(page);
   const appId = await createApp(page, '验证可靠性重构_' + proofAccount);
@@ -85,13 +87,15 @@ test('生成、下载源码快照、部署幂等与版本恢复', async ({ page 
       group by a.kind`,
     [appId],
   );
-  const counts = Object.fromEntries(attempts.rows.map(row => [row.kind, row.count]));
+  const counts = Object.fromEntries(attempts.rows.map((row) => [row.kind, row.count]));
   expect(counts.model, '模型 attempt 应已落账').toBeGreaterThanOrEqual(1);
   expect(counts.tool, '工具 attempt 应已落账').toBeGreaterThanOrEqual(1);
 
-
   // 3. 部署 requestId 幂等：回放 UI 发出的同一请求，不新增部署行。
-  const deployRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/app/deploy');
+  const deployRequest = page.waitForRequest(
+    (request) =>
+      request.method() === 'POST' && new URL(request.url()).pathname === '/api/app/deploy',
+  );
   await page.getByRole('button', { name: '部署', exact: true }).click();
   const request = await deployRequest;
   const deployBody = request.postDataJSON() as { appId: string; requestId: string };
@@ -100,9 +104,15 @@ test('生成、下载源码快照、部署幂等与版本恢复', async ({ page 
   await expect(page.getByText('网站部署成功！')).toBeVisible({ timeout: 60_000 });
   const deployUrl = await page.getByRole('link', { name: '访问作品' }).getAttribute('href');
   await page.screenshot({ path: join(evidence, '02-deployed.png'), fullPage: true });
-  await page.getByRole('dialog').getByRole('button', { name: /^关\s*闭$/ }).click();
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: /^关\s*闭$/ })
+    .click();
 
-  const replay = await page.request.post('/api/app/deploy', { headers: { origin }, data: deployBody });
+  const replay = await page.request.post('/api/app/deploy', {
+    headers: { origin },
+    data: deployBody,
+  });
   expect(replay.ok()).toBe(true);
   expect((await replay.json()).data).toBe(deployUrl);
   const deployments = await db.query<{ status: string; count: number }>(
@@ -115,10 +125,16 @@ test('生成、下载源码快照、部署幂等与版本恢复', async ({ page 
   await page.getByRole('button', { name: /^版\s*本$/ }).click();
   await expect(page.getByRole('dialog', { name: /版本历史/ })).toBeVisible();
   await expect(page.locator('.version-tree-row').first()).toBeVisible();
-  await page.screenshot({ path: join(evidence, '03-versions.png'), fullPage: true, animations: 'disabled' });
+  await page.screenshot({
+    path: join(evidence, '03-versions.png'),
+    fullPage: true,
+    animations: 'disabled',
+  });
   await page.keyboard.press('Escape');
 
-  const versionsResponse = await page.request.get('/api/app/versions?appId=' + appId, { headers: { origin } });
+  const versionsResponse = await page.request.get('/api/app/versions?appId=' + appId, {
+    headers: { origin },
+  });
   expect(versionsResponse.ok()).toBe(true);
   const versions = (await versionsResponse.json()).data as { versions: { id: string }[] };
   expect(versions.versions.length).toBeGreaterThanOrEqual(1);
@@ -148,7 +164,10 @@ test('生成、下载源码快照、部署幂等与版本恢复', async ({ page 
   const snapshotDirectory = pointer.rows[0].directory;
   const sealedIndex = await readFile(join(snapshotDirectory, 'index.html'), 'utf8');
   const workspaceIndex = join(workspaceRoot, 'runtime/code_output', `html_${appId}`, 'index.html');
-  await writeFile(workspaceIndex, '<!doctype html><html><body>WORKSPACE_DRAFT_MUST_NOT_DOWNLOAD</body></html>');
+  await writeFile(
+    workspaceIndex,
+    '<!doctype html><html><body>WORKSPACE_DRAFT_MUST_NOT_DOWNLOAD</body></html>',
+  );
 
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('link', { name: '下载代码', exact: true }).click();
@@ -156,25 +175,34 @@ test('生成、下载源码快照、部署幂等与版本恢复', async ({ page 
   expect(download.suggestedFilename()).toBe(appId + '.zip');
   const zipPath = await download.path();
   expect(zipPath).not.toBeNull();
-  const downloadedIndex = execFileSync('unzip', ['-p', zipPath!, 'index.html'], { encoding: 'utf8' });
+  const downloadedIndex = execFileSync('unzip', ['-p', zipPath, 'index.html'], {
+    encoding: 'utf8',
+  });
   expect(downloadedIndex).toContain(sealedIndex.trim().slice(0, 40));
   expect(downloadedIndex).not.toContain('WORKSPACE_DRAFT_MUST_NOT_DOWNLOAD');
   await page.screenshot({ path: join(evidence, '05-downloaded.png'), fullPage: true });
 
-  await writeFile(join(evidence, 'proof.json'), JSON.stringify({
-    account: proofUser.userAccount,
-    accountId: proofUser.id,
-    appId,
-    attempts: counts,
-    deployUrl,
-    deployments: deployments.rows,
-    restoredVersionId: versions.versions[0].id,
-    restoreCode: restoreBody.code,
-    restoreStatus: restoreBody.data?.status ?? null,
-    runningDeploymentsAfterRestore: running.rows[0].count,
-    downloadedFromSealedSnapshot: true,
-    workspaceDraftExcluded: true,
-  }, null, 2) + '\n');
+  await writeFile(
+    join(evidence, 'proof.json'),
+    JSON.stringify(
+      {
+        account: proofUser.userAccount,
+        accountId: proofUser.id,
+        appId,
+        attempts: counts,
+        deployUrl,
+        deployments: deployments.rows,
+        restoredVersionId: versions.versions[0].id,
+        restoreCode: restoreBody.code,
+        restoreStatus: restoreBody.data?.status ?? null,
+        runningDeploymentsAfterRestore: running.rows[0].count,
+        downloadedFromSealedSnapshot: true,
+        workspaceDraftExcluded: true,
+      },
+      null,
+      2,
+    ) + '\n',
+  );
 
   expect(errors).toEqual([]);
 });

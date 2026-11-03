@@ -8,7 +8,11 @@ assert.ok(['start', 'status'].includes(action), '用法：npm run durable:pg [--
 
 const url = new URL(process.env.DATABASE_URL ?? '');
 assert.equal(url.protocol, 'postgres:');
-assert.match(url.pathname, /^\/paimeng_app(?:_test)?$/, 'DATABASE_URL 必须指向独立的 paimeng_app 或 paimeng_app_test 数据库');
+assert.match(
+  url.pathname,
+  /^\/paimeng_app(?:_test)?$/,
+  'DATABASE_URL 必须指向独立的 paimeng_app 或 paimeng_app_test 数据库',
+);
 const host = url.hostname;
 const port = url.port || '5432';
 
@@ -16,7 +20,9 @@ const admin = new pg.Client({ connectionString: new URL('/postgres', url).href }
 try {
   await admin.connect();
 } catch (error) {
-  throw new Error(`无法连接 ${host}:${port} 上的 Postgres（DATABASE_URL 指向的实例）。本机用它自己的容器 zslm-postgres；先把它启动再重试。原因：${(error as Error).message}`);
+  throw new Error(
+    `无法连接 ${host}:${port} 上的 Postgres（DATABASE_URL 指向的实例）。本机用它自己的容器 zslm-postgres；先把它启动再重试。原因：${(error as Error).message}`,
+  );
 }
 try {
   if (action === 'start') {
@@ -28,13 +34,18 @@ try {
       }
     }
   }
-  const version = await admin.query<{ version: string }>("SELECT current_setting('server_version') AS version");
+  const version = await admin.query<{ version: string }>(
+    "SELECT current_setting('server_version') AS version",
+  );
   const present = await admin.query<{ datname: string; size: string }>(
-    "SELECT datname, pg_size_pretty(pg_database_size(datname)) AS size FROM pg_database WHERE datname = ANY($1) ORDER BY datname",
+    'SELECT datname, pg_size_pretty(pg_database_size(datname)) AS size FROM pg_database WHERE datname = ANY($1) ORDER BY datname',
     [databases],
   );
-  const missing = databases.filter(name => !present.rows.some(row => row.datname === name));
-  if (missing.length) throw new Error(`${host}:${port} 上缺少 database：${missing.join('、')}（先执行 npm run durable:pg）`);
+  const missing = databases.filter((name) => !present.rows.some((row) => row.datname === name));
+  if (missing.length)
+    throw new Error(
+      `${host}:${port} 上缺少 database：${missing.join('、')}（先执行 npm run durable:pg）`,
+    );
   console.log(`Postgres ${host}:${port} 就绪（server_version ${version.rows[0].version}）`);
   for (const row of present.rows) console.log(`  ${row.datname} ${row.size}`);
 } finally {

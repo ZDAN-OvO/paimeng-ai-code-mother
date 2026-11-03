@@ -26,7 +26,7 @@ async function handle(message: Command): Promise<Record<string, unknown>> {
     }
     case 'setCodegenModel': {
       const snapshot = await readConfigSnapshot();
-      const alias = snapshot.aliases.find(candidate => candidate.alias === 'codegen.default');
+      const alias = snapshot.aliases.find((candidate) => candidate.alias === 'codegen.default');
       if (!alias) throw new Error('缺少 codegen.default');
       const input: ModelAliasInput = {
         alias: alias.alias,
@@ -38,7 +38,11 @@ async function handle(message: Command): Promise<Record<string, unknown>> {
       };
       await upsertTestAlias(input, { applyImmediately: message.applyImmediately });
       const after = await readTestDocument();
-      return { ok: true, revision: after.revision.toString(), refreshEpoch: after.refreshEpoch.toString() };
+      return {
+        ok: true,
+        revision: after.revision.toString(),
+        refreshEpoch: after.refreshEpoch.toString(),
+      };
     }
     case 'close':
       await getPool().end();
@@ -47,17 +51,23 @@ async function handle(message: Command): Promise<Record<string, unknown>> {
 }
 
 const reader = createInterface({ input: process.stdin });
-reader.on('line', async line => {
-  let parsed: Command;
-  try {
-    parsed = JSON.parse(line) as Command;
-  } catch (error) {
-    process.stdout.write(`${JSON.stringify({ ok: false, error: String(error) })}\n`);
-    return;
-  }
-  try {
-    process.stdout.write(`${JSON.stringify(await handle(parsed))}\n`);
-  } catch (error) {
-    process.stdout.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}\n`);
-  }
+reader.on('line', (line) => {
+  void (async () => {
+    let parsed: Command;
+    try {
+      parsed = JSON.parse(line) as Command;
+    } catch (error) {
+      process.stdout.write(`${JSON.stringify({ ok: false, error: String(error) })}\n`);
+      return;
+    }
+    try {
+      process.stdout.write(`${JSON.stringify(await handle(parsed))}\n`);
+    } catch (error) {
+      process.stdout.write(
+        `${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}\n`,
+      );
+    }
+  })().catch((error: unknown) => {
+    console.error(error);
+  });
 });

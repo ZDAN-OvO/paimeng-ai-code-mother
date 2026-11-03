@@ -15,7 +15,7 @@ pg.types.setTypeParser(20, (value: string) => value);
 
 const state = globalThis as typeof globalThis & { tsPool?: pg.Pool };
 export function getPool() {
-  return state.tsPool ??= new pg.Pool({ connectionString: getConfig().databaseUrl, max: 8 });
+  return (state.tsPool ??= new pg.Pool({ connectionString: getConfig().databaseUrl, max: 8 }));
 }
 export function db() {
   return drizzle(getPool(), { schema });

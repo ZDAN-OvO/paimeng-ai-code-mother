@@ -18,14 +18,22 @@ const highlight: [typeof rehypeHighlight, { detect: false }] = [rehypeHighlight,
 // lets React finish the keystroke/poll paint before the (long, growing) parse
 // of the block that is still streaming, spreading the cost over idle frames.
 function MarkdownBody({ content }: { content: string }) {
-  return <div className="markdown-body">
-    <ReactMarkdown
-      skipHtml
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[highlight]}
-      components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer nofollow" /> }}
-    >{content}</ReactMarkdown>
-  </div>;
+  return (
+    <div className="markdown-body">
+      <ReactMarkdown
+        skipHtml
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[highlight]}
+        components={{
+          a: ({ node, ...props }) => (
+            <a {...props} target="_blank" rel="noopener noreferrer nofollow" />
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 export const MarkdownMessage = memo(function MarkdownMessage({ content }: { content: string }) {

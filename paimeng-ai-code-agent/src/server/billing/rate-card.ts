@@ -1,6 +1,10 @@
 import 'server-only';
 import type { RateCardView } from '@/shared/billing';
-import { modelPriceVersionSchema, type ModelConfigDocument, type ModelPriceVersion } from '@/shared/model-document';
+import {
+  modelPriceVersionSchema,
+  type ModelConfigDocument,
+  type ModelPriceVersion,
+} from '@/shared/model-document';
 import type { Transaction } from '../infra/db';
 import { readModelConfigDocument } from '../models/store';
 
@@ -53,10 +57,16 @@ function fixedMillis(timestamp: string): string {
 }
 
 /** JSON 单价（分 / 1M tokens）直接就是 Credit；1 分 = 1 Credit。 */
-export function rateViewOfPrice(providerId: string, modelName: string, raw: ModelPriceVersion): RateCardView {
+export function rateViewOfPrice(
+  providerId: string,
+  modelName: string,
+  raw: ModelPriceVersion,
+): RateCardView {
   const price = modelPriceVersionSchema.parse(raw);
   const usd = price.upstreamUsd;
-  const hasUsd = Boolean(usd && (usd.inputMiss !== null || usd.inputHit !== null || usd.output !== null));
+  const hasUsd = Boolean(
+    usd && (usd.inputMiss !== null || usd.inputHit !== null || usd.output !== null),
+  );
   return {
     providerId,
     modelName,
@@ -80,7 +90,8 @@ export function ratesFromDocument(document: ModelConfigDocument): RateCardView[]
   const rates: RateCardView[] = [];
   for (const provider of document.providers) {
     for (const model of provider.models) {
-      for (const price of model.prices) rates.push(rateViewOfPrice(provider.id, model.upstream, price));
+      for (const price of model.prices)
+        rates.push(rateViewOfPrice(provider.id, model.upstream, price));
     }
   }
   for (const legacy of document.legacyPrices) {
@@ -101,10 +112,12 @@ export function ratesFromDocument(document: ModelConfigDocument): RateCardView[]
       createTime: fixedMillis(legacy.createTime || legacy.effectiveFrom),
     });
   }
-  return rates.sort((left, right) =>
-    left.providerId.localeCompare(right.providerId)
-    || left.modelName.localeCompare(right.modelName)
-    || instantOf(right.effectiveFrom) - instantOf(left.effectiveFrom));
+  return rates.sort(
+    (left, right) =>
+      left.providerId.localeCompare(right.providerId) ||
+      left.modelName.localeCompare(right.modelName) ||
+      instantOf(right.effectiveFrom) - instantOf(left.effectiveFrom),
+  );
 }
 
 /**

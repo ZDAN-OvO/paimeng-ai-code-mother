@@ -2,7 +2,8 @@ import { isProjectCodeGenType, type AppInfo, type CodeGenType } from '@/shared/c
 import type { TemplateIdentity } from '@/shared/templates';
 import { BUILD_DEPENDENCIES, REACT_DEPENDENCIES } from '../../delivery/build-contract';
 
-const staticProhibitions = '禁止写 package.json、vite.config.*、tsconfig*.json，禁止使用 Vue/React/JSX/TS 源文件、npm 依赖或任何构建工具。平台直接静态托管，没有构建步骤。';
+const staticProhibitions =
+  '禁止写 package.json、vite.config.*、tsconfig*.json，禁止使用 Vue/React/JSX/TS 源文件、npm 依赖或任何构建工具。平台直接静态托管，没有构建步骤。';
 
 export const typeRules: Record<CodeGenType, string> = {
   html: `只写 index.html，样式放 <style>、脚本放 <script>，素材放 assets/ 并用相对路径引用。${staticProhibitions}`,
@@ -12,12 +13,21 @@ export const typeRules: Record<CodeGenType, string> = {
 };
 
 export function staticPathHint(type: CodeGenType) {
-  if (type === 'html') return '原生 HTML 只写 index.html（内联样式与脚本），素材放 assets/，禁止工程脚手架与构建工具。';
-  if (type === 'multi_file') return '原生多文件使用 index.html、css/、js/ 与 assets/，禁止工程脚手架与构建工具。';
+  if (type === 'html')
+    return '原生 HTML 只写 index.html（内联样式与脚本），素材放 assets/，禁止工程脚手架与构建工具。';
+  if (type === 'multi_file')
+    return '原生多文件使用 index.html、css/、js/ 与 assets/，禁止工程脚手架与构建工具。';
   return 'Vue 或 React 工程使用对应框架与 Vite，并保留模板入口。';
 }
 
-export function generationInstructions({ app, template, entry, webInstruction, hasImages = false, previewTool = true }: {
+export function generationInstructions({
+  app,
+  template,
+  entry,
+  webInstruction,
+  hasImages = false,
+  previewTool = true,
+}: {
   app: Pick<AppInfo, 'codeGenType' | 'initPrompt'>;
   template: TemplateIdentity | null | undefined;
   entry: string | null;
@@ -53,6 +63,7 @@ export function generationInstructions({ app, template, entry, webInstruction, h
     ? ' 本轮用户上传了图片，图片已随消息一起提供，你可以直接看图理解需求。工作区里的上传原图只有用户明确要求用作页面素材时才在页面里引用（用相对路径）；仅用于理解布局或风格的参考图不要写进网站。'
     : '';
   // git 只读：模型用它理解项目与看这一轮的未提交改动，提交与回退都由平台做。
-  const versionInstruction = ' 版本与历史：工作区是一个 git 仓库，git 工具只读（status log show diff rev-parse reflog tag describe blame shortlog ls-files cat-file），用来读懂项目历史和这一轮还没提交的改动。提交由平台负责：这一轮成功结束后平台会把改动自动提交成一版，你不需要也不能 git add、git commit、切分支或合并；写完文件就好。没有远端，push/pull/fetch 不可用。用户要求回到旧版本时，说明平台会在版本面板里切，并在那一版基础上继续改。';
+  const versionInstruction =
+    ' 版本与历史：工作区是一个 git 仓库，git 工具只读（status log show diff rev-parse reflog tag describe blame shortlog ls-files cat-file），用来读懂项目历史和这一轮还没提交的改动。提交由平台负责：这一轮成功结束后平台会把改动自动提交成一版，你不需要也不能 git add、git commit、切分支或合并；写完文件就好。没有远端，push/pull/fetch 不可用。用户要求回到旧版本时，说明平台会在版本面板里切，并在那一版基础上继续改。';
   return `你是应用生成 Agent。当前应用类型 ${app.codeGenType}。所有读写必须使用工具，禁止仅输出代码而不写入文件。只能修改当前应用。禁止写密钥或 .env。${opening}${rules}${webInstruction} 禁止安装脚本和任意 shell。工具返回错误时根据错误修正并重试。${milestone}${preview}${imageInstruction}${versionInstruction}完成后简短说明改动。初始化需求 ${app.initPrompt}`;
 }

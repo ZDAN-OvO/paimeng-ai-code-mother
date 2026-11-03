@@ -31,9 +31,10 @@ function aliasFixture(alias: string, modelName: string, enabled = true): ModelAl
     alias,
     providerId: 'primary',
     modelName,
-    capabilities: alias === 'codegen.default'
-      ? { streaming: true, toolCalling: true, structuredOutput: false, imageInput: false }
-      : { streaming: false, toolCalling: false, structuredOutput: true, imageInput: false },
+    capabilities:
+      alias === 'codegen.default'
+        ? { streaming: true, toolCalling: true, structuredOutput: false, imageInput: false }
+        : { streaming: false, toolCalling: false, structuredOutput: true, imageInput: false },
     settings: {},
     enabled,
     createTime: '',
@@ -46,7 +47,7 @@ function snapshot(revision: string, refreshEpoch: string, modelName: string): Mo
     revision,
     refreshEpoch,
     providers: [providerFixture()],
-    aliases: requiredAliasNames.map(alias => aliasFixture(alias, modelName)),
+    aliases: requiredAliasNames.map((alias) => aliasFixture(alias, modelName)),
   };
 }
 
@@ -197,7 +198,7 @@ describe('模型注册表 TTL 与刷新序号', () => {
 describe('并发与单飞', () => {
   it('并发解析共享同一次快照读取', async () => {
     let release!: () => void;
-    const gate = new Promise<void>(resolve => {
+    const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     let reads = 0;
@@ -215,7 +216,7 @@ describe('并发与单飞', () => {
 
     const first = registry.resolveBinding('codegen.default');
     const second = registry.resolveBinding('codegen.default');
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     release();
     const [a, b] = await Promise.all([first, second]);
 
@@ -228,7 +229,7 @@ describe('并发与单飞', () => {
     const time = controlledClock();
     let calls = 0;
     let releaseFirst!: () => void;
-    const firstGate = new Promise<void>(resolve => {
+    const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
     let epoch = '0';
@@ -248,10 +249,10 @@ describe('并发与单飞', () => {
     const registry = createModelRegistry({ store, clock: time.clock });
 
     const slow = registry.resolveBinding('codegen.default');
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     epoch = '1';
     const fresh = registry.resolveBinding('codegen.default');
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     releaseFirst();
     const [a, b] = await Promise.all([slow, fresh]);
 
@@ -274,7 +275,10 @@ describe('故障回退与不可掩盖的错误', () => {
     };
     const registry = createModelRegistry({ store, clock: controlledClock().clock });
 
-    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({ status: 503, code: 50300 });
+    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({
+      status: 503,
+      code: 50300,
+    });
   });
 
   it('配置行缺失（缺表/未迁移）同样返回 503，不回退环境变量', async () => {
@@ -289,7 +293,10 @@ describe('故障回退与不可掩盖的错误', () => {
     };
     const registry = createModelRegistry({ store, clock: controlledClock().clock });
 
-    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({ status: 503, code: 50300 });
+    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({
+      status: 503,
+      code: 50300,
+    });
   });
 
   it('DB 读取失败时，宽限期内继续使用旧快照并标记降级', async () => {
@@ -369,7 +376,10 @@ describe('故障回退与不可掩盖的错误', () => {
     state.snapshotError = new Error('database unavailable');
     time.advance(modelSnapshotStaleGraceMs + 1);
 
-    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({ status: 503, code: 50300 });
+    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({
+      status: 503,
+      code: 50300,
+    });
   });
 
   it('已观察到更高 epoch 后加载失败，即使之后读不到版本也拒绝旧快照', async () => {
@@ -382,11 +392,17 @@ describe('故障回退与不可掩盖的错误', () => {
     state.snapshotError = new Error('database unavailable');
     time.advance(modelRegistryTtlMs);
 
-    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({ status: 503, code: 50300 });
+    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({
+      status: 503,
+      code: 50300,
+    });
 
     state.epochError = new Error('database unavailable');
     time.advance(modelLoadBackoffMs);
-    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({ status: 503, code: 50300 });
+    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({
+      status: 503,
+      code: 50300,
+    });
   });
 
   it('无效配置不会被旧快照掩盖', async () => {
@@ -397,29 +413,37 @@ describe('故障回退与不可掩盖的错误', () => {
     await registry.resolveBinding('codegen.default');
 
     const broken = snapshot('2', '1', 'model-b');
-    broken.aliases = broken.aliases.filter(alias => alias.alias !== 'codegen.default');
+    broken.aliases = broken.aliases.filter((alias) => alias.alias !== 'codegen.default');
     state.snapshot = broken;
     state.currentEpoch = '1';
     time.advance(modelRegistryTtlMs);
 
-    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({ status: 503, code: 50300 });
+    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({
+      status: 503,
+      code: 50300,
+    });
     expect(registry.status().revision).toBe('1');
   });
 
-  it.each(['not-a-number', '0x10', '-1', '', '1e3'])('刷新序号 %j 非法时视为无效配置且失败关闭', async invalidEpoch => {
-    const { state, store } = fakeStore(snapshot('1', '0', 'model-a'));
-    const time = controlledClock();
-    const registry = createModelRegistry({ store, clock: time.clock });
+  it.each(['not-a-number', '0x10', '-1', '', '1e3'])(
+    '刷新序号 %j 非法时视为无效配置且失败关闭',
+    async (invalidEpoch) => {
+      const { state, store } = fakeStore(snapshot('1', '0', 'model-a'));
+      const time = controlledClock();
+      const registry = createModelRegistry({ store, clock: time.clock });
 
-    await registry.resolveBinding('codegen.default');
-    state.currentEpoch = invalidEpoch;
-    time.advance(modelRegistryTtlMs);
+      await registry.resolveBinding('codegen.default');
+      state.currentEpoch = invalidEpoch;
+      time.advance(modelRegistryTtlMs);
 
-    const error = await registry.resolveBinding('codegen.default').catch((caught: unknown) => caught);
-    expect(error).toMatchObject({ status: 503, code: 50300 });
-    expect((error as BusinessError).message).toContain('刷新序号');
-    expect(registry.status().lastError).toContain('刷新序号');
-  });
+      const error = await registry
+        .resolveBinding('codegen.default')
+        .catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ status: 503, code: 50300 });
+      expect((error as BusinessError).message).toContain('刷新序号');
+      expect(registry.status().lastError).toContain('刷新序号');
+    },
+  );
 
   it('一旦判定配置无效，之后的 DB 故障与退避期间仍返回 503，不得回退旧快照', async () => {
     const { state, store } = fakeStore(snapshot('1', '0', 'model-a'));
@@ -429,16 +453,22 @@ describe('故障回退与不可掩盖的错误', () => {
     await registry.resolveBinding('codegen.default');
 
     const broken = snapshot('2', '1', 'model-b');
-    broken.aliases = broken.aliases.filter(alias => alias.alias !== 'codegen.default');
+    broken.aliases = broken.aliases.filter((alias) => alias.alias !== 'codegen.default');
     state.snapshot = broken;
     state.currentEpoch = '1';
     time.advance(modelRegistryTtlMs);
-    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({ status: 503, code: 50300 });
+    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({
+      status: 503,
+      code: 50300,
+    });
 
     state.epochError = new Error('database unavailable');
     state.snapshotError = new Error('database unavailable');
     time.advance(modelLoadBackoffMs);
-    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({ status: 503, code: 50300 });
+    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({
+      status: 503,
+      code: 50300,
+    });
 
     state.epochError = null;
     state.snapshotError = null;
@@ -456,15 +486,21 @@ describe('故障回退与不可掩盖的错误', () => {
     expect((await registry.resolveBinding('codegen.default')).modelName).toBe('model-b');
 
     const broken = snapshot('3', '1', 'model-c');
-    broken.aliases = broken.aliases.filter(alias => alias.alias !== 'codegen.default');
+    broken.aliases = broken.aliases.filter((alias) => alias.alias !== 'codegen.default');
     state.snapshot = broken;
     state.currentEpoch = '1';
     time.advance(modelRegistryTtlMs);
-    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({ status: 503, code: 50300 });
+    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({
+      status: 503,
+      code: 50300,
+    });
 
     state.snapshot = snapshot('1', '0', 'model-a');
     state.currentEpoch = '0';
-    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({ status: 503, code: 50300 });
+    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({
+      status: 503,
+      code: 50300,
+    });
     expect(registry.status().lastError).toContain('codegen.default');
 
     state.snapshot = snapshot('4', '1', 'model-d');
@@ -486,7 +522,9 @@ describe('故障回退与不可掩盖的错误', () => {
       },
     };
     const coldRegistry = createModelRegistry({ store: coldStore, clock: controlledClock().clock });
-    const coldError = await coldRegistry.resolveBinding('codegen.default').catch((caught: unknown) => caught);
+    const coldError = await coldRegistry
+      .resolveBinding('codegen.default')
+      .catch((caught: unknown) => caught);
     expect(coldError).toBeInstanceOf(BusinessError);
     expect((coldError as BusinessError).message).not.toContain(sentinel);
     expect((coldError as BusinessError).message).not.toContain('SELECT');
@@ -522,14 +560,20 @@ describe('故障回退与不可掩盖的错误', () => {
     const { store } = fakeStore(emptySnapshot('3', '0'));
     const registry = createModelRegistry({ store, clock: controlledClock().clock });
 
-    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({ status: 503, code: 50300 });
+    await expect(registry.resolveBinding('codegen.default')).rejects.toMatchObject({
+      status: 503,
+      code: 50300,
+    });
   });
 
   it('请求未配置或未启用的别名返回 503', async () => {
     const { store } = fakeStore(snapshot('1', '0', 'model-a'));
     const registry = createModelRegistry({ store, clock: controlledClock().clock });
 
-    await expect(registry.resolveBinding('codegen.extra')).rejects.toMatchObject({ status: 503, code: 50300 });
+    await expect(registry.resolveBinding('codegen.extra')).rejects.toMatchObject({
+      status: 503,
+      code: 50300,
+    });
   });
 
   it('公共入口 resolveModel 返回冻结的 LanguageModel', async () => {

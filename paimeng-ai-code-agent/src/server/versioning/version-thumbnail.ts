@@ -4,7 +4,12 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
-import { getVersion, saveVersionThumbnail, versionRepo, versionThumbnailPath } from './version-store';
+import {
+  getVersion,
+  saveVersionThumbnail,
+  versionRepo,
+  versionThumbnailPath,
+} from './version-store';
 import type { WorkspaceApp } from '../workspace/workspace';
 
 const run = promisify(execFile);
@@ -38,8 +43,12 @@ async function gitBuffer(repo: string, args: string[]) {
     return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
   } catch (error) {
     const failure = error as { stderr?: Buffer | string; code?: number | string | null };
-    const stderr = Buffer.isBuffer(failure.stderr) ? failure.stderr.toString('utf8') : failure.stderr ?? '';
-    throw new VersionTreeError(`git ${args[0]} 失败：${stderr.trim().split('\n')[0] || failure.code}`);
+    const stderr = Buffer.isBuffer(failure.stderr)
+      ? failure.stderr.toString('utf8')
+      : (failure.stderr ?? '');
+    throw new VersionTreeError(
+      `git ${args[0]} 失败：${stderr.trim().split('\n')[0] || failure.code}`,
+    );
   }
 }
 
@@ -49,7 +58,9 @@ async function gitBuffer(repo: string, args: string[]) {
  */
 async function extractVersionTree(app: WorkspaceApp, sha: string, target: string) {
   const repo = versionRepo(app);
-  const listing = (await gitBuffer(repo, ['ls-tree', '-r', '-z', '--name-only', sha])).toString('utf8');
+  const listing = (await gitBuffer(repo, ['ls-tree', '-r', '-z', '--name-only', sha])).toString(
+    'utf8',
+  );
   const paths = listing.split('\0').filter(Boolean);
   if (paths.length === 0) throw new VersionTreeError('这个版本没有任何文件');
   for (const path of paths) {
@@ -69,19 +80,30 @@ async function shoot(app: WorkspaceApp, sha: string): Promise<Buffer | null> {
   const temp = await mkdtemp(join(tmpdir(), 'paimeng-version-shot-'));
   try {
     const paths = await extractVersionTree(app, sha, temp);
-    const entry = ['index.html', 'public/index.html', 'dist/index.html'].find(candidate => paths.includes(candidate));
+    const entry = ['index.html', 'public/index.html', 'dist/index.html'].find((candidate) =>
+      paths.includes(candidate),
+    );
     if (!entry) return null;
     const { chromium } = await import('playwright');
-    const browser = await chromium.launch({ headless: true, chromiumSandbox: true, timeout: 15_000 });
+    const browser = await chromium.launch({
+      headless: true,
+      chromiumSandbox: true,
+      timeout: 15_000,
+    });
     try {
       const context = await browser.newContext({ viewport, serviceWorkers: 'block' });
       // 版本截图只渲染这一版自己的文件：外链一律断开，避免截图被当前网络状态左右。
-      await context.route('**/*', route => {
+      await context.route('**/*', (route) => {
         const url = route.request().url();
-        return url.startsWith('file://') || url.startsWith('data:') ? route.continue() : route.abort();
+        return url.startsWith('file://') || url.startsWith('data:')
+          ? route.continue()
+          : route.abort();
       });
       const page = await context.newPage();
-      await page.goto(`file://${join(temp, entry)}`, { waitUntil: 'load', timeout: captureTimeoutMs });
+      await page.goto(`file://${join(temp, entry)}`, {
+        waitUntil: 'load',
+        timeout: captureTimeoutMs,
+      });
       // 页面里的图片/字体再给一点时间落位，否则会截到空白卡片。
       await page.waitForTimeout(400);
       return await page.screenshot({ type: 'png', timeout: captureTimeoutMs });
@@ -97,7 +119,10 @@ async function shoot(app: WorkspaceApp, sha: string): Promise<Buffer | null> {
  * 取版本截图：已有就直接读，没有就现截一张并落盘。
  * 截图失败只返回 null（界面显示占位），不影响版本面板本身。
  */
-export async function versionThumbnail(app: WorkspaceApp, versionId: string): Promise<Buffer | null> {
+export async function versionThumbnail(
+  app: WorkspaceApp,
+  versionId: string,
+): Promise<Buffer | null> {
   // 后台截图绝不能把仓库重建出来：这是生成收尾后 fire-and-forget 的任务，
   // 应用可能正在被删除——ensureVersionRepo 见到 .git 缺失会 git init 重建，
   // 与工作区的 rm 并发会撞出 ENOTEMPTY 并留下孤儿 .git。仓库不在就放弃截图。
@@ -108,7 +133,8 @@ export async function versionThumbnail(app: WorkspaceApp, versionId: string): Pr
     const existing = await readFile(versionThumbnailPath(app, version.id)).catch(() => null);
     if (existing) return existing;
   }
-  if (!version.thumbnailKey && app.codeGenType !== 'html' && app.codeGenType !== 'multi_file') return null;
+  if (!version.thumbnailKey && app.codeGenType !== 'html' && app.codeGenType !== 'multi_file')
+    return null;
   const pending = inFlight.get(version.id);
   if (pending) return pending;
   const task = (async () => {
@@ -118,7 +144,10 @@ export async function versionThumbnail(app: WorkspaceApp, versionId: string): Pr
       await saveVersionThumbnail(app, version.id, png);
       return png;
     } catch (problem) {
-      console.error(`版本截图失败（${app.id} ${version.id.slice(0, 7)}）：`, problem instanceof Error ? problem.message : problem);
+      console.error(
+        `版本截图失败（${app.id} ${version.id.slice(0, 7)}）：`,
+        problem instanceof Error ? problem.message : problem,
+      );
       return null;
     } finally {
       inFlight.delete(version.id);

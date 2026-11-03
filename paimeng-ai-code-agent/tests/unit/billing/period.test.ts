@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { isCurrentPeriod, naiveTime, nextPeriodStart, parseNaiveTime, periodOf, periodRange } from '@/server/billing/period';
+import {
+  isCurrentPeriod,
+  naiveTime,
+  nextPeriodStart,
+  parseNaiveTime,
+  periodOf,
+  periodRange,
+} from '@/server/billing/period';
 
 const utc = (text: string) => new Date(`${text}Z`);
 
@@ -27,8 +34,12 @@ describe('北京时间账期', () => {
   });
 
   it('月末时刻的下一个账期起点就是本账期终点', () => {
-    expect(nextPeriodStart(utc('2026-01-15T00:00:00.000')).toISOString()).toBe('2026-01-31T16:00:00.000Z');
-    expect(nextPeriodStart(utc('2026-12-15T00:00:00.000')).toISOString()).toBe('2026-12-31T16:00:00.000Z');
+    expect(nextPeriodStart(utc('2026-01-15T00:00:00.000')).toISOString()).toBe(
+      '2026-01-31T16:00:00.000Z',
+    );
+    expect(nextPeriodStart(utc('2026-12-15T00:00:00.000')).toISOString()).toBe(
+      '2026-12-31T16:00:00.000Z',
+    );
   });
 
   it('isCurrentPeriod 用同一套账期口径', () => {

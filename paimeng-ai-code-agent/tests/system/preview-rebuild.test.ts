@@ -25,7 +25,15 @@ const created: { id: string; codeGenType: CodeGenType }[] = [];
 beforeAll(async () => {
   const create = async (prefix: string) => {
     const id = await nextSnowflakeId();
-    await db().insert(users).values({ id, userAccount: prefix + randomUUID(), userPassword: 'unused', createTime: now(), updateTime: now() });
+    await db()
+      .insert(users)
+      .values({
+        id,
+        userAccount: prefix + randomUUID(),
+        userPassword: 'unused',
+        createTime: now(),
+        updateTime: now(),
+      });
     const [row] = await db().select().from(users).where(eq(users.id, id));
     return publicUser(row);
   };
@@ -34,13 +42,20 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   for (const app of created) {
-    for (const table of [leases, generations]) await db().delete(table).where(eq(table.appId, BigInt(app.id)));
-    await db().delete(apps).where(eq(apps.id, BigInt(app.id)));
+    for (const table of [leases, generations])
+      await db()
+        .delete(table)
+        .where(eq(table.appId, BigInt(app.id)));
+    await db()
+      .delete(apps)
+      .where(eq(apps.id, BigInt(app.id)));
     await rm(workspace(app), { recursive: true, force: true });
   }
   for (const user of [actor, outsider]) {
     if (!user) continue;
-    await db().delete(users).where(eq(users.id, BigInt(user.id)));
+    await db()
+      .delete(users)
+      .where(eq(users.id, BigInt(user.id)));
   }
   await getPool().end();
 });
@@ -77,8 +92,23 @@ it('应用仍在生成时返回 null，由页面稍后重试', async () => {
   const id = await createApp({ initPrompt: '生成中的应用', templateId: 'vue-ts' }, actor);
   created.push({ id, codeGenType: 'vue_project' });
   const generationId = randomUUID();
-  await db().insert(generations).values({ id: generationId, appId: BigInt(id), userId: BigInt(actor.id), status: 'generating', createTime: now(), updateTime: now() });
-  await db().insert(leases).values({ appId: BigInt(id), generationId, expiresAt: new Date(Date.now() + 30000).toISOString().slice(0, 23).replace('T', ' ') });
+  await db()
+    .insert(generations)
+    .values({
+      id: generationId,
+      appId: BigInt(id),
+      userId: BigInt(actor.id),
+      status: 'generating',
+      createTime: now(),
+      updateTime: now(),
+    });
+  await db()
+    .insert(leases)
+    .values({
+      appId: BigInt(id),
+      generationId,
+      expiresAt: new Date(Date.now() + 30000).toISOString().slice(0, 23).replace('T', ' '),
+    });
   expect(await rebuildPreview({ appId: id }, actor)).toBeNull();
 });
 

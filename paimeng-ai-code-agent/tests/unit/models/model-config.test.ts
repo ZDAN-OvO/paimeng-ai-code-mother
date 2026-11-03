@@ -78,7 +78,11 @@ const provider = (overrides: Partial<ProviderDraft> = {}): ModelProviderInput =>
   const draft = providerDraft(overrides);
   return draft.apiKeySource === 'env'
     ? { ...providerCommon(draft), apiKeySource: 'env', apiKeyEnv: draft.apiKeyEnv }
-    : { ...providerCommon(draft), apiKeySource: 'inline', apiKeyCiphertext: draft.apiKeyCiphertext };
+    : {
+        ...providerCommon(draft),
+        apiKeySource: 'inline',
+        apiKeyCiphertext: draft.apiKeyCiphertext,
+      };
 };
 
 const providerWrite = (overrides: Partial<ProviderDraft> = {}): ModelProviderWriteInput => {
@@ -117,10 +121,18 @@ describe('模型密钥引用允许名单', () => {
   });
 
   it('密钥引用名只接受大写环境变量名，最长 128 个字符', () => {
-    expect(modelProviderInputSchema.safeParse(provider({ apiKeyEnv: 'lowercase' })).success).toBe(false);
-    expect(modelProviderInputSchema.safeParse(provider({ apiKeyEnv: 'AI_API_KEY' })).success).toBe(true);
-    expect(modelProviderInputSchema.safeParse(provider({ apiKeyEnv: `A${'B'.repeat(127)}` })).success).toBe(true);
-    expect(modelProviderInputSchema.safeParse(provider({ apiKeyEnv: `A${'B'.repeat(128)}` })).success).toBe(false);
+    expect(modelProviderInputSchema.safeParse(provider({ apiKeyEnv: 'lowercase' })).success).toBe(
+      false,
+    );
+    expect(modelProviderInputSchema.safeParse(provider({ apiKeyEnv: 'AI_API_KEY' })).success).toBe(
+      true,
+    );
+    expect(
+      modelProviderInputSchema.safeParse(provider({ apiKeyEnv: `A${'B'.repeat(127)}` })).success,
+    ).toBe(true);
+    expect(
+      modelProviderInputSchema.safeParse(provider({ apiKeyEnv: `A${'B'.repeat(128)}` })).success,
+    ).toBe(false);
   });
 });
 
@@ -131,17 +143,23 @@ describe('API 格式、选项与密钥来源', () => {
       expect(modelProviderInputSchema.safeParse(provider({ apiFormat })).success).toBe(true);
       expect(modelProviderWriteSchema.safeParse(providerWrite({ apiFormat })).success).toBe(true);
     }
-    expect(modelProviderInputSchema.safeParse({ ...provider(), adapter: 'openai-compatible' }).success).toBe(false);
+    expect(
+      modelProviderInputSchema.safeParse({ ...provider(), adapter: 'openai-compatible' }).success,
+    ).toBe(false);
   });
 
   it('选项白名单随格式变化，未知选项被拒绝', () => {
     expect(providerOptionsIssue('openai-chat', { includeUsage: true })).toBeNull();
-    expect(providerOptionsIssue('openai-responses', { includeUsage: true })).toContain('不支持选项 includeUsage');
-    expect(providerOptionsIssue('anthropic-messages', { supportsStructuredOutputs: true })).toContain(
-      '不支持选项 supportsStructuredOutputs',
+    expect(providerOptionsIssue('openai-responses', { includeUsage: true })).toContain(
+      '不支持选项 includeUsage',
     );
+    expect(
+      providerOptionsIssue('anthropic-messages', { supportsStructuredOutputs: true }),
+    ).toContain('不支持选项 supportsStructuredOutputs');
     expect(providerOptionsIssue('openai-responses', {})).toBeNull();
-    expect(modelProviderInputSchema.safeParse(provider({ options: { includeUsage: true } })).success).toBe(true);
+    expect(
+      modelProviderInputSchema.safeParse(provider({ options: { includeUsage: true } })).success,
+    ).toBe(true);
   });
 
   it('校验会把格式不支持的选项报成配置问题', () => {
@@ -150,21 +168,48 @@ describe('API 格式、选项与密钥来源', () => {
       [codegenAlias(), routeAlias()],
       policy,
     );
-    expect(issues.some(issue => issue.includes('不支持选项 includeUsage'))).toBe(true);
+    expect(issues.some((issue) => issue.includes('不支持选项 includeUsage'))).toBe(true);
   });
 
   it('直接输入的密钥在写入口径是明文、存储口径只有密文', () => {
-    expect(modelProviderWriteSchema.safeParse(providerWrite({ apiKeySource: 'inline' })).success).toBe(true);
-    expect(modelProviderWriteSchema.safeParse(providerWrite({ apiKeySource: 'inline', apiKey: '' })).success).toBe(true);
-    expect(modelProviderWriteSchema.safeParse(providerWrite({ apiKeySource: 'inline', apiKey: 'x'.repeat(1025) })).success).toBe(false);
-    expect(modelProviderInputSchema.safeParse(provider({ apiKeySource: 'inline' })).success).toBe(true);
-    expect(modelProviderInputSchema.safeParse(providerWrite({ apiKeySource: 'inline' })).success).toBe(false);
-    expect(modelProviderWriteSchema.safeParse(provider({ apiKeySource: 'inline' })).success).toBe(false);
+    expect(
+      modelProviderWriteSchema.safeParse(providerWrite({ apiKeySource: 'inline' })).success,
+    ).toBe(true);
+    expect(
+      modelProviderWriteSchema.safeParse(providerWrite({ apiKeySource: 'inline', apiKey: '' }))
+        .success,
+    ).toBe(true);
+    expect(
+      modelProviderWriteSchema.safeParse(
+        providerWrite({ apiKeySource: 'inline', apiKey: 'x'.repeat(1025) }),
+      ).success,
+    ).toBe(false);
+    expect(modelProviderInputSchema.safeParse(provider({ apiKeySource: 'inline' })).success).toBe(
+      true,
+    );
+    expect(
+      modelProviderInputSchema.safeParse(providerWrite({ apiKeySource: 'inline' })).success,
+    ).toBe(false);
+    expect(modelProviderWriteSchema.safeParse(provider({ apiKeySource: 'inline' })).success).toBe(
+      false,
+    );
   });
 
   it('两种来源都要求各自的密钥字段', () => {
-    expect(modelProviderInputSchema.safeParse({ ...provider(), apiKeySource: 'inline', apiKeyEnv: 'AI_API_KEY' }).success).toBe(false);
-    expect(modelProviderWriteSchema.safeParse({ ...providerWrite(), apiKeySource: 'env', apiKey: 'sk-test' }).success).toBe(false);
+    expect(
+      modelProviderInputSchema.safeParse({
+        ...provider(),
+        apiKeySource: 'inline',
+        apiKeyEnv: 'AI_API_KEY',
+      }).success,
+    ).toBe(false);
+    expect(
+      modelProviderWriteSchema.safeParse({
+        ...providerWrite(),
+        apiKeySource: 'env',
+        apiKey: 'sk-test',
+      }).success,
+    ).toBe(false);
   });
 
   it('思考开关只对 openai-chat 生效，且只接受开关枚举', () => {
@@ -172,16 +217,21 @@ describe('API 格式、选项与密钥来源', () => {
     expect(providerOptionKeysByFormat['openai-chat']).toContain('thinkingSwitch');
     expect(providerOptionKeysByFormat['openai-responses']).toEqual([]);
     expect(providerOptionKeysByFormat['anthropic-messages']).toEqual([]);
-    expect(modelProviderInputSchema.safeParse(provider({ options: { thinkingSwitch: 'disabled' } })).success).toBe(true);
+    expect(
+      modelProviderInputSchema.safeParse(provider({ options: { thinkingSwitch: 'disabled' } }))
+        .success,
+    ).toBe(true);
     const invalidSwitch: unknown = { ...provider(), options: { thinkingSwitch: 'off' } };
     expect(modelProviderInputSchema.safeParse(invalidSwitch).success).toBe(false);
-    expect(providerOptionsIssue('openai-responses', { thinkingSwitch: 'enabled' })).toContain('不支持选项 thinkingSwitch');
+    expect(providerOptionsIssue('openai-responses', { thinkingSwitch: 'enabled' })).toContain(
+      '不支持选项 thinkingSwitch',
+    );
     const issues = modelConfigIssues(
       [provider({ apiFormat: 'anthropic-messages', options: { thinkingSwitch: 'enabled' } })],
       [codegenAlias(), routeAlias()],
       policy,
     );
-    expect(issues.some(issue => issue.includes('不支持选项 thinkingSwitch'))).toBe(true);
+    expect(issues.some((issue) => issue.includes('不支持选项 thinkingSwitch'))).toBe(true);
   });
 });
 
@@ -191,22 +241,40 @@ describe('提供商自定义请求头', () => {
   it('可选：缺省与空集合都合法，普通自定义头通过', () => {
     expect(modelProviderInputSchema.safeParse(provider()).success).toBe(true);
     expect(modelProviderInputSchema.safeParse(withHeaders({})).success).toBe(true);
-    const valid = { 'User-Agent': 'paimeng-ai-code-mother/1.0', 'HTTP-Referer': 'https://example.test', 'X-Title': 'paimeng' };
+    const valid = {
+      'User-Agent': 'paimeng-ai-code-mother/1.0',
+      'HTTP-Referer': 'https://example.test',
+      'X-Title': 'paimeng',
+    };
     expect(modelProviderInputSchema.safeParse(withHeaders(valid)).success).toBe(true);
-    expect(modelProviderWriteSchema.safeParse({ ...providerWrite(), headers: { 'X-Title': 'paimeng' } }).success).toBe(true);
+    expect(
+      modelProviderWriteSchema.safeParse({ ...providerWrite(), headers: { 'X-Title': 'paimeng' } })
+        .success,
+    ).toBe(true);
   });
 
   it('拒绝由系统生成的鉴权与传输头（名称大小写不敏感）', () => {
-    for (const name of ['authorization', 'Authorization', 'X-Api-Key', 'x-goog-api-key', 'Host', 'Content-Length', 'Connection', 'Transfer-Encoding']) {
+    for (const name of [
+      'authorization',
+      'Authorization',
+      'X-Api-Key',
+      'x-goog-api-key',
+      'Host',
+      'Content-Length',
+      'Connection',
+      'Transfer-Encoding',
+    ]) {
       expect(modelProviderInputSchema.safeParse(withHeaders({ [name]: 'x' })).success).toBe(false);
     }
   });
 
   it('拒绝名称大小写重复', () => {
-    const result = modelProviderInputSchema.safeParse(withHeaders({ 'X-Title': 'a', 'x-title': 'b' }));
+    const result = modelProviderInputSchema.safeParse(
+      withHeaders({ 'X-Title': 'a', 'x-title': 'b' }),
+    );
     expect(result.success).toBe(false);
     if (result.success) return;
-    expect(result.error.issues.some(issue => issue.message.includes('重复'))).toBe(true);
+    expect(result.error.issues.some((issue) => issue.message.includes('重复'))).toBe(true);
   });
 
   it('拒绝非法名称字符与 CRLF 注入', () => {
@@ -217,17 +285,35 @@ describe('提供商自定义请求头', () => {
 
   it('拒绝控制字符、CRLF 与首尾空白的请求头值', () => {
     for (const value of ['bad\nvalue', 'bad\rvalue', 'bad\u0000value', ' padded', 'padded ', '']) {
-      expect(modelProviderInputSchema.safeParse(withHeaders({ 'X-Title': value })).success).toBe(false);
+      expect(modelProviderInputSchema.safeParse(withHeaders({ 'X-Title': value })).success).toBe(
+        false,
+      );
     }
-    expect(modelProviderInputSchema.safeParse(withHeaders({ 'X-Title': 'ok value' })).success).toBe(true);
+    expect(modelProviderInputSchema.safeParse(withHeaders({ 'X-Title': 'ok value' })).success).toBe(
+      true,
+    );
   });
 
   it('限制请求头数量与名称/值长度', () => {
-    const tooMany = Object.fromEntries(Array.from({ length: providerHeaderLimit + 1 }, (_value, index) => [`X-H-${index}`, 'v']));
+    const tooMany = Object.fromEntries(
+      Array.from({ length: providerHeaderLimit + 1 }, (_value, index) => [`X-H-${index}`, 'v']),
+    );
     expect(modelProviderInputSchema.safeParse(withHeaders(tooMany)).success).toBe(false);
-    expect(modelProviderInputSchema.safeParse(withHeaders({ [`X-${'a'.repeat(providerHeaderNameLimit)}`]: 'v' })).success).toBe(false);
-    expect(modelProviderInputSchema.safeParse(withHeaders({ 'X-Title': 'v'.repeat(providerHeaderValueLimit + 1) })).success).toBe(false);
-    expect(modelProviderInputSchema.safeParse(withHeaders({ 'X-Title': 'v'.repeat(providerHeaderValueLimit) })).success).toBe(true);
+    expect(
+      modelProviderInputSchema.safeParse(
+        withHeaders({ [`X-${'a'.repeat(providerHeaderNameLimit)}`]: 'v' }),
+      ).success,
+    ).toBe(false);
+    expect(
+      modelProviderInputSchema.safeParse(
+        withHeaders({ 'X-Title': 'v'.repeat(providerHeaderValueLimit + 1) }),
+      ).success,
+    ).toBe(false);
+    expect(
+      modelProviderInputSchema.safeParse(
+        withHeaders({ 'X-Title': 'v'.repeat(providerHeaderValueLimit) }),
+      ).success,
+    ).toBe(true);
   });
 });
 
@@ -250,7 +336,12 @@ describe('别名思考强度', () => {
   });
 
   it('选项键名单从 schema 派生，开关之外的键只有思考开关', () => {
-    expect(modelProviderOptionKeys).toEqual(['includeUsage', 'supportsStructuredOutputs', 'supportsMultiPartToolContent', 'thinkingSwitch']);
+    expect(modelProviderOptionKeys).toEqual([
+      'includeUsage',
+      'supportsStructuredOutputs',
+      'supportsMultiPartToolContent',
+      'thinkingSwitch',
+    ]);
   });
 });
 
@@ -283,12 +374,16 @@ describe('模型地址校验', () => {
     expect(modelBaseUrlIssue('http://172.32.0.1/v1', policy)).not.toBeNull();
     expect(modelBaseUrlIssue('http://192.169.1.1/v1', policy)).not.toBeNull();
     expect(modelBaseUrlIssue('http://169.254.169.254/latest', policy)).not.toBeNull();
-    expect(modelBaseUrlIssue('http://127.0.0.1:8080/v1', { internalOrigins: ['http://127.0.0.1:8080'] })).toBeNull();
+    expect(
+      modelBaseUrlIssue('http://127.0.0.1:8080/v1', { internalOrigins: ['http://127.0.0.1:8080'] }),
+    ).toBeNull();
   });
 
   it('拒绝内嵌凭据、查询参数、片段与非 HTTP(S)', () => {
     expect(modelBaseUrlIssue('https://user:secret@api.openai.com/v1', policy)).toContain('凭据');
-    expect(modelBaseUrlIssue('https://api.openai.com/v1?api_key=secret', policy)).toContain('查询参数');
+    expect(modelBaseUrlIssue('https://api.openai.com/v1?api_key=secret', policy)).toContain(
+      '查询参数',
+    );
     expect(modelBaseUrlIssue('https://api.openai.com/v1#frag', policy)).toContain('片段');
     expect(modelBaseUrlIssue('ftp://api.openai.com', policy)).toContain('HTTP(S)');
     expect(modelBaseUrlIssue('not a url', policy)).toContain('绝对 URL');
@@ -297,13 +392,25 @@ describe('模型地址校验', () => {
 
 describe('部署允许名单配置', () => {
   it('合法条目通过', () => {
-    expect(modelConfigListIssues(['PRIMARY_KEY'], ['http://127.0.0.1:8080', 'https://gateway.example'])).toEqual([]);
+    expect(
+      modelConfigListIssues(['PRIMARY_KEY'], ['http://127.0.0.1:8080', 'https://gateway.example']),
+    ).toEqual([]);
     expect(modelInternalOriginIssue('http://127.0.0.1:8080')).toBeNull();
   });
 
   it('非法条目被拒且不回显条目内容', () => {
-    expect(modelConfigListIssues(['lowercase'], [])).toEqual(['MODEL_API_KEY_ENV_ALLOWLIST 第 1 项不是合法的环境变量名']);
-    const issues = modelConfigListIssues([], ['http://user:secret@gateway.example', 'http://gateway.example/path', 'ftp://gateway.example', 'not a url']);
+    expect(modelConfigListIssues(['lowercase'], [])).toEqual([
+      'MODEL_API_KEY_ENV_ALLOWLIST 第 1 项不是合法的环境变量名',
+    ]);
+    const issues = modelConfigListIssues(
+      [],
+      [
+        'http://user:secret@gateway.example',
+        'http://gateway.example/path',
+        'ftp://gateway.example',
+        'not a url',
+      ],
+    );
     expect(issues).toHaveLength(4);
     expect(issues.join('；')).not.toContain('secret');
     expect(issues[1]).toContain('第 2 项');
@@ -317,20 +424,60 @@ describe('完整候选配置校验', () => {
 
   it('缺少必需槽位会被拒绝；停用与能力变化留给分配时检查', () => {
     const missing = modelConfigIssues([provider()], [codegenAlias()], policy);
-    expect(missing.some(issue => issue.includes('缺少必需槽位类型路由（route.classify）'))).toBe(true);
-    expect(missing.some(issue => issue.includes('无法识别工程类型'))).toBe(true);
-    expect(modelConfigIssues([provider()], [codegenAlias({ enabled: false }), routeAlias()], policy)).toEqual([]);
-    expect(modelConfigIssues([provider()], [codegenAlias({ capabilities: { streaming: true, toolCalling: false, structuredOutput: false, imageInput: false } }), routeAlias()], policy)).toEqual([]);
-    expect(modelConfigIssues([provider({ enabled: false })], [codegenAlias(), routeAlias()], policy)).toEqual([]);
+    expect(missing.some((issue) => issue.includes('缺少必需槽位类型路由（route.classify）'))).toBe(
+      true,
+    );
+    expect(missing.some((issue) => issue.includes('无法识别工程类型'))).toBe(true);
+    expect(
+      modelConfigIssues([provider()], [codegenAlias({ enabled: false }), routeAlias()], policy),
+    ).toEqual([]);
+    expect(
+      modelConfigIssues(
+        [provider()],
+        [
+          codegenAlias({
+            capabilities: {
+              streaming: true,
+              toolCalling: false,
+              structuredOutput: false,
+              imageInput: false,
+            },
+          }),
+          routeAlias(),
+        ],
+        policy,
+      ),
+    ).toEqual([]);
+    expect(
+      modelConfigIssues([provider({ enabled: false })], [codegenAlias(), routeAlias()], policy),
+    ).toEqual([]);
   });
 
   it('别名必须指向存在的提供商', () => {
-    expect(modelConfigIssues([provider()], [codegenAlias({ providerId: 'missing' }), routeAlias({ providerId: 'missing' })], policy).some(issue => issue.includes('不存在的提供商'))).toBe(true);
+    expect(
+      modelConfigIssues(
+        [provider()],
+        [codegenAlias({ providerId: 'missing' }), routeAlias({ providerId: 'missing' })],
+        policy,
+      ).some((issue) => issue.includes('不存在的提供商')),
+    ).toBe(true);
   });
 
   it('未允许的密钥引用与非法地址会被拒绝', () => {
-    expect(modelConfigIssues([provider({ apiKeyEnv: 'PRIMARY_KEY' })], [codegenAlias(), routeAlias()], policy).some(issue => issue.includes('未允许的环境变量'))).toBe(true);
-    expect(modelConfigIssues([provider({ baseUrl: 'http://evil.example/v1' })], [codegenAlias(), routeAlias()], policy).some(issue => issue.includes('地址不合法'))).toBe(true);
+    expect(
+      modelConfigIssues(
+        [provider({ apiKeyEnv: 'PRIMARY_KEY' })],
+        [codegenAlias(), routeAlias()],
+        policy,
+      ).some((issue) => issue.includes('未允许的环境变量')),
+    ).toBe(true);
+    expect(
+      modelConfigIssues(
+        [provider({ baseUrl: 'http://evil.example/v1' })],
+        [codegenAlias(), routeAlias()],
+        policy,
+      ).some((issue) => issue.includes('地址不合法')),
+    ).toBe(true);
   });
 });
 
@@ -349,24 +496,39 @@ describe('槽位清单', () => {
   it('仅有两个必需槽位，四个槽位编号唯一', () => {
     expect([...requiredModelAliases]).toEqual(['codegen.default', 'route.classify']);
     expect(modelSlots).toHaveLength(4);
-    expect(new Set(modelSlots.map(slot => slot.slot)).size).toBe(4);
+    expect(new Set(modelSlots.map((slot) => slot.slot)).size).toBe(4);
   });
 
   it('槽位要求能生成满足要求的能力声明', () => {
     for (const slot of modelSlots) {
       const capabilities = capabilitiesForSlot(slot);
       expect(missingSlotCapabilities(slot, capabilities)).toEqual([]);
-      expect(missingSlotCapabilities(slot, { ...capabilities, ...Object.fromEntries(slot.requires.map(requirement => [requirement, false])) }))
-        .toEqual([...slot.requires]);
+      expect(
+        missingSlotCapabilities(slot, {
+          ...capabilities,
+          ...Object.fromEntries(slot.requires.map((requirement) => [requirement, false])),
+        }),
+      ).toEqual([...slot.requires]);
     }
-    expect(capabilitiesForSlot(modelSlotOf('codegen.default') ?? modelSlots[0])).toEqual({ streaming: true, toolCalling: true, structuredOutput: false, imageInput: false });
-    expect(capabilitiesForSlot(modelSlotOf('route.classify') ?? modelSlots[1])).toEqual({ streaming: false, toolCalling: false, structuredOutput: true, imageInput: false });
+    expect(capabilitiesForSlot(modelSlotOf('codegen.default') ?? modelSlots[0])).toEqual({
+      streaming: true,
+      toolCalling: true,
+      structuredOutput: false,
+      imageInput: false,
+    });
+    expect(capabilitiesForSlot(modelSlotOf('route.classify') ?? modelSlots[1])).toEqual({
+      streaming: false,
+      toolCalling: false,
+      structuredOutput: true,
+      imageInput: false,
+    });
   });
 
   it('每个能力都有中文名，未配置后果不为空', () => {
     for (const slot of modelSlots) {
       expect(slot.missingImpact.length).toBeGreaterThan(0);
-      for (const requirement of slot.requires) expect(modelCapabilityLabels[requirement].length).toBeGreaterThan(0);
+      for (const requirement of slot.requires)
+        expect(modelCapabilityLabels[requirement].length).toBeGreaterThan(0);
     }
     expect(modelSlotOf('unknown.slot')).toBeNull();
   });

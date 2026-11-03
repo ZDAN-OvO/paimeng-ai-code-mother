@@ -1,4 +1,3 @@
-
 export function appOrigin(): string {
   return process.env.APP_ORIGIN ?? 'http://localhost:3000';
 }

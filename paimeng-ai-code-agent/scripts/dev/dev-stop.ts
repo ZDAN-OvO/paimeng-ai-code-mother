@@ -13,16 +13,19 @@ const statePath = join(root, 'runtime', 'dev-processes.json');
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 function groupAlive(pid: number): boolean {
-  try { process.kill(-pid, 0); return true; }
-  catch (error) {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
     throw error;
   }
 }
 
 function signalGroup(pid: number, value: NodeJS.Signals): void {
-  try { process.kill(-pid, value); }
-  catch (error) {
+  try {
+    process.kill(-pid, value);
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
   }
 }
@@ -44,9 +47,12 @@ function isProjectProcess(pid: number): boolean {
   try {
     if (realpathSync(`/proc/${pid}/cwd`) === root) return true;
   } catch {
+    // 进程可能已经退出；继续用 ps 确认归属。
   }
   try {
-    return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).includes(root);
+    return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).includes(
+      root,
+    );
   } catch {
     return false;
   }
@@ -55,13 +61,17 @@ function isProjectProcess(pid: number): boolean {
 function isProjectGroup(pid: number): boolean {
   if (!groupAlive(pid)) return false;
   const commands = commandsInGroup(pid);
-  return commands.some((command) => command.includes(root) || command.includes('paimeng-ai-code-agent'));
+  return commands.some(
+    (command) => command.includes(root) || command.includes('paimeng-ai-code-agent'),
+  );
 }
 
 function removeState(): void {
-  try { unlinkSync(statePath); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.warn(`无法删除 ${statePath}：${(error as Error).message}`);
+  try {
+    unlinkSync(statePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+      console.warn(`无法删除 ${statePath}：${(error as Error).message}`);
   }
 }
 
@@ -79,8 +89,12 @@ try {
 }
 
 const parentPid = Number(state.parentPid);
-const groups = (state.children ?? []).map((child) => child.pid).filter((pid) => Number.isInteger(pid) && pid > 0);
-console.log(`上次开发进程启动于 ${state.startedAt}；父进程 ${parentPid}，子进程组 ${groups.join(', ') || '无'}`);
+const groups = (state.children ?? [])
+  .map((child) => child.pid)
+  .filter((pid) => Number.isInteger(pid) && pid > 0);
+console.log(
+  `上次开发进程启动于 ${state.startedAt}；父进程 ${parentPid}，子进程组 ${groups.join(', ') || '无'}`,
+);
 
 if (isProjectProcess(parentPid)) {
   try {
@@ -102,8 +116,9 @@ for (const pid of groupsToStop) {
   if (groupAlive(pid)) signalGroup(pid, 'SIGKILL');
 }
 if (isProjectProcess(parentPid)) {
-  try { process.kill(parentPid, 'SIGKILL'); }
-  catch (error) {
+  try {
+    process.kill(parentPid, 'SIGKILL');
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
   }
 }

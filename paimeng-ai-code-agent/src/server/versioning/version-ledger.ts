@@ -94,12 +94,18 @@ export async function listVersionShas(appId: string): Promise<string[]> {
     .select({ commitSha: versionRecords.commitSha })
     .from(versionRecords)
     .where(eq(versionRecords.appId, BigInt(appId)));
-  return rows.map(row => row.commitSha);
+  return rows.map((row) => row.commitSha);
 }
 
 /** 只改标题：回填脚本重算概述时用，不动版本本身与时间。 */
-export async function setVersionTitle(appId: string, commitSha: string, title: string): Promise<void> {
-  await db().update(versionRecords).set({ title: clipTitle(title) })
+export async function setVersionTitle(
+  appId: string,
+  commitSha: string,
+  title: string,
+): Promise<void> {
+  await db()
+    .update(versionRecords)
+    .set({ title: clipTitle(title) })
     .where(and(eq(versionRecords.appId, BigInt(appId)), eq(versionRecords.commitSha, commitSha)));
 }
 

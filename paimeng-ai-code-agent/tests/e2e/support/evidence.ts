@@ -16,7 +16,11 @@ const day = [
  * `E2E_EVIDENCE_ROOT` 把它指到自己的证据目录，这样一次证明的截图、日志和报告
  * 落在同一个可整包带走的位置，而不是散在 runtime/ 里等着被下一次运行覆盖。
  */
-const root = join(process.env.E2E_EVIDENCE_ROOT ?? fileURLToPath(new URL('../../../runtime/evidence', import.meta.url)), day);
+const root = join(
+  process.env.E2E_EVIDENCE_ROOT ??
+    fileURLToPath(new URL('../../../runtime/evidence', import.meta.url)),
+  day,
+);
 
 /** Return a dated evidence directory under the evidence root, creating it. */
 export function evidenceDir(...parts: string[]): string {

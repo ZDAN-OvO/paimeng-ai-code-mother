@@ -12,7 +12,8 @@ import 'server-only';
  */
 export function rewriteReasoningLine(line: string): string {
   if (!line.includes('response.reasoning_text.delta')) return line;
-  if (line.startsWith('event:')) return line.replace('response.reasoning_text.delta', 'response.reasoning_summary_text.delta');
+  if (line.startsWith('event:'))
+    return line.replace('response.reasoning_text.delta', 'response.reasoning_summary_text.delta');
   if (!line.startsWith('data:')) return line;
   const payload = line.slice(5).trim();
   if (!payload || payload === '[DONE]') return line;
@@ -40,7 +41,8 @@ export function reasoningEventStream(): TransformStream<Uint8Array, Uint8Array> 
       buffer += decoder.decode(chunk, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
-      for (const line of lines) controller.enqueue(encoder.encode(`${rewriteReasoningLine(line)}\n`));
+      for (const line of lines)
+        controller.enqueue(encoder.encode(`${rewriteReasoningLine(line)}\n`));
     },
     flush(controller) {
       if (buffer) controller.enqueue(encoder.encode(rewriteReasoningLine(buffer)));
@@ -55,14 +57,19 @@ export function reasoningJsonToSummary(body: unknown): unknown {
   if (!Array.isArray(output)) return body;
   return {
     ...(body as Record<string, unknown>),
-    output: output.map(item => {
+    output: output.map((item) => {
       if (!item || typeof item !== 'object') return item;
       const reasoning = item as { type?: unknown; content?: unknown; summary?: unknown };
       if (reasoning.type !== 'reasoning' || !Array.isArray(reasoning.content)) return item;
       if (Array.isArray(reasoning.summary) && reasoning.summary.length) return item;
       const summary = reasoning.content
-        .filter(part => !!part && typeof part === 'object' && (part as { type?: unknown }).type === 'reasoning_text')
-        .map(part => ({ type: 'summary_text', text: (part as { text?: unknown }).text ?? '' }));
+        .filter(
+          (part) =>
+            !!part &&
+            typeof part === 'object' &&
+            (part as { type?: unknown }).type === 'reasoning_text',
+        )
+        .map((part) => ({ type: 'summary_text', text: (part as { text?: unknown }).text ?? '' }));
       return summary.length ? { ...reasoning, summary } : item;
     }),
   };
@@ -79,13 +86,13 @@ export function normalizeResponsesJson(body: unknown): unknown {
   if (!Array.isArray(output)) return withSummary;
   return {
     ...(withSummary as Record<string, unknown>),
-    output: output.map(item => {
+    output: output.map((item) => {
       if (!item || typeof item !== 'object') return item;
       const message = item as { type?: unknown; content?: unknown };
       if (message.type !== 'message' || !Array.isArray(message.content)) return item;
       return {
         ...message,
-        content: message.content.map(part => {
+        content: message.content.map((part) => {
           if (!part || typeof part !== 'object') return part;
           const content = part as { type?: unknown; annotations?: unknown };
           if (content.type !== 'output_text' || Array.isArray(content.annotations)) return part;

@@ -12,17 +12,13 @@ if (!postgresReady) process.stderr.write(`[storage-pg] 跳过：Postgres 不可�
  * advisory lock，验证自定义 Postgres 存储与 SDK 期望的原子性/游标/文档语义一致。
  */
 describe.skipIf(!postgresReady)('PostgresStorage：pi-durable 1.4.0 conformance', () => {
-  registerStorageConformance(
-    { describe, expect, it },
-    'postgres',
-    async (use) => {
-      await resetPostgresStorage({ connectionString: postgresUrl });
-      const storage = await PostgresStorage.open({ connectionString: postgresUrl });
-      try {
-        await use(storage);
-      } finally {
-        await storage.close(context);
-      }
-    },
-  );
+  registerStorageConformance({ describe, expect, it }, 'postgres', async (useStorage) => {
+    await resetPostgresStorage({ connectionString: postgresUrl });
+    const storage = await PostgresStorage.open({ connectionString: postgresUrl });
+    try {
+      await useStorage(storage);
+    } finally {
+      await storage.close(context);
+    }
+  });
 });

@@ -1,13 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { defineExtension, defineTask, Harness, type HarnessOptions, type ReportInfo, type TaskId } from '@earendil-works/pi-durable';
+import {
+  defineExtension,
+  defineTask,
+  Harness,
+  type HarnessOptions,
+  type ReportInfo,
+  type TaskId,
+} from '@earendil-works/pi-durable';
 import pg from 'pg';
-import { context, createHarnessRegistry, durableModels } from '@/server/generation/durable/harness';
+import {
+  buildHarnessOptions,
+  context,
+  createHarnessRegistry,
+  durableModels,
+} from '@/server/generation/durable/harness';
 import { PostgresStorage, resetPostgresStorage } from '@/server/generation/durable/storage-pg';
-import { buildHarnessOptions } from '@/server/generation/durable/harness';
 import { postgresReachable, postgresUrl } from './support';
 
 const postgresReady = await postgresReachable(postgresUrl);
-if (!postgresReady) process.stderr.write(`[durable-sleep] 跳过：Postgres 不可达（${postgresUrl}）\n`);
+if (!postgresReady)
+  process.stderr.write(`[durable-sleep] 跳过：Postgres 不可达（${postgresUrl}）\n`);
 
 type SleepState = { phase: 'wait' } | { phase: 'finish' };
 
@@ -20,17 +32,23 @@ const sleepTask = defineTask<Record<string, never>, SleepState, { wokeAt: number
       await runtime.sleepUntil(runtime.now() + 60_000, { phase: 'finish' }, ctx);
     },
     finish: async (_task, runtime, ctx) => {
-      await runtime.commit(() => ({
-        status: 'terminal',
-        outcome: { status: 'completed', result: { wokeAt: runtime.now() } },
-      }), ctx);
+      await runtime.commit(
+        () => ({
+          status: 'terminal',
+          outcome: { status: 'completed', result: { wokeAt: runtime.now() } },
+        }),
+        ctx,
+      );
     },
   },
   abort: async (_task, runtime, ctx) => {
-    await runtime.commit(() => ({
-      status: 'terminal',
-      outcome: { status: 'faulted', error: { message: 'aborted' } },
-    }), ctx);
+    await runtime.commit(
+      () => ({
+        status: 'terminal',
+        outcome: { status: 'faulted', error: { message: 'aborted' } },
+      }),
+      ctx,
+    );
   },
 });
 
@@ -78,13 +96,18 @@ describe.skipIf(!postgresReady)('pi-durable 1.4.0：durable sleep 与自定义�
     let id: TaskId<{ wokeAt: number }>;
     try {
       const root = await first.harness.root(context);
-      id = await root.commit((tx) => tx.createTask(sleepTask, {}, { ownership: { kind: 'conversation' } }), context);
+      id = await root.commit(
+        (tx) => tx.createTask(sleepTask, {}, { ownership: { kind: 'conversation' } }),
+        context,
+      );
       first.harness.resume();
       await waitForSleep(first.harness, id);
 
       const record = await first.harness.getTask(id, context);
       expect(record?.state.status).toBe('sleeping');
-      expect(record?.state.status === 'sleeping' ? record.state.until : undefined).toBe(start + 60_000);
+      expect(record?.state.status === 'sleeping' ? record.state.until : undefined).toBe(
+        start + 60_000,
+      );
       expect(record?.restarts ?? 0).toBe(0);
 
       const inspection = await first.harness.inspect(context);
@@ -110,7 +133,9 @@ describe.skipIf(!postgresReady)('pi-durable 1.4.0：durable sleep 与自定义�
       second.harness.resume();
       const settled = await second.harness.waitForTask<{ wokeAt: number }>(id, context);
       expect(settled.state.outcome.status).toBe('completed');
-      expect(settled.state.outcome.status === 'completed' ? settled.state.outcome.result : undefined).toEqual({ wokeAt: clock });
+      expect(
+        settled.state.outcome.status === 'completed' ? settled.state.outcome.result : undefined,
+      ).toEqual({ wokeAt: clock });
     } finally {
       await second.harness.close(context);
       await second.storage.close(context);
@@ -140,7 +165,9 @@ describe.skipIf(!postgresReady)('pi-durable 1.4.0：durable sleep 与自定义�
     const check = new pg.Client({ connectionString: postgresUrl });
     await check.connect();
     try {
-      const version = await check.query<{ version: number }>('SELECT version FROM durable_schema WHERE singleton = 1');
+      const version = await check.query<{ version: number }>(
+        'SELECT version FROM durable_schema WHERE singleton = 1',
+      );
       expect(version.rows[0]?.version).toBe(2);
       const definition = await check.query<{ definition: string }>(
         "SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname = 'tasks_status_check'",
@@ -153,7 +180,9 @@ describe.skipIf(!postgresReady)('pi-durable 1.4.0：durable sleep 与自定义�
          VALUES ($1, 1, 'test.sleep', 'sleeping', false, false, $2)`,
         [987654321, '{}'],
       );
-      const count = await check.query<{ count: number }>("SELECT count(*)::int AS count FROM tasks WHERE status = 'sleeping'");
+      const count = await check.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM tasks WHERE status = 'sleeping'",
+      );
       expect(count.rows[0]?.count).toBe(1);
 
       // 比当前支持版本更新的库必须明确拒绝，而不是带着未知结构继续跑。
@@ -163,7 +192,9 @@ describe.skipIf(!postgresReady)('pi-durable 1.4.0：durable sleep 与自定义�
       await check.end();
     }
 
-    await expect(PostgresStorage.open({ connectionString: postgresUrl })).rejects.toThrow(/newer than supported/);
+    await expect(PostgresStorage.open({ connectionString: postgresUrl })).rejects.toThrow(
+      /newer than supported/,
+    );
     await resetPostgresStorage({ connectionString: postgresUrl });
   }, 30_000);
 });

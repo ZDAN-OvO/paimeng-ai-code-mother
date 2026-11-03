@@ -5,7 +5,9 @@ import { appOrigin } from './app-origin';
 export const proofAccount = process.env.E2E_PROOF_ACCOUNT ?? 'paimeng666';
 const suppliedPassword = process.env.E2E_PROOF_PASSWORD;
 if (!suppliedPassword) {
-  throw new Error('E2E_PROOF_PASSWORD is required for the reliability proof; pass it through the environment.');
+  throw new Error(
+    'E2E_PROOF_PASSWORD is required for the reliability proof; pass it through the environment.',
+  );
 }
 const proofPassword: string = suppliedPassword;
 
@@ -13,7 +15,9 @@ const proofPassword: string = suppliedPassword;
  * Register the proof account if this test database does not have it, then sign in
  * through the real login form. Returns the session user for the proof artifact.
  */
-export async function loginAsProofAccount(page: Page): Promise<{ id: string; userAccount: string }> {
+export async function loginAsProofAccount(
+  page: Page,
+): Promise<{ id: string; userAccount: string }> {
   const origin = appOrigin();
   const registered = await page.request.post('/api/user/register', {
     headers: { origin },
@@ -26,7 +30,10 @@ export async function loginAsProofAccount(page: Page): Promise<{ id: string; use
   await page.goto('/user/login');
   await page.getByLabel('账号', { exact: true }).fill(proofAccount);
   await page.getByLabel('密码', { exact: true }).fill(proofPassword);
-  await page.locator('form').getByRole('button', { name: /^登\s*录$/ }).click();
+  await page
+    .locator('form')
+    .getByRole('button', { name: /^登\s*录$/ })
+    .click();
   await expect(page).toHaveURL('/', { timeout: 20_000 });
 
   const session = await page.request.get('/api/user/get/login', { headers: { origin } });

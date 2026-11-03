@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadPromptSafetyRules, promptSafetyRules, resetPromptSafetyRules } from '@/server/generation/prompt-safety-rules';
+import {
+  loadPromptSafetyRules,
+  promptSafetyRules,
+  resetPromptSafetyRules,
+} from '@/server/generation/prompt-safety-rules';
 
 let directory: string;
 
@@ -12,7 +16,9 @@ function ruleFile(name: string, content: unknown) {
   return path;
 }
 
-beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'prompt-safety-')); });
+beforeEach(() => {
+  directory = mkdtempSync(join(tmpdir(), 'prompt-safety-'));
+});
 afterEach(() => {
   rmSync(directory, { recursive: true, force: true });
   delete process.env.PROMPT_SAFETY_RULES_PATH;
@@ -31,7 +37,10 @@ describe('输入护轨规则文件', () => {
   });
 
   it('从指定路径读取，不改代码即可换词表', () => {
-    const path = ruleFile('rules.json', { sensitiveWords: ['内部代号'], injectionPatterns: ['^forbidden$'] });
+    const path = ruleFile('rules.json', {
+      sensitiveWords: ['内部代号'],
+      injectionPatterns: ['^forbidden$'],
+    });
     const rules = loadPromptSafetyRules(path);
     expect(rules.lowercasedWords).toEqual(['内部代号']);
     expect(rules.injectionPatterns[0].test('FORBIDDEN')).toBe(true);
@@ -39,11 +48,16 @@ describe('输入护轨规则文件', () => {
 
   it('允许空规则：想停用护轨必须在文件里显式写明', () => {
     const path = ruleFile('empty.json', { sensitiveWords: [], injectionPatterns: [] });
-    expect(loadPromptSafetyRules(path)).toMatchObject({ sensitiveWords: [], injectionPatterns: [] });
+    expect(loadPromptSafetyRules(path)).toMatchObject({
+      sensitiveWords: [],
+      injectionPatterns: [],
+    });
   });
 
   it('文件不存在直接抛错，不退化成不设防', () => {
-    expect(() => loadPromptSafetyRules(join(directory, 'missing.json'))).toThrow(/无法读取输入护轨规则文件/);
+    expect(() => loadPromptSafetyRules(join(directory, 'missing.json'))).toThrow(
+      /无法读取输入护轨规则文件/,
+    );
   });
 
   it('JSON 非法直接抛错', () => {
@@ -57,7 +71,7 @@ describe('输入护轨规则文件', () => {
   });
 
   it('正则编不过直接抛错，并指出第几条', () => {
-    const path = ruleFile('regex.json', { sensitiveWords: [], injectionPatterns: ['(?' , 'ok'] });
+    const path = ruleFile('regex.json', { sensitiveWords: [], injectionPatterns: ['(?', 'ok'] });
     expect(() => loadPromptSafetyRules(path)).toThrow(/第 1 条注入正则无效/);
   });
 
@@ -66,7 +80,11 @@ describe('输入护轨规则文件', () => {
     process.env.PROMPT_SAFETY_RULES_PATH = path;
     expect(promptSafetyRules().lowercasedWords).toEqual(['第一版']);
     // 文件已改，但缓存还在：改规则要重启进程，运行中不会悄悄变。
-    writeFileSync(path, JSON.stringify({ sensitiveWords: ['第二版'], injectionPatterns: [] }), 'utf8');
+    writeFileSync(
+      path,
+      JSON.stringify({ sensitiveWords: ['第二版'], injectionPatterns: [] }),
+      'utf8',
+    );
     expect(promptSafetyRules().lowercasedWords).toEqual(['第一版']);
     resetPromptSafetyRules();
     expect(promptSafetyRules().lowercasedWords).toEqual(['第二版']);

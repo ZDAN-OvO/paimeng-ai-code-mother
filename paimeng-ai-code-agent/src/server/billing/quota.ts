@@ -4,8 +4,13 @@ import { db, now, type Transaction } from '@/server/infra/db';
 import { BusinessError } from '@/server/infra/http';
 import { creditLedger, users } from '@/server/infra/schema';
 import {
-  insufficientCreditsCode, insufficientCreditsMessage, monthlyQuotaCredits,
-  type AccountSummary, type CreditLedgerEntryView, type EffectiveQuotaPolicy, type QuotaPolicySource,
+  insufficientCreditsCode,
+  insufficientCreditsMessage,
+  monthlyQuotaCredits,
+  type AccountSummary,
+  type CreditLedgerEntryView,
+  type EffectiveQuotaPolicy,
+  type QuotaPolicySource,
 } from '@/shared/billing';
 import { accountSnapshot, insertLedgerTx, ledgerEntryView } from './ledger';
 import { ensureExpiryTx, lockBalance, rebuildBalanceTx } from './expiry';
@@ -50,21 +55,35 @@ export type MonthlyQuotaRun = {
 };
 
 function reasonOf(policy: EffectiveQuotaPolicy): string {
-  const source = policy.source === 'user' ? '用户覆盖' : policy.source === 'global' ? '全局默认' : policy.source === 'legacy' ? '历史发放' : '系统默认';
+  const source =
+    policy.source === 'user'
+      ? '用户覆盖'
+      : policy.source === 'global'
+        ? '全局默认'
+        : policy.source === 'legacy'
+          ? '历史发放'
+          : '系统默认';
   return `每月规则：${source}${policy.version === null ? '' : ` v${policy.version}`}`;
 }
 
 /** 读当期规则行（0 也算已发）。 */
 export async function ruleEntryOf(
-  run: ReturnType<typeof db> | Transaction, userId: bigint, period: string,
+  run: ReturnType<typeof db> | Transaction,
+  userId: bigint,
+  period: string,
 ): Promise<typeof creditLedger.$inferSelect | null> {
-  const [row] = await run.select().from(creditLedger)
-    .where(and(
-      eq(creditLedger.userId, userId),
-      eq(creditLedger.kind, 'quota'),
-      eq(creditLedger.origin, 'rule'),
-      eq(creditLedger.period, period),
-    )).limit(1);
+  const [row] = await run
+    .select()
+    .from(creditLedger)
+    .where(
+      and(
+        eq(creditLedger.userId, userId),
+        eq(creditLedger.kind, 'quota'),
+        eq(creditLedger.origin, 'rule'),
+        eq(creditLedger.period, period),
+      ),
+    )
+    .limit(1);
   return row ?? null;
 }
 
@@ -72,14 +91,22 @@ export async function ruleEntryOf(
  * 幂等地发放某一账期的限时积分（默认当前账期）。
  * 顺序：锁用户 → 补过期 → 查规则行 → 解析策略 → 写行 → 重算快照。
  */
-export async function ensurePeriodQuota(userId: string, at: Date = new Date()): Promise<PeriodQuotaResult> {
+export async function ensurePeriodQuota(
+  userId: string,
+  at: Date = new Date(),
+): Promise<PeriodQuotaResult> {
   const id = BigInt(userId);
   const period = periodOf(at);
-  return db().transaction(async tx => {
-    const [active] = await tx.select({ id: users.id }).from(users)
-      .where(and(eq(users.id, id), eq(users.isDelete, 0))).limit(1);
+  return db().transaction(async (tx) => {
+    const [active] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.id, id), eq(users.isDelete, 0)))
+      .limit(1);
     if (!active) throw new BusinessError(404, 40400, '用户不存在');
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`credit_ledger:rule:${userId}:${period}`}))`);
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`credit_ledger:rule:${userId}:${period}`}))`,
+    );
     await lockBalance(tx, id);
     await ensureExpiryTx(tx, userId, at);
 
@@ -113,8 +140,12 @@ export async function ensurePeriodQuota(userId: string, at: Date = new Date()): 
       const row = await ruleEntryOf(tx, id, period);
       if (!row) throw new BusinessError(409, 40900, '本期规则发放已存在，但无法定位对应条目');
       return {
-        granted: false, period, credits: row.credits, policySource: policy.source,
-        policyVersion: policy.version, entry: ledgerEntryView(row),
+        granted: false,
+        period,
+        credits: row.credits,
+        policySource: policy.source,
+        policyVersion: policy.version,
+        entry: ledgerEntryView(row),
       };
     }
     await rebuildBalanceTx(tx, userId, at);
@@ -133,14 +164,20 @@ export async function ensurePeriodQuota(userId: string, at: Date = new Date()): 
  * 新 Generation 的准入：先补当前账期与过期，再按账本可用额判定，≤ 0 就拒绝。
  * 不看 Overdraft：透支线是运行期熔断线，不是能拿来启动新生成的余额。
  */
-export async function assertCanStartGeneration(userId: string, at: Date = new Date()): Promise<void> {
+export async function assertCanStartGeneration(
+  userId: string,
+  at: Date = new Date(),
+): Promise<void> {
   const summary = await ensureCurrentPeriod(userId, at);
   if (summary.available > 0) return;
   throw new BusinessError(402, insufficientCreditsCode, insufficientCreditsMessage(summary));
 }
 
 /** 读额度摘要前的确保：补当期规则与过期，再返回一个数加两种口径。 */
-export async function ensureCurrentPeriod(userId: string, at: Date = new Date()): Promise<AccountSummary> {
+export async function ensureCurrentPeriod(
+  userId: string,
+  at: Date = new Date(),
+): Promise<AccountSummary> {
   const { period } = await ensurePeriodQuota(userId, at);
   const snapshot = await accountSnapshot(userId, at);
   return { ...snapshot, period };
@@ -151,30 +188,49 @@ export async function ensureCurrentPeriod(userId: string, at: Date = new Date())
  * 规则为 0 的用户也会被记一行，所以不会每次都被重复扫描。`dryRun` 只统计人数，不写库。
  */
 export async function issuePendingQuota(
-  options: { at?: Date; dryRun?: boolean; limit?: number; userIds?: readonly string[]; operatorId?: string } = {},
+  options: {
+    at?: Date;
+    dryRun?: boolean;
+    limit?: number;
+    userIds?: readonly string[];
+    operatorId?: string;
+  } = {},
 ): Promise<MonthlyQuotaRun> {
   const at = options.at ?? new Date();
   const dryRun = options.dryRun ?? false;
   const period = periodOf(at);
   const limit = options.limit ?? defaultIssueLimit;
-  const scope = options.userIds?.map(id => BigInt(id));
+  const scope = options.userIds?.map((id) => BigInt(id));
 
-  const issued = db().select({ userId: creditLedger.userId }).from(creditLedger)
-    .where(and(
-      eq(creditLedger.period, period),
-      eq(creditLedger.kind, 'quota'),
-      eq(creditLedger.origin, 'rule'),
-    ));
+  const issued = db()
+    .select({ userId: creditLedger.userId })
+    .from(creditLedger)
+    .where(
+      and(
+        eq(creditLedger.period, period),
+        eq(creditLedger.kind, 'quota'),
+        eq(creditLedger.origin, 'rule'),
+      ),
+    );
   const conditions = [eq(users.isDelete, 0), notInArray(users.id, issued)];
   if (scope?.length) conditions.push(inArray(users.id, scope));
-  const candidates = await db().select({ id: users.id }).from(users)
+  const candidates = await db()
+    .select({ id: users.id })
+    .from(users)
     .where(and(...conditions))
     .orderBy(asc(users.id))
     .limit(limit);
 
   const empty: MonthlyQuotaRun = {
-    period, dryRun, scanned: candidates.length, issued: 0, granted: 0, zero: 0, credits: 0,
-    operationId: null, failures: [],
+    period,
+    dryRun,
+    scanned: candidates.length,
+    issued: 0,
+    granted: 0,
+    zero: 0,
+    credits: 0,
+    operationId: null,
+    failures: [],
   };
   if (dryRun) return empty;
 
@@ -199,7 +255,10 @@ export async function issuePendingQuota(
       if (result.credits > 0) granted += 1;
       else zero += 1;
     } catch (error) {
-      failures.push({ userId: candidate.id.toString(), reason: error instanceof Error ? error.message : String(error) });
+      failures.push({
+        userId: candidate.id.toString(),
+        reason: error instanceof Error ? error.message : String(error),
+      });
     }
   }
   await finishOperation(operationId, {

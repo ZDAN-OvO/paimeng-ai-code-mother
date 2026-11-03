@@ -33,10 +33,14 @@ describe('透支线', () => {
 
 describe('近 60 天购买窗口', () => {
   it('起点是滚动 60×24 小时之前的 UTC 朴素时间戳', () => {
-    expect(purchaseWindowStart(new Date('2026-10-31T12:34:56.789Z'))).toBe('2026-09-01 12:34:56.789');
+    expect(purchaseWindowStart(new Date('2026-10-31T12:34:56.789Z'))).toBe(
+      '2026-09-01 12:34:56.789',
+    );
   });
 
   it('跨月与跨年按真实日历回退，不受月份长度影响', () => {
-    expect(purchaseWindowStart(new Date('2026-03-01T00:00:00.000Z'))).toBe('2025-12-31 00:00:00.000');
+    expect(purchaseWindowStart(new Date('2026-03-01T00:00:00.000Z'))).toBe(
+      '2025-12-31 00:00:00.000',
+    );
   });
 });

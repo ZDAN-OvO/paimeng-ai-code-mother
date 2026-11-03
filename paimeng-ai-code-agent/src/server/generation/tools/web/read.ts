@@ -6,7 +6,9 @@ import { tavilyExtract } from './tavily';
 import { WebAccessError, type WebPageData } from './types';
 
 function clip(text: string, limit: number) {
-  return text.length <= limit ? { text, truncated: false } : { text: text.slice(0, limit), truncated: true };
+  return text.length <= limit
+    ? { text, truncated: false }
+    : { text: text.slice(0, limit), truncated: true };
 }
 
 /** Jina Reader 在前几行给出 Title/URL Source/Warning，正文从第一个空行开始。 */
@@ -40,10 +42,16 @@ async function jinaRead(url: string, options: { signal?: AbortSignal; deps?: Htt
  * 读取网页正文：先走服务商提取，失败且在配置允许时回退到 Jina Reader。
  * 返回 null 表示两家都拿不到正文，由调用方按「空结果」处理。
  */
-export async function readPage(url: string, options: { signal?: AbortSignal; deps?: HttpDeps }): Promise<WebPageData | null> {
+export async function readPage(
+  url: string,
+  options: { signal?: AbortSignal; deps?: HttpDeps },
+): Promise<WebPageData | null> {
   const requested = parseTarget(url, '网页地址');
   // 模型给的地址在交给任何服务商之前先过本地地址校验：内网、环回与云元数据地址不会被转发出去。
-  await resolveTarget(requested, { lookup: options.deps?.lookup, networks: webAccessSettings().allowNetworks });
+  await resolveTarget(requested, {
+    lookup: options.deps?.lookup,
+    networks: webAccessSettings().allowNetworks,
+  });
   const warnings: string[] = [];
   let provider = 'tavily';
   let title = '';
@@ -59,7 +67,9 @@ export async function readPage(url: string, options: { signal?: AbortSignal; dep
     }
   } catch (error) {
     if (error instanceof WebAccessError && error.code === 'blocked-url') throw error;
-    warnings.push(error instanceof WebAccessError ? `正文服务失败：${error.message}` : '正文服务失败');
+    warnings.push(
+      error instanceof WebAccessError ? `正文服务失败：${error.message}` : '正文服务失败',
+    );
   }
   if (!content && webAccessSettings().jinaFallback) {
     try {
@@ -69,7 +79,9 @@ export async function readPage(url: string, options: { signal?: AbortSignal; dep
       content = fallback.content;
       warnings.push(...fallback.warnings);
     } catch (error) {
-      warnings.push(error instanceof WebAccessError ? `回退读取失败：${error.message}` : '回退读取失败');
+      warnings.push(
+        error instanceof WebAccessError ? `回退读取失败：${error.message}` : '回退读取失败',
+      );
     }
   }
   if (!content) return null;

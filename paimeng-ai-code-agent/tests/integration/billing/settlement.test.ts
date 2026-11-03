@@ -5,22 +5,58 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { eq, inArray } from 'drizzle-orm';
 import {
-  applyBillingMigrations, billingBalancesOf, billingRateProvider, billingRequest, createBillingUser, envelopeOf,
+  applyBillingMigrations,
+  billingBalancesOf,
+  billingRateProvider,
+  billingRequest,
+  createBillingUser,
+  envelopeOf,
   grantBillingCredits,
-  loadBillingDatabase, purgeBillingRateCards, seedBillingApp, seedBillingGeneration, seedBillingRate, seedBillingStep,
+  loadBillingDatabase,
+  purgeBillingRateCards,
+  seedBillingApp,
+  seedBillingGeneration,
+  seedBillingRate,
+  seedBillingStep,
   withoutMonthlyQuota,
   type BillingTestUser,
 } from '../../support/billing';
 import { db, getPool } from '@/server/infra/db';
 import {
-  appAuthority, appPreviewPointers, apps, creditAccounts, creditCharges, creditEntries, creditGrants, creditQuotaAdjustments, creditQuotaIssues,
-  generationDeliveries, generationExecutions, generationInputs, generationQuestions, generationSteps,
-  generationTransitions, generations, sessions, sourceSnapshots, users, versionRecords,
+  appAuthority,
+  appPreviewPointers,
+  apps,
+  creditAccounts,
+  creditCharges,
+  creditEntries,
+  creditGrants,
+  creditQuotaAdjustments,
+  creditQuotaIssues,
+  generationDeliveries,
+  generationExecutions,
+  generationInputs,
+  generationQuestions,
+  generationSteps,
+  generationTransitions,
+  generations,
+  sessions,
+  sourceSnapshots,
+  users,
+  versionRecords,
 } from '@/server/infra/schema';
 import { effectiveCreditsOf, entriesOfCharge } from '@/server/billing/ledger';
 import { settleGenerationBilling } from '@/server/billing/settlement';
-import { acquireAuthority, ensureAuthority, markInputResolved } from '@/server/generation/control-store';
-import { failOrCancel, publishReady, recoverGeneration, startGeneration } from '@/server/generation/generation-lifecycle';
+import {
+  acquireAuthority,
+  ensureAuthority,
+  markInputResolved,
+} from '@/server/generation/control-store';
+import {
+  failOrCancel,
+  publishReady,
+  recoverGeneration,
+  startGeneration,
+} from '@/server/generation/generation-lifecycle';
 import { purgeVersions } from '@/server/versioning/version-store';
 import { workspace, type WorkspaceApp } from '@/server/workspace/workspace';
 import { monthlyQuotaCredits, type BillingChargeView } from '@/shared/billing';
@@ -41,7 +77,15 @@ let snapshotsRoot = '';
 
 beforeAll(async () => {
   await applyBillingMigrations(
-    '008_credit_rate_card.sql', '010_credit_grant_account.sql', '012_credit_charge_entry.sql', '014_credit_entry_audit.sql', '020_credit_quota_policy.sql', '021_credit_quota_adjustment.sql', '022_credit_quota_batch.sql', '023_app_config_model_config.sql');
+    '008_credit_rate_card.sql',
+    '010_credit_grant_account.sql',
+    '012_credit_charge_entry.sql',
+    '014_credit_entry_audit.sql',
+    '020_credit_quota_policy.sql',
+    '021_credit_quota_adjustment.sql',
+    '022_credit_quota_batch.sql',
+    '023_app_config_model_config.sql',
+  );
   base = await realpath(await mkdtemp(join(tmpdir(), 'paimeng-settlement-')));
   runtimeRoot = join(base, 'runtime');
   snapshotsRoot = join(base, 'snapshots');
@@ -51,9 +95,14 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (createdGenerations.length) {
-    const chargeIds = (await db().select({ generationId: creditCharges.generationId }).from(creditCharges)
-      .where(inArray(creditCharges.generationId, createdGenerations))).map(row => row.generationId);
-    if (chargeIds.length) await db().delete(creditEntries).where(inArray(creditEntries.chargeId, chargeIds));
+    const chargeIds = (
+      await db()
+        .select({ generationId: creditCharges.generationId })
+        .from(creditCharges)
+        .where(inArray(creditCharges.generationId, createdGenerations))
+    ).map((row) => row.generationId);
+    if (chargeIds.length)
+      await db().delete(creditEntries).where(inArray(creditEntries.chargeId, chargeIds));
     await db().delete(creditCharges).where(inArray(creditCharges.generationId, createdGenerations));
   }
   if (createdApps.length) {
@@ -67,12 +116,14 @@ afterAll(async () => {
     await db().delete(generationDeliveries).where(inArray(generationDeliveries.appId, ids));
     await db().delete(appPreviewPointers).where(inArray(appPreviewPointers.appId, ids));
     await db().delete(versionRecords).where(inArray(versionRecords.appId, ids));
-    await db().delete(generationSteps).where(inArray(generationSteps.generationId, createdGenerations));
+    await db()
+      .delete(generationSteps)
+      .where(inArray(generationSteps.generationId, createdGenerations));
     await db().delete(generations).where(inArray(generations.appId, ids));
     await db().delete(apps).where(inArray(apps.id, ids));
   }
   if (createdUsers.length) {
-    const ids = createdUsers.map(id => BigInt(id));
+    const ids = createdUsers.map((id) => BigInt(id));
     await db().delete(creditQuotaAdjustments).where(inArray(creditQuotaAdjustments.userId, ids));
     await db().delete(creditQuotaIssues).where(inArray(creditQuotaIssues.userId, ids));
     await db().delete(creditGrants).where(inArray(creditGrants.userId, ids));
@@ -86,7 +137,9 @@ afterAll(async () => {
     await rm(workspace(app), { recursive: true, force: true }).catch(() => undefined);
   }
   await rm(base, { recursive: true, force: true }).catch(() => undefined);
-  await getPool().end().catch(() => undefined);
+  await getPool()
+    .end()
+    .catch(() => undefined);
 });
 
 async function newUser(role?: 'user' | 'admin'): Promise<BillingTestUser> {
@@ -105,7 +158,11 @@ async function newApp(owner: BillingTestUser): Promise<WorkspaceApp> {
 }
 
 async function seedGeneration(input: {
-  appId: string; userId: string; status?: string; stopReason?: string | null; messageId?: string | null;
+  appId: string;
+  userId: string;
+  status?: string;
+  stopReason?: string | null;
+  messageId?: string | null;
 }): Promise<string> {
   const id = await seedBillingGeneration(input);
   createdGenerations.push(id);
@@ -133,7 +190,11 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     await grant(owner.id, 'limited', 100);
     await grant(owner.id, 'lasting', 10);
     const app = await newApp(owner);
-    const generationId = await seedGeneration({ appId: app.id, userId: owner.id, messageId: 'msg-pools' });
+    const generationId = await seedGeneration({
+      appId: app.id,
+      userId: owner.id,
+      messageId: 'msg-pools',
+    });
     // 500k 未命中输入 × 600 / 1M = 300 Credit
     await seedStep(generationId, { modelName: 'model-pools', input: 500_000 });
 
@@ -141,19 +202,33 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
 
     const [charge] = await chargeRows(generationId);
     expect(charge).toMatchObject({
-      appId: BigInt(app.id), userId: BigInt(owner.id), credits: 300, costUsd: null,
-      status: 'settled', estimatedSteps: 0,
+      appId: BigInt(app.id),
+      userId: BigInt(owner.id),
+      credits: 300,
+      costUsd: null,
+      status: 'settled',
+      estimatedSteps: 0,
     });
     expect(charge.createTime).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?$/);
-    expect(charge.rateCardSnapshot).toMatchObject([{ providerId: billingRateProvider, modelName: 'model-pools', effectiveFrom: '2020-01-01 00:00:00.000' }]);
-    expect(charge.usageSnapshot).toMatchObject([{ modelName: 'model-pools', input: 500_000, estimated: false, priced: true }]);
+    expect(charge.rateCardSnapshot).toMatchObject([
+      {
+        providerId: billingRateProvider,
+        modelName: 'model-pools',
+        effectiveFrom: '2020-01-01 00:00:00.000',
+      },
+    ]);
+    expect(charge.usageSnapshot).toMatchObject([
+      { modelName: 'model-pools', input: 500_000, estimated: false, priced: true },
+    ]);
 
     const entries = await entriesOfCharge(charge.generationId);
-    expect(entries.map(entry => ({ kind: entry.kind, credits: entry.credits })))
-      .toEqual([{ kind: 'consume', credits: -100 }, { kind: 'consume', credits: -200 }]);
-    expect(entries.every(entry => entry.reversalOf === null)).toBe(true);
+    expect(entries.map((entry) => ({ kind: entry.kind, credits: entry.credits }))).toEqual([
+      { kind: 'consume', credits: -100 },
+      { kind: 'consume', credits: -200 },
+    ]);
+    expect(entries.every((entry) => entry.reversalOf === null)).toBe(true);
     expect(await effectiveCreditsOf(charge.generationId)).toBe(300);
-    expect(await balancesOf(owner.id)).toEqual({ available: (0) + (-190), limited: 0, lasting: -190 });
+    expect(await balancesOf(owner.id)).toEqual({ available: 0 + -190, limited: 0, lasting: -190 });
   });
 
   it('改价只追加 JSON 价格版本，已结算 Charge 的金额与快照不变，新步骤用新价', async () => {
@@ -161,22 +236,34 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     await seedRate({ modelName: 'model-price-change', creditInputMiss: 600 });
     await grant(owner.id, 'lasting', 1000);
     const app = await newApp(owner);
-    const firstGeneration = await seedGeneration({ appId: app.id, userId: owner.id, messageId: 'msg-price-first' });
+    const firstGeneration = await seedGeneration({
+      appId: app.id,
+      userId: owner.id,
+      messageId: 'msg-price-first',
+    });
     // 100k 未命中输入 × 600 / 1M = 60 Credit
     await seedStep(firstGeneration, { modelName: 'model-price-change', input: 100_000 });
     await settleGenerationBilling(firstGeneration);
     const [before] = await chargeRows(firstGeneration);
     expect(before).toMatchObject({ credits: 60, rateCardSnapshot: [{ creditInputMiss: 600 }] });
 
-    await seedRate({ modelName: 'model-price-change', creditInputMiss: 900, effectiveAt: '2026-01-01 00:00:00.000' });
+    await seedRate({
+      modelName: 'model-price-change',
+      creditInputMiss: 900,
+      effectiveAt: '2026-01-01 00:00:00.000',
+    });
     // 重跑结算不应对已有步骤重复计价，也不应重写历史快照。
     await settleGenerationBilling(firstGeneration);
     const [after] = await chargeRows(firstGeneration);
     expect(after?.credits).toBe(before?.credits);
     expect(after?.rateCardSnapshot).toEqual(before?.rateCardSnapshot);
-    expect((await entriesOfCharge(firstGeneration)).map(entry => entry.credits)).toEqual([-60]);
+    expect((await entriesOfCharge(firstGeneration)).map((entry) => entry.credits)).toEqual([-60]);
 
-    const secondGeneration = await seedGeneration({ appId: app.id, userId: owner.id, messageId: 'msg-price-second' });
+    const secondGeneration = await seedGeneration({
+      appId: app.id,
+      userId: owner.id,
+      messageId: 'msg-price-second',
+    });
     await seedStep(secondGeneration, { modelName: 'model-price-change', input: 100_000 });
     await settleGenerationBilling(secondGeneration);
     const [second] = await chargeRows(secondGeneration);
@@ -195,9 +282,13 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
 
     const [charge] = await chargeRows(generationId);
     expect(charge.credits).toBe(60);
-    expect((await entriesOfCharge(charge.generationId)).map(entry => ({ kind: entry.kind, credits: entry.credits })))
-      .toEqual([{ kind: 'consume', credits: -60 }]);
-    expect(await balancesOf(owner.id)).toEqual({ available: (0) + (-55), limited: 0, lasting: -55 });
+    expect(
+      (await entriesOfCharge(charge.generationId)).map((entry) => ({
+        kind: entry.kind,
+        credits: entry.credits,
+      })),
+    ).toEqual([{ kind: 'consume', credits: -60 }]);
+    expect(await balancesOf(owner.id)).toEqual({ available: 0 + -55, limited: 0, lasting: -55 });
   });
 
   it('重复结算与并发结算都只产生一条 charge、只扣一次钱', async () => {
@@ -216,7 +307,11 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     expect(charges).toHaveLength(1);
     expect(charges[0].credits).toBe(60);
     expect(await entriesOfCharge(charges[0].generationId)).toHaveLength(1);
-    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits + 1000 - 60) + (0), limited: monthlyQuotaCredits + 1000 - 60, lasting: 0 });
+    expect(await balancesOf(owner.id)).toEqual({
+      available: monthlyQuotaCredits + 1000 - 60 + 0,
+      limited: monthlyQuotaCredits + 1000 - 60,
+      lasting: 0,
+    });
   });
 
   it('只有 build 步骤的终态也写一条 0 Credit 的 charge，不写 entry', async () => {
@@ -224,16 +319,30 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     await seedRate({ modelName: 'model-build-only' });
     await grant(owner.id, 'limited', 100);
     const app = await newApp(owner);
-    const generationId = await seedGeneration({ appId: app.id, userId: owner.id, status: 'failed', stopReason: 'model-error' });
+    const generationId = await seedGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'failed',
+      stopReason: 'model-error',
+    });
     // build 步骤的 token 不参与计价：计费只认 kind='model'
-    await seedStep(generationId, { kind: 'build', modelName: 'model-build-only', input: 1_000_000, output: 1_000_000 });
+    await seedStep(generationId, {
+      kind: 'build',
+      modelName: 'model-build-only',
+      input: 1_000_000,
+      output: 1_000_000,
+    });
 
     await settleGenerationBilling(generationId);
 
     const [charge] = await chargeRows(generationId);
     expect(charge).toMatchObject({ credits: 0, status: 'settled', estimatedSteps: 0 });
     expect(await entriesOfCharge(charge.generationId)).toHaveLength(0);
-    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits + 100) + (0), limited: monthlyQuotaCredits + 100, lasting: 0 });
+    expect(await balancesOf(owner.id)).toEqual({
+      available: monthlyQuotaCredits + 100 + 0,
+      limited: monthlyQuotaCredits + 100,
+      lasting: 0,
+    });
   });
 
   it('注册即得的当期配额先于余额池被扣减', async () => {
@@ -247,16 +356,29 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
 
     await settleGenerationBilling(generationId);
 
-    expect((await entriesOfCharge(generationId)).map(entry => ({ kind: entry.kind, credits: entry.credits })))
-      .toEqual([{ kind: 'consume', credits: -30 }]);
-    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits - 30) + (100), limited: monthlyQuotaCredits - 30, lasting: 100 });
+    expect(
+      (await entriesOfCharge(generationId)).map((entry) => ({
+        kind: entry.kind,
+        credits: entry.credits,
+      })),
+    ).toEqual([{ kind: 'consume', credits: -30 }]);
+    expect(await balancesOf(owner.id)).toEqual({
+      available: monthlyQuotaCredits - 30 + 100,
+      limited: monthlyQuotaCredits - 30,
+      lasting: 100,
+    });
   });
 
   it('非终态的 generation 不结算', async () => {
     const owner = await newUser();
     await seedRate({ modelName: 'model-running' });
     const app = await newApp(owner);
-    const generationId = await seedGeneration({ appId: app.id, userId: owner.id, status: 'generating', stopReason: null });
+    const generationId = await seedGeneration({
+      appId: app.id,
+      userId: owner.id,
+      status: 'generating',
+      stopReason: null,
+    });
     await seedStep(generationId, { modelName: 'model-running', input: 100_000 });
 
     await settleGenerationBilling(generationId);
@@ -269,15 +391,25 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     await grant(owner.id, 'lasting', 50);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
-    await seedStep(generationId, { providerId: 'no-such-provider', modelName: 'no-such-model', input: 100_000 });
+    await seedStep(generationId, {
+      providerId: 'no-such-provider',
+      modelName: 'no-such-model',
+      input: 100_000,
+    });
 
     await settleGenerationBilling(generationId);
 
     const [charge] = await chargeRows(generationId);
     expect(charge).toMatchObject({ credits: 0, status: 'unpriced', estimatedSteps: 0 });
-    expect(charge.usageSnapshot).toMatchObject([{ priced: false, estimated: false, input: 100_000 }]);
+    expect(charge.usageSnapshot).toMatchObject([
+      { priced: false, estimated: false, input: 100_000 },
+    ]);
     expect(await entriesOfCharge(charge.generationId)).toHaveLength(0);
-    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits) + (50), limited: monthlyQuotaCredits, lasting: 50 });
+    expect(await balancesOf(owner.id)).toEqual({
+      available: monthlyQuotaCredits + 50,
+      limited: monthlyQuotaCredits,
+      lasting: 50,
+    });
   });
 
   it('用量缺失时按已知步骤均值估算，账单标记 estimated 并保留估算依据', async () => {
@@ -286,8 +418,19 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
     await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const generationId = await seedGeneration({ appId: app.id, userId: owner.id });
-    await seedStep(generationId, { modelName: 'model-estimate', input: 1_000, output: 400, stepNumber: 0 });
-    await seedStep(generationId, { modelName: 'model-estimate', input: null, cacheRead: null, output: null, stepNumber: 1 });
+    await seedStep(generationId, {
+      modelName: 'model-estimate',
+      input: 1_000,
+      output: 400,
+      stepNumber: 0,
+    });
+    await seedStep(generationId, {
+      modelName: 'model-estimate',
+      input: null,
+      cacheRead: null,
+      output: null,
+      stepNumber: 1,
+    });
 
     await settleGenerationBilling(generationId);
 
@@ -298,7 +441,11 @@ describe('结算：一次 Generation 一份 Charge、分池 entry、双池余额
       { estimated: false, sampleSteps: 1 },
       { estimated: true, sampleSteps: 1, input: null, billedInput: 1_000, billedOutput: 400 },
     ]);
-    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits - 3) + (100), limited: monthlyQuotaCredits - 3, lasting: 100 });
+    expect(await balancesOf(owner.id)).toEqual({
+      available: monthlyQuotaCredits - 3 + 100,
+      limited: monthlyQuotaCredits - 3,
+      lasting: 100,
+    });
   });
 });
 
@@ -309,19 +456,34 @@ describe('终态路径都接上了结算', () => {
     await grant(owner.id, 'limited', 1000);
     const app = await newApp(owner);
     const started = await startGeneration({
-      app, userId: owner.id, requestId: randomUUID(), holder: 'settlement-publish', prompt: '做一个页面',
-      template: { id: 'html', version: '1.0.0' }, runtimeRoot, snapshotsRoot,
+      app,
+      userId: owner.id,
+      requestId: randomUUID(),
+      holder: 'settlement-publish',
+      prompt: '做一个页面',
+      template: { id: 'html', version: '1.0.0' },
+      runtimeRoot,
+      snapshotsRoot,
     });
     createdGenerations.push(started.generationId);
     await seedStep(started.generationId, { modelName: 'model-publish', input: 100_000 });
-    await writeFile(join(started.execution!.directory, 'index.html'), '<html><body>结算</body></html>');
+    await writeFile(
+      join(started.execution!.directory, 'index.html'),
+      '<html><body>结算</body></html>',
+    );
     await markInputResolved({ appId: app.id, inputId: started.input.id });
 
-    const publish = () => publishReady({
-      app, generationId: started.generationId, epoch: started.epoch!,
-      execution: { id: started.executionId!, directory: started.execution!.directory },
-      title: '结算第一版', messageId: 'msg-publish', runtimeRoot, snapshotsRoot,
-    });
+    const publish = () =>
+      publishReady({
+        app,
+        generationId: started.generationId,
+        epoch: started.epoch!,
+        execution: { id: started.executionId!, directory: started.execution!.directory },
+        title: '结算第一版',
+        messageId: 'msg-publish',
+        runtimeRoot,
+        snapshotsRoot,
+      });
     const first = await publish();
     expect(first).toMatchObject({ published: true, alreadyPublished: false });
     await publish();
@@ -329,7 +491,11 @@ describe('终态路径都接上了结算', () => {
     const charges = await chargeRows(started.generationId);
     expect(charges).toHaveLength(1);
     expect(charges[0]).toMatchObject({ credits: 60, status: 'settled' });
-    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits + 1000 - 60) + (0), limited: monthlyQuotaCredits + 1000 - 60, lasting: 0 });
+    expect(await balancesOf(owner.id)).toEqual({
+      available: monthlyQuotaCredits + 1000 - 60 + 0,
+      limited: monthlyQuotaCredits + 1000 - 60,
+      lasting: 0,
+    });
   });
 
   it('没有源码改动（no-changes）同样结算', async () => {
@@ -338,23 +504,38 @@ describe('终态路径都接上了结算', () => {
     await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const started = await startGeneration({
-      app, userId: owner.id, requestId: randomUUID(), holder: 'settlement-nochange', prompt: '只回答',
-      template: null, runtimeRoot, snapshotsRoot,
+      app,
+      userId: owner.id,
+      requestId: randomUUID(),
+      holder: 'settlement-nochange',
+      prompt: '只回答',
+      template: null,
+      runtimeRoot,
+      snapshotsRoot,
     });
     createdGenerations.push(started.generationId);
     await seedStep(started.generationId, { modelName: 'model-nochange', input: 50_000 });
     await markInputResolved({ appId: app.id, inputId: started.input.id });
 
     const outcome = await publishReady({
-      app, generationId: started.generationId, epoch: started.epoch!,
+      app,
+      generationId: started.generationId,
+      epoch: started.epoch!,
       execution: { id: started.executionId!, directory: started.execution!.directory },
-      title: '纯问答', messageId: 'msg-nochange', runtimeRoot, snapshotsRoot,
+      title: '纯问答',
+      messageId: 'msg-nochange',
+      runtimeRoot,
+      snapshotsRoot,
     });
     expect(outcome).toMatchObject({ published: false, reason: 'no-source-change' });
 
     const [charge] = await chargeRows(started.generationId);
     expect(charge).toMatchObject({ credits: 30, status: 'settled' });
-    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits - 30) + (100), limited: monthlyQuotaCredits - 30, lasting: 100 });
+    expect(await balancesOf(owner.id)).toEqual({
+      available: monthlyQuotaCredits - 30 + 100,
+      limited: monthlyQuotaCredits - 30,
+      lasting: 100,
+    });
   });
 
   it('取消（cancelled）也结算，并把 messageId 带到 generation 上', async () => {
@@ -363,22 +544,39 @@ describe('终态路径都接上了结算', () => {
     await grant(owner.id, 'limited', 1000);
     const app = await newApp(owner);
     const started = await startGeneration({
-      app, userId: owner.id, requestId: randomUUID(), holder: 'settlement-cancel', prompt: '做一个页面',
-      template: null, runtimeRoot, snapshotsRoot,
+      app,
+      userId: owner.id,
+      requestId: randomUUID(),
+      holder: 'settlement-cancel',
+      prompt: '做一个页面',
+      template: null,
+      runtimeRoot,
+      snapshotsRoot,
     });
     createdGenerations.push(started.generationId);
     await seedStep(started.generationId, { modelName: 'model-cancel', input: 100_000 });
-    await writeFile(join(started.execution!.directory, 'index.html'), '<html><body>取消</body></html>');
+    await writeFile(
+      join(started.execution!.directory, 'index.html'),
+      '<html><body>取消</body></html>',
+    );
 
     const cancelled = await failOrCancel({
-      app, generationId: started.generationId, epoch: started.epoch!,
+      app,
+      generationId: started.generationId,
+      epoch: started.epoch!,
       execution: { id: started.executionId!, directory: started.execution!.directory },
-      outcome: 'cancelled', error: '用户取消', messageId: 'msg-cancel', runtimeRoot, snapshotsRoot,
+      outcome: 'cancelled',
+      error: '用户取消',
+      messageId: 'msg-cancel',
+      runtimeRoot,
+      snapshotsRoot,
     });
     expect(cancelled).toMatchObject({ alreadyTerminal: false, status: 'cancelled' });
 
-    const [generation] = await db().select({ messageId: generations.messageId, stopReason: generations.stopReason })
-      .from(generations).where(eq(generations.id, started.generationId));
+    const [generation] = await db()
+      .select({ messageId: generations.messageId, stopReason: generations.stopReason })
+      .from(generations)
+      .where(eq(generations.id, started.generationId));
     expect(generation).toMatchObject({ messageId: 'msg-cancel', stopReason: 'cancelled' });
     const charges = await chargeRows(started.generationId);
     expect(charges).toHaveLength(1);
@@ -391,25 +589,39 @@ describe('终态路径都接上了结算', () => {
     await grant(owner.id, 'lasting', 100);
     const app = await newApp(owner);
     const started = await startGeneration({
-      app, userId: owner.id, requestId: randomUUID(), holder: 'settlement-recover', prompt: '做一个页面',
-      template: null, runtimeRoot, snapshotsRoot,
+      app,
+      userId: owner.id,
+      requestId: randomUUID(),
+      holder: 'settlement-recover',
+      prompt: '做一个页面',
+      template: null,
+      runtimeRoot,
+      snapshotsRoot,
     });
     createdGenerations.push(started.generationId);
     await seedStep(started.generationId, { modelName: 'model-recover', input: 50_000 });
     // 让写权限看起来已经过期：恢复只处理没有 live owner 的应用。
-    await db().update(appAuthority).set({ expiresAt: '2000-01-01 00:00:00.000' })
+    await db()
+      .update(appAuthority)
+      .set({ expiresAt: '2000-01-01 00:00:00.000' })
       .where(eq(appAuthority.appId, BigInt(app.id)));
 
     const recovery = await recoverGeneration({ app, runtimeRoot, snapshotsRoot });
-    expect(recovery.recovered.map(item => item.generationId)).toContain(started.generationId);
-    const [generation] = await db().select({ status: generations.status, stopReason: generations.stopReason })
-      .from(generations).where(eq(generations.id, started.generationId));
+    expect(recovery.recovered.map((item) => item.generationId)).toContain(started.generationId);
+    const [generation] = await db()
+      .select({ status: generations.status, stopReason: generations.stopReason })
+      .from(generations)
+      .where(eq(generations.id, started.generationId));
     expect(generation).toMatchObject({ status: 'failed', stopReason: 'interrupted' });
 
     const charges = await chargeRows(started.generationId);
     expect(charges).toHaveLength(1);
     expect(charges[0].credits).toBe(30);
-    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits - 30) + (100), limited: monthlyQuotaCredits - 30, lasting: 100 });
+    expect(await balancesOf(owner.id)).toEqual({
+      available: monthlyQuotaCredits - 30 + 100,
+      limited: monthlyQuotaCredits - 30,
+      lasting: 100,
+    });
   });
 
   it('接管写权限时被收束的多条 generation 全部结算', async () => {
@@ -420,23 +632,38 @@ describe('终态路径都接上了结算', () => {
     await ensureAuthority(app.id);
     const staleIds: string[] = [];
     for (const stepNumber of [0, 1]) {
-      const id = await seedGeneration({ appId: app.id, userId: owner.id, status: 'generating', stopReason: null });
+      const id = await seedGeneration({
+        appId: app.id,
+        userId: owner.id,
+        status: 'generating',
+        stopReason: null,
+      });
       await seedStep(id, { modelName: 'model-takeover', input: 100_000, stepNumber });
       staleIds.push(id);
     }
 
-    const handle = await acquireAuthority({ appId: app.id, generationId: randomUUID(), holder: 'settlement-takeover' });
+    const handle = await acquireAuthority({
+      appId: app.id,
+      generationId: randomUUID(),
+      holder: 'settlement-takeover',
+    });
     expect(handle.closedGenerationIds).toEqual(expect.arrayContaining(staleIds));
 
     for (const id of staleIds) {
-      const [generation] = await db().select({ status: generations.status, stopReason: generations.stopReason })
-        .from(generations).where(eq(generations.id, id));
+      const [generation] = await db()
+        .select({ status: generations.status, stopReason: generations.stopReason })
+        .from(generations)
+        .where(eq(generations.id, id));
       expect(generation).toMatchObject({ status: 'failed', stopReason: 'interrupted' });
       const charges = await chargeRows(id);
       expect(charges).toHaveLength(1);
       expect(charges[0].credits).toBe(60);
     }
-    expect(await balancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits + 1000 - 120) + (0), limited: monthlyQuotaCredits + 1000 - 120, lasting: 0 });
+    expect(await balancesOf(owner.id)).toEqual({
+      available: monthlyQuotaCredits + 1000 - 120 + 0,
+      limited: monthlyQuotaCredits + 1000 - 120,
+      lasting: 0,
+    });
   });
 });
 
@@ -448,7 +675,11 @@ describe('GET billing/charges：只读自己的 App，成本只给 Admin', () =>
     await grant(owner.id, 'limited', 100);
     await grant(owner.id, 'lasting', 10);
     const app = await newApp(owner);
-    const generationId = await seedGeneration({ appId: app.id, userId: owner.id, messageId: 'msg-http' });
+    const generationId = await seedGeneration({
+      appId: app.id,
+      userId: owner.id,
+      messageId: 'msg-http',
+    });
     await seedStep(generationId, { modelName: 'model-http', input: 150_000 });
     await settleGenerationBilling(generationId);
 
@@ -480,7 +711,10 @@ describe('GET billing/charges：只读自己的 App，成本只给 Admin', () =>
   it('Admin 读自己的 App 时返回 USD 成本', async () => {
     const admin = await newUser('admin');
     await seedRate({
-      modelName: 'model-cost', usdInputMiss: '0.300000', usdInputHit: '0.006000', usdOutput: '1.200000',
+      modelName: 'model-cost',
+      usdInputMiss: '0.300000',
+      usdInputHit: '0.006000',
+      usdOutput: '1.200000',
     });
     await grant(admin.id, 'lasting', 100);
     const app = await newApp(admin);
@@ -498,8 +732,12 @@ describe('GET billing/charges：只读自己的 App，成本只给 Admin', () =>
     const app = await newApp(owner);
     expect((await chargesOf(owner.cookie, app.id, 0)).status).toBe(400);
     expect((await chargesOf(owner.cookie, app.id, 21)).status).toBe(400);
-    expect((await billingRequest('billing/charges?limit=21', undefined, owner.cookie)).status).toBe(400);
-    const all = await envelopeOf<BillingChargeView[]>(await billingRequest('billing/charges', undefined, owner.cookie));
+    expect((await billingRequest('billing/charges?limit=21', undefined, owner.cookie)).status).toBe(
+      400,
+    );
+    const all = await envelopeOf<BillingChargeView[]>(
+      await billingRequest('billing/charges', undefined, owner.cookie),
+    );
     expect(all.code).toBe(0);
     expect(all.data).toEqual([]);
   });

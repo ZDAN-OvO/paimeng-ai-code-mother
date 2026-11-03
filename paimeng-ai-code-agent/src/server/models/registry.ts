@@ -14,7 +14,12 @@ import {
   type ModelConfigSnapshot,
   type ModelProvider,
 } from '@/shared/model-config';
-import { buildAliasModels, ModelConfigInvalidError, type AliasModel, type AliasModels } from './adapters';
+import {
+  buildAliasModels,
+  ModelConfigInvalidError,
+  type AliasModel,
+  type AliasModels,
+} from './adapters';
 import { readConfigSnapshot, readRefreshEpoch } from './store';
 
 /** 快照存活时间，从一致读事务开始计时。 */
@@ -76,7 +81,8 @@ type LoadedSnapshot = {
 
 function environmentSnapshot(): ModelConfigSnapshot {
   const config = getConfig();
-  if (!config.aiModel) throw new ModelConfigInvalidError('模型配置为空且未设置 AI_MODEL，无法从环境变量建立模型');
+  if (!config.aiModel)
+    throw new ModelConfigInvalidError('模型配置为空且未设置 AI_MODEL，无法从环境变量建立模型');
   const provider: ModelProvider = {
     id: defaultModelProviderId,
     displayName: '环境默认提供商',
@@ -89,16 +95,18 @@ function environmentSnapshot(): ModelConfigSnapshot {
     createTime: '',
     updateTime: '',
   };
-  const aliases: ModelAlias[] = modelSlots.filter(slot => !slot.optional).map(slot => ({
-    alias: slot.slot,
-    providerId: defaultModelProviderId,
-    modelName: config.aiModel,
-    capabilities: capabilitiesForSlot(slot),
-    settings: {},
-    enabled: true,
-    createTime: '',
-    updateTime: '',
-  }));
+  const aliases: ModelAlias[] = modelSlots
+    .filter((slot) => !slot.optional)
+    .map((slot) => ({
+      alias: slot.slot,
+      providerId: defaultModelProviderId,
+      modelName: config.aiModel,
+      capabilities: capabilitiesForSlot(slot),
+      settings: {},
+      enabled: true,
+      createTime: '',
+      updateTime: '',
+    }));
   return { revision: '0', refreshEpoch: '0', providers: [provider], aliases };
 }
 
@@ -111,7 +119,8 @@ function errorMessage(error: unknown): string {
 
 function validateSnapshot(snapshot: ModelConfigSnapshot): void {
   for (const version of [snapshot.revision, snapshot.refreshEpoch]) {
-    if (!decimalVersionSchema.safeParse(version).success) throw new ModelConfigInvalidError('模型配置版本号不合法');
+    if (!decimalVersionSchema.safeParse(version).success)
+      throw new ModelConfigInvalidError('模型配置版本号不合法');
   }
   const config = getConfig();
   const issues = modelConfigIssues(snapshot.providers, snapshot.aliases, {
@@ -129,8 +138,13 @@ function isInvalidConfig(error: unknown): boolean {
   return error instanceof ModelConfigInvalidError || error instanceof ZodError;
 }
 
-function versionAtLeast(a: { revision: string; refreshEpoch: string }, b: { revision: string; refreshEpoch: string }): boolean {
-  return BigInt(a.revision) >= BigInt(b.revision) && BigInt(a.refreshEpoch) >= BigInt(b.refreshEpoch);
+function versionAtLeast(
+  a: { revision: string; refreshEpoch: string },
+  b: { revision: string; refreshEpoch: string },
+): boolean {
+  return (
+    BigInt(a.revision) >= BigInt(b.revision) && BigInt(a.refreshEpoch) >= BigInt(b.refreshEpoch)
+  );
 }
 
 /**
@@ -162,10 +176,15 @@ export function createModelRegistry(options: ModelRegistryOptions = {}): ModelRe
     try {
       raw = await store.readConfigSnapshot();
     } catch (error) {
-      if (error instanceof ZodError) throw new ModelConfigInvalidError('数据库中的模型配置不符合 schema');
+      if (error instanceof ZodError)
+        throw new ModelConfigInvalidError('数据库中的模型配置不符合 schema');
       throw error;
     }
-    const empty = raw.providers.length === 0 && raw.aliases.length === 0 && raw.revision === '0' && raw.refreshEpoch === '0';
+    const empty =
+      raw.providers.length === 0 &&
+      raw.aliases.length === 0 &&
+      raw.revision === '0' &&
+      raw.refreshEpoch === '0';
     const snapshot = empty ? environmentSnapshot() : raw;
     validateSnapshot(snapshot);
     rememberEpoch(BigInt(snapshot.refreshEpoch));
@@ -181,10 +200,13 @@ export function createModelRegistry(options: ModelRegistryOptions = {}): ModelRe
 
   function install(result: LoadedSnapshot): void {
     if (installed && !versionAtLeast(result, installed)) return;
-    if (installed
-      && result.revision === installed.revision
-      && result.refreshEpoch === installed.refreshEpoch
-      && result.readAt < installed.readAt) return;
+    if (
+      installed &&
+      result.revision === installed.revision &&
+      result.refreshEpoch === installed.refreshEpoch &&
+      result.readAt < installed.readAt
+    )
+      return;
     installed = result;
     degraded = false;
     lastError = null;
@@ -250,7 +272,8 @@ export function createModelRegistry(options: ModelRegistryOptions = {}): ModelRe
     if (highestEpoch > BigInt(installed.refreshEpoch)) {
       throw unavailable('已检测到更新的模型配置但加载失败，拒绝使用旧模型配置');
     }
-    if (clock() - installed.readAt > staleGraceMs) throw unavailable('模型配置读取失败且旧快照已超过可用期限');
+    if (clock() - installed.readAt > staleGraceMs)
+      throw unavailable('模型配置读取失败且旧快照已超过可用期限');
     degraded = true;
     return installed;
   }
@@ -286,7 +309,9 @@ export function createModelRegistry(options: ModelRegistryOptions = {}): ModelRe
     return snapshot;
   }
 
-  async function loadedFor(alias: string): Promise<{ snapshot: LoadedSnapshot; binding: AliasModel }> {
+  async function loadedFor(
+    alias: string,
+  ): Promise<{ snapshot: LoadedSnapshot; binding: AliasModel }> {
     const snapshot = await loadedSnapshot();
     const binding = snapshot.models.bindings[alias];
     if (!binding) throw unavailable(`模型别名 ${alias} 未配置或未启用`);

@@ -1,9 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { maxSelectedElements, selectedElementsSchema, selectionContext, type SelectedElement } from '@/shared/element-selection';
+import {
+  maxSelectedElements,
+  selectedElementsSchema,
+  selectionContext,
+  type SelectedElement,
+} from '@/shared/element-selection';
 
 const element = (overrides: Partial<SelectedElement> = {}): SelectedElement => ({
-  selector: 'body>h1#hero', tagName: 'H1', id: 'hero', className: 'title main',
-  textContent: '预览标题', pagePath: '/preview/html_900001/', ...overrides,
+  selector: 'body>h1#hero',
+  tagName: 'H1',
+  id: 'hero',
+  className: 'title main',
+  textContent: '预览标题',
+  pagePath: '/preview/html_900001/',
+  ...overrides,
 });
 
 describe('选中元素的定位上下文', () => {
@@ -26,7 +36,13 @@ describe('选中元素的定位上下文', () => {
   it('同一页面的多个元素按顺序编号，页面路径只写一次', () => {
     const context = selectionContext([
       element(),
-      element({ selector: 'body>nav#nav', tagName: 'NAV', id: 'nav', className: 'menu', textContent: '首页 关于' }),
+      element({
+        selector: 'body>nav#nav',
+        tagName: 'NAV',
+        id: 'nav',
+        className: 'menu',
+        textContent: '首页 关于',
+      }),
     ]);
     expect(context).toContain('选中元素信息（2 个）：');
     expect(context.match(/页面路径: \/preview\/html_900001\//g)).toHaveLength(1);
@@ -38,7 +54,15 @@ describe('选中元素的定位上下文', () => {
   });
 
   it('不同页面的元素各自带上自己的页面路径', () => {
-    const context = selectionContext([element(), element({ selector: 'body>p', id: '', className: '', pagePath: '/preview/html_900001/about' })]);
+    const context = selectionContext([
+      element(),
+      element({
+        selector: 'body>p',
+        id: '',
+        className: '',
+        pagePath: '/preview/html_900001/about',
+      }),
+    ]);
     expect(context).toContain('- 页面路径: /preview/html_900001/');
     expect(context).toContain('  - 页面路径: /preview/html_900001/about');
   });
@@ -54,7 +78,9 @@ describe('选中元素的上报形状', () => {
   it('接受合法快照，拒绝空选择器与超出上限的数量', () => {
     expect(selectedElementsSchema.safeParse([element()]).success).toBe(true);
     expect(selectedElementsSchema.safeParse([element({ selector: '' })]).success).toBe(false);
-    const tooMany = Array.from({ length: maxSelectedElements + 1 }, (_, index) => element({ selector: 'body>p:nth-of-type(' + (index + 1) + ')' }));
+    const tooMany = Array.from({ length: maxSelectedElements + 1 }, (_, index) =>
+      element({ selector: 'body>p:nth-of-type(' + (index + 1) + ')' }),
+    );
     expect(selectedElementsSchema.safeParse(tooMany).success).toBe(false);
   });
 });

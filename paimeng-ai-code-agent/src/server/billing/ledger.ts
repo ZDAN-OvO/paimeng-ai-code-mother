@@ -1,10 +1,23 @@
 import 'server-only';
 import { and, asc, desc, eq, gt, inArray, sql } from 'drizzle-orm';
 import { db, now, type Transaction } from '@/server/infra/db';
-import { apps, creditBalance, creditCharges, creditLedger, generations } from '@/server/infra/schema';
 import {
-  type AccountSnapshot, type BillingChargeView, type ChargeStatus, type CreditBucket, type CreditEntryKind,
-  type CreditEntryOrigin, type CreditLedgerEntryView, type RateCardView, type UsageSnapshotStep,
+  apps,
+  creditBalance,
+  creditCharges,
+  creditLedger,
+  generations,
+} from '@/server/infra/schema';
+import {
+  type AccountSnapshot,
+  type BillingChargeView,
+  type ChargeStatus,
+  type CreditBucket,
+  type CreditEntryKind,
+  type CreditEntryOrigin,
+  type CreditLedgerEntryView,
+  type RateCardView,
+  type UsageSnapshotStep,
 } from '@/shared/billing';
 import { stopReasonFrom } from '@/server/generation/generation-accounting';
 import { naiveTime } from './period';
@@ -29,7 +42,7 @@ export function purchaseWindowStart(asOf: Date = new Date()): string {
 /** Overdraft = min(近 60 天购买入账总额 × 2%, 500)。它是熔断线，不是准入额度。 */
 export function overdraftOf(purchasedCredits: number): number {
   if (!Number.isFinite(purchasedCredits) || purchasedCredits <= 0) return 0;
-  return Math.min(purchasedCredits * 2 / 100, maxOverdraftCredits);
+  return Math.min((purchasedCredits * 2) / 100, maxOverdraftCredits);
 }
 
 export type LedgerEntryInput = {
@@ -49,67 +62,94 @@ export type LedgerEntryInput = {
 };
 
 /** 追加一行；唯一键冲突返回 null（调用方据此判断「这次是重放」）。 */
-export async function insertLedgerTx(tx: Transaction, input: LedgerEntryInput): Promise<CreditLedgerRow | null> {
-  const [row] = await tx.insert(creditLedger).values({
-    userId: input.userId,
-    kind: input.kind,
-    origin: input.origin,
-    credits: input.credits,
-    period: input.period ?? null,
-    expiresAt: input.expiresAt ?? null,
-    chargeId: input.chargeId ?? null,
-    reversalOf: input.reversalOf ?? null,
-    reason: input.reason ?? null,
-    operatorId: input.operatorId ?? null,
-    requestId: input.requestId ?? null,
-    ref: input.ref ?? null,
-    createTime: input.createTime ?? now(),
-  }).onConflictDoNothing().returning();
+export async function insertLedgerTx(
+  tx: Transaction,
+  input: LedgerEntryInput,
+): Promise<CreditLedgerRow | null> {
+  const [row] = await tx
+    .insert(creditLedger)
+    .values({
+      userId: input.userId,
+      kind: input.kind,
+      origin: input.origin,
+      credits: input.credits,
+      period: input.period ?? null,
+      expiresAt: input.expiresAt ?? null,
+      chargeId: input.chargeId ?? null,
+      reversalOf: input.reversalOf ?? null,
+      reason: input.reason ?? null,
+      operatorId: input.operatorId ?? null,
+      requestId: input.requestId ?? null,
+      ref: input.ref ?? null,
+      createTime: input.createTime ?? now(),
+    })
+    .onConflictDoNothing()
+    .returning();
   return row ?? null;
 }
 
 /** 一个用户的全部流水，按时间正序；用于读模型折叠（单人数据量有界）。 */
 export async function entriesOfUser(userId: string, tx?: Transaction): Promise<CreditLedgerRow[]> {
-  return (tx ?? db()).select().from(creditLedger)
+  return (tx ?? db())
+    .select()
+    .from(creditLedger)
     .where(eq(creditLedger.userId, BigInt(userId)))
     .orderBy(asc(creditLedger.createTime), asc(creditLedger.id));
 }
 
 /** 余额快照：可用额、限时/长期拆分、近 60 天购买额与透支线。 */
-export async function accountSnapshot(userId: string, at: Date = new Date()): Promise<AccountSnapshot> {
+export async function accountSnapshot(
+  userId: string,
+  at: Date = new Date(),
+): Promise<AccountSnapshot> {
   const facts = await balanceFactsOf(userId, at);
-  const [purchased] = await db().select({ credits: sql<string>`coalesce(sum(${creditLedger.credits}), 0)` })
+  const [purchased] = await db()
+    .select({ credits: sql<string>`coalesce(sum(${creditLedger.credits}), 0)` })
     .from(creditLedger)
-    .where(and(
-      eq(creditLedger.userId, BigInt(userId)),
-      eq(creditLedger.kind, 'topup'),
-      gt(creditLedger.createTime, purchaseWindowStart(at)),
-    ));
+    .where(
+      and(
+        eq(creditLedger.userId, BigInt(userId)),
+        eq(creditLedger.kind, 'topup'),
+        gt(creditLedger.createTime, purchaseWindowStart(at)),
+      ),
+    );
   const purchasedCredits60d = Number(purchased?.credits ?? 0);
   return { ...facts, purchasedCredits60d, overdraft: overdraftOf(purchasedCredits60d) };
 }
 
 /** 只读快照；与 `accountSnapshot` 同源，保留给准入与运行期熔断。 */
-export async function availableCredits(userId: string, at: Date = new Date()): Promise<AccountSnapshot> {
+export async function availableCredits(
+  userId: string,
+  at: Date = new Date(),
+): Promise<AccountSnapshot> {
   return accountSnapshot(userId, at);
 }
 
 /** 快照与账本的差异：diff = 快照 − 账本。修复走 `rebuildBalance`。 */
-export async function auditBalance(userId: string, at: Date = new Date()): Promise<{
+export async function auditBalance(
+  userId: string,
+  at: Date = new Date(),
+): Promise<{
   expected: number;
   actual: number;
   diff: number;
 }> {
   const facts = await balanceFactsOf(userId, at);
-  const [row] = await db().select({ available: creditBalance.available }).from(creditBalance)
-    .where(eq(creditBalance.userId, BigInt(userId))).limit(1);
+  const [row] = await db()
+    .select({ available: creditBalance.available })
+    .from(creditBalance)
+    .where(eq(creditBalance.userId, BigInt(userId)))
+    .limit(1);
   const actual = row?.available ?? 0;
   return { expected: facts.available, actual, diff: actual - facts.available };
 }
 
 /** 由账本重算并写回快照；先锁行、补过期，再重算。 */
-export async function rebuildBalance(userId: string, at: Date = new Date()): Promise<AccountSnapshot> {
-  return db().transaction(async tx => {
+export async function rebuildBalance(
+  userId: string,
+  at: Date = new Date(),
+): Promise<AccountSnapshot> {
+  return db().transaction(async (tx) => {
     await lockBalance(tx, BigInt(userId));
     await ensureExpiryTx(tx, userId, at);
     await rebuildBalanceTx(tx, userId, at);
@@ -125,58 +165,74 @@ export type CreditChargeRow = typeof creditCharges.$inferSelect;
  * 幂等占用一次结算：插一条空投影的 charge 行，返回 null 表示这个 Generation 已经结算过。
  * 拿到行之后必须在同一事务里补齐投影与分录；事务回滚时占位行一起消失。
  */
-export async function insertCharge(tx: Transaction, input: {
-  generationId: string;
-  appId: bigint;
-  userId: bigint;
-  createTime: string;
-}): Promise<CreditChargeRow | null> {
-  const [row] = await tx.insert(creditCharges).values({
-    generationId: input.generationId,
-    appId: input.appId,
-    userId: input.userId,
-    credits: 0,
-    costUsd: null,
-    rateCardSnapshot: [],
-    usageSnapshot: [],
-    status: 'unpriced',
-    estimatedSteps: 0,
-    createTime: input.createTime,
-  }).onConflictDoNothing().returning();
+export async function insertCharge(
+  tx: Transaction,
+  input: {
+    generationId: string;
+    appId: bigint;
+    userId: bigint;
+    createTime: string;
+  },
+): Promise<CreditChargeRow | null> {
+  const [row] = await tx
+    .insert(creditCharges)
+    .values({
+      generationId: input.generationId,
+      appId: input.appId,
+      userId: input.userId,
+      credits: 0,
+      costUsd: null,
+      rateCardSnapshot: [],
+      usageSnapshot: [],
+      status: 'unpriced',
+      estimatedSteps: 0,
+      createTime: input.createTime,
+    })
+    .onConflictDoNothing()
+    .returning();
   return row ?? null;
 }
 
 /** 写回 charge 的投影与两个不可变快照（定价结果）；分录由 `postConsume` 另外追加。 */
-export async function projectCharge(tx: Transaction, input: {
-  chargeId: string;
-  credits: number;
-  costUsd: string | null;
-  status: ChargeStatus;
-  estimatedSteps: number;
-  usageSnapshot: UsageSnapshotStep[];
-  rateCardSnapshot: RateCardView[];
-}): Promise<void> {
-  await tx.update(creditCharges).set({
-    credits: input.credits,
-    costUsd: input.costUsd,
-    status: input.status,
-    estimatedSteps: input.estimatedSteps,
-    usageSnapshot: input.usageSnapshot,
-    rateCardSnapshot: input.rateCardSnapshot,
-  }).where(eq(creditCharges.generationId, input.chargeId));
+export async function projectCharge(
+  tx: Transaction,
+  input: {
+    chargeId: string;
+    credits: number;
+    costUsd: string | null;
+    status: ChargeStatus;
+    estimatedSteps: number;
+    usageSnapshot: UsageSnapshotStep[];
+    rateCardSnapshot: RateCardView[];
+  },
+): Promise<void> {
+  await tx
+    .update(creditCharges)
+    .set({
+      credits: input.credits,
+      costUsd: input.costUsd,
+      status: input.status,
+      estimatedSteps: input.estimatedSteps,
+      usageSnapshot: input.usageSnapshot,
+      rateCardSnapshot: input.rateCardSnapshot,
+    })
+    .where(eq(creditCharges.generationId, input.chargeId));
 }
 
 /**
  * 结算扣减：先补过期，再按到期顺序从限时积分里取，剩下的落长期积分。
  * 锁的是该用户唯一一行 `credit_balance`，同一 Owner 的并发结算在这里串行化。
  */
-export async function postConsume(tx: Transaction, input: {
-  chargeId: string;
-  userId: bigint;
-  credits: number;
-  createTime: string;
-  at?: Date;
-}): Promise<void> {
+export async function postConsume(
+  tx: Transaction,
+  input: {
+    chargeId: string;
+    userId: bigint;
+    credits: number;
+    createTime: string;
+    at?: Date;
+  },
+): Promise<void> {
   if (input.credits <= 0) return;
   const at = input.at ?? new Date();
   const atText = naiveTime(at);
@@ -223,17 +279,27 @@ export async function postConsume(tx: Transaction, input: {
 }
 
 /** 一个 charge 的全部分录（消费与退回），按写入顺序。 */
-export async function entriesOfCharge(chargeId: string, tx?: Transaction): Promise<CreditLedgerRow[]> {
-  return (tx ?? db()).select().from(creditLedger)
-    .where(and(eq(creditLedger.chargeId, chargeId), inArray(creditLedger.kind, ['consume', 'refund'])))
+export async function entriesOfCharge(
+  chargeId: string,
+  tx?: Transaction,
+): Promise<CreditLedgerRow[]> {
+  return (tx ?? db())
+    .select()
+    .from(creditLedger)
+    .where(
+      and(eq(creditLedger.chargeId, chargeId), inArray(creditLedger.kind, ['consume', 'refund'])),
+    )
     .orderBy(asc(creditLedger.id));
 }
 
 /** 有效金额 = 该账单消费与退回的净额（正数）；冲正后变小。 */
 export async function effectiveCreditsOf(chargeId: string, tx?: Transaction): Promise<number> {
-  const [row] = await (tx ?? db()).select({ credits: sql<string>`coalesce(sum(${creditLedger.credits}), 0)` })
+  const [row] = await (tx ?? db())
+    .select({ credits: sql<string>`coalesce(sum(${creditLedger.credits}), 0)` })
     .from(creditLedger)
-    .where(and(eq(creditLedger.chargeId, chargeId), inArray(creditLedger.kind, ['consume', 'refund'])));
+    .where(
+      and(eq(creditLedger.chargeId, chargeId), inArray(creditLedger.kind, ['consume', 'refund'])),
+    );
   return -Number(row?.credits ?? 0) || 0;
 }
 
@@ -241,14 +307,19 @@ export async function effectiveCreditsOf(chargeId: string, tx?: Transaction): Pr
  * 由分录重算 charge 投影：credits 永远等于消费净额；每条消费都有退回时投影成 `reversed`。
  * 冲正只追加行，然后调这里一次，不直接改 status。
  */
-export async function reprojectCharge(tx: Transaction, chargeId: string): Promise<{ credits: number; reversed: boolean }> {
+export async function reprojectCharge(
+  tx: Transaction,
+  chargeId: string,
+): Promise<{ credits: number; reversed: boolean }> {
   const entries = await entriesOfCharge(chargeId, tx);
-  const consumes = entries.filter(entry => entry.kind === 'consume');
-  const refunds = entries.filter(entry => entry.kind === 'refund');
+  const consumes = entries.filter((entry) => entry.kind === 'consume');
+  const refunds = entries.filter((entry) => entry.kind === 'refund');
   const credits = -entries.reduce((sum, entry) => sum + entry.credits, 0);
-  const reversed = consumes.length > 0
-    && consumes.every(entry => refunds.some(refund => refund.reversalOf === entry.id));
-  await tx.update(creditCharges)
+  const reversed =
+    consumes.length > 0 &&
+    consumes.every((entry) => refunds.some((refund) => refund.reversalOf === entry.id));
+  await tx
+    .update(creditCharges)
     .set(reversed ? { credits, status: 'reversed' } : { credits })
     .where(eq(creditCharges.generationId, chargeId));
   return { credits, reversed };
@@ -270,21 +341,36 @@ export type ReversalResult = { reversed: boolean; entries: number };
  * 原账期已经过期时，同事务再写一条 `origin='reversal'` 的 `expire` 把这次退回清掉：
  * 账本上看得到「退回 + 已过期」，余额不变，已失效的积分不会被复活。
  */
-export async function reverseCharge(chargeId: string, input: ReversalInput): Promise<ReversalResult> {
-  return db().transaction(tx => reverseChargeTx(tx, chargeId, input));
+export async function reverseCharge(
+  chargeId: string,
+  input: ReversalInput,
+): Promise<ReversalResult> {
+  return db().transaction((tx) => reverseChargeTx(tx, chargeId, input));
 }
 
-export async function reverseChargeTx(tx: Transaction, chargeId: string, input: ReversalInput): Promise<ReversalResult> {
-  const [charge] = await tx.select().from(creditCharges)
-    .where(eq(creditCharges.generationId, chargeId)).limit(1).for('update');
+export async function reverseChargeTx(
+  tx: Transaction,
+  chargeId: string,
+  input: ReversalInput,
+): Promise<ReversalResult> {
+  const [charge] = await tx
+    .select()
+    .from(creditCharges)
+    .where(eq(creditCharges.generationId, chargeId))
+    .limit(1)
+    .for('update');
   if (!charge) return { reversed: false, entries: 0 };
 
-  const open = await tx.select().from(creditLedger)
-    .where(and(
-      eq(creditLedger.chargeId, chargeId),
-      eq(creditLedger.kind, 'consume'),
-      sql`not exists (select 1 from credit_ledger r where r.reversal_of = ${creditLedger.id})`,
-    ))
+  const open = await tx
+    .select()
+    .from(creditLedger)
+    .where(
+      and(
+        eq(creditLedger.chargeId, chargeId),
+        eq(creditLedger.kind, 'consume'),
+        sql`not exists (select 1 from credit_ledger r where r.reversal_of = ${creditLedger.id})`,
+      ),
+    )
     .orderBy(asc(creditLedger.id));
   if (!open.length) return { reversed: false, entries: 0 };
 
@@ -333,7 +419,10 @@ export async function reverseChargeTx(tx: Transaction, chargeId: string, input: 
 // ---- 账单读模型 ----
 
 /** 账本行 → 对外的流水视图；`balanceAfter` 由调用方补。 */
-export function ledgerEntryView(row: CreditLedgerRow, balanceAfter?: number): CreditLedgerEntryView {
+export function ledgerEntryView(
+  row: CreditLedgerRow,
+  balanceAfter?: number,
+): CreditLedgerEntryView {
   return {
     id: String(row.id),
     userId: String(row.userId),
@@ -363,34 +452,49 @@ export async function chargesOf(input: {
   limit: number;
   includeCost: boolean;
 }): Promise<BillingChargeView[]> {
-  const rows = await db().select({
-    generationId: creditCharges.generationId,
-    appId: creditCharges.appId,
-    appName: apps.appName,
-    credits: creditCharges.credits,
-    costUsd: creditCharges.costUsd,
-    status: creditCharges.status,
-    estimatedSteps: creditCharges.estimatedSteps,
-    usageSnapshot: creditCharges.usageSnapshot,
-    createTime: creditCharges.createTime,
-    messageId: generations.messageId,
-    generationStatus: generations.status,
-    stopReason: generations.stopReason,
-  }).from(creditCharges)
+  const rows = await db()
+    .select({
+      generationId: creditCharges.generationId,
+      appId: creditCharges.appId,
+      appName: apps.appName,
+      credits: creditCharges.credits,
+      costUsd: creditCharges.costUsd,
+      status: creditCharges.status,
+      estimatedSteps: creditCharges.estimatedSteps,
+      usageSnapshot: creditCharges.usageSnapshot,
+      createTime: creditCharges.createTime,
+      messageId: generations.messageId,
+      generationStatus: generations.status,
+      stopReason: generations.stopReason,
+    })
+    .from(creditCharges)
     .leftJoin(generations, eq(generations.id, creditCharges.generationId))
     .leftJoin(apps, eq(apps.id, creditCharges.appId))
-    .where(and(
-      eq(creditCharges.userId, BigInt(input.userId)),
-      ...(input.appId ? [eq(creditCharges.appId, BigInt(input.appId))] : []),
-    ))
+    .where(
+      and(
+        eq(creditCharges.userId, BigInt(input.userId)),
+        ...(input.appId ? [eq(creditCharges.appId, BigInt(input.appId))] : []),
+      ),
+    )
     .orderBy(desc(creditCharges.createTime), desc(creditCharges.generationId))
     .limit(input.limit);
   if (!rows.length) return [];
-  const entries = await db().select().from(creditLedger)
-    .where(inArray(creditLedger.chargeId, rows.map(row => row.generationId)))
+  const entries = await db()
+    .select()
+    .from(creditLedger)
+    .where(
+      inArray(
+        creditLedger.chargeId,
+        rows.map((row) => row.generationId),
+      ),
+    )
     .orderBy(asc(creditLedger.id));
-  return rows.map(row => {
-    const own = entries.filter(entry => entry.chargeId === row.generationId && (entry.kind === 'consume' || entry.kind === 'refund'));
+  return rows.map((row) => {
+    const own = entries.filter(
+      (entry) =>
+        entry.chargeId === row.generationId &&
+        (entry.kind === 'consume' || entry.kind === 'refund'),
+    );
     const view: BillingChargeView = {
       generationId: row.generationId,
       messageId: row.messageId ?? null,
@@ -400,15 +504,17 @@ export async function chargesOf(input: {
       effectiveCredits: -own.reduce((sum, entry) => sum + entry.credits, 0),
       status: row.status,
       estimatedSteps: row.estimatedSteps,
-      estimated: row.estimatedSteps > 0 || row.usageSnapshot.some(step => step.estimated),
-      unpriced: row.usageSnapshot.some(step => !step.priced),
+      estimated: row.estimatedSteps > 0 || row.usageSnapshot.some((step) => step.estimated),
+      unpriced: row.usageSnapshot.some((step) => !step.priced),
       createTime: row.createTime,
       generationStatus: row.generationStatus as BillingChargeView['generationStatus'],
       stopReason: stopReasonFrom(row.stopReason),
-      entries: own.filter(entry => entry.kind === 'consume')
-        .map(entry => ({ bucket: bucketOf(entry), credits: -entry.credits })),
-      reversals: own.filter(entry => entry.kind === 'refund')
-        .map(entry => ({
+      entries: own
+        .filter((entry) => entry.kind === 'consume')
+        .map((entry) => ({ bucket: bucketOf(entry), credits: -entry.credits })),
+      reversals: own
+        .filter((entry) => entry.kind === 'refund')
+        .map((entry) => ({
           bucket: bucketOf(entry),
           credits: -entry.credits,
           reason: entry.reason,

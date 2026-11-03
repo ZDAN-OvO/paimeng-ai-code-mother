@@ -36,11 +36,15 @@ function parseRules(path: string, text: string): PromptSafetyRules {
   try {
     raw = JSON.parse(text);
   } catch (problem) {
-    throw new Error(`输入护轨规则文件 ${path} 不是合法 JSON：${problem instanceof Error ? problem.message : String(problem)}`);
+    throw new Error(
+      `输入护轨规则文件 ${path} 不是合法 JSON：${problem instanceof Error ? problem.message : String(problem)}`,
+    );
   }
   const parsed = rulesSchema.safeParse(raw);
   if (!parsed.success) {
-    const issues = parsed.error.issues.map(issue => `${issue.path.join('.') || '(根)'} ${issue.message}`).join('；');
+    const issues = parsed.error.issues
+      .map((issue) => `${issue.path.join('.') || '(根)'} ${issue.message}`)
+      .join('；');
     throw new Error(`输入护轨规则文件 ${path} 结构不合法：${issues}`);
   }
   const injectionPatterns = parsed.data.injectionPatterns.map((source, index) => {
@@ -48,23 +52,29 @@ function parseRules(path: string, text: string): PromptSafetyRules {
       // 不带 g / y：validatePrompt 用 test() 逐条判定，带状态标志会让同一输入的结果随调用次数变化。
       return new RegExp(source, 'i');
     } catch (problem) {
-      throw new Error(`输入护轨规则文件 ${path} 第 ${index + 1} 条注入正则无效（${source}）：${problem instanceof Error ? problem.message : String(problem)}`);
+      throw new Error(
+        `输入护轨规则文件 ${path} 第 ${index + 1} 条注入正则无效（${source}）：${problem instanceof Error ? problem.message : String(problem)}`,
+      );
     }
   });
   return {
     sensitiveWords: parsed.data.sensitiveWords,
-    lowercasedWords: parsed.data.sensitiveWords.map(word => word.toLowerCase()),
+    lowercasedWords: parsed.data.sensitiveWords.map((word) => word.toLowerCase()),
     injectionPatterns,
   };
 }
 
 /** 纯加载，不做缓存；测试与需要临时规则的调用方直接用它。 */
-export function loadPromptSafetyRules(path: string = defaultPromptSafetyRulesPath()): PromptSafetyRules {
+export function loadPromptSafetyRules(
+  path: string = defaultPromptSafetyRulesPath(),
+): PromptSafetyRules {
   let text: string;
   try {
     text = readFileSync(path, 'utf8');
   } catch (problem) {
-    throw new Error(`无法读取输入护轨规则文件 ${path}：${problem instanceof Error ? problem.message : String(problem)}`);
+    throw new Error(
+      `无法读取输入护轨规则文件 ${path}：${problem instanceof Error ? problem.message : String(problem)}`,
+    );
   }
   return parseRules(path, text);
 }

@@ -8,12 +8,14 @@ const config: NextConfig = {
   redirects() {
     const platform = new URL(process.env.APP_ORIGIN ?? 'http://localhost:3000');
     if (platform.hostname !== 'localhost') return [];
-    return [{
-      source: '/:path((?!api(?:/|$)|_next(?:/|$)).*)',
-      has: [{ type: 'host', value: '127\\.0\\.0\\.1' }],
-      destination: `${platform.origin}/:path`,
-      permanent: false,
-    }];
+    return [
+      {
+        source: '/:path((?!api(?:/|$)|_next(?:/|$)).*)',
+        has: [{ type: 'host', value: '127\\.0\\.0\\.1' }],
+        destination: `${platform.origin}/:path`,
+        permanent: false,
+      },
+    ];
   },
   outputFileTracingRoot: process.cwd(),
   // config/ 是运行期读取的策略文件（输入护轨规则），必须跟着产物一起打包，不能被 tree-shake 掉。

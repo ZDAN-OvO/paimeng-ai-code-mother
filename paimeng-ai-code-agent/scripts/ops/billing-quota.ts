@@ -10,16 +10,21 @@ import { issuePendingQuota } from '../../src/server/billing/quota';
  */
 const args = process.argv.slice(2);
 const apply = args.includes('--apply');
-const limitArg = args.find(arg => arg.startsWith('--limit='));
+const limitArg = args.find((arg) => arg.startsWith('--limit='));
 const limit = limitArg ? Number(limitArg.slice('--limit='.length)) : undefined;
-if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) throw new Error('--limit 必须是正整数');
+if (limit !== undefined && (!Number.isInteger(limit) || limit < 1))
+  throw new Error('--limit 必须是正整数');
 
 const url = new URL(process.env.DATABASE_URL ?? '');
-if (!/^paimeng_app(?:_test)?$/.test(url.pathname.slice(1))) throw new Error('仅允许对独立的 paimeng_app 库发放限时积分');
+if (!/^paimeng_app(?:_test)?$/.test(url.pathname.slice(1)))
+  throw new Error('仅允许对独立的 paimeng_app 库发放限时积分');
 
 const run = await issuePendingQuota({ dryRun: !apply, limit });
-console.log(`${apply ? '已发放' : '试运行（加 --apply 才写库）'}：账期 ${run.period}，扫描 ${run.scanned} 人，`
-  + `新建规则行 ${run.issued} 条（正数 ${run.granted}，0 积分 ${run.zero}），合计 ${run.credits} 积分`);
+console.log(
+  `${apply ? '已发放' : '试运行（加 --apply 才写库）'}：账期 ${run.period}，扫描 ${run.scanned} 人，` +
+    `新建规则行 ${run.issued} 条（正数 ${run.granted}，0 积分 ${run.zero}），合计 ${run.credits} 积分`,
+);
 if (run.operationId) console.log(`操作日志：${run.operationId}`);
-if (run.failures.length) console.error(`失败 ${run.failures.length} 人：`, run.failures.slice(0, 10));
+if (run.failures.length)
+  console.error(`失败 ${run.failures.length} 人：`, run.failures.slice(0, 10));
 await getPool().end();

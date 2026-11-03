@@ -65,12 +65,20 @@ function windowReply(reply: unknown) {
  * 不进事务、不写任何生成行或租约。返回 null 表示 Redis 不可用时的 fail open：请求照常放行，
  * 也没有需要退还的额度。
  */
-export async function reserveChatRateLimit(userId: string, ip: string): Promise<ChatRateLimitReservation | null> {
+export async function reserveChatRateLimit(
+  userId: string,
+  ip: string,
+): Promise<ChatRateLimitReservation | null> {
   const { rate, intervalSeconds, message } = getConfig().chatRateLimit;
   const key = chatRateLimitKey(userId, ip);
   let verdict: { allowed: boolean; windowId: string };
   try {
-    const reply = await withRateLimitRedis(client => client.eval(reserveScript, { keys: [key], arguments: [String(rate), String(intervalSeconds * 1000), randomUUID()] }));
+    const reply = await withRateLimitRedis((client) =>
+      client.eval(reserveScript, {
+        keys: [key],
+        arguments: [String(rate), String(intervalSeconds * 1000), randomUUID()],
+      }),
+    );
     verdict = windowReply(reply);
   } catch {
     warnRateLimitRedisUnavailable('unavailable');
@@ -86,7 +94,9 @@ export async function reserveChatRateLimit(userId: string, ip: string): Promise<
  */
 export async function refundChatRateLimit(reservation: ChatRateLimitReservation): Promise<void> {
   try {
-    await withRateLimitRedis(client => client.eval(refundScript, { keys: [reservation.key], arguments: [reservation.windowId] }));
+    await withRateLimitRedis((client) =>
+      client.eval(refundScript, { keys: [reservation.key], arguments: [reservation.windowId] }),
+    );
   } catch {
     warnRateLimitRedisUnavailable('unavailable');
   }

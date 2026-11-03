@@ -48,7 +48,7 @@ test.afterAll(async () => {
 test('首页填写需求后生成出可预览的页面，刷新后仍在', async ({ page }) => {
   test.setTimeout(180_000);
   const errors: string[] = [];
-  page.on('pageerror', error => errors.push(error.message));
+  page.on('pageerror', (error) => errors.push(error.message));
 
   const registered = await page.request.post('/api/user/register', {
     headers: { origin },
@@ -59,16 +59,26 @@ test('首页填写需求后生成出可预览的页面，刷新后仍在', async
   await page.goto('/user/login');
   await page.getByLabel('账号', { exact: true }).fill(account);
   await page.getByLabel('密码', { exact: true }).fill(password);
-  await page.locator('form').getByRole('button', { name: /^登\s*录$/ }).click();
+  await page
+    .locator('form')
+    .getByRole('button', { name: /^登\s*录$/ })
+    .click();
   await expect(page).toHaveURL('/');
 
   await page.getByLabel('技术栈', { exact: true }).click();
-  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('原生 HTML', { exact: true }).click();
-  await expect(page.getByText('单文件静态页，样式与交互集中在 index.html', { exact: true })).toBeVisible();
+  await page
+    .locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')
+    .getByText('原生 HTML', { exact: true })
+    .click();
+  await expect(
+    page.getByText('单文件静态页，样式与交互集中在 index.html', { exact: true }),
+  ).toBeVisible();
   await page.getByLabel('应用描述').fill(prompt);
   await page.screenshot({ path: join(evidence, '01-home-filled.png'), fullPage: true });
 
-  const created = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/app/add');
+  const created = page.waitForRequest(
+    (request) => request.method() === 'POST' && new URL(request.url()).pathname === '/api/app/add',
+  );
   await page.getByRole('button', { name: '创建应用', exact: true }).click();
   const createBody = (await created).postDataJSON() as { initPrompt: string; templateId?: string };
   expect(createBody).toEqual({ initPrompt: prompt, templateId: 'html' });
@@ -80,13 +90,22 @@ test('首页填写需求后生成出可预览的页面，刷新后仍在', async
   await expect(page.getByText(/文件已生成/)).toBeVisible({ timeout: 120_000 });
   await expect(page.getByText('可预览', { exact: true })).toBeVisible();
   await expect(page.locator('.message-ai .tool-call').first()).toBeVisible();
-  await expect(page.locator('.message-ai .tool-call').filter({ hasText: '写入文件' }).first()).toBeVisible();
+  await expect(
+    page.locator('.message-ai .tool-call').filter({ hasText: '写入文件' }).first(),
+  ).toBeVisible();
   // 预览里的标题就是这次的需求：证明产物来自这次输入，不是静态模板。
-  await expect(page.frameLocator('iframe[title="应用预览"]').getByRole('heading', { name: prompt, exact: true })).toBeVisible();
+  await expect(
+    page
+      .frameLocator('iframe[title="应用预览"]')
+      .getByRole('heading', { name: prompt, exact: true }),
+  ).toBeVisible();
   await page.screenshot({ path: join(evidence, '03-generated.png'), fullPage: true });
 
   // 副作用：库里一次 ready 的 generation，attempt 账本里有模型与工具调用；工作区真的写出了文件。
-  const generation = await db.query<{ status: string }>('select status from generation where app_id = $1', [appId]);
+  const generation = await db.query<{ status: string }>(
+    'select status from generation where app_id = $1',
+    [appId],
+  );
   expect(generation.rows).toEqual([{ status: 'ready' }]);
   const attempts = await db.query<{ kind: string; count: number }>(
     `select a.kind, count(*)::int as count
@@ -96,28 +115,39 @@ test('首页填写需求后生成出可预览的页面，刷新后仍在', async
       group by a.kind`,
     [appId],
   );
-  const counts = Object.fromEntries(attempts.rows.map(row => [row.kind, row.count]));
+  const counts = Object.fromEntries(attempts.rows.map((row) => [row.kind, row.count]));
   expect(counts.model, '模型 attempt 应已落账').toBeGreaterThanOrEqual(1);
   expect(counts.tool, '工具 attempt 应已落账').toBeGreaterThanOrEqual(1);
   const source = await readFile(join(workspaceDir + appId, 'index.html'), 'utf8');
   expect(source).toContain(prompt);
 
   // 副作用落成文件：报告里的数字要能对上一个 spec 自己写下的快照，而不是事后粘贴。
-  await writeFile(join(evidence, 'db-facts.json'), JSON.stringify({
-    appId,
-    prompt,
-    generation: generation.rows,
-    attemptsByKind: counts,
-    sourcePath: `runtime/code_output/html_${appId}/index.html`,
-    sourceBytes: Buffer.byteLength(source),
-    sourceContainsPrompt: source.includes(prompt),
-    capturedAt: new Date().toISOString(),
-  }, null, 2) + '\n');
+  await writeFile(
+    join(evidence, 'db-facts.json'),
+    JSON.stringify(
+      {
+        appId,
+        prompt,
+        generation: generation.rows,
+        attemptsByKind: counts,
+        sourcePath: `runtime/code_output/html_${appId}/index.html`,
+        sourceBytes: Buffer.byteLength(source),
+        sourceContainsPrompt: source.includes(prompt),
+        capturedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    ) + '\n',
+  );
 
   await page.reload();
   await expect(page.getByText('可预览', { exact: true })).toBeVisible();
   await expect(page.getByText(/文件已生成/)).toBeVisible();
-  await expect(page.frameLocator('iframe[title="应用预览"]').getByRole('heading', { name: prompt, exact: true })).toBeVisible();
+  await expect(
+    page
+      .frameLocator('iframe[title="应用预览"]')
+      .getByRole('heading', { name: prompt, exact: true }),
+  ).toBeVisible();
   await page.screenshot({ path: join(evidence, '04-after-reload.png'), fullPage: true });
 
   expect(errors).toEqual([]);

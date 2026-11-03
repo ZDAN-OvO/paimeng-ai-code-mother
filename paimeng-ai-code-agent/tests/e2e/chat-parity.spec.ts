@@ -25,54 +25,152 @@ type Options = {
 function appInfo(options: Options) {
   const ownerId = 'owner';
   return {
-    id: appId, userId: ownerId, appName: options.appName ?? '派蒙测试应用', initPrompt: options.initPrompt ?? '生成一个测试首页',
-    codeGenType: 'html', createTime: '2026-10-10 10:00:00', updateTime: '2026-10-10 10:00:00',
-    previewUrl: options.previewUrl ?? null, deployUrl: options.deployUrl ?? null, sourceAvailable: options.sourceAvailable ?? false,
-    user: { id: ownerId, userAccount: 'owner_acc', userName: '测试创建者', userAvatar: null, userProfile: null, userRole: 'user', createTime: '2026-10-10 09:00:00', updateTime: '2026-10-10 09:00:00' },
+    id: appId,
+    userId: ownerId,
+    appName: options.appName ?? '派蒙测试应用',
+    initPrompt: options.initPrompt ?? '生成一个测试首页',
+    codeGenType: 'html',
+    createTime: '2026-10-10 10:00:00',
+    updateTime: '2026-10-10 10:00:00',
+    previewUrl: options.previewUrl ?? null,
+    deployUrl: options.deployUrl ?? null,
+    sourceAvailable: options.sourceAvailable ?? false,
+    user: {
+      id: ownerId,
+      userAccount: 'owner_acc',
+      userName: '测试创建者',
+      userAvatar: null,
+      userProfile: null,
+      userRole: 'user',
+      createTime: '2026-10-10 09:00:00',
+      updateTime: '2026-10-10 09:00:00',
+    },
   };
 }
 
 async function respondStream(route: Route, text: string) {
-  const stream = createUIMessageStream({ execute: ({ writer }) => {
-    writer.write({ type: 'start', messageId: 'parity-assistant' });
-    writer.write({ type: 'text-start', id: 'parity-text' });
-    writer.write({ type: 'text-delta', id: 'parity-text', delta: text });
-    writer.write({ type: 'text-end', id: 'parity-text' });
-    writer.setOutcome({ status: 'completed' });
-  } });
+  const stream = createUIMessageStream({
+    execute: ({ writer }) => {
+      writer.write({ type: 'start', messageId: 'parity-assistant' });
+      writer.write({ type: 'text-start', id: 'parity-text' });
+      writer.write({ type: 'text-delta', id: 'parity-text', delta: text });
+      writer.write({ type: 'text-end', id: 'parity-text' });
+      writer.setOutcome({ status: 'completed' });
+    },
+  });
   const response = createUIMessageStreamResponse({ stream });
-  await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: await response.text() });
+  await route.fulfill({
+    status: response.status,
+    headers: Object.fromEntries(response.headers),
+    body: await response.text(),
+  });
 }
 
 async function setup(page: Page, options: Options = {}) {
-  const state = { chatRequests: 0, lastChatBody: null as { message?: { parts?: { text?: string }[] } } | null, deleteRequests: 0 };
-  await page.route('**/api/app/good/list/page/vo', route => route.fulfill({ json: { code: 0, data: { records: [], totalRow: 0, pageNumber: 1, pageSize: 10 }, message: 'ok' } }));
-  await page.route('**/api/app/my/list/page/vo', route => route.fulfill({ json: { code: 0, data: { records: [], totalRow: 0, pageNumber: 1, pageSize: 10 }, message: 'ok' } }));
-  await page.route('**/api/user/get/login', route => route.fulfill({ json: { code: 0, data: { id: options.userId ?? 'owner', userName: options.admin ? '管理员' : '测试创建者', userRole: options.admin ? 'admin' : 'user', userAvatar: null }, message: 'ok' } }));
-  await page.route('**/api/app/get/vo?*', route => route.fulfill({ json: { code: 0, data: appInfo(options), message: 'ok' } }));
-  await page.route('**/api/app/messages?*', route => options.historyFailure
-    ? route.fulfill({ status: 403, json: { code: 40300, data: null, message: '无权限访问该应用' } })
-    : route.fulfill({ json: { code: 0, data: [], message: 'ok' } }));
-  await page.route('**/api/app/generation?*', route => options.historyFailure
-    ? route.fulfill({ status: 403, json: { code: 40300, data: null, message: '无权限访问该应用' } })
-    : route.fulfill({ json: { code: 0, data: options.task ?? null, message: 'ok' } }));
-  await page.route('**/api/app/chat/gen/code', async route => {
+  const state = {
+    chatRequests: 0,
+    lastChatBody: null as { message?: { parts?: { text?: string }[] } } | null,
+    deleteRequests: 0,
+  };
+  await page.route('**/api/app/good/list/page/vo', (route) =>
+    route.fulfill({
+      json: {
+        code: 0,
+        data: { records: [], totalRow: 0, pageNumber: 1, pageSize: 10 },
+        message: 'ok',
+      },
+    }),
+  );
+  await page.route('**/api/app/my/list/page/vo', (route) =>
+    route.fulfill({
+      json: {
+        code: 0,
+        data: { records: [], totalRow: 0, pageNumber: 1, pageSize: 10 },
+        message: 'ok',
+      },
+    }),
+  );
+  await page.route('**/api/user/get/login', (route) =>
+    route.fulfill({
+      json: {
+        code: 0,
+        data: {
+          id: options.userId ?? 'owner',
+          userName: options.admin ? '管理员' : '测试创建者',
+          userRole: options.admin ? 'admin' : 'user',
+          userAvatar: null,
+        },
+        message: 'ok',
+      },
+    }),
+  );
+  await page.route('**/api/app/get/vo?*', (route) =>
+    route.fulfill({ json: { code: 0, data: appInfo(options), message: 'ok' } }),
+  );
+  await page.route('**/api/app/messages?*', (route) =>
+    options.historyFailure
+      ? route.fulfill({
+          status: 403,
+          json: { code: 40300, data: null, message: '无权限访问该应用' },
+        })
+      : route.fulfill({ json: { code: 0, data: [], message: 'ok' } }),
+  );
+  await page.route('**/api/app/generation?*', (route) =>
+    options.historyFailure
+      ? route.fulfill({
+          status: 403,
+          json: { code: 40300, data: null, message: '无权限访问该应用' },
+        })
+      : route.fulfill({ json: { code: 0, data: options.task ?? null, message: 'ok' } }),
+  );
+  await page.route('**/api/app/chat/gen/code', async (route) => {
     state.chatRequests += 1;
     state.lastChatBody = route.request().postDataJSON();
     await respondStream(route, options.streamText ?? '已收到。');
   });
-  await page.route('**/api/app/deploy', route => route.fulfill({ json: { code: 0, data: deployUrl, message: 'ok' } }));
-  await page.route('**/api/app/delete', route => { state.deleteRequests += 1; return route.fulfill({ json: { code: 0, data: true, message: 'ok' } }); });
-  await page.route('**/api/app/generation/cancel', route => route.fulfill({ json: { code: 0, data: true, message: 'ok' } }));
+  await page.route('**/api/app/deploy', (route) =>
+    route.fulfill({ json: { code: 0, data: deployUrl, message: 'ok' } }),
+  );
+  await page.route('**/api/app/delete', (route) => {
+    state.deleteRequests += 1;
+    return route.fulfill({ json: { code: 0, data: true, message: 'ok' } });
+  });
+  await page.route('**/api/app/generation/cancel', (route) =>
+    route.fulfill({ json: { code: 0, data: true, message: 'ok' } }),
+  );
   return state;
 }
 
-type MockElement = { tagName: string; id: string; className: string; textContent: string; selector: string; pagePath: string };
-const heroElement: MockElement = { tagName: 'H1', id: 'hero', className: 'title main', textContent: '预览标题', selector: 'body>h1#hero', pagePath: `/preview/html_${appId}/` };
-const navElement: MockElement = { tagName: 'NAV', id: 'nav', className: 'menu', textContent: '首页 关于', selector: 'body>nav#nav', pagePath: `/preview/html_${appId}/` };
+type MockElement = {
+  tagName: string;
+  id: string;
+  className: string;
+  textContent: string;
+  selector: string;
+  pagePath: string;
+};
+const heroElement: MockElement = {
+  tagName: 'H1',
+  id: 'hero',
+  className: 'title main',
+  textContent: '预览标题',
+  selector: 'body>h1#hero',
+  pagePath: `/preview/html_${appId}/`,
+};
+const navElement: MockElement = {
+  tagName: 'NAV',
+  id: 'nav',
+  className: 'menu',
+  textContent: '首页 关于',
+  selector: 'body>nav#nav',
+  pagePath: `/preview/html_${appId}/`,
+};
 
 async function mockPreview(page: Page, elements: MockElement[] = [heroElement]) {
-  await page.route(`${previewOrigin}/**`, route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><body><h1 id="hero" class="title main">预览标题</h1>
+  await page.route(`${previewOrigin}/**`, (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: `<!doctype html><html><body><h1 id="hero" class="title main">预览标题</h1>
 <script>
 window.addEventListener('message', function (event) {
   if (event.data && event.data.type === 'TOGGLE_EDIT_MODE' && event.data.editMode === true) {
@@ -81,7 +179,9 @@ window.addEventListener('message', function (event) {
     }, 30);
   }
 });
-</script></body></html>` }));
+</script></body></html>`,
+    }),
+  );
 }
 
 test('非本人公开应用仍显示详情、失败历史不自动生成', async ({ page }) => {
@@ -114,7 +214,12 @@ test('创建者通过详情弹窗修改和删除应用', async ({ page }) => {
 });
 
 test('管理员只见修改删除入口，不能生成或发布', async ({ page }) => {
-  await setup(page, { admin: true, userId: 'admin-1', previewUrl, task: { id: 'task-ready', status: 'ready' } });
+  await setup(page, {
+    admin: true,
+    userId: 'admin-1',
+    previewUrl,
+    task: { id: 'task-ready', status: 'ready' },
+  });
   await page.goto('/app/chat/' + appId);
   await expect(page.getByLabel('对话消息')).toBeDisabled();
   await expect(page.getByRole('button', { name: '部署' })).toBeDisabled();
@@ -125,7 +230,11 @@ test('管理员只见修改删除入口，不能生成或发布', async ({ page 
 });
 
 test('仅有源码时下载和部署可用，没有可预览产物', async ({ page }) => {
-  await setup(page, { sourceAvailable: true, previewUrl: null, task: { id: 'task-failed', status: 'failed' } });
+  await setup(page, {
+    sourceAvailable: true,
+    previewUrl: null,
+    task: { id: 'task-failed', status: 'failed' },
+  });
   await page.goto('/app/chat/' + appId);
   await expect(page.getByRole('link', { name: '下载代码' })).toBeEnabled();
   await expect(page.getByRole('button', { name: '部署' })).toBeEnabled();
@@ -138,7 +247,11 @@ test('仅有源码时下载和部署可用，没有可预览产物', async ({ pa
 });
 
 test('旧应用源码与预览都在时下载、预览和部署同时可用', async ({ page }) => {
-  await setup(page, { sourceAvailable: true, previewUrl, task: { id: 'task-failed', status: 'failed' } });
+  await setup(page, {
+    sourceAvailable: true,
+    previewUrl,
+    task: { id: 'task-failed', status: 'failed' },
+  });
   await page.goto('/app/chat/' + appId);
   await expect(page.getByRole('link', { name: '下载代码' })).toBeEnabled();
   await expect(page.getByRole('button', { name: '部署' })).toBeEnabled();
@@ -147,7 +260,11 @@ test('旧应用源码与预览都在时下载、预览和部署同时可用', as
 });
 
 test('可视化编辑保留悬停/选中定位上下文并传入模型请求', async ({ page }) => {
-  const state = await setup(page, { previewUrl, sourceAvailable: true, task: { id: 'task-ready', status: 'ready' } });
+  const state = await setup(page, {
+    previewUrl,
+    sourceAvailable: true,
+    task: { id: 'task-ready', status: 'ready' },
+  });
   await mockPreview(page);
   await page.goto('/app/chat/' + appId);
   await page.getByRole('button', { name: '可视化编辑' }).click();
@@ -157,7 +274,26 @@ test('可视化编辑保留悬停/选中定位上下文并传入模型请求', a
   await expect(alert).toContainText('页面路径: /preview/html_' + appId + '/');
   await expect(alert).toContainText('选择器: body>h1#hero');
 
-  await page.evaluate(target => window.postMessage({ type: 'ELEMENTS_SELECTED', elements: [{ tagName: 'H1', id: 'wrong', className: '', textContent: '', selector: 'body>h1', pagePath: '/' }] }, target), appOrigin());
+  await page.evaluate(
+    (target) =>
+      window.postMessage(
+        {
+          type: 'ELEMENTS_SELECTED',
+          elements: [
+            {
+              tagName: 'H1',
+              id: 'wrong',
+              className: '',
+              textContent: '',
+              selector: 'body>h1',
+              pagePath: '/',
+            },
+          ],
+        },
+        target,
+      ),
+    appOrigin(),
+  );
   await page.waitForTimeout(100);
   await expect(alert).not.toContainText('#wrong');
 
@@ -173,7 +309,11 @@ test('可视化编辑保留悬停/选中定位上下文并传入模型请求', a
 });
 
 test('可视化编辑支持多选：逐个展示、可单独移除，定位上下文一起发送', async ({ page }) => {
-  const state = await setup(page, { previewUrl, sourceAvailable: true, task: { id: 'task-ready', status: 'ready' } });
+  const state = await setup(page, {
+    previewUrl,
+    sourceAvailable: true,
+    task: { id: 'task-ready', status: 'ready' },
+  });
   await mockPreview(page, [heroElement, navElement]);
   await page.goto('/app/chat/' + appId);
   await page.getByRole('button', { name: '可视化编辑' }).click();
@@ -198,13 +338,23 @@ test('可视化编辑支持多选：逐个展示、可单独移除，定位上�
 });
 
 test('生成中可视化编辑仍可用，选中元素随 Ctrl+Enter 插话发送', async ({ page }) => {
-  await setup(page, { previewUrl, sourceAvailable: true, task: { id: 'task-generating', status: 'generating' } });
+  await setup(page, {
+    previewUrl,
+    sourceAvailable: true,
+    task: { id: 'task-generating', status: 'generating' },
+  });
   await mockPreview(page, [heroElement, navElement]);
   const inputs: Array<Record<string, unknown>> = [];
-  await page.route('**/api/app/chat/input', async route => {
+  await page.route('**/api/app/chat/input', async (route) => {
     const body = route.request().postDataJSON() as Record<string, unknown>;
     inputs.push(body);
-    await route.fulfill({ json: { code: 0, data: { id: body.id, submissionId: 31, generationId: 'task-generating', state: 'queued' }, message: 'ok' } });
+    await route.fulfill({
+      json: {
+        code: 0,
+        data: { id: body.id, submissionId: 31, generationId: 'task-generating', state: 'queued' },
+        message: 'ok',
+      },
+    });
   });
   await page.goto('/app/chat/' + appId);
   const edit = page.getByRole('button', { name: '可视化编辑' });
@@ -228,7 +378,8 @@ test('生成中可视化编辑仍可用，选中元素随 Ctrl+Enter 插话发�
 });
 
 test('助手 Markdown、GFM、代码高亮安全渲染且不执行原始 HTML', async ({ page }) => {
-  const markdown = '# 标题\n\n**加粗**\n\n```js\nconst answer = 1;\n```\n\n<script>window.__xss = 1;</script>\n\n<img src=x onerror="window.__xss = 2">\n\n| a | b |\n| - | - |\n| 1 | 2 |';
+  const markdown =
+    '# 标题\n\n**加粗**\n\n```js\nconst answer = 1;\n```\n\n<script>window.__xss = 1;</script>\n\n<img src=x onerror="window.__xss = 2">\n\n| a | b |\n| - | - |\n| 1 | 2 |';
   await setup(page, { task: { id: 'task-ready', status: 'ready' }, streamText: markdown });
   await page.goto('/app/chat/' + appId);
   await page.getByLabel('对话消息').fill('渲染 Markdown');
@@ -239,7 +390,9 @@ test('助手 Markdown、GFM、代码高亮安全渲染且不执行原始 HTML', 
   await expect(bubble.locator('pre code.hljs')).toContainText('const answer = 1;');
   await expect(bubble.locator('table th').first()).toHaveText('a');
   expect(await bubble.locator('script').count()).toBe(0);
-  expect(await page.evaluate(() => (window as unknown as { __xss?: number }).__xss)).toBeUndefined();
+  expect(
+    await page.evaluate(() => (window as unknown as { __xss?: number }).__xss),
+  ).toBeUndefined();
 });
 
 test('Enter 发送、Shift+Enter 换行、Ctrl+Enter 保留', async ({ page }) => {
@@ -261,7 +414,11 @@ test('Enter 发送、Shift+Enter 换行、Ctrl+Enter 保留', async ({ page }) =
 
 test('部署成功弹窗展示并复制部署链接', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await setup(page, { sourceAvailable: true, previewUrl, task: { id: 'task-ready', status: 'ready' } });
+  await setup(page, {
+    sourceAvailable: true,
+    previewUrl,
+    task: { id: 'task-ready', status: 'ready' },
+  });
   await page.goto('/app/chat/' + appId);
   await page.getByRole('button', { name: '部署' }).click();
   const dialog = page.getByRole('dialog');
@@ -272,7 +429,11 @@ test('部署成功弹窗展示并复制部署链接', async ({ page, context }) 
 });
 
 test('实时预览可在新窗口打开', async ({ page }) => {
-  await setup(page, { sourceAvailable: true, previewUrl, task: { id: 'task-ready', status: 'ready' } });
+  await setup(page, {
+    sourceAvailable: true,
+    previewUrl,
+    task: { id: 'task-ready', status: 'ready' },
+  });
   await page.goto('/app/chat/' + appId);
   const popupPromise = page.waitForEvent('popup');
   await page.getByRole('button', { name: '新窗口打开' }).click();

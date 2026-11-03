@@ -12,9 +12,16 @@ import { evidencePath } from './support/evidence';
 
 const appId = '950095';
 const app = {
-  id: appId, userId: 'owner', appName: '透支熔断展示', initPrompt: '做一个页面', codeGenType: 'html',
-  previewUrl: null, deployUrl: null, sourceAvailable: false,
-  createTime: '2026-10-10 10:00:00', updateTime: '2026-10-10 10:05:00',
+  id: appId,
+  userId: 'owner',
+  appName: '透支熔断展示',
+  initPrompt: '做一个页面',
+  codeGenType: 'html',
+  previewUrl: null,
+  deployUrl: null,
+  sourceAvailable: false,
+  createTime: '2026-10-10 10:00:00',
+  updateTime: '2026-10-10 10:05:00',
 };
 const abortMessage = '已超出透支线，生成已中止';
 const assistantId = 'overdraft-msg-1';
@@ -24,15 +31,31 @@ const history = [
 ];
 
 /** 中止之后服务端读回的三份事实：generation 终态、用量记账、账单。 */
-const generation = { id: 'gen-overdraft', status: 'failed', error: abortMessage, stopReason: 'overdraft' };
+const generation = {
+  id: 'gen-overdraft',
+  status: 'failed',
+  error: abortMessage,
+  stopReason: 'overdraft',
+};
 const account = {
-  generationId: 'gen-overdraft', messageId: assistantId, status: 'failed', error: abortMessage, stopReason: 'overdraft',
+  generationId: 'gen-overdraft',
+  messageId: assistantId,
+  status: 'failed',
+  error: abortMessage,
+  stopReason: 'overdraft',
   model: { alias: 'codegen.default', providerId: 'fixture', modelName: 'fixture-1' },
   totals: {
     rounds: 1,
     model: {
-      steps: 2, inputTokens: 2_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-      reasoningTokens: null, usageUnknown: false, modelMs: 5200, toolMs: 0,
+      steps: 2,
+      inputTokens: 2_000_000,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: null,
+      usageUnknown: false,
+      modelMs: 5200,
+      toolMs: 0,
     },
     summary: { calls: 0, inputTokens: null, outputTokens: null, usageUnknown: false, summaryMs: 0 },
     build: { attempts: 0, buildMs: 0 },
@@ -41,36 +64,91 @@ const account = {
   steps: [],
 };
 const charge = {
-  generationId: 'gen-overdraft', messageId: assistantId, appId,
-  credits: 900, effectiveCredits: 900, status: 'settled', estimatedSteps: 0,
-  estimated: false, unpriced: false, createTime: '2026-10-10 10:05:00.000',
-  generationStatus: 'failed', stopReason: 'overdraft',
-  entries: [{ bucket: 'limited', credits: 500 }, { bucket: 'lasting', credits: 400 }],
+  generationId: 'gen-overdraft',
+  messageId: assistantId,
+  appId,
+  credits: 900,
+  effectiveCredits: 900,
+  status: 'settled',
+  estimatedSteps: 0,
+  estimated: false,
+  unpriced: false,
+  createTime: '2026-10-10 10:05:00.000',
+  generationStatus: 'failed',
+  stopReason: 'overdraft',
+  entries: [
+    { bucket: 'limited', credits: 500 },
+    { bucket: 'lasting', credits: 400 },
+  ],
   reversals: [],
 };
 
 async function setup(page: Page) {
-  await page.route('**/api/user/get/login', route => route.fulfill({
-    json: { code: 0, data: { id: 'owner', userName: '测试创建者', userRole: 'user', userAvatar: null }, message: 'ok' },
-  }));
-  await page.route('**/api/app/good/list/page/vo', route => route.fulfill({ json: { code: 0, data: { records: [], totalRow: 0, pageNumber: 1, pageSize: 10 }, message: 'ok' } }));
-  await page.route('**/api/app/my/list/page/vo', route => route.fulfill({ json: { code: 0, data: { records: [], totalRow: 0, pageNumber: 1, pageSize: 10 }, message: 'ok' } }));
-  await page.route('**/api/app/get/vo?*', route => route.fulfill({ json: { code: 0, data: app, message: 'ok' } }));
-  await page.route('**/api/app/messages?*', route => route.fulfill({ json: { code: 0, data: history, message: 'ok' } }));
-  await page.route('**/api/app/generation?*', route => route.fulfill({ json: { code: 0, data: generation, message: 'ok' } }));
-  await page.route('**/api/app/generation/accounts?*', route => route.fulfill({ json: { code: 0, data: [account], message: 'ok' } }));
+  await page.route('**/api/user/get/login', (route) =>
+    route.fulfill({
+      json: {
+        code: 0,
+        data: { id: 'owner', userName: '测试创建者', userRole: 'user', userAvatar: null },
+        message: 'ok',
+      },
+    }),
+  );
+  await page.route('**/api/app/good/list/page/vo', (route) =>
+    route.fulfill({
+      json: {
+        code: 0,
+        data: { records: [], totalRow: 0, pageNumber: 1, pageSize: 10 },
+        message: 'ok',
+      },
+    }),
+  );
+  await page.route('**/api/app/my/list/page/vo', (route) =>
+    route.fulfill({
+      json: {
+        code: 0,
+        data: { records: [], totalRow: 0, pageNumber: 1, pageSize: 10 },
+        message: 'ok',
+      },
+    }),
+  );
+  await page.route('**/api/app/get/vo?*', (route) =>
+    route.fulfill({ json: { code: 0, data: app, message: 'ok' } }),
+  );
+  await page.route('**/api/app/messages?*', (route) =>
+    route.fulfill({ json: { code: 0, data: history, message: 'ok' } }),
+  );
+  await page.route('**/api/app/generation?*', (route) =>
+    route.fulfill({ json: { code: 0, data: generation, message: 'ok' } }),
+  );
+  await page.route('**/api/app/generation/accounts?*', (route) =>
+    route.fulfill({ json: { code: 0, data: [account], message: 'ok' } }),
+  );
   // 长期积分已被这笔账单扣成欠款：可用 −400 是 Owner 判定「为什么被掐断」的直接依据。
-  await page.route('**/api/billing/summary', route => route.fulfill({
-    json: {
-      code: 0,
-      data: { available: -400, limited: 0, lasting: -400, limitedExpiresAt: null, purchasedCredits60d: 0, overdraft: 0, period: '2026-10' },
-      message: 'ok',
-    },
-  }));
-  await page.route('**/api/billing/charges?*', route => route.fulfill({ json: { code: 0, data: [charge], message: 'ok' } }));
+  await page.route('**/api/billing/summary', (route) =>
+    route.fulfill({
+      json: {
+        code: 0,
+        data: {
+          available: -400,
+          limited: 0,
+          lasting: -400,
+          limitedExpiresAt: null,
+          purchasedCredits60d: 0,
+          overdraft: 0,
+          period: '2026-10',
+        },
+        message: 'ok',
+      },
+    }),
+  );
+  await page.route('**/api/billing/charges?*', (route) =>
+    route.fulfill({ json: { code: 0, data: [charge], message: 'ok' } }),
+  );
 }
 
-test('被透支熔断中止：中断说明 + 停止原因 + 最终账单三处都在，且与普通失败可区分', async ({ page }) => {
+test('被透支熔断中止：中断说明 + 停止原因 + 最终账单三处都在，且与普通失败可区分', async ({
+  page,
+}) => {
   await setup(page);
   await page.goto('/app/chat/' + appId);
 

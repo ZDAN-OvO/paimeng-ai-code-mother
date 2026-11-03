@@ -13,7 +13,9 @@ import { resetModelConfigRow } from '../../support/model-config';
 loadEnvFile('.env');
 process.env.DATABASE_URL = testDatabaseUrl(process.env.DATABASE_URL ?? '');
 
-const saved = new Map(['AI_MODEL', 'AI_BASE_URL', 'AI_API_KEY'].map(name => [name, process.env[name]]));
+const saved = new Map(
+  ['AI_MODEL', 'AI_BASE_URL', 'AI_API_KEY'].map((name) => [name, process.env[name]]),
+);
 
 type RegistryMessage = {
   ok: boolean;
@@ -33,28 +35,36 @@ type RegistryProcess = {
 function startRegistryProcess(): RegistryProcess {
   const child = spawn(
     process.execPath,
-    ['--conditions=react-server', '--import', 'tsx', 'tests/integration/models/support/model-registry-process.ts'],
+    [
+      '--conditions=react-server',
+      '--import',
+      'tsx',
+      'tests/integration/models/support/model-registry-process.ts',
+    ],
     { cwd: process.cwd(), env: { ...process.env } },
   );
   const lines = createInterface({ input: child.stdout });
-  const waiting: { resolve: (message: RegistryMessage) => void; reject: (error: Error) => void }[] = [];
+  const waiting: { resolve: (message: RegistryMessage) => void; reject: (error: Error) => void }[] =
+    [];
   let stderr = '';
-  child.stderr.on('data', chunk => {
+  child.stderr.on('data', (chunk) => {
     stderr += String(chunk);
   });
-  lines.on('line', line => {
+  lines.on('line', (line) => {
     const waiter = waiting.shift();
     if (!waiter) return;
     try {
       const parsed: unknown = JSON.parse(line);
-      if (typeof parsed !== 'object' || parsed === null) throw new Error(`子进程输出不是对象: ${line}`);
+      if (typeof parsed !== 'object' || parsed === null)
+        throw new Error(`子进程输出不是对象: ${line}`);
       waiter.resolve(parsed as RegistryMessage);
     } catch (error) {
       waiter.reject(error instanceof Error ? error : new Error(String(error)));
     }
   });
-  child.on('exit', code => {
-    for (const waiter of waiting.splice(0)) waiter.reject(new Error(`子进程提前退出 code=${code} stderr=${stderr}`));
+  child.on('exit', (code) => {
+    for (const waiter of waiting.splice(0))
+      waiter.reject(new Error(`子进程提前退出 code=${code} stderr=${stderr}`));
   });
   return {
     request(message) {
@@ -67,6 +77,7 @@ function startRegistryProcess(): RegistryProcess {
       try {
         await this.request({ command: 'close' });
       } catch {
+        // 测试清理允许子进程已退出；仍继续发送终止信号。
       }
       child.kill();
     },
@@ -104,7 +115,11 @@ describe('模型注册表跨进程生效', () => {
       expect(before).toMatchObject({ ok: true, modelName: 'model-a', refreshEpoch: '0' });
 
       const appliedAt = Date.now();
-      const applied = await writer.request({ command: 'setCodegenModel', modelName: 'model-b', applyImmediately: true });
+      const applied = await writer.request({
+        command: 'setCodegenModel',
+        modelName: 'model-b',
+        applyImmediately: true,
+      });
       expect(applied).toMatchObject({ ok: true, refreshEpoch: '1' });
 
       const after = await reader.request({ command: 'resolve', alias: 'codegen.default' });
@@ -123,7 +138,11 @@ describe('模型注册表跨进程生效', () => {
       const before = await reader.request({ command: 'resolve', alias: 'codegen.default' });
       expect(before).toMatchObject({ ok: true, modelName: 'model-a', refreshEpoch: '0' });
 
-      const savedWithoutApply = await writer.request({ command: 'setCodegenModel', modelName: 'model-c', applyImmediately: false });
+      const savedWithoutApply = await writer.request({
+        command: 'setCodegenModel',
+        modelName: 'model-c',
+        applyImmediately: false,
+      });
       expect(savedWithoutApply).toMatchObject({ ok: true, refreshEpoch: '0' });
 
       const cached = await reader.request({ command: 'resolve', alias: 'codegen.default' });

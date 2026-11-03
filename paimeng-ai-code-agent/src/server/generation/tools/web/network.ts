@@ -14,8 +14,22 @@ export type Lookup = (hostname: string) => Promise<LookupAddress[]>;
  * 注意：ipaddr.js 把 198.18.0.0/15 也归在 reserved 下，所以可放行网段必须先于本表判定。
  */
 const alwaysBlockedRanges = new Set([
-  'unspecified', 'broadcast', 'multicast', 'linkLocal', 'loopback', 'private', 'uniqueLocal',
-  'reserved', 'carrierGradeNat', 'as112', 'amt', 'orchid2', 'rfc6145', 'rfc6052', '6to4', 'teredo',
+  'unspecified',
+  'broadcast',
+  'multicast',
+  'linkLocal',
+  'loopback',
+  'private',
+  'uniqueLocal',
+  'reserved',
+  'carrierGradeNat',
+  'as112',
+  'amt',
+  'orchid2',
+  'rfc6145',
+  'rfc6052',
+  '6to4',
+  'teredo',
 ]);
 
 function normalize(address: string): ipaddr.IPv4 | ipaddr.IPv6 {
@@ -25,7 +39,9 @@ function normalize(address: string): ipaddr.IPv4 | ipaddr.IPv6 {
   } catch {
     throw new WebAccessError('blocked-url', '目标地址无法识别，已拒绝');
   }
-  return parsed instanceof ipaddr.IPv6 && parsed.isIPv4MappedAddress() ? parsed.toIPv4Address() : parsed;
+  return parsed instanceof ipaddr.IPv6 && parsed.isIPv4MappedAddress()
+    ? parsed.toIPv4Address()
+    : parsed;
 }
 
 export function rangeOf(address: string) {
@@ -34,14 +50,20 @@ export function rangeOf(address: string) {
 
 export function matchesExtraNetwork(address: string, networks: readonly ExtraNetwork[]) {
   const parsed = normalize(address);
-  return networks.some(entry => parsed.kind() === entry.network.kind() && parsed.match(entry.network, entry.prefix));
+  return networks.some(
+    (entry) => parsed.kind() === entry.network.kind() && parsed.match(entry.network, entry.prefix),
+  );
 }
 
 /** 单个地址是否可连：先看是否命中已放行网段，再拒绝危险类别；字面量地址永不放行。 */
-export function assertAllowedAddress(address: string, options: { literal: boolean; networks: readonly ExtraNetwork[] }) {
+export function assertAllowedAddress(
+  address: string,
+  options: { literal: boolean; networks: readonly ExtraNetwork[] },
+) {
   if (!options.literal && matchesExtraNetwork(address, options.networks)) return;
   const range = rangeOf(address);
-  if (alwaysBlockedRanges.has(range)) throw new WebAccessError('blocked-url', '目标解析到内网或保留地址，已拒绝');
+  if (alwaysBlockedRanges.has(range))
+    throw new WebAccessError('blocked-url', '目标解析到内网或保留地址，已拒绝');
   if (range === 'unicast') return;
   throw new WebAccessError('blocked-url', '目标解析到非公网地址，已拒绝');
 }
@@ -54,15 +76,19 @@ export function assertAllowedAddress(address: string, options: { literal: boolea
 export function trustedFacilityTarget(url: URL): ResolvedTarget {
   const localLiteral = isIP(url.hostname) !== 0 || url.hostname === 'localhost';
   if (url.protocol === 'https:') {
-    if (url.port && url.port !== '443') throw new WebAccessError('unsupported', '自建设施端点只允许默认端口');
+    if (url.port && url.port !== '443')
+      throw new WebAccessError('unsupported', '自建设施端点只允许默认端口');
   } else if (url.protocol === 'http:') {
     if (!localLiteral) throw new WebAccessError('unsupported', '自建设施 HTTP 端点只允许本机地址');
   } else {
     throw new WebAccessError('unsupported', '自建设施端点只支持 HTTP(S)');
   }
-  if (url.username || url.password) throw new WebAccessError('unsupported', '自建设施端点不允许携带凭据');
-  if (url.hostname === 'localhost') return { url, addresses: [{ address: '127.0.0.1', family: 4 }] };
-  if (isIP(url.hostname) !== 0) return { url, addresses: [{ address: url.hostname, family: isIP(url.hostname) as 4 | 6 }] };
+  if (url.username || url.password)
+    throw new WebAccessError('unsupported', '自建设施端点不允许携带凭据');
+  if (url.hostname === 'localhost')
+    return { url, addresses: [{ address: '127.0.0.1', family: 4 }] };
+  if (isIP(url.hostname) !== 0)
+    return { url, addresses: [{ address: url.hostname, family: isIP(url.hostname) }] };
   return { url, addresses: null };
 }
 
@@ -74,8 +100,10 @@ export function parseTarget(raw: string, label = '目标地址'): URL {
   } catch {
     throw new WebAccessError('unsupported', `${label}不是有效 URL`);
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new WebAccessError('unsupported', `${label}只支持 HTTP(S)`);
-  if (url.username || url.password) throw new WebAccessError('unsupported', `${label}不允许携带凭据`);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:')
+    throw new WebAccessError('unsupported', `${label}只支持 HTTP(S)`);
+  if (url.username || url.password)
+    throw new WebAccessError('unsupported', `${label}不允许携带凭据`);
   if (!url.hostname) throw new WebAccessError('unsupported', `${label}缺少主机名`);
   return url;
 }
@@ -85,33 +113,45 @@ export type ResolvedTarget = { url: URL; addresses: LookupAddress[] | null };
 /** 可信服务商端点：主机由部署配置固定，跳过本地地址校验，但仍要求无凭据 HTTPS。 */
 export function trustedTarget(url: URL): ResolvedTarget {
   if (url.protocol !== 'https:') throw new WebAccessError('unsupported', '服务商端点必须是 HTTPS');
-  if (url.port && url.port !== '443') throw new WebAccessError('unsupported', '服务商端点只允许默认端口');
+  if (url.port && url.port !== '443')
+    throw new WebAccessError('unsupported', '服务商端点只允许默认端口');
   return { url, addresses: null };
 }
 
 /** 由可信代理代替本地解析：本地只拒绝字面量内网地址，其余交给代理在出口拦截。 */
 export function delegatedTarget(url: URL): ResolvedTarget {
-  if (url.port && url.port !== (url.protocol === 'https:' ? '443' : '80')) throw new WebAccessError('unsupported', '请求地址只允许默认端口');
+  if (url.port && url.port !== (url.protocol === 'https:' ? '443' : '80'))
+    throw new WebAccessError('unsupported', '请求地址只允许默认端口');
   if (isIP(url.hostname) !== 0) assertAllowedAddress(url.hostname, { literal: true, networks: [] });
   return { url, addresses: null };
 }
 
-export async function resolveTarget(url: URL, options: { lookup?: Lookup; networks: readonly ExtraNetwork[] }): Promise<ResolvedTarget> {
-  if (url.port && url.port !== (url.protocol === 'https:' ? '443' : '80')) throw new WebAccessError('unsupported', '请求地址只允许默认端口');
+export async function resolveTarget(
+  url: URL,
+  options: { lookup?: Lookup; networks: readonly ExtraNetwork[] },
+): Promise<ResolvedTarget> {
+  if (url.port && url.port !== (url.protocol === 'https:' ? '443' : '80'))
+    throw new WebAccessError('unsupported', '请求地址只允许默认端口');
   if (isIP(url.hostname) !== 0) {
     assertAllowedAddress(url.hostname, { literal: true, networks: options.networks });
-    return { url, addresses: [{ address: url.hostname, family: isIP(url.hostname) as 4 | 6 }] };
+    return { url, addresses: [{ address: url.hostname, family: isIP(url.hostname) }] };
   }
-  const lookup = options.lookup ?? (async (hostname: string) => dnsLookup(hostname, { all: true, verbatim: true }));
+  const lookup =
+    options.lookup ??
+    (async (hostname: string) => dnsLookup(hostname, { all: true, verbatim: true }));
   let addresses: LookupAddress[];
   try {
     addresses = await lookup(url.hostname);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    throw new WebAccessError('unavailable', code === 'ENOTFOUND' ? '目标主机无法解析' : '目标主机解析失败');
+    throw new WebAccessError(
+      'unavailable',
+      code === 'ENOTFOUND' ? '目标主机无法解析' : '目标主机解析失败',
+    );
   }
   if (!addresses.length) throw new WebAccessError('unavailable', '目标主机无法解析');
   // 每个地址都必须合格：解析出多个地址时不能只赌其中一个是公网地址。
-  for (const entry of addresses) assertAllowedAddress(entry.address, { literal: false, networks: options.networks });
+  for (const entry of addresses)
+    assertAllowedAddress(entry.address, { literal: false, networks: options.networks });
   return { url, addresses };
 }

@@ -4,14 +4,24 @@ import { createServer, connect, type Socket } from 'node:net';
 import { join, resolve } from 'node:path';
 
 export const productRoot = process.cwd();
-const harnessEntry = resolve(productRoot, 'src', 'server', 'generation', 'durable', 'harness-server.ts');
-export const postgresUrl = process.env.DURABLE_PG_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_agent_test';
+const harnessEntry = resolve(
+  productRoot,
+  'src',
+  'server',
+  'generation',
+  'durable',
+  'harness-server.ts',
+);
+export const postgresUrl =
+  process.env.DURABLE_PG_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_agent_test';
 /**
  * 产品库（app / generation / app_authority / generation_execution）地址。
  * 集成测试一律指向专用的 paimeng_app_test：从开发库取连接串也只换库名，永不写开发库。
  */
 export const productPostgresUrl = (() => {
-  const url = new URL(process.env.DATABASE_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_app_test');
+  const url = new URL(
+    process.env.DATABASE_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_app_test',
+  );
   url.pathname = '/paimeng_app_test';
   return url.href;
 })();
@@ -24,7 +34,10 @@ export function postgresReachable(url: string): Promise<boolean> {
   const parsed = new URL(url);
   return new Promise((done) => {
     const socket = connect({ host: parsed.hostname, port: Number(parsed.port || 5432) });
-    const finish = (reachable: boolean) => { socket.destroy(); done(reachable); };
+    const finish = (reachable: boolean) => {
+      socket.destroy();
+      done(reachable);
+    };
     socket.setTimeout(1000);
     socket.once('connect', () => finish(true));
     socket.once('timeout', () => finish(false));
@@ -48,11 +61,16 @@ export type HarnessState = {
   pid: number;
   tasks: { kind: string; state: string; abortRequested: boolean }[];
   submissions: { id: number; requestId?: string; status: string }[];
-  view: { entries: { id: number; kind: string; text: string }[]; live: { text: string; tools: { name: string; status: string }[]; busy: boolean } };
+  view: {
+    entries: { id: number; kind: string; text: string }[];
+    live: { text: string; tools: { name: string; status: string }[]; busy: boolean };
+  };
 };
 
 export function answers(state: HarnessState): string[] {
-  return state.view.entries.filter((entry) => entry.kind === 'pi.assistant').map((entry) => entry.text);
+  return state.view.entries
+    .filter((entry) => entry.kind === 'pi.assistant')
+    .map((entry) => entry.text);
 }
 
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -66,7 +84,20 @@ export type HarnessProcess = { child: ChildProcess; output: () => string };
  */
 const startedHarnesses = new Map<number, () => string>();
 
-export function startHarness(options: { port: number; runDir: string; reset: boolean; waitMs: number; finalText: string; thinking?: string; firstThinking?: string; workspace?: string; tool?: string; args?: unknown; env?: Record<string, string>; databaseUrl?: string }): HarnessProcess {
+export function startHarness(options: {
+  port: number;
+  runDir: string;
+  reset: boolean;
+  waitMs: number;
+  finalText: string;
+  thinking?: string;
+  firstThinking?: string;
+  workspace?: string;
+  tool?: string;
+  args?: unknown;
+  env?: Record<string, string>;
+  databaseUrl?: string;
+}): HarnessProcess {
   let output = '';
   const env = {
     ...process.env,
@@ -86,12 +117,20 @@ export function startHarness(options: { port: number; runDir: string; reset: boo
     ...(options.reset ? { DURABLE_HARNESS_RESET: '1' } : {}),
     ...options.env,
   };
-  const child = spawn(process.execPath, ['--import', 'tsx', '--conditions=react-server', harnessEntry], { cwd: productRoot, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(
+    process.execPath,
+    ['--import', 'tsx', '--conditions=react-server', harnessEntry],
+    { cwd: productRoot, env, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
   // 不因进程退出而删除：启动失败的 harness 往往在几秒内就死了，而错误信息正是它留下的。
   // 同一端口再次启动时会覆盖。
   startedHarnesses.set(options.port, () => output);
-  child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
-  child.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  child.stdout?.on('data', (chunk: Buffer) => {
+    output += chunk.toString();
+  });
+  child.stderr?.on('data', (chunk: Buffer) => {
+    output += chunk.toString();
+  });
   return { child, output: () => output };
 }
 
@@ -125,6 +164,7 @@ export async function waitHealthy(base: string, timeoutMs: number): Promise<void
     try {
       if ((await fetch(`${base}/health`)).ok) return;
     } catch {
+      // 子进程尚未开始监听；在截止时间内继续健康检查。
     }
     await delay(200);
   }
@@ -134,25 +174,38 @@ export async function waitHealthy(base: string, timeoutMs: number): Promise<void
     ? `harness 输出（末尾 20 行）：\n${outputTail(output)}`
     : '这个 harness 没有输出任何内容（进程可能根本没启动，或已经被上一次中断的 vitest 留在后台占用端口）。';
   throw new Error(
-    `harness 在 ${timeoutMs}ms 内没有通过健康检查（${base}）。\n${details}\n`
-    + '如果是「advisory lock」或「storage is already open」：上一次被中断的 vitest 留下了孤儿 harness 进程，'
-    + '先用 pgrep -af harness-server 找到它（DURABLE_HARNESS_RUN_DIR 指向 /tmp/durable-*），kill 后重跑。',
+    `harness 在 ${timeoutMs}ms 内没有通过健康检查（${base}）。\n${details}\n` +
+      '如果是「advisory lock」或「storage is already open」：上一次被中断的 vitest 留下了孤儿 harness 进程，' +
+      '先用 pgrep -af harness-server 找到它（DURABLE_HARNESS_RUN_DIR 指向 /tmp/durable-*），kill 后重跑。',
   );
 }
 
 export async function submit(base: string, content: string, requestId: string): Promise<void> {
-  const response = await fetch(`${base}/submit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content, requestId }) });
-  if (response.status !== 202) throw new Error(`submit ${response.status}: ${await response.text()}`);
+  const response = await fetch(`${base}/submit`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ content, requestId }),
+  });
+  if (response.status !== 202)
+    throw new Error(`submit ${response.status}: ${await response.text()}`);
 }
 
 export async function getState(base: string, conversationId?: number): Promise<HarnessState> {
   const query = conversationId === undefined ? '' : `?conversationId=${conversationId}`;
-  const response = await fetch(`${base}/state${query}`, { headers: { accept: 'application/json' } });
+  const response = await fetch(`${base}/state${query}`, {
+    headers: { accept: 'application/json' },
+  });
   if (!response.ok) throw new Error(`state ${response.status}`);
   return (await response.json()) as HarnessState;
 }
 
-export async function waitForState(base: string, done: (state: HarnessState) => boolean, timeoutMs: number, label: string, conversationId?: number): Promise<HarnessState> {
+export async function waitForState(
+  base: string,
+  done: (state: HarnessState) => boolean,
+  timeoutMs: number,
+  label: string,
+  conversationId?: number,
+): Promise<HarnessState> {
   const deadline = Date.now() + timeoutMs;
   let last: HarnessState | undefined;
   while (Date.now() < deadline) {
@@ -163,18 +216,26 @@ export async function waitForState(base: string, done: (state: HarnessState) => 
   throw new Error(`${label}: timed out; last state=${JSON.stringify(last)}`);
 }
 
-export function attachSse(base: string): { socket: Socket; text: () => string; firstByte: Promise<void> } {
+export function attachSse(base: string): {
+  socket: Socket;
+  text: () => string;
+  firstByte: Promise<void>;
+} {
   const url = new URL(`${base}/events`);
   const socket = connect(Number(url.port), url.hostname);
   let text = '';
   let first: () => void = () => undefined;
-  const firstByte = new Promise<void>((done) => { first = done; });
+  const firstByte = new Promise<void>((done) => {
+    first = done;
+  });
   socket.on('data', (chunk: Buffer) => {
     if (text.length === 0) first();
     text += chunk.toString('utf8');
   });
   socket.on('error', () => undefined);
-  socket.write(`GET ${url.pathname} HTTP/1.1\r\nHost: ${url.host}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n`);
+  socket.write(
+    `GET ${url.pathname} HTTP/1.1\r\nHost: ${url.host}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n`,
+  );
   return { socket, text: () => text, firstByte };
 }
 
@@ -185,7 +246,10 @@ export function readSse(base: string, timeoutMs: number): Promise<string> {
     void (async () => {
       let text = '';
       try {
-        const response = await fetch(`${base}/events`, { headers: { accept: 'text/event-stream' }, signal: controller.signal });
+        const response = await fetch(`${base}/events`, {
+          headers: { accept: 'text/event-stream' },
+          signal: controller.signal,
+        });
         const reader = response.body!.getReader();
         const decoder = new TextDecoder();
         while (true) {
@@ -194,6 +258,7 @@ export function readSse(base: string, timeoutMs: number): Promise<string> {
           text += decoder.decode(value, { stream: true });
         }
       } catch {
+        // 超时中止或服务端断流允许结束读取；finally 负责清理计时器。
       } finally {
         clearTimeout(timer);
         done(text);

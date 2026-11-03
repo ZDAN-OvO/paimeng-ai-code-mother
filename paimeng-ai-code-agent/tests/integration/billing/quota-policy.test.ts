@@ -10,7 +10,11 @@ import {
 } from '../../support/billing';
 import { db, getPool } from '@/server/infra/db';
 import {
-  creditBalance, creditLedger, creditQuotaPolicies, sessions, users,
+  creditBalance,
+  creditLedger,
+  creditQuotaPolicies,
+  sessions,
+  users,
 } from '@/server/infra/schema';
 import { ensurePeriodQuota, issuePendingQuota, ruleEntryOf } from '@/server/billing/quota';
 import { balanceFactsOf } from '@/server/billing/expiry';
@@ -19,7 +23,8 @@ import { nextPeriodOf } from '@/server/billing/quota-policy';
 import { nextPeriodStart, periodOf } from '@/server/billing/period';
 import {
   monthlyQuotaCredits,
-  type QuotaPolicyAdminView, type QuotaPolicySaveReceipt,
+  type QuotaPolicyAdminView,
+  type QuotaPolicySaveReceipt,
 } from '@/shared/billing';
 
 /**
@@ -42,10 +47,14 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const userIds = [...createdUsers.map(user => BigInt(user.id)), BigInt(admin.id)];
-  if (policyIds.length) await db().delete(creditQuotaPolicies).where(inArray(creditQuotaPolicies.id, policyIds));
+  const userIds = [...createdUsers.map((user) => BigInt(user.id)), BigInt(admin.id)];
+  if (policyIds.length)
+    await db().delete(creditQuotaPolicies).where(inArray(creditQuotaPolicies.id, policyIds));
   await db().delete(creditQuotaPolicies).where(inArray(creditQuotaPolicies.createdBy, userIds));
-  const scope = sql.join(userIds.map(id => sql`${id}`), sql`, `);
+  const scope = sql.join(
+    userIds.map((id) => sql`${id}`),
+    sql`, `,
+  );
   await db().execute(sql`delete from credit_entry where charge_id in (
     select generation_id from credit_charge where user_id in (${scope}))`);
   await db().execute(sql`delete from credit_charge where user_id in (${scope})`);
@@ -72,7 +81,10 @@ async function readPolicy(userId?: string): Promise<QuotaPolicyAdminView> {
   return (await envelopeOf<QuotaPolicyAdminView>(response)).data;
 }
 
-async function savePolicy(payload: Record<string, unknown>, session = admin.cookie): Promise<Response> {
+async function savePolicy(
+  payload: Record<string, unknown>,
+  session = admin.cookie,
+): Promise<Response> {
   return billingRequest('admin/billing/quota/policy', payload, session);
 }
 
@@ -85,51 +97,88 @@ async function savePolicyOk(payload: Record<string, unknown>): Promise<QuotaPoli
 }
 
 async function rulesOf(userId: string, targetPeriod: string) {
-  return db().select().from(creditLedger)
-    .where(and(
-      eq(creditLedger.userId, BigInt(userId)),
-      eq(creditLedger.kind, 'quota'),
-      eq(creditLedger.origin, 'rule'),
-      eq(creditLedger.period, targetPeriod),
-    ));
+  return db()
+    .select()
+    .from(creditLedger)
+    .where(
+      and(
+        eq(creditLedger.userId, BigInt(userId)),
+        eq(creditLedger.kind, 'quota'),
+        eq(creditLedger.origin, 'rule'),
+        eq(creditLedger.period, targetPeriod),
+      ),
+    );
 }
 
 describe('月度配额策略版本', () => {
   it('默认仍是 500；保存下一账期策略不改当前账期，并用 expectedRevision 拦住覆盖', async () => {
     const initial = await readPolicy();
     expect(initial).toMatchObject({ period, nextPeriod, defaultCredits: monthlyQuotaCredits });
-    expect(initial.global.current).toMatchObject({ credits: monthlyQuotaCredits, source: 'fallback', version: null });
-    expect(initial.global.next).toMatchObject({ credits: monthlyQuotaCredits, source: 'fallback', version: null });
+    expect(initial.global.current).toMatchObject({
+      credits: monthlyQuotaCredits,
+      source: 'fallback',
+      version: null,
+    });
+    expect(initial.global.next).toMatchObject({
+      credits: monthlyQuotaCredits,
+      source: 'fallback',
+      version: null,
+    });
 
     const saved = await savePolicyOk({
-      scope: 'global', effectivePeriod: nextPeriod, mode: 'override', credits: 700,
-      expectedRevision: null, note: '下一账期 700',
+      scope: 'global',
+      effectivePeriod: nextPeriod,
+      mode: 'override',
+      credits: 700,
+      expectedRevision: null,
+      note: '下一账期 700',
     });
-    expect(saved.policy).toMatchObject({ scope: 'global', effectivePeriod: nextPeriod, credits: 700, revision: 1 });
+    expect(saved.policy).toMatchObject({
+      scope: 'global',
+      effectivePeriod: nextPeriod,
+      credits: 700,
+      revision: 1,
+    });
     expect(saved.effective).toMatchObject({ credits: 700, source: 'global', version: 1 });
 
     const view = await readPolicy();
     expect(view.global.current.credits).toBe(monthlyQuotaCredits);
     expect(view.global.next).toMatchObject({ credits: 700, source: 'global', version: 1 });
-    expect(view.global.versions.some(version => version.id === saved.policy.id)).toBe(true);
+    expect(view.global.versions.some((version) => version.id === saved.policy.id)).toBe(true);
 
     // 同一账期已有 v1：不带 expectedRevision 的保存必须 409，不能静默覆盖。
     const stale = await savePolicy({
-      scope: 'global', effectivePeriod: nextPeriod, mode: 'override', credits: 800, expectedRevision: null,
+      scope: 'global',
+      effectivePeriod: nextPeriod,
+      mode: 'override',
+      credits: 800,
+      expectedRevision: null,
     });
     expect(stale.status).toBe(409);
     const ok = await savePolicyOk({
-      scope: 'global', effectivePeriod: nextPeriod, mode: 'override', credits: 800, expectedRevision: 1,
+      scope: 'global',
+      effectivePeriod: nextPeriod,
+      mode: 'override',
+      credits: 800,
+      expectedRevision: 1,
     });
     expect(ok.policy.revision).toBe(2);
 
     // 过去/当前账期不可追溯修改；策略只从下个月或更晚生效。
     const current = await savePolicy({
-      scope: 'global', effectivePeriod: period, mode: 'override', credits: 900, expectedRevision: null,
+      scope: 'global',
+      effectivePeriod: period,
+      mode: 'override',
+      credits: 900,
+      expectedRevision: null,
     });
     expect(current.status).toBe(400);
     const past = await savePolicy({
-      scope: 'global', effectivePeriod: '2020-01', mode: 'override', credits: 900, expectedRevision: null,
+      scope: 'global',
+      effectivePeriod: '2020-01',
+      mode: 'override',
+      credits: 900,
+      expectedRevision: null,
     });
     expect(past.status).toBe(400);
   });
@@ -137,18 +186,33 @@ describe('月度配额策略版本', () => {
   it('用户覆盖与显式继承可区分；继承回落到全局，0 配额是真实覆盖', async () => {
     const user = await newUser();
     const override = await savePolicyOk({
-      scope: 'user', userId: user.id, effectivePeriod: nextPeriod, mode: 'override', credits: 0,
-      expectedRevision: null, note: '零配额覆盖',
+      scope: 'user',
+      userId: user.id,
+      effectivePeriod: nextPeriod,
+      mode: 'override',
+      credits: 0,
+      expectedRevision: null,
+      note: '零配额覆盖',
     });
-    expect(override.policy).toMatchObject({ scope: 'user', userId: user.id, credits: 0, revision: 1 });
+    expect(override.policy).toMatchObject({
+      scope: 'user',
+      userId: user.id,
+      credits: 0,
+      revision: 1,
+    });
 
     const zero = await readPolicy(user.id);
     expect(zero.user?.next).toMatchObject({ credits: 0, source: 'user', version: 1 });
     expect(zero.user?.current.credits).toBe(monthlyQuotaCredits);
 
     const inherit = await savePolicyOk({
-      scope: 'user', userId: user.id, effectivePeriod: nextPeriod, mode: 'inherit', credits: null,
-      expectedRevision: 1, note: '恢复全局',
+      scope: 'user',
+      userId: user.id,
+      effectivePeriod: nextPeriod,
+      mode: 'inherit',
+      credits: null,
+      expectedRevision: 1,
+      note: '恢复全局',
     });
     expect(inherit.policy).toMatchObject({ mode: 'inherit', credits: null, revision: 2 });
     const inherited = await readPolicy(user.id);
@@ -156,18 +220,39 @@ describe('月度配额策略版本', () => {
     expect(inherited.user?.next).toMatchObject({ credits: 800, source: 'global' });
 
     const forbidden = await savePolicy({
-      scope: 'global', userId: user.id, effectivePeriod: nextPeriod, mode: 'override', credits: 1, expectedRevision: 2,
+      scope: 'global',
+      userId: user.id,
+      effectivePeriod: nextPeriod,
+      mode: 'override',
+      credits: 1,
+      expectedRevision: 2,
     });
     expect(forbidden.status).toBe(400);
   });
 
   it('普通用户不能读写策略；不存在的用户 404', async () => {
     const plain = await newUser();
-    expect((await billingRequest('admin/billing/quota/policy', undefined, plain.cookie)).status).toBe(403);
-    expect((await savePolicy({
-      scope: 'global', effectivePeriod: nextPeriod, mode: 'override', credits: 1, expectedRevision: null,
-    }, plain.cookie)).status).toBe(403);
-    expect((await billingRequest('admin/billing/quota/policy?userId=999999999', undefined, admin.cookie)).status).toBe(404);
+    expect(
+      (await billingRequest('admin/billing/quota/policy', undefined, plain.cookie)).status,
+    ).toBe(403);
+    expect(
+      (
+        await savePolicy(
+          {
+            scope: 'global',
+            effectivePeriod: nextPeriod,
+            mode: 'override',
+            credits: 1,
+            expectedRevision: null,
+          },
+          plain.cookie,
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (await billingRequest('admin/billing/quota/policy?userId=999999999', undefined, admin.cookie))
+        .status,
+    ).toBe(404);
   });
 });
 
@@ -175,8 +260,12 @@ describe('基础发放与 0 积分', () => {
   it('下一账期规则为 0 时写一条 0 积分回执行，不增加可用额；重复 ensure 不重复', async () => {
     const user = await newUser();
     await savePolicyOk({
-      scope: 'global', effectivePeriod: nextPeriod, mode: 'override', credits: 0,
-      expectedRevision: 2, note: '下一账期 0',
+      scope: 'global',
+      effectivePeriod: nextPeriod,
+      mode: 'override',
+      credits: 0,
+      expectedRevision: 2,
+      note: '下一账期 0',
     });
 
     const first = await ensurePeriodQuota(user.id, nextAt);
@@ -201,8 +290,13 @@ describe('基础发放与 0 积分', () => {
 
     // 改的是下一账期，不影响已发的当月。
     await savePolicyOk({
-      scope: 'user', userId: user.id, effectivePeriod: nextPeriod, mode: 'override', credits: 999,
-      expectedRevision: null, note: '未来 999',
+      scope: 'user',
+      userId: user.id,
+      effectivePeriod: nextPeriod,
+      mode: 'override',
+      credits: 999,
+      expectedRevision: null,
+      note: '未来 999',
     });
     const result = await ensurePeriodQuota(user.id);
     expect(result).toMatchObject({ granted: false, credits: monthlyQuotaCredits });
@@ -214,11 +308,18 @@ describe('基础发放与 0 积分', () => {
     const at = nextPeriodStart(new Date(nextAt.getTime() + 40 * 86_400_000));
     const target = periodOf(at);
     await savePolicyOk({
-      scope: 'global', effectivePeriod: target, mode: 'override', credits: 300,
-      expectedRevision: null, note: '并发用例：300',
+      scope: 'global',
+      effectivePeriod: target,
+      mode: 'override',
+      credits: 300,
+      expectedRevision: null,
+      note: '并发用例：300',
     });
-    const results = await Promise.all([ensurePeriodQuota(user.id, at), ensurePeriodQuota(user.id, at)]);
-    expect(results.filter(result => result.granted)).toHaveLength(1);
+    const results = await Promise.all([
+      ensurePeriodQuota(user.id, at),
+      ensurePeriodQuota(user.id, at),
+    ]);
+    expect(results.filter((result) => result.granted)).toHaveLength(1);
     expect(await rulesOf(user.id, target)).toHaveLength(1);
   });
 
@@ -226,16 +327,31 @@ describe('基础发放与 0 积分', () => {
     const zeroUser = await newUser();
     const paidUser = await newUser();
     await savePolicyOk({
-      scope: 'user', userId: paidUser.id, effectivePeriod: nextPeriod, mode: 'override', credits: 120,
-      expectedRevision: null, note: '批量用例：120',
+      scope: 'user',
+      userId: paidUser.id,
+      effectivePeriod: nextPeriod,
+      mode: 'override',
+      credits: 120,
+      expectedRevision: null,
+      note: '批量用例：120',
     });
 
-    const dryRun = await issuePendingQuota({ at: nextAt, dryRun: true, userIds: [zeroUser.id, paidUser.id] });
+    const dryRun = await issuePendingQuota({
+      at: nextAt,
+      dryRun: true,
+      userIds: [zeroUser.id, paidUser.id],
+    });
     expect(dryRun).toMatchObject({ period: nextPeriod, dryRun: true, scanned: 2, issued: 0 });
     expect(await rulesOf(zeroUser.id, nextPeriod)).toHaveLength(0);
 
     const applied = await issuePendingQuota({ at: nextAt, userIds: [zeroUser.id, paidUser.id] });
-    expect(applied).toMatchObject({ period: nextPeriod, issued: 2, granted: 1, zero: 1, credits: 120 });
+    expect(applied).toMatchObject({
+      period: nextPeriod,
+      issued: 2,
+      granted: 1,
+      zero: 1,
+      credits: 120,
+    });
     expect((await rulesOf(zeroUser.id, nextPeriod))[0].credits).toBe(0);
     expect((await rulesOf(paidUser.id, nextPeriod))[0].credits).toBe(120);
 

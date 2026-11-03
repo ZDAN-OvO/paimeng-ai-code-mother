@@ -14,7 +14,11 @@ import { z } from 'zod';
 /** 录音上限：到点自动结束并转写（服务端另有 10 MiB 字节上限）。 */
 export const maxRecordingSeconds = 120;
 /** 优先带 opus 的 webm，其次容器默认，最后 ogg（老 Firefox）。都不支持时交给浏览器自选。 */
-export const preferredAudioMimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'] as const;
+export const preferredAudioMimeTypes = [
+  'audio/webm;codecs=opus',
+  'audio/webm',
+  'audio/ogg',
+] as const;
 
 const audioExtensions: Readonly<Record<string, string>> = {
   'audio/webm': 'webm',
@@ -26,7 +30,7 @@ const audioExtensions: Readonly<Record<string, string>> = {
 
 /** 选中浏览器支持的首选录音格式；都不支持返回 null，让 MediaRecorder 自己选。 */
 export function chooseAudioMimeType(isTypeSupported: (mimeType: string) => boolean): string | null {
-  return preferredAudioMimeTypes.find(type => isTypeSupported(type)) ?? null;
+  return preferredAudioMimeTypes.find((type) => isTypeSupported(type)) ?? null;
 }
 
 /** 录音文件名扩展名；服务端在声明类型缺失时按扩展名兜底，所以要和容器对得上。 */
@@ -57,9 +61,14 @@ export function microphoneError(cause: unknown): string {
 }
 
 /** 麦克风按钮禁用的原因；可用时返回 null。 */
-export function voiceUnavailableReason(input: { editable: boolean; serverEnabled: boolean; recorderSupported: boolean }): string | null {
+export function voiceUnavailableReason(input: {
+  editable: boolean;
+  serverEnabled: boolean;
+  recorderSupported: boolean;
+}): string | null {
   if (!input.editable) return '当前不可编辑，无法使用语音输入';
-  if (!input.serverEnabled) return '未配置语音转写模型：请在模型管理的模型分配里配置语音转写槽位（OpenAI 兼容的 /audio/transcriptions）';
+  if (!input.serverEnabled)
+    return '未配置语音转写模型：请在模型管理的模型分配里配置语音转写槽位（OpenAI 兼容的 /audio/transcriptions）';
   if (!input.recorderSupported) return '当前浏览器不支持录音（需要 MediaRecorder）';
   return null;
 }
@@ -74,10 +83,15 @@ export async function transcribeAudio(blob: Blob): Promise<string> {
   form.append('audio', blob, `recording.${audioFileExtension(blob.type)}`);
   let data: unknown;
   try {
-    const response = await fetch('/api/app/chat/transcribe', { method: 'POST', body: form, credentials: 'same-origin' });
+    const response = await fetch('/api/app/chat/transcribe', {
+      method: 'POST',
+      body: form,
+      credentials: 'same-origin',
+    });
     data = await readApiResponse(response);
   } catch (error) {
-    const reason = error instanceof ApiResponseError && error.status !== 0 ? error.message : '网络错误';
+    const reason =
+      error instanceof ApiResponseError && error.status !== 0 ? error.message : '网络错误';
     throw new Error('语音转写失败：' + reason);
   }
   const parsed = transcribeDataSchema.safeParse(data);
@@ -87,7 +101,11 @@ export async function transcribeAudio(blob: Blob): Promise<string> {
 
 type VoicePhase = 'idle' | 'starting' | 'recording' | 'transcribing' | 'failed';
 
-export function VoiceInput({ editable, serverEnabled, onTranscript }: {
+export function VoiceInput({
+  editable,
+  serverEnabled,
+  onTranscript,
+}: {
   /** 输入框可用（本人且已加载）；false 时按钮禁用并说明原因。 */
   editable: boolean;
   /** 服务端是否配置了语音转写槽位（GET app/chat/transcribe）。 */
@@ -111,7 +129,7 @@ export function VoiceInput({ editable, serverEnabled, onTranscript }: {
       // 卸载时收尾：关麦克风、停计时，并标记丢弃，避免离开页面后还把录音传到转写接口。
       discard.current = true;
       if (recorder.current && recorder.current.state !== 'inactive') recorder.current.stop();
-      stream.current?.getTracks().forEach(track => track.stop());
+      stream.current?.getTracks().forEach((track) => track.stop());
       stream.current = null;
       if (timer.current !== null) clearInterval(timer.current);
     };
@@ -127,7 +145,7 @@ export function VoiceInput({ editable, serverEnabled, onTranscript }: {
   }
 
   function closeStream() {
-    stream.current?.getTracks().forEach(track => track.stop());
+    stream.current?.getTracks().forEach((track) => track.stop());
     stream.current = null;
   }
 
@@ -195,19 +213,20 @@ export function VoiceInput({ editable, serverEnabled, onTranscript }: {
       return;
     }
     stream.current = media;
-    const mimeType = chooseAudioMimeType(type => MediaRecorder.isTypeSupported(type));
+    const mimeType = chooseAudioMimeType((type) => MediaRecorder.isTypeSupported(type));
     const created = new MediaRecorder(media, mimeType ? { mimeType } : undefined);
     recorder.current = created;
     chunks.current = [];
     discard.current = false;
-    created.ondataavailable = event => {
+    created.ondataavailable = (event) => {
       if (event.data.size > 0) chunks.current.push(event.data);
     };
-    created.onstop = () => finished(new Blob(chunks.current, { type: created.mimeType || mimeType || 'audio/webm' }));
+    created.onstop = () =>
+      finished(new Blob(chunks.current, { type: created.mimeType || mimeType || 'audio/webm' }));
     created.start();
     setSeconds(0);
     setPhase('recording');
-    timer.current = setInterval(() => setSeconds(current => current + 1), 1000);
+    timer.current = setInterval(() => setSeconds((current) => current + 1), 1000);
   }
 
   // 到上限自动结束并转写：服务端有 10 MiB 上限，长时间录音也没有意义，不如在这里收住。
@@ -218,24 +237,84 @@ export function VoiceInput({ editable, serverEnabled, onTranscript }: {
 
   const recording = phase === 'recording';
   const busy = phase === 'starting' || phase === 'transcribing';
-  const mic = <Button
-    size="small"
-    aria-label={recording ? '结束录音' : '语音输入'}
-    icon={recording ? <StopOutlined aria-hidden="true" /> : <AudioOutlined aria-hidden="true" />}
-    disabled={reason !== null || busy || phase === 'failed'}
-    loading={busy}
-    onClick={() => { if (recording) stopRecording(); else void startRecording(); }}
-  >{recording ? '结束录音' : '语音输入'}</Button>;
+  const mic = (
+    <Button
+      size="small"
+      aria-label={recording ? '结束录音' : '语音输入'}
+      icon={recording ? <StopOutlined aria-hidden="true" /> : <AudioOutlined aria-hidden="true" />}
+      disabled={reason !== null || busy || phase === 'failed'}
+      loading={busy}
+      onClick={() => {
+        if (recording) stopRecording();
+        else void startRecording();
+      }}
+    >
+      {recording ? '结束录音' : '语音输入'}
+    </Button>
+  );
   // 不可用的原因文案很长（含槽位与接口路径），放在悬浮提示里，不占按钮行的宽度；
   // 提示挂在一层 span 上：禁用的原生按钮不派发鼠标事件，直接挂在按钮上悬停不出提示（实测）。
-  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-    {reason === null ? mic : <Tooltip title={reason}><span>{mic}</span></Tooltip>}
-    {phase === 'starting' && <span className="composer-hint" role="status">正在打开麦克风…</span>}
-    {recording && <span className="composer-hint" role="status">正在录音，点击结束 · {formatRecordingTime(seconds)}/{formatRecordingTime(maxRecordingSeconds)}</span>}
-    {recording && <Button size="small" type="text" onClick={() => stopRecording(true)}>取消录音</Button>}
-    {phase === 'transcribing' && <span className="composer-hint" role="status">正在转写…</span>}
-    {error !== '' && <span className="composer-hint" role="alert" style={{ color: '#cf1322' }}>{error}</span>}
-    {phase === 'failed' && <Button size="small" icon={<ReloadOutlined aria-hidden="true" />} onClick={() => { if (recorded.current) void upload(recorded.current); }}>重试转写</Button>}
-    {phase === 'failed' && <Button size="small" type="text" icon={<DeleteOutlined aria-hidden="true" />} onClick={() => { recorded.current = null; setError(''); setSeconds(0); setPhase('idle'); }}>丢弃录音</Button>}
-  </span>;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+      {reason === null ? (
+        mic
+      ) : (
+        <Tooltip title={reason}>
+          <span>{mic}</span>
+        </Tooltip>
+      )}
+      {phase === 'starting' && (
+        <span className="composer-hint" role="status">
+          正在打开麦克风…
+        </span>
+      )}
+      {recording && (
+        <span className="composer-hint" role="status">
+          正在录音，点击结束 · {formatRecordingTime(seconds)}/
+          {formatRecordingTime(maxRecordingSeconds)}
+        </span>
+      )}
+      {recording && (
+        <Button size="small" type="text" onClick={() => stopRecording(true)}>
+          取消录音
+        </Button>
+      )}
+      {phase === 'transcribing' && (
+        <span className="composer-hint" role="status">
+          正在转写…
+        </span>
+      )}
+      {error !== '' && (
+        <span className="composer-hint" role="alert" style={{ color: '#cf1322' }}>
+          {error}
+        </span>
+      )}
+      {phase === 'failed' && (
+        <Button
+          size="small"
+          icon={<ReloadOutlined aria-hidden="true" />}
+          onClick={() => {
+            if (recorded.current) void upload(recorded.current);
+          }}
+        >
+          重试转写
+        </Button>
+      )}
+      {phase === 'failed' && (
+        <Button
+          size="small"
+          type="text"
+          icon={<DeleteOutlined aria-hidden="true" />}
+          onClick={() => {
+            recorded.current = null;
+            setError('');
+            setSeconds(0);
+            setPhase('idle');
+          }}
+        >
+          丢弃录音
+        </Button>
+      )}
+    </span>
+  );
 }

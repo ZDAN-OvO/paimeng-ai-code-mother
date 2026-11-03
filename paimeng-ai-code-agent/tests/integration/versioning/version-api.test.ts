@@ -11,7 +11,12 @@ import { GET, POST } from '@/app/api/[...path]/route';
 import { db } from '@/server/infra/db';
 import { apps, leases, users } from '@/server/infra/schema';
 import { ensureWorkspace, workspace } from '@/server/workspace/workspace';
-import { commitVersion, purgeVersions, versionRepo, versionRoot } from '@/server/versioning/version-store';
+import {
+  commitVersion,
+  purgeVersions,
+  versionRepo,
+  versionRoot,
+} from '@/server/versioning/version-store';
 import type { AppVersion, AppVersionOverview, VersionDiff } from '@/shared/versioning';
 
 loadEnvFile('.env');
@@ -25,7 +30,11 @@ const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: 
 async function post(path: string, data: unknown, session?: string) {
   const headers: Record<string, string> = { origin, 'content-type': 'application/json' };
   if (session) headers.cookie = session;
-  const request = new Request(`${origin}/api/${path}`, { method: 'POST', headers, body: JSON.stringify(data) });
+  const request = new Request(`${origin}/api/${path}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(data),
+  });
   return POST(request, { params: Promise.resolve({ path: path.split('/') }) });
 }
 
@@ -33,7 +42,9 @@ async function get(path: string, query: Record<string, string>, session?: string
   const headers: Record<string, string> = { origin };
   if (session) headers.cookie = session;
   const url = `${origin}/api/${path}?` + new URLSearchParams(query).toString();
-  return GET(new Request(url, { method: 'GET', headers }), { params: Promise.resolve({ path: path.split('/') }) });
+  return GET(new Request(url, { method: 'GET', headers }), {
+    params: Promise.resolve({ path: path.split('/') }),
+  });
 }
 
 async function json<T>(response: Response) {
@@ -41,7 +52,11 @@ async function json<T>(response: Response) {
 }
 
 async function createUser(account: string) {
-  const credentials = { userAccount: account, userPassword: 'password123', checkPassword: 'password123' };
+  const credentials = {
+    userAccount: account,
+    userPassword: 'password123',
+    checkPassword: 'password123',
+  };
   const registered = await json<string>(await post('user/register', credentials));
   expect(registered.code).toBe(0);
   const login = await post('user/login', credentials);
@@ -50,7 +65,9 @@ async function createUser(account: string) {
 }
 
 async function createApp(cookie: string, initPrompt: string) {
-  const created = await json<string>(await post('app/add', { initPrompt, codeGenType: 'html' }, cookie));
+  const created = await json<string>(
+    await post('app/add', { initPrompt, codeGenType: 'html' }, cookie),
+  );
   expect(created.code).toBe(0);
   return created.data;
 }
@@ -112,9 +129,15 @@ afterAll(async () => {
   await purgeVersions(appRef()).catch(() => undefined);
   await rm(workspace(appRef()), { recursive: true, force: true });
   await rm(versionRepo(appRef()), { recursive: true, force: true });
-  await db().delete(apps).where(eq(apps.id, BigInt(appId)));
-  await db().delete(users).where(eq(users.id, BigInt(owner.id)));
-  await db().delete(users).where(eq(users.id, BigInt(stranger.id)));
+  await db()
+    .delete(apps)
+    .where(eq(apps.id, BigInt(appId)));
+  await db()
+    .delete(users)
+    .where(eq(users.id, BigInt(owner.id)));
+  await db()
+    .delete(users)
+    .where(eq(users.id, BigInt(stranger.id)));
   expect(versionRoot()).toContain('versionstore');
 });
 
@@ -127,7 +150,7 @@ describe('版本接口', () => {
     expect(response.status).toBe(200);
     const body = await json<AppVersionOverview>(response);
     expect(body.data.current).toEqual({ versionId: first.id });
-    expect(body.data.versions.map(version => version.id)).toEqual([first.id]);
+    expect(body.data.versions.map((version) => version.id)).toEqual([first.id]);
     expect(body.data.versions).toHaveLength(await commitCount());
     expect(body.data.blocked).toBeNull();
   });
@@ -135,8 +158,10 @@ describe('版本接口', () => {
   it('按关键词能命中版本', async () => {
     const response = await get('app/versions', { appId, query: '第一版' }, owner.cookie);
     const body = await json<AppVersionOverview>(response);
-    expect(body.data.versions.some(version => version.id === first.id)).toBe(true);
-    const miss = await json<AppVersionOverview>(await get('app/versions', { appId, query: '不存在的关键词' }, owner.cookie));
+    expect(body.data.versions.some((version) => version.id === first.id)).toBe(true);
+    const miss = await json<AppVersionOverview>(
+      await get('app/versions', { appId, query: '不存在的关键词' }, owner.cookie),
+    );
     expect(miss.data.versions).toHaveLength(0);
   });
 
@@ -144,13 +169,19 @@ describe('版本接口', () => {
     await writeProject('index.html', '<html><body>第二版</body></html>');
     const second = await commitVersion({ app: appRef(), title: '第二版' });
     expect(second).not.toBeNull();
-    const headsBefore = await git(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads']);
+    const headsBefore = await git([
+      'for-each-ref',
+      '--format=%(refname) %(objectname)',
+      'refs/heads',
+    ]);
     const commitsBefore = await commitCount();
     expect(commitsBefore).toBe(2);
 
-    const restored = await json<{ status: string; version: AppVersion; previewError: string | null }>(
-      await post('app/versions/restore', { appId, versionId: first.id }, owner.cookie),
-    );
+    const restored = await json<{
+      status: string;
+      version: AppVersion;
+      previewError: string | null;
+    }>(await post('app/versions/restore', { appId, versionId: first.id }, owner.cookie));
     expect(restored.code).toBe(0);
     expect(restored.data.status).toBe('restored');
     expect(restored.data.version.id).toBe(first.id);
@@ -159,12 +190,16 @@ describe('版本接口', () => {
     // Git 事实：HEAD 就是目标提交，detached（没有分支指向它），提交数与分支头一个都没变。
     expect(await git(['rev-parse', 'HEAD'])).toBe(first.id);
     expect(await gitOrNull(['symbolic-ref', '-q', 'HEAD'])).toBeNull();
-    expect(await git(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads'])).toBe(headsBefore);
+    expect(await git(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads'])).toBe(
+      headsBefore,
+    );
     expect(await commitCount()).toBe(commitsBefore);
     expect(await mainHead()).toBe(second!.id);
     expect(await readProject('index.html')).toContain('第一版');
 
-    const overview = await json<AppVersionOverview>(await get('app/versions', { appId }, owner.cookie));
+    const overview = await json<AppVersionOverview>(
+      await get('app/versions', { appId }, owner.cookie),
+    );
     expect(overview.data.current).toEqual({ versionId: first.id });
     expect(overview.data.versions).toHaveLength(commitsBefore);
   });
@@ -175,10 +210,12 @@ describe('版本接口', () => {
     expect(next).not.toBeNull();
 
     expect(await git(['rev-parse', 'HEAD^'])).toBe(first.id);
-    const overview = await json<AppVersionOverview>(await get('app/versions', { appId }, owner.cookie));
+    const overview = await json<AppVersionOverview>(
+      await get('app/versions', { appId }, owner.cookie),
+    );
     // 清单按时间排：新接的一版在最前，被回退到的第一版仍在列表里可选。
-    expect(overview.data.versions[0]!.id).toBe(next!.id);
-    expect(overview.data.versions.map(version => version.id)).toContain(first.id);
+    expect(overview.data.versions[0].id).toBe(next!.id);
+    expect(overview.data.versions.map((version) => version.id)).toContain(first.id);
     expect(overview.data.current).toEqual({ versionId: next!.id });
   });
 
@@ -198,13 +235,17 @@ describe('版本接口', () => {
   });
 
   it('差异接口按 SHA 返回改动文件与补丁', async () => {
-    const overview = await json<AppVersionOverview>(await get('app/versions', { appId }, owner.cookie));
-    const head = overview.data.versions[0]!;
-    const diff = await json<VersionDiff>(await get('app/versions/diff', { appId, base: first.id, target: head.id }, owner.cookie));
+    const overview = await json<AppVersionOverview>(
+      await get('app/versions', { appId }, owner.cookie),
+    );
+    const head = overview.data.versions[0];
+    const diff = await json<VersionDiff>(
+      await get('app/versions/diff', { appId, base: first.id, target: head.id }, owner.cookie),
+    );
     expect(diff.code).toBe(0);
     expect(diff.data.base.id).toBe(first.id);
     expect(diff.data.target.id).toBe(head.id);
-    expect(diff.data.files.some(file => file.path === 'index.html')).toBe(true);
+    expect(diff.data.files.some((file) => file.path === 'index.html')).toBe(true);
     expect(typeof diff.data.patch).toBe('string');
   });
 
@@ -216,7 +257,11 @@ describe('版本接口', () => {
     const bare = await commitVersion({ app: appRef(), title: '没有入口页面的一版' });
     expect(bare).not.toBeNull();
 
-    const response = await get('app/versions/thumbnail', { appId, versionId: bare!.id }, owner.cookie);
+    const response = await get(
+      'app/versions/thumbnail',
+      { appId, versionId: bare!.id },
+      owner.cookie,
+    );
     expect(response.status).toBe(404);
 
     // 还原工作区，后面的用例照常跑。
@@ -225,36 +270,76 @@ describe('版本接口', () => {
   });
 
   it('生成占用应用时 HTTP 写操作被拒绝，但面板能看到原因', async () => {
-    await db().insert(leases).values({ appId: BigInt(appId), generationId: randomUUID(), expiresAt: new Date(Date.now() + 60_000).toISOString().slice(0, 23).replace('T', ' ') });
+    await db()
+      .insert(leases)
+      .values({
+        appId: BigInt(appId),
+        generationId: randomUUID(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString().slice(0, 23).replace('T', ' '),
+      });
     try {
-      const overview = await json<AppVersionOverview>(await get('app/versions', { appId }, owner.cookie));
+      const overview = await json<AppVersionOverview>(
+        await get('app/versions', { appId }, owner.cookie),
+      );
       expect(overview.data.blocked).toMatch(/正在生成/);
-      const write = await post('app/versions/restore', { appId, versionId: first.id }, owner.cookie);
+      const write = await post(
+        'app/versions/restore',
+        { appId, versionId: first.id },
+        owner.cookie,
+      );
       expect(write.status).toBe(409);
     } finally {
-      await db().delete(leases).where(eq(leases.appId, BigInt(appId)));
+      await db()
+        .delete(leases)
+        .where(eq(leases.appId, BigInt(appId)));
     }
   });
 
   it('他人应用读不到版本，也改不了工作区', async () => {
     expect((await get('app/versions', { appId }, stranger.cookie)).status).toBe(403);
-    const write = await post('app/versions/restore', { appId, versionId: first.id }, stranger.cookie);
+    const write = await post(
+      'app/versions/restore',
+      { appId, versionId: first.id },
+      stranger.cookie,
+    );
     expect(write.status).toBe(403);
   });
 
   it('截图、差异与回退的参数都必须是完整 SHA', async () => {
-    const restore = await post('app/versions/restore', { appId, versionId: 'not-a-sha' }, owner.cookie);
+    const restore = await post(
+      'app/versions/restore',
+      { appId, versionId: 'not-a-sha' },
+      owner.cookie,
+    );
     expect(restore.status).toBe(400);
-    const thumbnail = await get('app/versions/thumbnail', { appId, versionId: 'not-a-sha' }, owner.cookie);
+    const thumbnail = await get(
+      'app/versions/thumbnail',
+      { appId, versionId: 'not-a-sha' },
+      owner.cookie,
+    );
     expect(thumbnail.status).toBe(400);
-    const diff = await get('app/versions/diff', { appId, base: 'not-a-sha', target: first.id }, owner.cookie);
+    const diff = await get(
+      'app/versions/diff',
+      { appId, base: 'not-a-sha', target: first.id },
+      owner.cookie,
+    );
     expect(diff.status).toBe(400);
   });
 
   it('删除应用会连版本库一起回收（走真实 deleteApp，不是只调 purgeVersions）', async () => {
-    expect(await stat(versionRepo(appRef())).then(() => true, () => false)).toBe(true);
+    expect(
+      await stat(versionRepo(appRef())).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(true);
     const removed = await post('app/delete', { id: appId }, owner.cookie);
     expect(removed.status).toBe(200);
-    expect(await stat(versionRepo(appRef())).then(() => true, () => false)).toBe(false);
+    expect(
+      await stat(versionRepo(appRef())).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
   });
 });

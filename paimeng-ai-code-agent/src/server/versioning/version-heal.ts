@@ -14,11 +14,12 @@ export async function healVersionRows(app: WorkspaceApp): Promise<number> {
   const pins = await listVersionPins(app);
   if (pins.length === 0) return 0;
   const known = new Set(await listVersionShas(app.id));
-  const missing = pins.filter(pin => !known.has(pin.sha));
+  const missing = pins.filter((pin) => !known.has(pin.sha));
   let healed = 0;
   for (const pin of missing) {
     // 并发的两次自愈会撞主键，第二次插入返回 false，不计入补行数。
-    if (await insertVersionRow({ appId: app.id, commitSha: pin.sha, title: pin.subject })) healed += 1;
+    if (await insertVersionRow({ appId: app.id, commitSha: pin.sha, title: pin.subject }))
+      healed += 1;
   }
   return healed;
 }

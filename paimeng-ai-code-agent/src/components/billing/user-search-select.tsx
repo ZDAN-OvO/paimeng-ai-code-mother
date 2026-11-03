@@ -8,7 +8,12 @@ import type { AdminCreditUser, AdminUserSearchResult } from '@/shared/billing';
  * 管理面的用户选择器：按账号/用户名模糊搜索，完整用户 ID 直接粘贴也能命中。
  * 下拉候选与选中后的身份展示都读同一份 `AdminCreditUser`，提交仍然只送用户 ID。
  */
-export function UserSearchSelect({ value, onChange, ariaLabel = '选择用户', placeholder = '搜索账号、用户名或粘贴用户 ID' }: {
+export function UserSearchSelect({
+  value,
+  onChange,
+  ariaLabel = '选择用户',
+  placeholder = '搜索账号、用户名或粘贴用户 ID',
+}: {
   value?: string;
   onChange?: (value: string, user: AdminCreditUser | null) => void;
   ariaLabel?: string;
@@ -61,31 +66,38 @@ export function UserSearchSelect({ value, onChange, ariaLabel = '选择用户', 
     timer.current = setTimeout(() => void search(query), 250);
   }
 
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
 
-  return <Select
-    aria-label={ariaLabel}
-    style={{ width: '100%', minWidth: 240 }}
-    showSearch
-    allowClear
-    value={value}
-    placeholder={placeholder}
-    filterOption={false}
-    onSearch={schedule}
-    onInputKeyDown={(event) => {
-      if (event.key !== 'Enter') return;
-      event.preventDefault();
-      void selectFirst(event.currentTarget.value);
-    }}
-    notFoundContent={loading ? <Spin size="small" /> : '没有匹配的用户'}
-    options={options.map(user => ({
-      value: user.userId,
-      label: `${user.userAccount}（${user.userName || '未设置用户名'}）· ${user.userId}`,
-      user,
-    }))}
-    onChange={(next: string | undefined) => {
-      const user = options.find(option => option.userId === next) ?? null;
-      onChange?.(next ?? '', user);
-    }}
-  />;
+  return (
+    <Select
+      aria-label={ariaLabel}
+      style={{ width: '100%', minWidth: 240 }}
+      showSearch
+      allowClear
+      value={value}
+      placeholder={placeholder}
+      filterOption={false}
+      onSearch={schedule}
+      onInputKeyDown={(event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        void selectFirst(event.currentTarget.value);
+      }}
+      notFoundContent={loading ? <Spin size="small" /> : '没有匹配的用户'}
+      options={options.map((user) => ({
+        value: user.userId,
+        label: `${user.userAccount}（${user.userName || '未设置用户名'}）· ${user.userId}`,
+        user,
+      }))}
+      onChange={(next: string | undefined) => {
+        const user = options.find((option) => option.userId === next) ?? null;
+        onChange?.(next ?? '', user);
+      }}
+    />
+  );
 }

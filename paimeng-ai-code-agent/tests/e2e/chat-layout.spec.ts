@@ -15,48 +15,99 @@ type Layout = { preview?: string | null; sourceAvailable?: boolean };
 function homePage(count: number) {
   return {
     records: Array.from({ length: count }, (_, index) => ({
-      id: String(920000 + index), appName: '案例 ' + index, cover: null, initPrompt: '示例',
-      codeGenType: 'html', user: { id: 'owner', userName: '测试创建者', userAvatar: null },
+      id: String(920000 + index),
+      appName: '案例 ' + index,
+      cover: null,
+      initPrompt: '示例',
+      codeGenType: 'html',
+      user: { id: 'owner', userName: '测试创建者', userAvatar: null },
     })),
-    totalRow: count, pageNumber: 1, pageSize: 6,
+    totalRow: count,
+    pageNumber: 1,
+    pageSize: 6,
   };
 }
 
 async function mockPreviewPage(page: Page) {
-  await page.route(`${previewOrigin}/**`, route => route.fulfill({
-    contentType: 'text/html',
-    body: '<!doctype html><html><body><h1 id="hero">预览标题</h1><a href="#second">第二页</a></body></html>',
-  }));
+  await page.route(`${previewOrigin}/**`, (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: '<!doctype html><html><body><h1 id="hero">预览标题</h1><a href="#second">第二页</a></body></html>',
+    }),
+  );
 }
 
 async function setup(page: Page, layout: Layout = {}) {
   const state = { preview: layout.preview ?? null };
-  await page.route('**/api/app/good/list/page/vo', route => route.fulfill({ json: { code: 0, data: homePage(18), message: 'ok' } }));
-  await page.route('**/api/app/my/list/page/vo', route => route.fulfill({ json: { code: 0, data: homePage(0), message: 'ok' } }));
-  await page.route('**/api/user/get/login', route => route.fulfill({ json: { code: 0, data: { id: 'owner', userName: '测试创建者', userRole: 'user', userAvatar: null }, message: 'ok' } }));
-  await page.route('**/api/app/get/vo?*', route => route.fulfill({
-    json: { code: 0, data: {
-      id: appId, userId: 'owner', appName: '布局测试', initPrompt: '布局测试', codeGenType: 'html',
-      sourceAvailable: layout.sourceAvailable ?? false, previewUrl: state.preview, builtAt: null, deployedTime: null,
-    }, message: 'ok' },
-  }));
-  await page.route('**/api/app/messages?*', route => route.fulfill({ json: { code: 0, data: [], message: 'ok' } }));
-  await page.route('**/api/app/generation?*', route => route.fulfill({ json: { code: 0, data: null, message: 'ok' } }));
-  await page.route('**/api/app/chat/runtime?*', route => route.fulfill({ json: { code: 0, data: { generation: null, busy: false, pending: [], messages: [] }, message: 'ok' } }));
+  await page.route('**/api/app/good/list/page/vo', (route) =>
+    route.fulfill({ json: { code: 0, data: homePage(18), message: 'ok' } }),
+  );
+  await page.route('**/api/app/my/list/page/vo', (route) =>
+    route.fulfill({ json: { code: 0, data: homePage(0), message: 'ok' } }),
+  );
+  await page.route('**/api/user/get/login', (route) =>
+    route.fulfill({
+      json: {
+        code: 0,
+        data: { id: 'owner', userName: '测试创建者', userRole: 'user', userAvatar: null },
+        message: 'ok',
+      },
+    }),
+  );
+  await page.route('**/api/app/get/vo?*', (route) =>
+    route.fulfill({
+      json: {
+        code: 0,
+        data: {
+          id: appId,
+          userId: 'owner',
+          appName: '布局测试',
+          initPrompt: '布局测试',
+          codeGenType: 'html',
+          sourceAvailable: layout.sourceAvailable ?? false,
+          previewUrl: state.preview,
+          builtAt: null,
+          deployedTime: null,
+        },
+        message: 'ok',
+      },
+    }),
+  );
+  await page.route('**/api/app/messages?*', (route) =>
+    route.fulfill({ json: { code: 0, data: [], message: 'ok' } }),
+  );
+  await page.route('**/api/app/generation?*', (route) =>
+    route.fulfill({ json: { code: 0, data: null, message: 'ok' } }),
+  );
+  await page.route('**/api/app/chat/runtime?*', (route) =>
+    route.fulfill({
+      json: {
+        code: 0,
+        data: { generation: null, busy: false, pending: [], messages: [] },
+        message: 'ok',
+      },
+    }),
+  );
   await mockPreviewPage(page);
   return state;
 }
 
 async function streamAnswer(route: Route) {
-  const stream = createUIMessageStream({ execute: ({ writer }) => {
-    writer.write({ type: 'start', messageId: 'layout-' + Math.random().toString(36).slice(2) });
-    writer.write({ type: 'text-start', id: 'layout-text' });
-    writer.write({ type: 'text-delta', id: 'layout-text', delta: '已经生成好了。' });
-    writer.write({ type: 'text-end', id: 'layout-text' });
-    writer.setOutcome({ status: 'completed' });
-  } });
+  const stream = createUIMessageStream({
+    execute: ({ writer }) => {
+      writer.write({ type: 'start', messageId: 'layout-' + Math.random().toString(36).slice(2) });
+      writer.write({ type: 'text-start', id: 'layout-text' });
+      writer.write({ type: 'text-delta', id: 'layout-text', delta: '已经生成好了。' });
+      writer.write({ type: 'text-end', id: 'layout-text' });
+      writer.setOutcome({ status: 'completed' });
+    },
+  });
   const response = createUIMessageStreamResponse({ stream });
-  await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: await response.text() });
+  await route.fulfill({
+    status: response.status,
+    headers: Object.fromEntries(response.headers),
+    body: await response.text(),
+  });
 }
 
 test('顶栏钉在视口顶：长页面滚一屏后它还在原处', async ({ page }) => {
@@ -75,7 +126,9 @@ test('聊天页整页不滚：顶栏与工具栏都在视口里', async ({ page 
   await setup(page, { preview: previewUrl });
   await page.goto('/app/chat/' + appId);
   await expect(page.locator('.preview-frame')).toBeAttached();
-  expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(
+    true,
+  );
   await expect(page.getByRole('heading', { name: '布局测试' })).toBeVisible();
 });
 
@@ -124,7 +177,10 @@ test('收起、展开与切换手机端都不重载预览', async ({ page }) => 
   await setup(page, { preview: previewUrl });
   await page.goto('/app/chat/' + appId);
   await expect(page.locator('.preview-frame')).toBeAttached();
-  await page.evaluate(() => { (document.querySelector('.preview-frame') as unknown as { __kept?: string }).__kept = 'same-node'; });
+  await page.evaluate(() => {
+    (document.querySelector('.preview-frame') as unknown as { __kept?: string }).__kept =
+      'same-node';
+  });
 
   await page.getByRole('button', { name: '收起网页展示' }).click();
   await expect(page.locator('.preview-panel')).toBeHidden();
@@ -132,12 +188,16 @@ test('收起、展开与切换手机端都不重载预览', async ({ page }) => 
   await page.getByRole('button', { name: '手机端' }).click();
   await page.getByRole('button', { name: '电脑端' }).click();
 
-  expect(await page.evaluate(() => (document.querySelector('.preview-frame') as unknown as { __kept?: string }).__kept)).toBe('same-node');
+  expect(
+    await page.evaluate(
+      () => (document.querySelector('.preview-frame') as unknown as { __kept?: string }).__kept,
+    ),
+  ).toBe('same-node');
 });
 
 test('没有预览时默认收起，预览出现后自动展开', async ({ page }) => {
   const state = await setup(page);
-  await page.route('**/api/app/chat/gen/code', route => streamAnswer(route));
+  await page.route('**/api/app/chat/gen/code', (route) => streamAnswer(route));
   await page.goto('/app/chat/' + appId);
   await expect(page.locator('.preview-panel')).toBeHidden();
   await expect(page.getByRole('button', { name: '网页展示' })).toBeVisible();
@@ -151,7 +211,7 @@ test('没有预览时默认收起，预览出现后自动展开', async ({ page 
 
 test('手动收起过就不再自动展开', async ({ page }) => {
   const state = await setup(page, { preview: previewUrl });
-  await page.route('**/api/app/chat/gen/code', route => streamAnswer(route));
+  await page.route('**/api/app/chat/gen/code', (route) => streamAnswer(route));
   await page.goto('/app/chat/' + appId);
   await page.getByRole('button', { name: '收起网页展示' }).click();
   await expect(page.locator('.preview-panel')).toBeHidden();
@@ -188,9 +248,15 @@ test('手机上进来默认就是手机端预览', async ({ page }) => {
 
 test('报错与提示在对话流里，页面顶上不再有独立提示条', async ({ page }) => {
   await setup(page, { preview: previewUrl });
-  await page.route('**/api/app/generation?*', route => route.fulfill({
-    json: { code: 0, data: { id: 'failed-task', status: 'failed', error: '构建失败：缺少 index.html' }, message: 'ok' },
-  }));
+  await page.route('**/api/app/generation?*', (route) =>
+    route.fulfill({
+      json: {
+        code: 0,
+        data: { id: 'failed-task', status: 'failed', error: '构建失败：缺少 index.html' },
+        message: 'ok',
+      },
+    }),
+  );
   await page.goto('/app/chat/' + appId);
   const note = page.locator('.messages .message-note');
   await expect(note).toContainText('生成中断：构建失败：缺少 index.html');

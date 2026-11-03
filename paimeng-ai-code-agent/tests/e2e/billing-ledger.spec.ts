@@ -25,7 +25,7 @@ async function register(page: Page, account: string): Promise<string> {
     data: { userAccount: account, userPassword: password, checkPassword: password },
   });
   expect(response.ok()).toBe(true);
-  const envelope = await response.json() as { code: number; data: string };
+  const envelope = (await response.json()) as { code: number; data: string };
   expect(envelope.code).toBe(0);
   createdUserIds.push(envelope.data);
   return envelope.data;
@@ -35,7 +35,10 @@ async function login(page: Page, account: string) {
   await page.goto('/user/login');
   await page.getByLabel('账号', { exact: true }).fill(account);
   await page.getByLabel('密码', { exact: true }).fill(password);
-  await page.locator('form').getByRole('button', { name: /^登\s*录$/ }).click();
+  await page
+    .locator('form')
+    .getByRole('button', { name: /^登\s*录$/ })
+    .click();
   await expect(page).toHaveURL('/');
 }
 
@@ -43,7 +46,9 @@ async function adminLogin(page: Page, account: string) {
   await register(page, account);
   const connection = await testConnection();
   try {
-    await connection.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [account]);
+    await connection.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [
+      account,
+    ]);
   } finally {
     await connection.end();
   }
@@ -54,7 +59,9 @@ async function adminLogin(page: Page, account: string) {
  * 造一个 App + 一笔 60 积分的已结算账单：当期发放 100 → 消费 60 → 可用 40。
  * 冲正之后可用应当回到 100，界面显示「已退还 / 已冲正」。
  */
-async function seedSettledCharge(ownerId: string): Promise<{ appId: string; appName: string; generationId: string }> {
+async function seedSettledCharge(
+  ownerId: string,
+): Promise<{ appId: string; appName: string; generationId: string }> {
   const appId = String(BigInt(Date.now()) * 100n + BigInt(Math.floor(Math.random() * 100)));
   const generationId = randomUUID();
   createdAppIds.push(appId);
@@ -110,7 +117,8 @@ async function availableOf(userId: string): Promise<number> {
   const connection = await testConnection();
   try {
     const { rows } = await connection.query<{ available: string }>(
-      'SELECT available FROM credit_balance WHERE user_id = $1', [userId],
+      'SELECT available FROM credit_balance WHERE user_id = $1',
+      [userId],
     );
     return Number(rows[0]?.available ?? 0);
   } finally {
@@ -122,15 +130,28 @@ test.afterAll(async () => {
   const connection = await testConnection();
   try {
     if (createdGenerationIds.length) {
-      await connection.query('DELETE FROM credit_ledger WHERE charge_id = ANY($1::text[])', [createdGenerationIds]);
-      await connection.query('DELETE FROM credit_charge WHERE generation_id = ANY($1::text[])', [createdGenerationIds]);
-      await connection.query('DELETE FROM generation WHERE id = ANY($1::text[])', [createdGenerationIds]);
+      await connection.query('DELETE FROM credit_ledger WHERE charge_id = ANY($1::text[])', [
+        createdGenerationIds,
+      ]);
+      await connection.query('DELETE FROM credit_charge WHERE generation_id = ANY($1::text[])', [
+        createdGenerationIds,
+      ]);
+      await connection.query('DELETE FROM generation WHERE id = ANY($1::text[])', [
+        createdGenerationIds,
+      ]);
     }
-    if (createdAppIds.length) await connection.query('DELETE FROM app WHERE id = ANY($1::bigint[])', [createdAppIds]);
+    if (createdAppIds.length)
+      await connection.query('DELETE FROM app WHERE id = ANY($1::bigint[])', [createdAppIds]);
     if (createdUserIds.length) {
-      await connection.query('DELETE FROM credit_ledger WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
-      await connection.query('DELETE FROM credit_balance WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
-      await connection.query('DELETE FROM user_session WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
+      await connection.query('DELETE FROM credit_ledger WHERE user_id = ANY($1::bigint[])', [
+        createdUserIds,
+      ]);
+      await connection.query('DELETE FROM credit_balance WHERE user_id = ANY($1::bigint[])', [
+        createdUserIds,
+      ]);
+      await connection.query('DELETE FROM user_session WHERE user_id = ANY($1::bigint[])', [
+        createdUserIds,
+      ]);
       await connection.query('DELETE FROM app_user WHERE id = ANY($1::bigint[])', [createdUserIds]);
     }
   } finally {
@@ -160,7 +181,10 @@ test('Owner 在 /billing 看到有效金额、积分种类与面额说明', asyn
 
   await page.setViewportSize({ width: 480, height: 800 });
   await expect(page.getByLabel('按应用筛选')).toBeVisible();
-  await page.screenshot({ path: evidencePath('billing', 'owner-ledger-narrow.png'), fullPage: true });
+  await page.screenshot({
+    path: evidencePath('billing', 'owner-ledger-narrow.png'),
+    fullPage: true,
+  });
 });
 
 test('Admin 查用户账单并整笔冲正：成本未知可辨识、冲正后只退一次', async ({ page }) => {
@@ -195,7 +219,10 @@ test('Admin 查用户账单并整笔冲正：成本未知可辨识、冲正后�
   await expect(reversed.getByRole('button', { name: '已冲正' })).toBeDisabled();
   expect(await availableOf(ownerId)).toBe(100);
 
-  await page.screenshot({ path: evidencePath('billing', 'admin-usage-reversal.png'), fullPage: true });
+  await page.screenshot({
+    path: evidencePath('billing', 'admin-usage-reversal.png'),
+    fullPage: true,
+  });
 });
 
 test('权限：未登录看不了账单页，普通用户读不到别人的用量', async ({ page }) => {
@@ -205,6 +232,8 @@ test('权限：未登录看不了账单页，普通用户读不到别人的用�
   const account = 'e2e_ledger_plain_' + randomUUID().slice(0, 8);
   const userId = await register(page, account);
   await login(page, account);
-  const response = await page.request.get('/api/admin/billing/usage?userId=' + userId, { headers: { origin } });
+  const response = await page.request.get('/api/admin/billing/usage?userId=' + userId, {
+    headers: { origin },
+  });
   expect(response.status()).toBe(403);
 });

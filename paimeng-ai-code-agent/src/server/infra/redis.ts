@@ -12,7 +12,9 @@ type RedisState = {
   shutdownHookInstalled: boolean;
 };
 
-const state: RedisState = ((globalThis as typeof globalThis & { tsRateLimitRedis?: RedisState }).tsRateLimitRedis ??= {
+const state: RedisState = ((
+  globalThis as typeof globalThis & { tsRateLimitRedis?: RedisState }
+).tsRateLimitRedis ??= {
   client: null,
   connecting: null,
   lastWarnAt: 0,
@@ -32,7 +34,11 @@ export function warnRateLimitRedisUnavailable(reason: string) {
 }
 
 function destroyQuietly(client: RedisClientType) {
-  try { client.destroy(); } catch { }
+  try {
+    client.destroy();
+  } catch {
+    // 关闭过程允许客户端已经断开。
+  }
 }
 
 function newClient(): RedisClientType {
@@ -41,8 +47,10 @@ function newClient(): RedisClientType {
     disableOfflineQueue: true,
     socket: { connectTimeout: connectTimeoutMs, reconnectStrategy: false },
   });
-  client.on('error', error => warnRateLimitRedisUnavailable(safeReason(error)));
-  client.on('end', () => { if (state.client === client) state.client = null; });
+  client.on('error', (error) => warnRateLimitRedisUnavailable(safeReason(error)));
+  client.on('end', () => {
+    if (state.client === client) state.client = null;
+  });
   return client;
 }
 
@@ -65,13 +73,15 @@ export async function rateLimitRedis(): Promise<RedisClientType> {
   let connecting = state.connecting;
   if (!connecting) {
     connecting = (async () => {
-      const opened = state.client ??= newClient();
+      const opened = (state.client ??= newClient());
       // connectTimeout 只覆盖 TCP 建连，Redis 握手也必须有上限。
       const timer = setTimeout(() => destroyQuietly(opened), connectTimeoutMs);
       try {
         if (!opened.isOpen) await opened.connect();
         return opened;
-      } finally { clearTimeout(timer); }
+      } finally {
+        clearTimeout(timer);
+      }
     })();
     state.connecting = connecting;
   }
@@ -92,11 +102,16 @@ export async function rateLimitRedis(): Promise<RedisClientType> {
 /** 包括已写入 socket 后等待响应的阶段；SDK 的排队超时不覆盖这个阶段。 */
 async function withDeadline<T>(client: RedisClientType, work: () => Promise<T>): Promise<T> {
   const timer = setTimeout(() => destroyQuietly(client), connectTimeoutMs);
-  try { return await work(); }
-  finally { clearTimeout(timer); }
+  try {
+    return await work();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-export async function withRateLimitRedis<T>(work: (client: RedisClientType) => Promise<T>): Promise<T> {
+export async function withRateLimitRedis<T>(
+  work: (client: RedisClientType) => Promise<T>,
+): Promise<T> {
   const client = await rateLimitRedis();
   return withDeadline(client, () => work(client));
 }
@@ -116,6 +131,10 @@ export async function closeRateLimitRedis(): Promise<void> {
 
 if (!state.shutdownHookInstalled) {
   state.shutdownHookInstalled = true;
-  process.once('beforeExit', () => { void closeRateLimitRedis(); });
-  process.once('exit', () => { if (state.client) destroyQuietly(state.client); });
+  process.once('beforeExit', () => {
+    void closeRateLimitRedis();
+  });
+  process.once('exit', () => {
+    if (state.client) destroyQuietly(state.client);
+  });
 }

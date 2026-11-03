@@ -8,7 +8,8 @@ import { idSchema } from '@/shared/contracts';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const harnessUrl = () => (process.env.DURABLE_HARNESS_URL ?? 'http://127.0.0.1:5599').replace(/\/$/, '');
+const harnessUrl = () =>
+  (process.env.DURABLE_HARNESS_URL ?? 'http://127.0.0.1:5599').replace(/\/$/, '');
 
 /**
  * Attach proxy to the resident pi-durable harness: the Next.js server is a client and never
@@ -44,7 +45,12 @@ function parseBody(raw: string): unknown {
   }
 }
 
-async function proxy(request: Request, path: string[], payload: string | undefined, options: { signal?: AbortSignal; conversationId?: number } = {}): Promise<Response> {
+async function proxy(
+  request: Request,
+  path: string[],
+  payload: string | undefined,
+  options: { signal?: AbortSignal; conversationId?: number } = {},
+): Promise<Response> {
   const target = new URL(`${harnessUrl()}/${path.join('/')}`);
   if (options.conversationId !== undefined) {
     const query = new URLSearchParams(new URL(request.url).searchParams);
@@ -54,7 +60,10 @@ async function proxy(request: Request, path: string[], payload: string | undefin
   }
   const upstream = await fetch(target, {
     method: request.method,
-    headers: request.method === 'POST' ? { 'content-type': 'application/json' } : { accept: 'text/event-stream' },
+    headers:
+      request.method === 'POST'
+        ? { 'content-type': 'application/json' }
+        : { accept: 'text/event-stream' },
     body: payload,
     signal: options.signal,
   });
@@ -67,9 +76,13 @@ async function proxy(request: Request, path: string[], payload: string | undefin
 export async function GET(request: Request, context: { params: Promise<{ path: string[] }> }) {
   try {
     const path = (await context.params).path;
-    const conversationId = await requireOwner(request, new URL(request.url).searchParams.get('appId'));
+    const conversationId = await requireOwner(
+      request,
+      new URL(request.url).searchParams.get('appId'),
+    );
     if (conversationId === undefined) throw new BusinessError(404, 40400, '该应用还没有会话');
-    if (path.length === 1 && path[0] === 'events') return proxy(request, path, undefined, { signal: request.signal, conversationId });
+    if (path.length === 1 && path[0] === 'events')
+      return proxy(request, path, undefined, { signal: request.signal, conversationId });
     return proxy(request, path, undefined, { conversationId });
   } catch (error) {
     return failure(error);
@@ -86,10 +99,15 @@ export async function POST(request: Request, context: { params: Promise<{ path: 
     if (path[0] !== 'conversations') {
       if (conversationId === undefined) throw new BusinessError(404, 40400, '该应用还没有会话');
       const requested = body.conversationId;
-      if (requested !== undefined && requested !== null && String(requested) !== String(conversationId)) {
+      if (
+        requested !== undefined &&
+        requested !== null &&
+        String(requested) !== String(conversationId)
+      ) {
         throw new BusinessError(403, 40300, '会话不属于该应用');
       }
-      if (requested === undefined || requested === null) payload = JSON.stringify({ ...body, conversationId });
+      if (requested === undefined || requested === null)
+        payload = JSON.stringify({ ...body, conversationId });
     }
     return await proxy(request, path, payload);
   } catch (error) {

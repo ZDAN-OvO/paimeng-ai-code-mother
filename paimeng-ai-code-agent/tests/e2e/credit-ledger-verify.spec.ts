@@ -26,7 +26,7 @@ async function register(page: Page, account: string): Promise<string> {
     data: { userAccount: account, userPassword: password, checkPassword: password },
   });
   expect(response.ok()).toBe(true);
-  const envelope = await response.json() as { code: number; data: string };
+  const envelope = (await response.json()) as { code: number; data: string };
   expect(envelope.code).toBe(0);
   createdUserIds.push(envelope.data);
   return envelope.data;
@@ -36,7 +36,10 @@ async function login(page: Page, account: string) {
   await page.goto('/user/login');
   await page.getByLabel('账号', { exact: true }).fill(account);
   await page.getByLabel('密码', { exact: true }).fill(password);
-  await page.locator('form').getByRole('button', { name: /^登\s*录$/ }).click();
+  await page
+    .locator('form')
+    .getByRole('button', { name: /^登\s*录$/ })
+    .click();
   await expect(page).toHaveURL('/');
 }
 
@@ -44,7 +47,9 @@ async function adminLogin(page: Page, account: string) {
   await register(page, account);
   const connection = await testConnection();
   try {
-    await connection.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [account]);
+    await connection.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [
+      account,
+    ]);
   } finally {
     await connection.end();
   }
@@ -70,10 +75,12 @@ async function ledgerOf(userId: string) {
   try {
     const { rows } = await connection.query(
       `select id, kind, origin, credits, period, expires_at, reason
-       from credit_ledger where user_id = $1 order by id`, [userId],
+       from credit_ledger where user_id = $1 order by id`,
+      [userId],
     );
     const { rows: balances } = await connection.query(
-      'select available, next_expiry_at from credit_balance where user_id = $1', [userId],
+      'select available, next_expiry_at from credit_balance where user_id = $1',
+      [userId],
     );
     return { rows, balance: balances[0] ?? null };
   } finally {
@@ -82,7 +89,9 @@ async function ledgerOf(userId: string) {
 }
 
 /** 造一个 App + 一笔 60 积分的已结算账单：当期发放 100 → 消费 60 → 可用 40。 */
-async function seedSettledCharge(ownerId: string): Promise<{ appName: string; generationId: string }> {
+async function seedSettledCharge(
+  ownerId: string,
+): Promise<{ appName: string; generationId: string }> {
   const appId = String(BigInt(Date.now()) * 100n + BigInt(Math.floor(Math.random() * 100)));
   const generationId = randomUUID();
   createdApps.push(BigInt(appId));
@@ -136,17 +145,35 @@ test.afterAll(async () => {
   const connection = await testConnection();
   try {
     if (createdGenerations.length) {
-      await connection.query('DELETE FROM credit_ledger WHERE charge_id = ANY($1::text[])', [createdGenerations]);
-      await connection.query('DELETE FROM credit_charge WHERE generation_id = ANY($1::text[])', [createdGenerations]);
-      await connection.query('DELETE FROM generation WHERE id = ANY($1::text[])', [createdGenerations]);
+      await connection.query('DELETE FROM credit_ledger WHERE charge_id = ANY($1::text[])', [
+        createdGenerations,
+      ]);
+      await connection.query('DELETE FROM credit_charge WHERE generation_id = ANY($1::text[])', [
+        createdGenerations,
+      ]);
+      await connection.query('DELETE FROM generation WHERE id = ANY($1::text[])', [
+        createdGenerations,
+      ]);
     }
-    if (createdApps.length) await connection.query('DELETE FROM app WHERE id = ANY($1::bigint[])', [createdApps]);
+    if (createdApps.length)
+      await connection.query('DELETE FROM app WHERE id = ANY($1::bigint[])', [createdApps]);
     if (createdUserIds.length) {
-      await connection.query('DELETE FROM credit_ledger WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
-      await connection.query('DELETE FROM credit_balance WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
-      await connection.query('DELETE FROM credit_operation WHERE operator_id = ANY($1::bigint[])', [createdUserIds]);
-      await connection.query('DELETE FROM credit_quota_policy WHERE created_by = ANY($1::bigint[])', [createdUserIds]);
-      await connection.query('DELETE FROM user_session WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
+      await connection.query('DELETE FROM credit_ledger WHERE user_id = ANY($1::bigint[])', [
+        createdUserIds,
+      ]);
+      await connection.query('DELETE FROM credit_balance WHERE user_id = ANY($1::bigint[])', [
+        createdUserIds,
+      ]);
+      await connection.query('DELETE FROM credit_operation WHERE operator_id = ANY($1::bigint[])', [
+        createdUserIds,
+      ]);
+      await connection.query(
+        'DELETE FROM credit_quota_policy WHERE created_by = ANY($1::bigint[])',
+        [createdUserIds],
+      );
+      await connection.query('DELETE FROM user_session WHERE user_id = ANY($1::bigint[])', [
+        createdUserIds,
+      ]);
       await connection.query('DELETE FROM app_user WHERE id = ANY($1::bigint[])', [createdUserIds]);
     }
   } finally {
@@ -167,7 +194,10 @@ test('管理员选人、发放限时/长期积分：流水、可用额与刷新�
   await expect(detail).toContainText('500');
   await expect(detail).toContainText('已发');
   await expect(detail).toContainText('每月规则');
-  await page.screenshot({ path: evidencePath('billing', '01-selected-initial.png'), fullPage: true });
+  await page.screenshot({
+    path: evidencePath('billing', '01-selected-initial.png'),
+    fullPage: true,
+  });
 
   await page.getByRole('button', { name: '发放限时积分' }).click();
   await page.getByLabel('数量（积分）').fill('300');
@@ -180,7 +210,7 @@ test('管理员选人、发放限时/长期积分：流水、可用额与刷新�
 
   const afterIssue = await ledgerOf(ownerId);
   saveJson('ledger-after-issue.json', afterIssue);
-  expect(afterIssue.rows.map(row => [row.kind, row.origin, Number(row.credits)])).toEqual([
+  expect(afterIssue.rows.map((row) => [row.kind, row.origin, Number(row.credits)])).toEqual([
     ['quota', 'rule', 500],
     ['quota', 'manual', 300],
   ]);
@@ -211,18 +241,22 @@ test('待发/欠款筛选、改规则与最近操作都能落到界面', async (
     await connection.query('DELETE FROM credit_ledger WHERE user_id = $1', [debtId]);
     await connection.query(
       `INSERT INTO credit_ledger (user_id, kind, origin, credits, create_time)
-       VALUES ($1, 'grant', 'manual', -50, timezone('UTC', now())::timestamp(3))`, [debtId],
+       VALUES ($1, 'grant', 'manual', -50, timezone('UTC', now())::timestamp(3))`,
+      [debtId],
     );
     await connection.query(
       `INSERT INTO credit_balance (user_id, available, next_expiry_at, update_time)
        VALUES ($1, -50, NULL, timezone('UTC', now())::timestamp(3))
-       ON CONFLICT (user_id) DO UPDATE SET available = -50, next_expiry_at = NULL`, [debtId],
+       ON CONFLICT (user_id) DO UPDATE SET available = -50, next_expiry_at = NULL`,
+      [debtId],
     );
   } finally {
     await connection.end();
   }
   await adminLogin(page, 'verify_credit_admin2_' + randomUUID().slice(0, 8));
-  const adminCookie = (await page.context().cookies()).map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+  const adminCookie = (await page.context().cookies())
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .join('; ');
 
   await page.goto('/admin/billing');
   const search = page.getByLabel('搜索用户');
@@ -258,7 +292,9 @@ test('待发/欠款筛选、改规则与最近操作都能落到界面', async (
     data: { userIds: [pendingId], requestId: randomUUID() },
   });
   expect(response.ok()).toBe(true);
-  const envelope = await response.json() as { data: { issued: number; operationId: string | null } };
+  const envelope = (await response.json()) as {
+    data: { issued: number; operationId: string | null };
+  };
   expect(envelope.data).toMatchObject({ issued: 1 });
   expect(envelope.data.operationId).toBeTruthy();
 
@@ -297,7 +333,10 @@ test('Owner 看到同一份积分；管理员冲正后账单归零、可用回�
     const drawer = adminPage.locator('.ant-drawer-section');
     const chargeRow = drawer.getByRole('row').filter({ hasText: generationId });
     await expect(chargeRow).toContainText('60 积分');
-    await adminPage.screenshot({ path: evidencePath('billing', '12-before-reverse.png'), fullPage: true });
+    await adminPage.screenshot({
+      path: evidencePath('billing', '12-before-reverse.png'),
+      fullPage: true,
+    });
 
     await chargeRow.getByRole('button', { name: /^冲\s*正$/ }).click();
     await adminPage.getByLabel('冲正理由').fill('证明：费率配置错误');
@@ -306,11 +345,14 @@ test('Owner 看到同一份积分；管理员冲正后账单归零、可用回�
     const reversed = drawer.getByRole('row').filter({ hasText: generationId });
     await expect(reversed).toContainText('已退还');
     await expect(reversed).toContainText('0 积分');
-    await adminPage.screenshot({ path: evidencePath('billing', '13-after-reverse.png'), fullPage: true });
+    await adminPage.screenshot({
+      path: evidencePath('billing', '13-after-reverse.png'),
+      fullPage: true,
+    });
 
     const afterReversal = await ledgerOf(ownerId);
     saveJson('ledger-after-reversal.json', afterReversal);
-    expect(afterReversal.rows.map(row => [row.kind, Number(row.credits)])).toEqual([
+    expect(afterReversal.rows.map((row) => [row.kind, Number(row.credits)])).toEqual([
       ['quota', 100],
       ['consume', -60],
       ['refund', 60],
