@@ -38,7 +38,7 @@
     "stress:queues": "node scripts/verify/stress-queues.mjs",
     "stress:sandbox-queue": "node scripts/verify/stress-sandbox-queue.mjs",
     "test:e2e:isolated": "tsx scripts/verify/test-e2e.ts",
-    "check:fast": "npm run check:ui && npm run check:e2e && npm run verify:boundary",
+    "check:fast": "npm run lint && npm run format:check && npm run check:patterns",
     "durable:inspect": "tsx --env-file=.env scripts/ops/durable-inspect.ts",
     "billing:quota-issue": "tsx --conditions=react-server --env-file=.env scripts/ops/billing-quota.ts",
     "billing:reconcile": "tsx --conditions=react-server --env-file=.env scripts/ops/billing-reconcile.ts",
@@ -47,7 +47,13 @@
     "test:all": "vitest run",
     "dev:web": "next dev --hostname 127.0.0.1 --port 3000",
     "billing:expire": "tsx --conditions=react-server --env-file=.env scripts/ops/billing-expire.ts",
-    "billing:verify-ledger": "tsx --conditions=react-server --env-file=.env scripts/ops/billing-verify-ledger.ts"
+    "billing:verify-ledger": "tsx --conditions=react-server --env-file=.env scripts/ops/billing-verify-ledger.ts",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "npm run lint -- --fix",
+    "format": "prettier --write \"{src,scripts,tests,evals}/**/*.{ts,tsx,mjs,cjs,js,json,css}\" \"*.{json,ts,mjs,yaml,yml}\" \"config/**/*.json\" --no-error-on-unmatched-pattern",
+    "format:check": "prettier --check \"{src,scripts,tests,evals}/**/*.{ts,tsx,mjs,cjs,js,json,css}\" \"*.{json,ts,mjs,yaml,yml}\" \"config/**/*.json\" --no-error-on-unmatched-pattern",
+    "check:patterns": "npm run check:ui && npm run check:e2e && npm run verify:boundary",
+    "lint:prune": "eslint . --prune-suppressions --max-warnings=0"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.78",
@@ -80,15 +86,20 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@eslint/js": "9.39.5",
     "@playwright/test": "1.63.0",
     "@types/archiver": "6.0.3",
     "@types/node": "24.10.1",
     "@types/pg": "8.23.1",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.4.2",
+    "eslint-config-prettier": "10.1.8",
     "prettier": "3.5.3",
     "tsx": "4.20.6",
     "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
     "vitest": "5.0.3"
   },
   "allowScripts": {

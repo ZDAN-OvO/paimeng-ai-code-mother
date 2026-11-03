@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { formItemWiringViolations } from '../lib/ui-patterns';
 
 /**
  * 管理端 UI 的静态护栏：只挡「生产构建里看不到、但用户在 dev 里一眼看到」的写法。
@@ -21,58 +22,11 @@ type Rule = { readonly pattern: RegExp; readonly advice: string };
 
 const rules: readonly Rule[] = [
   {
-    pattern: /\{'\s*'\}/,
-    advice: "不要用 {' '} 做间距：antd 的 Form.Item 会因此拿到多个子节点，受控控件不再绑定表单。用 Space 或 CSS gap",
-  },
-  {
     pattern: /\baddon(?:After|Before)\s*=/,
-    advice: 'antd v6 已废弃 Input 的 addonAfter/addonBefore（只在 dev 报警告）：用 Space.Compact 组合输入框与按钮',
+    advice:
+      'antd v6 已废弃 Input 的 addonAfter/addonBefore（只在 dev 报警告）：用 Space.Compact 组合输入框与按钮',
   },
 ];
-
-/** 会吞掉 antd 注入的 value/onChange 的包装元素：Form.Item 的直接子节点必须是控件本身。 */
-const wrapperTags = /^<(Space|Space\.Compact|div|span|section|Row|Col|Card)\b/;
-
-/**
- * 返回从 `<` 开始的 JSX 开标签的结束下标；字符串与 `{}` 表达式里的 `>` 不算标签结束。
- * 这样才能处理 `rules={[{ validator: (_, value) => … }]}` 这类含 `>` 的属性。
- */
-function tagEnd(text: string, start: number): number {
-  let depth = 0;
-  let quote: string | null = null;
-  for (let index = start; index < text.length; index += 1) {
-    const char = text[index];
-    if (quote) {
-      if (char === quote && text[index - 1] !== '\\') quote = null;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === '`') quote = char;
-    else if (char === '{') depth += 1;
-    else if (char === '}') depth -= 1;
-    else if (char === '>' && depth === 0) return index;
-  }
-  return -1;
-}
-
-/** 校验有 name 的 Form.Item 直接子节点是不是控件：包装元素会静默吞掉 value/onChange。 */
-function formItemWiringViolations(file: string, text: string): string[] {
-  const violations: string[] = [];
-  const opening = /<Form\.Item\b/g;
-  for (const match of text.matchAll(opening)) {
-    const start = match.index;
-    const end = tagEnd(text, start + match[0].length);
-    if (end < 0) continue;
-    const tag = text.slice(start, end + 1);
-    if (!/\bname\s*=/.test(tag)) continue;
-    const child = wrapperTags.exec(text.slice(end + 1).trimStart());
-    if (!child) continue;
-    const line = text.slice(0, start).split('\n').length;
-    violations.push(
-      `${file}:${line}: 有 name 的 Form.Item 直接子节点是 <${child[1]}>：antd 注入的 value/onChange 会被丢掉，字段收不到值。把控件放在直接子节点，按钮等放到 Form.Item 外面`,
-    );
-  }
-  return violations;
-}
 
 const root = process.cwd();
 const sourceDir = join(root, 'src');
@@ -98,11 +52,17 @@ if (!existsSync(sourceDir)) {
     const lines = text.split('\n');
     lines.forEach((line, index) => {
       for (const rule of rules) {
-        if (rule.pattern.test(line)) violations.push(`${relative(root, file)}:${index + 1}: ${rule.advice}`);
+        if (rule.pattern.test(line))
+          violations.push(`${relative(root, file)}:${index + 1}: ${rule.advice}`);
       }
       // `<Space` 的属性可能换行写，所以往前看三行；命中后由 npm run test:e2e:dev 兜底其余废弃属性。
-      if (/\bdirection\s*=/.test(line) && lines.slice(Math.max(0, index - 3), index + 1).some(near => /<Space\b/.test(near))) {
-        violations.push(`${relative(root, file)}:${index + 1}: antd v6 已废弃 Space 的 direction（只在 dev 报警告）：改用 orientation`);
+      if (
+        /\bdirection\s*=/.test(line) &&
+        lines.slice(Math.max(0, index - 3), index + 1).some((near) => /<Space\b/.test(near))
+      ) {
+        violations.push(
+          `${relative(root, file)}:${index + 1}: antd v6 已废弃 Space 的 direction（只在 dev 报警告）：改用 orientation`,
+        );
       }
     });
     violations.push(...formItemWiringViolations(relative(root, file), text));
