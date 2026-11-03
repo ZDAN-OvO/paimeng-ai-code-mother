@@ -9,8 +9,8 @@
 
 ## How to read this
 
-Status. Draft.
-Blockers. G0：lint/Prettier 仍是未提交工作树，尚无可复现的前置合入提交；F1：下面列出的局部修法及跨边界 ref 识别尚无最小实验结果，不能保证既清零规则又保留时序。
+Status. Ready.
+Blockers. None.
 Execution. 用户已明确启动。G0 已提交并推送（`1c41a93`，未合入），F1 已有观察结果；实施按 PR-01 → PR-04 串行、叠加在 `chore/lint-and-prettier` 之上，父项未合入前子项不进入 merge-ready。
 Roles. 实施者负责产品与自检；每个 Behavior PR 由未参与该 PR 产品及检查实现的验证者执行 /verify-pr；用户审阅交互证据并独占合并权限。
 Permissions. 本轮只有调查与规划授权，没有子 Agent、/spike、提交、推送、发布或合并授权。后续独立验证者可以是获授权的 Agent 或人工；没有独立验证则保持 pending。
@@ -25,6 +25,8 @@ G0 前置：将现有 lint/Prettier 工作单独做成可审查 PR，经验证�
 F1 前置：按 Appendix A 的任务准备 /spike；只有获明确授权后才在隔离副本执行。观察完成后更新方案和验收，不在本轮顺手实现。
 依赖图：G0 + F1 → PR-01 → PR-02 → PR-03 → PR-04。每个子 PR 从父 PR 合入后的实际 trunk 分叉；父项未合入，子项不进入 merge-ready。
 每轮集成检查：`npm run check:fast && npm run type-check && npm test`，再执行该轮真实浏览器场景；最后全量 `npm run test:integration` 串行运行。
+
+实施进度（只记事实，不勾选下方验收框）：G0 已提交并推送 `1c41a93`；F1 实验见 Appendix A。PR-01 已在 `agent/react-lint-pages` 实现（`bf709c9`）：四文件原始诊断清零、抑制 44 → 35，类型检查、512 单测与真实浏览器回归通过，证据包 `react-page-lifecycle-010629` 与 `platform-010141`。仍未满足该 PR 的全部门禁：没有受控故障注入、没有性能采样、没有独立验证者，也没有 PR 实体，因此不宣称 merge-ready。
 
 Parallel. None. 四组共同修改 `eslint-suppressions.json`、质量说明并共享 `_test` 数据库及 Redis DB 15；串行交付比为本次清理新增四套数据库更合理。后续若要并行，必须先指定唯一集成者处理共享文件，拆分数据库并重审本计划；单换端口不构成隔离。
 Feasibility. F1 已在隔离 worktree 完成：原始诊断 44 条可复现；Ref 命名、纯 prepare 回调、带存活校验的 promise 回调、`afterOpenChange` + `initialValues` 表单会话、派生标记与按预览身份保存选中态五类修法，分别用原始 ESLint 扫描确认对应诊断消失（44 → 35，详见 Appendix A）。PR-01 已在叠加分支实现并跑真实浏览器证据；PR-02–04 仍须按各自 Verify 门禁验证。
