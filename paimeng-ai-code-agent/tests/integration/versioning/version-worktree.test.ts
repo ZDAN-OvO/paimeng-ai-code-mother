@@ -207,8 +207,12 @@ describe('从隔离执行目录提交', () => {
     expect((await git(app, ['rev-parse', `refs/paimeng/versions/${version!.id}`])).trim()).toBe(
       version!.id,
     );
-    // 默认索引从未被创建，临时索引已清理
-    expect(await defaultIndex(app)).toBe(null);
+    // 默认索引只是从 HEAD 建的基线，不含外部执行目录的临时状态；临时索引已清理
+    expect(await defaultIndex(app)).not.toBe(null);
+    expect((await git(app, ['ls-files', '-z'])).split('\0').filter(Boolean).sort()).toEqual([
+      'assets/style.css',
+      'index.html',
+    ]);
     expect(await tempIndexFiles()).toEqual([]);
   });
 
@@ -241,6 +245,7 @@ describe('从隔离执行目录提交', () => {
     await write(workTree, 'index.html', '<html><body>v1</body></html>');
     const first = await commitVersionFrom({ app, workTree, title: '第一版' });
     expect(first).not.toBe(null);
+    const baselineIndex = await defaultIndex(app);
 
     await write(workTree, 'node_modules/pkg/index.js', 'dependency');
     await write(workTree, 'dist/bundle.js', 'generated');
@@ -253,7 +258,8 @@ describe('从隔离执行目录提交', () => {
     expect(await treeFiles(app, first!.id)).toEqual(['index.html']);
     expect((await listVersions(app)).versions).toHaveLength(1);
     expect(await pendingChangeStatsFrom(app, workTree)).toEqual([]);
-    expect(await defaultIndex(app)).toBe(null);
+    // 默认索引可能已被初始化成 HEAD 基线；执行目录提交不能改动它的内容。
+    expect(await defaultIndex(app)).toEqual(baselineIndex);
     expect(await tempIndexFiles()).toEqual([]);
   });
 
@@ -333,6 +339,7 @@ describe('从隔离执行目录提交', () => {
     await write(workTree, 'node_modules/pkg/index.js', 'dependency');
     await write(workTree, '.env.local', 'SECRET=1');
 
+    const baselineIndex = await defaultIndex(app);
     const stats = await pendingChangeStatsFrom(app, workTree);
 
     // 与 pendingChangeStats 同语义：只统计已跟踪文件的差异，未跟踪文件要等 `git add -A` 才进清单。
@@ -340,7 +347,7 @@ describe('从隔离执行目录提交', () => {
     expect(stats[0]).toMatchObject({ added: 3, removed: 1 });
     expect(stats.some((stat) => stat.path === 'about.html')).toBe(false);
     expect(await headOf(app)).toBe(first!.id);
-    expect(await defaultIndex(app)).toBe(null);
+    expect(await defaultIndex(app)).toEqual(baselineIndex);
     expect(await tempIndexFiles()).toEqual([]);
   });
 

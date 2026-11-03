@@ -190,50 +190,103 @@ async function twoVersions() {
   return { app, first, second };
 }
 
-describe('回退（detached HEAD）', () => {
-  it('干净回退只切到目标提交：commit 集合与分支头不变，HEAD 与工作区等于目标', async () => {
-    const { app, first } = await twoVersions();
+describe('恢复（追加新版本）', () => {
+  it('干净恢复追加一版：树等于目标、父提交是当前 HEAD、旧版本全部保留', async () => {
+    const { app, first, second } = await twoVersions();
     const commitsBefore = await commitSet(app);
     const refsBefore = await refs(app);
 
     const outcome = await restoreVersion({ app, versionId: first.id });
 
     expect(outcome.status).toBe('restored');
-    expect(outcome.version.id).toBe(first.id);
-    expect(await commitSet(app)).toEqual(commitsBefore);
-    expect(await refs(app)).toEqual(refsBefore);
-    await expectWorktreeAt(app, first.id);
+    // 返回的是新版本，不是用户点的那个旧 SHA：界面、预览和下载都要跟着它走。
+    expect(outcome.version.id).not.toBe(first.id);
+    expect(outcome.version.title).toBe('恢复：第一版');
+    const restored = outcome.version.id;
+    expect(await git(app, ['rev-parse', `${restored}^{tree}`])).toBe(
+      await git(app, ['rev-parse', `${first.id}^{tree}`]),
+    );
+    expect(await git(app, ['rev-parse', `${restored}^`])).toBe(`${second.id}\n`);
+    expect(await headOf(app)).toBe(restored);
+    expect(await currentBranchName(app)).toBe('main');
+    expect(await git(app, ['rev-parse', 'refs/heads/main'])).toBe(`${restored}\n`);
+    expect(await git(app, ['rev-parse', `refs/paimeng/versions/${restored}`])).toBe(
+      `${restored}\n`,
+    );
+    // 历史只增：旧提交一个都没少，只多出恢复这一版和它的钉子；主线指到最新一版。
+    expect(await commitSet(app)).toEqual([...commitsBefore, restored].sort());
+    const expectedRefs = [
+      ...refsBefore.filter((entry) => !entry.startsWith('refs/heads/main ')),
+      `refs/heads/main ${restored}`,
+      `refs/paimeng/versions/${restored} ${restored}`,
+    ].sort();
+    expect(await refs(app)).toEqual(expectedRefs);
+    await expectWorktreeAt(app, restored);
     // 目标提交里不存在的跟踪文件必须被删掉（read-tree 的「等于」语义，不是只覆盖）
     expect(await fileExists(app, 'about.html')).toBe(false);
+    // 旧版本仍然读得出来
+    expect((await getVersion(app, first.id)).id).toBe(first.id);
+    expect((await getVersion(app, second.id)).id).toBe(second.id);
     const overview = await listVersions(app);
-    expect(overview.current).toEqual({ versionId: first.id });
-    expect(overview.versions).toHaveLength(2);
-    expect(await currentBranchName(app)).toBe(null);
+    expect(overview.current).toEqual({ versionId: restored });
+    expect(overview.versions.map((version) => version.id)).toEqual([restored, second.id, first.id]);
   });
 
-  it('再次回退到同一个提交是无操作：不新增提交、不移动 HEAD', async () => {
+  it('工作区不再有 Git 元数据：仓库在平台数据根下', async () => {
+    const { app } = await twoVersions();
+    expect(
+      await stat(join(workspace(app), '.git')).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
+    expect(versionRepo(app).startsWith(workspace(app))).toBe(false);
+    expect(
+      await stat(join(versionRepo(app), 'HEAD')).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(true);
+    // 历史只增不再依赖工作区 hook：外置库由宿主写入路径保证，模型侧 git 工具只读。
+    expect(
+      await stat(join(versionRepo(app), 'hooks', 'reference-transaction')).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
+  });
+
+  it('内容已经等于目标时是无操作：再恢复当前版或再点一次旧版都不新增提交', async () => {
     const { app, first } = await twoVersions();
-    await restoreVersion({ app, versionId: first.id });
+    const restored = await restoreVersion({ app, versionId: first.id });
     const commitsBefore = await commitSet(app);
-    const outcome = await restoreVersion({ app, versionId: first.id });
-    expect(outcome.status).toBe('unchanged');
+
+    // 恢复当前版：HEAD 就是它。
+    const again = await restoreVersion({ app, versionId: restored.version.id });
+    expect(again.status).toBe('unchanged');
+    expect(again.version.id).toBe(restored.version.id);
+
+    // 再点一次旧版：提交不同但树相同，内容不会变，也不该再堆一版。
+    const repeat = await restoreVersion({ app, versionId: first.id });
+    expect(repeat.status).toBe('unchanged');
+    expect(repeat.version.id).toBe(restored.version.id);
+
     expect(await commitSet(app)).toEqual(commitsBefore);
-    expect(await headOf(app)).toBe(first.id);
+    expect(await headOf(app)).toBe(restored.version.id);
   });
 
-  it('回退后没有修改：提交返回 null，不建分支也不产生提交', async () => {
+  it('恢复后没有修改：提交返回 null，不产生提交', async () => {
     const { app, first } = await twoVersions();
-    await restoreVersion({ app, versionId: first.id });
+    const restored = await restoreVersion({ app, versionId: first.id });
     const refsBefore = await refs(app);
 
-    expect(await commitVersion({ app, title: '切版后没改' })).toBe(null);
+    expect(await commitVersion({ app, title: '恢复后没改' })).toBe(null);
 
-    expect(await currentBranchName(app)).toBe(null);
     expect(await refs(app)).toEqual(refsBefore);
-    expect(await headOf(app)).toBe(first.id);
+    expect(await headOf(app)).toBe(restored.version.id);
   });
 
-  it('脏源码拒绝回退，工作区字节不变', async () => {
+  it('脏源码拒绝恢复，工作区字节不变', async () => {
     const { app, first, second } = await twoVersions();
     await write(app, 'index.html', '<html><body>未提交</body></html>');
     const refsBefore = await refs(app);
@@ -245,8 +298,8 @@ describe('回退（detached HEAD）', () => {
     expect(await refs(app)).toEqual(refsBefore);
   });
 
-  it('与目标树无关的未跟踪素材不阻塞回退，也不会被删掉', async () => {
-    // 素材曾经长期处于未跟踪状态（版本化上线前就存在）；那时候必须能切版，否则永远回不去。
+  it('与目标树无关的未跟踪素材不阻塞恢复，也不会被删掉', async () => {
+    // 素材曾经长期处于未跟踪状态（版本化上线前就存在）；那时候必须能恢复，否则永远回不去。
     const { app, first, second } = await twoVersions();
     await write(app, 'assets/photo.jpg', 'binary-payload');
     await write(app, 'notes.md', '还没提交的笔记');
@@ -256,11 +309,11 @@ describe('回退（detached HEAD）', () => {
     expect(outcome.status).toBe('restored');
     expect(await read(app, 'assets/photo.jpg')).toBe('binary-payload');
     expect(await read(app, 'notes.md')).toBe('还没提交的笔记');
-    expect(await headOf(app)).toBe(first.id);
-    expect(second.id).not.toBe(first.id);
+    expect(await headOf(app)).toBe(outcome.version.id);
+    expect(await git(app, ['rev-parse', `${outcome.version.id}^`])).toBe(`${second.id}\n`);
   });
 
-  it('未跟踪文件占用了目标树里的路径时拒绝回退，避免覆盖用户内容', async () => {
+  it('未跟踪文件占用了目标树里的路径时拒绝恢复，避免覆盖用户内容', async () => {
     const { app } = await twoVersions();
     // 老版本里有 extra.html，之后被删掉；用户又在同路径写了一个未跟踪的新文件。
     const withExtra = await commit(app, '加上 extra.html', { 'extra.html': '<p>老版本的文件</p>' });
@@ -271,7 +324,7 @@ describe('回退（detached HEAD）', () => {
     expect(await read(app, 'extra.html')).toBe('<p>用户新写的内容</p>');
   });
 
-  it('目标路径的父目录被普通文件占住时也拒绝回退（stat 只会报 ENOTDIR，容易被当不存在）', async () => {
+  it('目标路径的父目录被普通文件占住时也拒绝恢复（stat 只会报 ENOTDIR，容易被当不存在）', async () => {
     const { app } = await twoVersions();
     const withDir = await commit(app, '加一个子目录页面', {
       'section/index.html': '<p>子页面</p>',
@@ -286,7 +339,7 @@ describe('回退（detached HEAD）', () => {
     expect(await read(app, 'section')).toBe('user-file-content');
   });
 
-  it('被忽略的文件占了目标树里的路径时拒绝回退（status 看不见它，但物化会覆盖）', async () => {
+  it('被忽略的文件占了目标树里的路径时拒绝恢复（status 看不见它，但物化会覆盖）', async () => {
     const { app } = await twoVersions();
     // 老版本跟踪 assets/photo.png；之后删掉它并把 assets/ 加入忽略规则；用户又在同路径放了新素材。
     const withAsset = await commit(app, '加上素材', { 'assets/photo.png': 'old-asset' });
@@ -301,7 +354,7 @@ describe('回退（detached HEAD）', () => {
     expect(await read(app, 'assets/photo.png')).toBe('NEW-ASSET-NOT-COMMITTED');
   });
 
-  it('被 .gitignore 排除的素材与依赖、构建产物不阻塞回退，也不会被删掉', async () => {
+  it('被 .gitignore 排除的素材与依赖、构建产物不阻塞恢复，也不会被删掉', async () => {
     const { app, first } = await twoVersions();
     await commit(app, '补上忽略规则', { '.gitignore': 'dist\nnode_modules\nassets/uploads\n' });
     await write(app, 'dist/bundle.js', 'generated');
@@ -337,17 +390,16 @@ describe('提交', () => {
     expect(await commitSet(app)).toEqual(commitsBefore);
   });
 
-  it('回退到旧版后提交：父提交是那一版，主线不动，钉子保住可达性', async () => {
+  it('恢复后继续提交：接在恢复版后面，主线跟着前进，钉子保住可达性', async () => {
     const { app, first, second } = await twoVersions();
-    await restoreVersion({ app, versionId: first.id });
+    const restored = await restoreVersion({ app, versionId: first.id });
 
-    const created = await commit(app, '从旧版继续改', {
+    const created = await commit(app, '从恢复版继续改', {
       'index.html': '<html><body>v1-fix</body></html>',
     });
 
-    expect(await git(app, ['rev-parse', 'HEAD^'])).toBe(`${first.id}\n`);
-    // 游离 HEAD 上提交不移动任何分支：清单只按时间排，不需要分支记住「从哪一版接着改」。
-    expect(await git(app, ['rev-parse', 'refs/heads/main'])).toBe(`${second.id}\n`);
+    expect(await git(app, ['rev-parse', `${created.id}^`])).toBe(`${restored.version.id}\n`);
+    expect(await git(app, ['rev-parse', 'refs/heads/main'])).toBe(`${created.id}\n`);
     expect(await git(app, ['rev-parse', `refs/paimeng/versions/${created.id}`])).toBe(
       `${created.id}\n`,
     );
@@ -355,12 +407,13 @@ describe('提交', () => {
     expect(overview.current).toEqual({ versionId: created.id });
     expect(overview.versions.map((version) => version.id)).toEqual([
       created.id,
+      restored.version.id,
       second.id,
       first.id,
     ]);
     // 再提交一次没有改动：不产生提交，也不产生台账行
     expect(await commitVersion({ app, title: '再提交' })).toBe(null);
-    expect((await listVersions(app)).versions).toHaveLength(3);
+    expect((await listVersions(app)).versions).toHaveLength(4);
   });
 
   it('在主线上的提交接在上一版后面，不新开任何分支', async () => {
@@ -379,7 +432,7 @@ describe('提交', () => {
 });
 
 describe('只读路径', () => {
-  it('仓库不存在时不创建 .git：列表为空、按 SHA 取版本报错', async () => {
+  it('仓库不存在时不创建任何仓库目录：列表为空、按 SHA 取版本报错', async () => {
     const app = await newApp();
 
     const overview = await listVersions(app);
@@ -521,7 +574,7 @@ describe('展示缓存', () => {
   });
 });
 
-describe('旧裸库迁移', () => {
+describe('一阶段裸库迁移', () => {
   it('复制进工作区并保留原库，不强制覆盖当前工作区', async () => {
     const app = await newApp();
     await write(app, 'index.html', 'current-content');
@@ -596,6 +649,39 @@ describe('旧裸库迁移', () => {
       await rm(seed, { recursive: true, force: true });
       await rm(legacy, { recursive: true, force: true });
     }
+  });
+});
+
+describe('工作区仓库迁移', () => {
+  it('把工作区里的普通仓库搬进数据根：SHA 不变、工作区不留 .git、脏检查基线正确', async () => {
+    const app = await newApp();
+    await write(app, 'index.html', 'first-content');
+    const tree = workspace(app);
+    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C' };
+    await run('git', ['init', '--quiet', '-b', 'main', tree], { env });
+    const gitIn = (args: string[]) =>
+      run('git', ['--git-dir', join(tree, '.git'), '--work-tree', tree, ...args], { env });
+    await gitIn(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '-A']);
+    await gitIn(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--quiet', '-m', '旧版']);
+    await write(app, 'second.html', 'second-content');
+    await gitIn(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '-A']);
+    await gitIn(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--quiet', '-m', '第二版']);
+    const before = (await gitIn(['rev-parse', 'HEAD'])).stdout.trim();
+
+    const repo = await ensureVersionRepo(app);
+
+    expect(repo).toBe(versionRepo(app));
+    expect((await run('git', ['--git-dir', repo, 'rev-parse', 'HEAD'])).stdout.trim()).toBe(before);
+    expect(
+      await stat(join(tree, '.git')).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
+    // 迁移不检出：工作区内容原样保留，而且相对新 HEAD 是干净的。
+    expect(await read(app, 'index.html')).toBe('first-content');
+    expect((await git(app, ['status', '--porcelain'])).trim()).toBe('');
+    expect(await headOf(app)).toBe(before);
   });
 });
 

@@ -44,6 +44,7 @@ import {
   commitVersionFrom,
   prepareVersionCommit,
   purgeVersions,
+  versionRepo,
 } from '@/server/versioning/version-store';
 import { generationControl, generationFor } from '@/server/generation/generation-store';
 import {
@@ -962,10 +963,10 @@ describe('publishReady：一次生成只落一版、一个交付、一个指针'
       '<html><body>提交失败</body></html>',
     );
     await markInputResolved({ appId: app.id, inputId: started.input.id });
-    // 让版本仓库不可用：应用工作区的 .git 被一个普通文件占住，ensureVersionRepo 会失败。
-    const appWorkspace = workspace(app);
-    await mkdir(appWorkspace, { recursive: true });
-    await writeFile(join(appWorkspace, '.git'), 'not a git dir');
+    // 让版本仓库不可用：版本库路径被一个普通文件占住，ensureVersionRepo 会失败。
+    const repo = versionRepo(app);
+    await mkdir(dirname(repo), { recursive: true });
+    await writeFile(repo, 'not a git dir');
 
     await expect(
       publishReady({
