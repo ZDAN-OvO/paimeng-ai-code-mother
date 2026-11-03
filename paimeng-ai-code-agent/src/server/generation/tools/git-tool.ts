@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process';
-import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { Type } from '@earendil-works/pi-ai';
 import { defineTool, type ConversationId, type ToolRegistration } from '@earendil-works/pi-durable';
@@ -77,15 +76,10 @@ export function createGitTool(deps: {
       if (!app) throw new Error(`会话 ${api.conversationId} 没有关联应用，拒绝执行 git`);
       assertGitSubcommand(args.args);
       // 第一次显式使用 git 时才初始化仓库：此前的文件就是仓库的初始内容。
-      await ensureVersionRepo(app);
+      // 仓库在平台数据根下，工作区不含 .git；每次都显式绑定仓库与当前工作区。
+      const repo = await ensureVersionRepo(app);
       const tree = deps.workspaceOf(api.conversationId) ?? workspace(app);
-      const outcome = await runGit(tree, [
-        '--git-dir',
-        join(workspace(app), '.git'),
-        '--work-tree',
-        tree,
-        ...args.args,
-      ]);
+      const outcome = await runGit(tree, ['--git-dir', repo, '--work-tree', tree, ...args.args]);
       const text =
         outcome.exitCode === 0 ? outcome.text : `退出码 ${outcome.exitCode}\n${outcome.text}`;
       return {
