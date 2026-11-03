@@ -37,3 +37,13 @@
 - `previewUrl` 以实际构建入口是否有效判断，不以任务 ready 为门槛：取消或失败后既有产物仍可预览。
 - `sourceAvailable` 独立表示可下载源码；Vue 每次发布都在写锁内重建源码，失败保留旧预览并拒绝本次发布。
 - 预览是独立进程、独立主机名（`src/server/delivery/preview.ts`、`scripts/dev/preview.ts`），与平台页面不同源，因此写请求的来源校验必须同时覆盖两侧。
+
+## App runtime 与实时预览
+
+- 运行时容器只能由 `app-runtime/supervisor` 启停；生成入口、业务层和预览进程都不直接调 Docker。
+- 运行时与 harness 文件工具共享持久 App Workspace，`generation_execution.directory` 每轮都指向它。正常下一轮保持同一容器、端口与根目录 inode；新基线先在隔离目录完整物化，再原地替换源码，保留依赖、构建产物和平台标记。ADR-0007。
+- `node_modules` 位于 App Workspace 内；共享 pnpm store 独立挂载。镜像身份或锁文件指纹变化时重新安装，正常下一轮复用已安装依赖。
+- 容器以 Workspace 属主的宿主 uid 运行，挂载只有自己的 Workspace（含 `node_modules`）与共享 store；不注入平台环境变量、凭证或 Docker socket。网络放开。
+- 预览：runtime ready 时 `/preview/<类型>_<id>/` 反向代理该 App 的 dev server（HTTP 与 HMR websocket，路径就是预览前缀）；否则回落交付/工作区的静态产物。运行时启动中或失败时返回明确状态页，不透出内部错误。
+- 源码写入、基线替换与封存通过控制面的 App → authority 行锁互斥，锁覆盖整个文件操作，跨进程接管须等待已准入写入退出。执行门闩同时绑定根、generationId 和 epoch；旧 ref 不能重开、关闭或封存新 owner，cleanup 保留持久根。
+- 编辑桥接的锁定跟随 Write authority：`app_authority` 处于 active/draining 时预览只读，收束后由宿主页解锁。

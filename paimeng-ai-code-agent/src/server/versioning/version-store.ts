@@ -736,16 +736,17 @@ export async function prepareVersionCommit(input: {
 }
 
 /**
- * 发布事务提交后把应用工作区镜像到新版本：HEAD、默认索引和文件一起前进。
- * 这样旧的 git 工具、下载、部署与恢复仍能读到「当前版本」；失败只影响镜像，不影响已提交的版本。
+ * 发布事务提交后镜像版本状态；持久 Workspace 已是该版源码时只推进 HEAD/默认索引。
+ * sourceAlreadyCurrent 调用方必须持有 epoch 围栏，避免晚到的镜像操作覆盖下一轮的源码。
  */
-export async function syncVersionWorkspace(input: { app: WorkspaceApp; versionId: string }): Promise<void> {
+export async function syncVersionWorkspace(input: { app: WorkspaceApp; versionId: string; sourceAlreadyCurrent?: boolean }): Promise<void> {
   const sha = parseVersionId(input.versionId);
   return withLock(input.app, async () => {
     const repo = await ensureVersionRepo(input.app);
     const tree = workspace(input.app);
     const commit = await resolveCommit(repo, sha);
-    await materialize(input.app, repo, tree, commit.sha);
+    if (input.sourceAlreadyCurrent) await git(repo, null, ['read-tree', commit.sha]);
+    else await materialize(input.app, repo, tree, commit.sha);
     await git(repo, null, ['update-ref', 'HEAD', commit.sha]);
   });
 }

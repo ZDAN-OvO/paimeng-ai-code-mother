@@ -22,6 +22,7 @@ scripts/
 - One instance, four databases: `paimeng_app` + `paimeng_agent` for development, `paimeng_app_test` + `paimeng_agent_test` for integration tests (the resetting harness must stay on the `_test` pair).
 - `npm run infra:up` brings up Redis (fixed container name, health-checked) from `.env`.
 - `docker pull node:24-alpine` for isolated Vue builds; `npx playwright install chromium` for cover captures and browser tests.
+- Resetting harness verification requires an explicitly provisioned exclusive storage database, `DURABLE_PG_URL=postgres://…/paimeng_agent_<run>_test`; all query options are rejected. Integration and isolated E2E preserve that database name. They refuse to reset shared `paimeng_agent_test` or development storage. The storage isolation integration test additionally uses the corresponding `<run>_witness_test` database. Provision only missing databases; never reuse another run's active storage or clear shared tables.
 - Ports: 3000 platform, 3001 preview (separate hostname, not an admin UI), 5599 resident pi-durable harness.
 
 ## Entry points

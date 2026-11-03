@@ -20,6 +20,7 @@ src/server/
 ├── versioning/    # git-backed Version history, ledger, migration, thumbnails
 ├── templates/     # versioned skeletons copied into new apps
 ├── workspace/     # app/execution project trees, uploaded objects, legacy artifact import
+├── app-runtime/   # App runtime supervisor: per-app container, dev server, runtime ledger
 ├── infra/         # config, Postgres schema, Redis, snowflake ids, HTTP envelope, network parsing
 └── models/        # app_config JSON document: providers, models, prices, slots, secrets, admin
 ```

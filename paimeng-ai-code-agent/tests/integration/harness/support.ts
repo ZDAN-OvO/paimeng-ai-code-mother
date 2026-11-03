@@ -6,7 +6,7 @@ import { storageTestDatabaseUrl, testDatabaseUrl } from '../../support/test-data
 
 export const productRoot = process.cwd();
 const harnessEntry = resolve(productRoot, 'src', 'server', 'generation', 'durable', 'harness-server.ts');
-export const postgresUrl = process.env.DURABLE_PG_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_agent_test';
+export const postgresUrl = storageTestDatabaseUrl(process.env.DURABLE_PG_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_agent_test');
 /**
  * 产品库（app / generation / app_authority / generation_execution）地址。
  * 默认落到共享的 paimeng_app_test；显式给了 `paimeng_app_<run>_test` 时保留独占库，

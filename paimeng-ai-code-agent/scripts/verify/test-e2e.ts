@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createConnection, createServer } from 'node:net';
 import { loadEnvFile } from 'node:process';
 import { storageTestDatabaseUrl, testDatabaseUrl } from '../../tests/support/test-database-url';
+import { storageResetDatabaseUrl } from '../../src/server/generation/durable/storage-reset-policy';
 
 function testPort(name: string, fallback: number) {
   const port = Number(process.env[name] ?? fallback);
@@ -164,7 +165,7 @@ try {
     AI_BASE_URL: 'http://127.0.0.1:9', ALLOW_TEST_FIXTURE: '1',
     APP_ORIGIN: appOrigin, PREVIEW_ORIGIN: previewOrigin,
     DURABLE_HARNESS_URL: harnessOrigin, DURABLE_HARNESS_HOST: '127.0.0.1', DURABLE_HARNESS_PORT: String(harnessPort),
-    DURABLE_PG_URL: storageTestDatabaseUrl(process.env.DURABLE_PG_URL || 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_agent'),
+    DURABLE_PG_URL: storageResetDatabaseUrl(storageTestDatabaseUrl(process.env.DURABLE_PG_URL || 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_agent')),
     DURABLE_FAUX_MODEL: '0', DURABLE_FAUX_FIXTURE: '1', DURABLE_HARNESS_RESET: '1',
     DURABLE_HARNESS_RUN_DIR: `runtime/e2e-harness-${appPort}`,
   };

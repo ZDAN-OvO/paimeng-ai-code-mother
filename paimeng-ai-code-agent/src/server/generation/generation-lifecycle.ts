@@ -14,7 +14,7 @@ import {
   type AuthorityState, type InputMode, type InputStatus,
 } from '../infra/schema';
 import {
-  acquireAuthority, beginChecking, beginDrain, closeQuestion, createExecution, finishDrain, getDraft,
+  withWorkspaceFence, withWorkspaceWrite, acquireAuthority, beginChecking, beginDrain, closeQuestion, createExecution, finishDrain, getDraft,
   invalidatedCandidateWatermark, markInputUnanswered, openQuestionOf, releaseAuthority, reopenExecution,
   sealExecution as sealExecutionRecord, setDraft, setExecutionStatus,
   type ExecutionRecord, type InputRecord, type QuestionRecord,
@@ -25,7 +25,7 @@ import { generationControl, lockGenerationControl, type GenerationControl } from
 import { settleGenerationBilling } from '../billing/settlement';
 import { assertCanStartGeneration } from '../billing/quota';
 import {
-  closeExecutionAndDrain, openExecution, prepareExecution, sealExecution,
+  closeExecutionAndDrain, openExecution, prepareAppExecution, sealExecution,
   type ExecutionBaseline, type ExecutionRef,
 } from '../workspace/execution-workspace';
 import { createDelivery, currentDelivery, setCurrentDelivery } from '../delivery/delivery-store';
@@ -403,9 +403,9 @@ async function sealSource(input: {
   if (pending) return pending;
   const work = (async () => {
     try {
-      const sealed = await sealExecution({
+      const sealed = await withWorkspaceFence({ appId: input.app.id, epoch: input.ref.epoch }, () => sealExecution({
         app: input.app, ref: input.ref, snapshotsRoot, generationId: input.ref.generationId,
-      });
+      }));
       return { id: null, directory: sealed.directory, digest: sealed.digest };
     } catch (error) {
       // 另一个 Next 进程/模块实例可能已经赢得了同一个最终目录；共享失败本身不是数据错误，
@@ -559,11 +559,23 @@ async function resolveBaseline(input: {
       parentVersionSha: explicitParentSha,
     };
   }
-  // HEAD 是「工作区当前检出的那一版」（回退后就是旧的），比台账最新一版更贴近真实起点；
-  // 发布链路不移动 HEAD，所以没有 HEAD 时退回台账最新一版，下一轮仍然承接已提交历史。
-  const head = await headVersionSha(app);
-  const latest = head ? null : ((await listVersionRows(app.id, { limit: 1 }))[0]?.commitSha ?? null);
-  const baseSha = head ?? latest;
+  // 当前成功发布链路在事务内接受 Version/Delivery/指针；HEAD 是事务后的镜像，可能滞后。
+  // 有指针时必须校验同 App 的已发布 Version，损坏不能静默退到旧 HEAD。
+  // 引入失败 Version、线性恢复或发布历史 Version 时，当前源码 Version 必须与 Delivery 指针解耦。
+  const [published] = await db().select({ sha: generationDeliveries.versionSha, recordedSha: versionRecords.commitSha })
+    .from(appPreviewPointers)
+    .leftJoin(generationDeliveries, and(
+      eq(generationDeliveries.id, appPreviewPointers.deliveryId),
+      eq(generationDeliveries.appId, appPreviewPointers.appId), eq(generationDeliveries.status, 'ready'),
+    ))
+    .leftJoin(versionRecords, and(eq(versionRecords.commitSha, generationDeliveries.versionSha), eq(versionRecords.appId, appPreviewPointers.appId)))
+    .where(eq(appPreviewPointers.appId, appKey(app.id)));
+  if (published && (!published.sha || !published.recordedSha || !await versionObjectExists(app, published.sha))) {
+    throw new Error('当前已发布 Version 不完整，不能作为执行基线');
+  }
+  const head = published ? null : await headVersionSha(app);
+  const latest = published || head ? null : ((await listVersionRows(app.id, { limit: 1 }))[0]?.commitSha ?? null);
+  const baseSha = published?.sha ?? head ?? latest;
   if (baseSha) {
     return {
       baseline: { kind: 'version', versionSha: baseSha },
@@ -687,8 +699,11 @@ export async function startGeneration(input: StartGenerationInput): Promise<Star
     const resolved = await resolveBaseline({
       app, previousDraftSnapshotId: handle.previousDraftSnapshotId, explicitParentSha, template: input.template,
     });
-    const ref = await prepareExecution({
+    await ensureSafeDirectory(join(await ensureSafeDirectory(getConfig().runtimeRoot), 'code_output'));
+    const ref = await prepareAppExecution({
       app, generationId, epoch, baseline: resolved.execution, runtimeRoot: input.runtimeRoot,
+      workspaceRoot: workspace(app),
+      protect: work => withWorkspaceWrite({ appId: app.id, generationId, epoch: epoch! }, work),
     });
     if (resolved.parentVersionSha !== (explicitParentSha ?? null)) {
       await setParentVersion({ appId: app.id, generationId, epoch, parentVersionSha: resolved.parentVersionSha });
@@ -1165,7 +1180,7 @@ export async function publishReady(input: PublishReadyInput): Promise<PublishRea
     });
     await sealExecutionRecord(input.execution.id);
     if (published.published && published.version) {
-      await syncVersionWorkspace({ app, versionId: published.version.sha })
+      await withWorkspaceFence({ appId: app.id, epoch }, () => syncVersionWorkspace({ app, versionId: published.version!.sha, sourceAlreadyCurrent: true }))
         .catch(error => console.warn(`版本工作区镜像失败（应用 ${app.id}）：`, error));
     }
     return {

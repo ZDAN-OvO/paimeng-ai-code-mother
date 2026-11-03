@@ -75,7 +75,7 @@ Generation 在验证和发布前产出的源码与构建结果；尚未成为当
 _Avoid_: draft, delivery, result
 
 **Execution**:
-承载一次 Generation 的隔离运行，拥有自己的 Execution conversation、Workspace 和 Write authority。
+承载一次 Generation 的执行，拥有独立的 Execution conversation 和 Write authority，并在该 App 的持久 Workspace 中工作。
 _Avoid_: generation, run, task
 
 **Attempt**:
@@ -119,8 +119,12 @@ _Avoid_: lease, lock, ownership
 ## 源码与产物
 
 **Workspace**:
-App 的源码工作区。App workspace 是 App 的持久源码目录；Execution workspace 是单次 Execution 的隔离副本，legacy 应用可能直接以 App workspace 作为回退基线。
+App 的持久源码工作区，由该 App 的连续 Execution 共用；轮次交接以封存的 Source snapshot 确定下一轮基线。
 _Avoid_: sandbox, checkout
+
+**App runtime**:
+按 App 分配、在 Generation 之间保留的隔离运行环境，包含该 App 的 Workspace、依赖和 dev server。
+_Avoid_: sandbox, Execution runtime
 
 **Draft**:
 未发布 Generation 留下的已封存源码状态，供下一轮继续；它不是 Version，也不是当前预览。
@@ -143,7 +147,7 @@ _Avoid_: deployment, build artifact, bundle
 _Avoid_: deploy, release, save
 
 **Preview**:
-平台内展示当前 Delivery 的页面；它不是公网 Deployment。
+平台内查看 App 的页面；App runtime 可用时展示正在更新的源码，否则展示最近的 Delivery。它不是公网 Deployment。
 _Avoid_: deploy preview, staging
 
 **Deployment**:
