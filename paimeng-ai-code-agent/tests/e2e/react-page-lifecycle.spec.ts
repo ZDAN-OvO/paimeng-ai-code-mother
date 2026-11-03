@@ -89,6 +89,9 @@ test('退出登录后不再显示上个账号的作品，换账号只显示自�
     path: evidencePath('react-lint', '03-second-account-home.png'),
     fullPage: true,
   });
+  await page.reload();
+  await expect(page.getByRole('heading', { name: secondApp, exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: firstApp, exact: true })).toHaveCount(0);
 
   writeFileSync(
     evidencePath('react-lint', 'page-lifecycle.json'),
