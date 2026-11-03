@@ -47,7 +47,8 @@ export function getConfig() {
   if(db.protocol!=='postgres:')throw new Error('DATABASE_URL 必须使用 Postgres');
   if(!['redis:', 'rediss:'].includes(new URL(env.REDIS_URL).protocol))throw new Error('REDIS_URL 必须使用 redis 或 rediss');
   for(const address of [env.APP_ORIGIN,env.PREVIEW_ORIGIN]){const url=new URL(address);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw new Error('管理端与预览来源必须是无凭据的 HTTP(S) URL');}
-  if(!/^paimeng_app(?:_test)?$/.test(db.pathname.slice(1))) throw new Error('DATABASE_URL 必须指向独立的 paimeng_app 或 paimeng_app_test 数据库');
+  // 只允许开发库与明确以 _test 结尾的测试库；独占库（paimeng_app_<run>_test）用于多 worktree 并发验证。
+  if(!/^paimeng_app(?:_test|_[a-z][a-z0-9_]*_test)?$/.test(db.pathname.slice(1))) throw new Error('DATABASE_URL 必须指向独立的 paimeng_app、paimeng_app_test 或 paimeng_app_<run>_test 数据库');
   if(new URL(env.APP_ORIGIN).origin===new URL(env.PREVIEW_ORIGIN).origin) throw new Error('预览与管理端必须使用不同来源');
   if(new URL(env.APP_ORIGIN).hostname===new URL(env.PREVIEW_ORIGIN).hostname) throw new Error('预览与管理端必须使用不同主机名，以隔离 Cookie');
   if(!/^https?:\/\//.test(env.BUILD_NPM_REGISTRY)) throw new Error('BUILD_NPM_REGISTRY 必须是 HTTP(S) 地址');

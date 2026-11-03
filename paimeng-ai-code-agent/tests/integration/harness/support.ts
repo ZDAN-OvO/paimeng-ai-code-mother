@@ -2,19 +2,17 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { createServer, connect, type Socket } from 'node:net';
 import { join, resolve } from 'node:path';
+import { storageTestDatabaseUrl, testDatabaseUrl } from '../../support/test-database-url';
 
 export const productRoot = process.cwd();
 const harnessEntry = resolve(productRoot, 'src', 'server', 'generation', 'durable', 'harness-server.ts');
 export const postgresUrl = process.env.DURABLE_PG_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_agent_test';
 /**
  * 产品库（app / generation / app_authority / generation_execution）地址。
- * 集成测试一律指向专用的 paimeng_app_test：从开发库取连接串也只换库名，永不写开发库。
+ * 默认落到共享的 paimeng_app_test；显式给了 `paimeng_app_<run>_test` 时保留独占库，
+ * 这样同一台机器上的其它 worktree 重置共享库不会把这一轮的表结构一起带走。
  */
-export const productPostgresUrl = (() => {
-  const url = new URL(process.env.DATABASE_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_app_test');
-  url.pathname = '/paimeng_app_test';
-  return url.href;
-})();
+export const productPostgresUrl = testDatabaseUrl(process.env.DATABASE_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_app_test');
 
 export function harnessAvailable(): boolean {
   return existsSync(harnessEntry) && existsSync(join(productRoot, 'node_modules', 'tsx'));
