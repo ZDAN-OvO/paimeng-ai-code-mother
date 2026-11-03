@@ -444,3 +444,28 @@ test('普通用户不能进入模型管理', async ({ page }) => {
   await page.goto('/admin/modelManage');
   await expect(page).toHaveURL(/\/user\/login\?redirect=/);
 });
+
+test('编辑提供商与模型时回填当前配置', async ({ page }) => {
+  const consoleWarnings: string[] = [];
+  page.on('console', message => {
+    if (message.type() === 'warning') consoleWarnings.push(message.text());
+  });
+  await openManager(page);
+  await providerGroup(page).getByRole('button', { name: '编辑提供商', exact: true }).click();
+  const providerDialog = page.getByRole('dialog', { name: '编辑提供商' });
+  await expect(providerDialog.getByLabel('提供商 ID', { exact: true })).toHaveValue('env-default');
+  await expect(providerDialog.getByLabel('名称', { exact: true })).toHaveValue('默认提供商');
+  await expect(providerDialog.getByLabel('地址', { exact: true })).toHaveValue('https://api.example.test/v1');
+  await providerDialog.screenshot({ path: evidencePath('models', '13-edit-provider-prefilled.png'), animations: 'disabled' });
+  await providerDialog.getByRole('button', { name: /^取\s*消$/ }).click();
+  await expect(providerDialog).not.toBeVisible();
+
+  await modelRow(page).getByRole('button', { name: /^配\s*置$/ }).click();
+  const drawer = page.getByRole('dialog', { name: '配置模型 · test-codegen-model' });
+  await expect(drawer.getByLabel('显示名称', { exact: true })).toHaveValue('test-codegen-model');
+  await expect(drawer.getByLabel('输入未命中单价', { exact: true })).toHaveValue('6.00');
+  await expect(drawer.getByLabel('输入命中单价', { exact: true })).toHaveValue('0.12');
+  await expect(drawer.getByLabel('输出单价', { exact: true })).toHaveValue('25.00');
+  await drawer.screenshot({ path: evidencePath('models', '14-edit-model-prefilled.png'), animations: 'disabled' });
+  expect(consoleWarnings.filter(warning => warning.includes('[antd: Drawer]'))).toEqual([]);
+});
