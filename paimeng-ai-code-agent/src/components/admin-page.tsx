@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   App,
   Button,
@@ -64,15 +64,14 @@ function Manager({ mode }: { mode: Mode }) {
     pageSize: 10,
   });
   const [pageSize, setPageSize] = useState(10);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(true);
   const [query, setQuery] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState<Row | null>(null);
   const [form] = Form.useForm();
 
-  async function load(pageNum = 1, size = pageSize, filters = query) {
-    setBusy(true);
-    try {
-      const params = {
+  const fetchPage = useCallback(
+    (pageNum: number, size: number, filters: Record<string, string>) =>
+      api<Page<Row>>(endpoints[mode], {
         ...Object.fromEntries(
           Object.entries(filters).filter(
             ([, value]) => value != null && String(value).trim() !== '',
@@ -80,8 +79,13 @@ function Manager({ mode }: { mode: Mode }) {
         ),
         pageNum,
         pageSize: size,
-      };
-      setPage(await api<Page<Row>>(endpoints[mode], params));
+      }),
+    [mode],
+  );
+  async function load(pageNum = 1, size = pageSize, filters = query) {
+    setBusy(true);
+    try {
+      setPage(await fetchPage(pageNum, size, filters));
       setPageSize(size);
     } catch (error) {
       message.error((error as Error).message);
@@ -90,8 +94,24 @@ function Manager({ mode }: { mode: Mode }) {
     }
   }
   useEffect(() => {
-    void load();
-  }, [mode]);
+    // 首次进入用空筛选加载；卸载或切换管理端后到达的响应不再写表格。
+    let live = true;
+    void fetchPage(1, 10, {})
+      .then((next) => {
+        if (!live) return;
+        setPage(next);
+        setPageSize(10);
+      })
+      .catch((error: Error) => {
+        if (live) message.error(error.message);
+      })
+      .finally(() => {
+        if (live) setBusy(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [fetchPage, message]);
 
   async function remove(id: string) {
     try {
