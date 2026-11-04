@@ -299,6 +299,30 @@ export default function AppChat({ params }: { params: Promise<{ id: string }> })
   return <Chat key={id} id={id} />;
 }
 
+const EMPTY_SELECTION: SelectedElement[] = [];
+
+async function fetchUsageMap(id: string): Promise<Map<string, GenerationAccount>> {
+  const accounts = await api<GenerationAccount[]>(
+    'app/generation/accounts?appId=' + encodeURIComponent(id),
+  );
+  return new Map(
+    accounts.flatMap((account) => [
+      [account.generationId, account] as [string, GenerationAccount],
+      ...(account.messageId ? [[account.messageId, account] as [string, GenerationAccount]] : []),
+    ]),
+  );
+}
+
+async function fetchCreditMap(id: string): Promise<Map<string, BillingChargeView>> {
+  const charges = await api<BillingChargeView[]>('billing/charges?appId=' + encodeURIComponent(id));
+  return new Map(
+    charges.flatMap((charge) => [
+      [charge.generationId, charge] as [string, BillingChargeView],
+      ...(charge.messageId ? [[charge.messageId, charge] as [string, BillingChargeView]] : []),
+    ]),
+  );
+}
+
 function Chat({ id }: { id: string }) {
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
@@ -316,7 +340,11 @@ function Chat({ id }: { id: string }) {
   const [historySettled, setHistorySettled] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [selected, setSelected] = useState<SelectedElement[]>([]);
+  // 选中元素属于「这个应用 + 这次生成 + 编辑/预览模式」：换了作用域就自然为空，不用副作用清空。
+  const [selection, setSelection] = useState<{ scope: string; items: SelectedElement[] }>({
+    scope: '',
+    items: [],
+  });
   const [publishing, setPublishing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
@@ -366,9 +394,23 @@ function Chat({ id }: { id: string }) {
   // useGenerationSync 收尾时核对是不是同一轮；它桥接 useChat 的两侧回调，必须在 useChat
   // 之前声明，所以留在页面而不是收进 hook。
   const activeGenerationId = useRef<string | null>(null);
+  const adoptGeneration = useCallback((generationId: string) => {
+    activeGenerationId.current = generationId;
+  }, []);
   const previewRefreshAt = useRef(0);
   const previewPending = useRef<number | null>(null);
   const canEdit = !!user && user.id === app?.userId;
+  const selectionScope = `${app?.previewUrl ?? ''}|${task?.id ?? ''}|${editing ? 'edit' : 'view'}`;
+  const selected = selection.scope === selectionScope ? selection.items : EMPTY_SELECTION;
+  const setSelected = useCallback(
+    (next: SelectedElement[] | ((current: SelectedElement[]) => SelectedElement[])) => {
+      setSelection((current) => {
+        const base = current.scope === selectionScope ? current.items : EMPTY_SELECTION;
+        return { scope: selectionScope, items: typeof next === 'function' ? next(base) : next };
+      });
+    },
+    [selectionScope],
+  );
   const isAdmin = user?.userRole === 'admin';
   const loaded = appLoaded && historySettled;
   const canAttachImages = canEdit && loaded;
@@ -456,6 +498,27 @@ function Chat({ id }: { id: string }) {
     if (generation.status === 'fulfilled') setTask(generation.value);
     return fresh;
   }, [id]);
+  // 发送参数由发起方（submit）给出：requestId 与要回答的问题都在事件里生成，
+  // transport 只负责把最后一条消息整理成契约格式，渲染期间不读也不写 ref。
+  const prepareSendMessagesRequest = useCallback(
+    ({
+      messages,
+      body,
+    }: {
+      messages: ChatMessage[];
+      body?: { requestId?: string; expectedQuestionId?: string };
+    }) => {
+      const message = messages[messages.length - 1];
+      return {
+        body: {
+          appId: id,
+          message: { ...message, parts: outgoingParts(message) },
+          ...(body ?? {}),
+        },
+      };
+    },
+    [id],
+  );
   const transport = useMemo(
     () =>
       new DefaultChatTransport<ChatMessage>({
@@ -463,21 +526,9 @@ function Chat({ id }: { id: string }) {
         // 非 2xx 先按信封解析再抛出：界面要靠业务 code（如额度不足的 40201）决定怎么提示。
         fetch: streamingRequest,
         // 本地回显挂在 metadata 上的附件在这里变成契约的 attachment part；排队消息自动发送走的是同一条路。
-        prepareSendMessagesRequest: ({ messages }) => {
-          const requestId = crypto.randomUUID();
-          activeGenerationId.current = requestId;
-          const message = messages[messages.length - 1];
-          return {
-            body: {
-              appId: id,
-              message: { ...message, parts: outgoingParts(message) },
-              requestId,
-              ...(questionRef.current ? { expectedQuestionId: questionRef.current } : {}),
-            },
-          };
-        },
+        prepareSendMessagesRequest,
       }),
-    [id],
+    [prepareSendMessagesRequest],
   );
   /** 消费服务端的瞬时 `data-progress`：推进时间线、按 >=1s 节流刷新 iframe。 */
   function applyProgress(data: unknown) {
@@ -578,8 +629,9 @@ function Chat({ id }: { id: string }) {
     awaitingHistory,
     runtimeBusy,
     applyRuntime,
-    settledGenerations,
-    shownMessageIds,
+    markShownMessages,
+    hasShownMessage,
+    hasSettled,
     runtimeInputs,
     handoff,
     question,
@@ -593,6 +645,7 @@ function Chat({ id }: { id: string }) {
     liveRef,
     mounted,
     activeGenerationId,
+    adoptGeneration,
     setMessages,
     setProgress,
     message,
@@ -645,66 +698,38 @@ function Chat({ id }: { id: string }) {
       '/api/app/asset?appId=' + encodeURIComponent(id) + '&path=' + encodeURIComponent(path),
     [id],
   );
-  const refreshUsage = useCallback(async () => {
-    try {
-      const accounts = await api<GenerationAccount[]>(
-        'app/generation/accounts?appId=' + encodeURIComponent(id),
-      );
-      if (!mounted.current) return;
-      setUsageByMessage(
-        new Map(
-          accounts.flatMap((account) => [
-            [account.generationId, account] as [string, GenerationAccount],
-            ...(account.messageId
-              ? [[account.messageId, account] as [string, GenerationAccount]]
-              : []),
-          ]),
-        ),
-      );
-    } catch {
-      if (mounted.current) setUsageByMessage(new Map());
-    }
-  }, [id]);
-  // 账单与用量同一时机取一次：结算发生在终态写入之后，按消息 id 与 generationId 两种键挂到气泡上。
-  const refreshCredit = useCallback(async () => {
-    try {
-      const charges = await api<BillingChargeView[]>(
-        'billing/charges?appId=' + encodeURIComponent(id),
-      );
-      if (!mounted.current) return;
-      setCreditByMessage(
-        new Map(
-          charges.flatMap((charge) => [
-            [charge.generationId, charge] as [string, BillingChargeView],
-            ...(charge.messageId
-              ? [[charge.messageId, charge] as [string, BillingChargeView]]
-              : []),
-          ]),
-        ),
-      );
-    } catch {
-      if (mounted.current) setCreditByMessage(new Map());
-    }
-  }, [id]);
   useEffect(() => {
     if (!task?.id || taskStatus === 'generating' || taskStatus === 'building') return;
-    void refreshUsage();
-    void refreshCredit();
-  }, [task?.id, taskStatus, refreshUsage, refreshCredit]);
-  useEffect(() => {
-    if (!generating) {
-      setMemoryBusy(false);
-      setRepairing(null);
-    }
-  }, [generating]);
+    let live = true;
+    fetchUsageMap(id)
+      .then((map) => {
+        if (live && mounted.current) setUsageByMessage(map);
+      })
+      .catch(() => {
+        if (live && mounted.current) setUsageByMessage(new Map());
+      });
+    fetchCreditMap(id)
+      .then((map) => {
+        if (live && mounted.current) setCreditByMessage(map);
+      })
+      .catch(() => {
+        if (live && mounted.current) setCreditByMessage(new Map());
+      });
+    return () => {
+      live = false;
+    };
+  }, [task?.id, taskStatus, id]);
+  // 运行态指示只在生成期间有意义：结束后直接按 generating 收敛，不需要额外的清空副作用。
+  const memoryBusyNow = generating && memoryBusy;
+  const repairingNow = generating ? repairing : null;
   const buildPending = publishing || rebuilding;
   useEffect(() => {
-    if (!buildPending) {
-      setBusySeconds(0);
-      return;
-    }
+    if (!buildPending) return;
     const timer = setInterval(() => setBusySeconds((value) => value + 1), 1000);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      setBusySeconds(0);
+    };
   }, [buildPending]);
 
   useEffect(() => {
@@ -733,7 +758,7 @@ function Chat({ id }: { id: string }) {
         if (runtime) applyRuntime(runtime);
         // 运行态带着进行中的转录（含还没结束的工具卡片）时以它为准，否则用落库的历史。
         const shown = runtime?.busy && runtime.messages.length ? runtime.messages : history;
-        shownMessageIds.current = new Set(shown.map((message) => message.id));
+        markShownMessages(shown);
         setMessages(shown);
         if (!history.length) setInput((current) => current || info.initPrompt);
       } catch (e) {
@@ -750,7 +775,7 @@ function Chat({ id }: { id: string }) {
       if (rebuildTimer.current) clearTimeout(rebuildTimer.current);
       void stop();
     };
-  }, [id, applyRuntime, fetchHistory, fetchRuntime, setMessages, stop]);
+  }, [id, applyRuntime, fetchHistory, fetchRuntime, setMessages, stop, markShownMessages]);
 
   // 运行态轮询：任务在跑时同步原生队列与进行中的转录；终态收尾还没拿到权威历史时也要继续轮询
   // （否则一次读失败就会永久停在半完成状态）。
@@ -821,13 +846,10 @@ function Chat({ id }: { id: string }) {
   );
   useEffect(() => {
     previewLoaded.current = false;
-    setSelected([]);
   }, [app?.previewUrl, task?.id]);
   useEffect(() => {
     editorMessage({ type: 'TOGGLE_EDIT_MODE', editMode: editing });
-    if (editing) return;
-    setSelected([]);
-    editorMessage({ type: 'CLEAR_ALL_EFFECTS' });
+    if (!editing) editorMessage({ type: 'CLEAR_ALL_EFFECTS' });
   }, [editing, editorMessage]);
   /** 移除单个选中元素：本地列表与预览里只剩的选中态要同时收起来，否则再点它会被桥接当成取消选择。 */
   const removeSelected = useCallback(
@@ -835,7 +857,7 @@ function Chat({ id }: { id: string }) {
       setSelected((current) => current.filter((item) => item.selector !== selector));
       editorMessage({ type: 'CLEAR_SELECTION', selector });
     },
-    [editorMessage],
+    [editorMessage, setSelected],
   );
   useEffect(() => {
     function receive(event: MessageEvent) {
@@ -865,7 +887,7 @@ function Chat({ id }: { id: string }) {
     }
     window.addEventListener('message', receive);
     return () => window.removeEventListener('message', receive);
-  }, [previewOrigin, editing, canEdit, editorMessage, message]);
+  }, [previewOrigin, editing, canEdit, editorMessage, message, setSelected]);
 
   // 粘贴附图：只要还能编辑就监听（生成中也要能附图，排队发送会带上它）；没有文件时不插手粘贴。
   useEffect(() => {
@@ -918,10 +940,21 @@ function Chat({ id }: { id: string }) {
       }
       try {
         const expectedQuestionId = questionRef.current;
-        await sendMessage({
-          text,
-          metadata: attachments.length ? { attachments: [...attachments] } : undefined,
-        });
+        // 一次发送会话一个 requestId：进度事件与幂等回执都按它对齐。
+        const requestId = crypto.randomUUID();
+        activeGenerationId.current = requestId;
+        await sendMessage(
+          {
+            text,
+            metadata: attachments.length ? { attachments: [...attachments] } : undefined,
+          },
+          {
+            body: {
+              requestId,
+              ...(expectedQuestionId ? { expectedQuestionId } : {}),
+            },
+          },
+        );
         // 被准入拦下：这一轮没有启动，把用户刚才写的放回输入框（问题也继续等着回答）。
         if (creditRejected.current) {
           if (!options.keepDraft) setInput((current) => (current.trim() ? current : original));
@@ -957,6 +990,7 @@ function Chat({ id }: { id: string }) {
       clearSentImages,
       message,
       setQuestion,
+      setSelected,
     ],
   );
 
@@ -972,8 +1006,8 @@ function Chat({ id }: { id: string }) {
       try {
         const receipt = await api<ChatInputReceipt>('app/chat/input', { appId: id, ...entry });
         if (!mounted.current) return false;
-        if (shownMessageIds.current.has(entry.id)) return true;
-        if (settledGenerations.current.has(receipt.generationId)) {
+        if (hasShownMessage(entry.id)) return true;
+        if (hasSettled(receipt.generationId)) {
           setLostInputs((current) =>
             current.some((item) => item.id === entry.id) ? current : [...current, entry],
           );
@@ -988,7 +1022,7 @@ function Chat({ id }: { id: string }) {
         postingInput.current = false;
       }
     },
-    [id, message],
+    [id, message, hasShownMessage, hasSettled, setInputs, setLostInputs],
   );
   const sendInput = useCallback(
     async (mode: ChatInputMode) => {
@@ -1028,6 +1062,7 @@ function Chat({ id }: { id: string }) {
       input,
       selected,
       canEdit,
+      setSelected,
       loaded,
       sealing,
       openQuestion,
@@ -1060,7 +1095,7 @@ function Chat({ id }: { id: string }) {
         recalling.current.delete(item.id);
       }
     },
-    [id, message],
+    [id, message, setInputs],
   );
 
   /**
@@ -1090,14 +1125,19 @@ function Chat({ id }: { id: string }) {
       if (await submit(item.text, item.attachments, { keepDraft: true }))
         setLostInputs((current) => current.filter((entry) => entry.id !== item.id));
     },
-    [openQuestion, generating, postInput, submit, message],
+    [openQuestion, generating, postInput, submit, message, setLostInputs],
   );
 
   useEffect(() => {
     if (!appLoaded || !historyLoaded || authLoading || !app || initialPromptHandled.current) return;
-    initialPromptHandled.current = true;
-    if (canEdit && !messages.length && !task && !generating && app.initPrompt.trim())
-      void submit(app.initPrompt);
+    // 首屏先画出对话骨架，再自动发初始提示：避免页面空白时就开始流式生成。
+    const frame = requestAnimationFrame(() => {
+      if (initialPromptHandled.current) return;
+      initialPromptHandled.current = true;
+      if (canEdit && !messages.length && !task && !generating && app.initPrompt.trim())
+        void submit(app.initPrompt);
+    });
+    return () => cancelAnimationFrame(frame);
   }, [
     appLoaded,
     historyLoaded,
@@ -1531,7 +1571,7 @@ function Chat({ id }: { id: string }) {
               回到最新 ↓
             </button>
           )}
-          {memoryBusy && (
+          {memoryBusyNow && (
             <p className="memory-hint" role="status">
               正在整理历史上下文，请稍候…
             </p>
@@ -1539,11 +1579,11 @@ function Chat({ id }: { id: string }) {
           {!questionPaused && <BuildProgress state={progress} error={taskError} />}
           {generating && (
             <p className="generating-hint" role="status">
-              {repairing
+              {repairingNow
                 ? '构建未通过，正在进行第 ' +
-                  repairing.attempt +
+                  repairingNow.attempt +
                   '/' +
-                  repairing.maxAttempts +
+                  repairingNow.maxAttempts +
                   ' 次修复…'
                 : '正在生成或构建，请稍候…'}
             </p>

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { previewOrigin as serverPreviewOrigin } from './support/app-origin';
+import { evidencePath } from './support/evidence';
 
 const appId = '466907259650179072';
 const previewOrigin = serverPreviewOrigin();
@@ -92,6 +93,7 @@ test('进入对话页预览缺失而源码仍在时自动重建并显示预览',
   await expect(page.locator('.preview-panel')).toBeHidden();
   await expect(page.getByText(/正在构建预览：容器内安装依赖并打包/)).toBeVisible();
   expect(fixture.builds()).toBe(1);
+  await page.screenshot({ path: evidencePath('preview', '01-building.png'), fullPage: true });
   fixture.release();
   await expect(page.locator('.preview-frame')).toHaveAttribute(
     'src',
@@ -99,6 +101,7 @@ test('进入对话页预览缺失而源码仍在时自动重建并显示预览',
   );
   await expect(page.getByText('网站文件生成完成后将在这里展示')).toHaveCount(0);
   expect(fixture.builds()).toBe(1);
+  await page.screenshot({ path: evidencePath('preview', '02-rebuilt.png'), fullPage: true });
 });
 
 const skipped = [
@@ -146,6 +149,7 @@ test('没有预览时失败任务仍然写清原因', async ({ page }) => {
   await page.goto('/app/chat/' + appId);
   await expect(page.locator('.message-note')).toContainText('生成中断：生成失败');
   await expect(page.locator('.ant-tag').filter({ hasText: '失败' })).toBeVisible();
+  await page.screenshot({ path: evidencePath('preview', '03-failed.png'), fullPage: true });
 });
 
 test('失败之后又成功构建过，过期的失败不再提示', async ({ page }) => {

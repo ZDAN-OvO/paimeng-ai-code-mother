@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { createUIMessageStream, createUIMessageStreamResponse, type UIMessage } from 'ai';
+import { evidencePath } from './support/evidence';
 
 const prompt = '首次需求自动生成测试';
 const appId = '123456789';
@@ -101,10 +102,18 @@ test('首次进入自动发送初始需求一次，刷新已有历史不重复�
   await expect(page.locator('.message-user')).toContainText(prompt);
   await expect(page.getByLabel('对话消息')).toHaveValue('');
   expect(fixture.requests()).toBe(1);
+  await page.screenshot({
+    path: evidencePath('initial-prompt', '01-auto-sent.png'),
+    fullPage: true,
+  });
   await page.reload();
   await expect(page.getByLabel('对话消息')).toBeEnabled();
   await expect(page.locator('.message-user')).toContainText(prompt);
   expect(fixture.requests()).toBe(1);
+  await page.screenshot({
+    path: evidencePath('initial-prompt', '02-after-reload.png'),
+    fullPage: true,
+  });
 });
 
 test('非创建者不会自动发送', async ({ page }) => {
@@ -123,6 +132,10 @@ for (const status of ['generating', 'failed', 'cancelled', 'ready']) {
     await expect(page.getByLabel('对话消息')).toBeEnabled();
     await expect(page.getByLabel('对话消息')).toHaveValue(prompt);
     expect(fixture.requests()).toBe(0);
+    await page.screenshot({
+      path: evidencePath('initial-prompt', `03-existing-${status}.png`),
+      fullPage: true,
+    });
   });
 }
 
