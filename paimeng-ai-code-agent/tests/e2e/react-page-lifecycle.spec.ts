@@ -99,6 +99,82 @@ test('退出登录后不再显示上个账号的作品，换账号只显示自�
   );
 });
 
+test('第一次保存后的刷新读迟到时，不会把新名称改回旧名称', async ({ page }) => {
+  const suffix = randomUUID().slice(0, 8);
+  const account = 'lifecycle_edit_' + suffix;
+  await register(page, account);
+  await login(page, account);
+  const originalName = '初始名称_' + suffix;
+  const firstSave = '第一次保存_' + suffix;
+  const secondSave = '第二次保存_' + suffix;
+  const appId = await createApp(page, originalName);
+
+  // 第一次保存后的刷新读先在服务端取回当时的旧名称并扣住，等第二次保存的刷新读落地后才交出去。
+  // 不用固定等待：扣住的是真实响应，放行时机由下面的 releaseStaleRead 决定。
+  let reads = 0;
+  let held = false;
+  let releaseStaleRead = () => {};
+  const staleReadHeld = new Promise<void>((resolve) => {
+    releaseStaleRead = resolve;
+  });
+  await page.route(
+    (url) => url.pathname === '/api/app/get/vo' && url.searchParams.get('id') === appId,
+    async (route) => {
+      reads += 1;
+      if (reads !== 2) {
+        await route.continue();
+        return;
+      }
+      const stale = await route.fetch();
+      held = true;
+      await staleReadHeld;
+      await route.fulfill({ response: stale });
+    },
+  );
+
+  await page.goto('/app/edit/' + appId);
+  await expect(page.getByLabel('应用名称', { exact: true })).toHaveValue(originalName);
+
+  const saved = () =>
+    page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/app/update') && response.request().method() === 'POST',
+    );
+  const refreshed = () =>
+    page.waitForResponse((response) => response.url().includes('/api/app/get/vo?id=' + appId));
+
+  await page.getByLabel('应用名称', { exact: true }).fill(firstSave);
+  const firstSaved = saved();
+  await page.getByRole('button', { name: '保存修改' }).click();
+  expect((await firstSaved).ok()).toBe(true);
+  await expect.poll(() => held, { timeout: 10_000 }).toBe(true);
+
+  await page.getByLabel('应用名称', { exact: true }).fill(secondSave);
+  const secondSaved = saved();
+  const secondRefreshed = refreshed();
+  await page.getByLabel('应用名称', { exact: true }).press('Enter');
+  expect((await secondSaved).ok()).toBe(true);
+  await secondRefreshed;
+
+  releaseStaleRead();
+  await expect(page.getByLabel('应用名称', { exact: true })).toHaveValue(secondSave);
+  const stored = (await (await page.request.get('/api/app/get/vo?id=' + appId)).json()).data;
+  expect(stored.appName).toBe(secondSave);
+  await page.screenshot({
+    path: evidencePath('react-lint', '06-stale-read-ignored.png'),
+    fullPage: true,
+  });
+
+  writeFileSync(
+    evidencePath('react-lint', 'stale-read.json'),
+    JSON.stringify(
+      { appId, originalName, firstSave, secondSave, shown: secondSave, stored: stored.appName },
+      null,
+      2,
+    ) + '\n',
+  );
+});
+
 test('管理员键入筛选词但不提交时不会发查询，提交后才查', async ({ page }) => {
   const account = 'lifecycle_admin_' + randomUUID().slice(0, 8);
   await register(page, account);
