@@ -68,11 +68,17 @@ async function commitWithPin(owner: WorkspaceApp, title: string) {
   await mkdir(join(tree, 'src'), { recursive: true });
   await writeFile(join(tree, 'src', 'index.html'), `<h1>${title}</h1>`);
   const identity = ['-c', 'user.name=paimeng', '-c', 'user.email=version@paimeng.local'];
-  await run('git', ['add', '-A'], { cwd: tree, env: gitEnv });
-  await run('git', [...identity, 'commit', '--quiet', '-m', title], { cwd: tree, env: gitEnv });
-  const { stdout } = await run('git', ['rev-parse', 'HEAD'], { cwd: tree, env: gitEnv });
+  const bound = ['--git-dir', repo, '--work-tree', tree];
+  await run('git', [...bound, 'add', '-A'], { cwd: tree, env: gitEnv });
+  await run('git', [...bound, ...identity, 'commit', '--quiet', '-m', title], {
+    cwd: tree,
+    env: gitEnv,
+  });
+  const { stdout } = await run('git', [...bound, 'rev-parse', 'HEAD'], { env: gitEnv });
   const sha = stdout.trim();
-  await run('git', ['update-ref', `refs/paimeng/versions/${sha}`, sha], { cwd: repo, env: gitEnv });
+  await run('git', ['--git-dir', repo, 'update-ref', `refs/paimeng/versions/${sha}`, sha], {
+    env: gitEnv,
+  });
   return sha;
 }
 

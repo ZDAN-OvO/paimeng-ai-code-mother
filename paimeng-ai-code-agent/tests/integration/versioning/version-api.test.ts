@@ -84,14 +84,14 @@ async function readProject(path: string) {
   return readFile(join(workspace(appRef()), path), 'utf8');
 }
 
-/** 版本事实全在 Git 里：断言直接读工作区的真实 HEAD/refs，而不是任何镜像表。 */
+/** 版本事实全在 Git 里：断言直接读外置版本库的真实 HEAD/refs，而不是任何镜像表。 */
 async function git(args: string[]) {
-  const { stdout } = await run('git', ['-C', workspace(appRef()), ...args], { env: gitEnv });
+  const { stdout } = await run(
+    'git',
+    ['--git-dir', versionRepo(appRef()), '--work-tree', workspace(appRef()), ...args],
+    { env: gitEnv },
+  );
   return stdout.trim();
-}
-
-async function gitOrNull(args: string[]) {
-  return git(args).catch(() => null);
 }
 
 async function mainHead() {
@@ -99,8 +99,8 @@ async function mainHead() {
 }
 
 /**
- * 历史里的提交总数：必须同时数分支与 HEAD，不能只数 HEAD——
- * 回退只切 HEAD，那份历史并没有消失（这正是「回退不新增版本」的另一半）。
+ * 历史里的提交总数：必须同时数分支与 HEAD。
+ * 恢复会追加新提交并移动分支指针；只数 HEAD 会漏掉分支上更早的历史。
  */
 async function commitCount() {
   return Number(await git(['rev-list', '--count', '--branches', 'HEAD']));
@@ -165,15 +165,10 @@ describe('版本接口', () => {
     expect(miss.data.versions).toHaveLength(0);
   });
 
-  it('回退只把工作区切到目标提交（detached HEAD），不新增提交也不动分支头', async () => {
+  it('恢复追加一版：树等于第一版、父提交是第二版，预览跟着新 SHA', async () => {
     await writeProject('index.html', '<html><body>第二版</body></html>');
     const second = await commitVersion({ app: appRef(), title: '第二版' });
     expect(second).not.toBeNull();
-    const headsBefore = await git([
-      'for-each-ref',
-      '--format=%(refname) %(objectname)',
-      'refs/heads',
-    ]);
     const commitsBefore = await commitCount();
     expect(commitsBefore).toBe(2);
 
@@ -184,36 +179,45 @@ describe('版本接口', () => {
     }>(await post('app/versions/restore', { appId, versionId: first.id }, owner.cookie));
     expect(restored.code).toBe(0);
     expect(restored.data.status).toBe('restored');
-    expect(restored.data.version.id).toBe(first.id);
+    const restoredId = restored.data.version.id;
+    // 返回的是新版本，不是用户点的旧 SHA。
+    expect(restoredId).not.toBe(first.id);
     expect(restored.data.previewError).toBeNull();
 
-    // Git 事实：HEAD 就是目标提交，detached（没有分支指向它），提交数与分支头一个都没变。
-    expect(await git(['rev-parse', 'HEAD'])).toBe(first.id);
-    expect(await gitOrNull(['symbolic-ref', '-q', 'HEAD'])).toBeNull();
-    expect(await git(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads'])).toBe(
-      headsBefore,
+    // Git 事实：历史只增，新版本的树与第一版一致，父提交是当前 HEAD。
+    expect(await git(['rev-parse', 'HEAD'])).toBe(restoredId);
+    expect(await git(['rev-parse', `${restoredId}^`])).toBe(second!.id);
+    expect(await git(['rev-parse', `${restoredId}^{tree}`])).toBe(
+      await git(['rev-parse', `${first.id}^{tree}`]),
     );
-    expect(await commitCount()).toBe(commitsBefore);
-    expect(await mainHead()).toBe(second!.id);
+    expect(await commitCount()).toBe(commitsBefore + 1);
+    expect(await mainHead()).toBe(restoredId);
     expect(await readProject('index.html')).toContain('第一版');
 
     const overview = await json<AppVersionOverview>(
       await get('app/versions', { appId }, owner.cookie),
     );
-    expect(overview.data.current).toEqual({ versionId: first.id });
-    expect(overview.data.versions).toHaveLength(commitsBefore);
+    expect(overview.data.current).toEqual({ versionId: restoredId });
+    expect(overview.data.versions).toHaveLength(commitsBefore + 1);
+    expect(overview.data.versions[0].id).toBe(restoredId);
   });
 
-  it('回退后继续生成会把新版本接在这一版后面（清单仍线性）', async () => {
+  it('恢复后继续生成：新版本接在恢复版后面（清单仍线性）', async () => {
+    const before = await json<AppVersionOverview>(
+      await get('app/versions', { appId }, owner.cookie),
+    );
+    const restoredId = before.data.current!.versionId;
+    expect(restoredId).not.toBe(first.id);
+
     await writeProject('index.html', '<html><body>从第一版改</body></html>');
     const next = await commitVersion({ app: appRef(), title: '从第一版继续改' });
     expect(next).not.toBeNull();
 
-    expect(await git(['rev-parse', 'HEAD^'])).toBe(first.id);
+    expect(await git(['rev-parse', `${next!.id}^`])).toBe(restoredId);
     const overview = await json<AppVersionOverview>(
       await get('app/versions', { appId }, owner.cookie),
     );
-    // 清单按时间排：新接的一版在最前，被回退到的第一版仍在列表里可选。
+    // 清单按时间排：新接的一版在最前，被恢复的第一版仍在列表里可选。
     expect(overview.data.versions[0].id).toBe(next!.id);
     expect(overview.data.versions.map((version) => version.id)).toContain(first.id);
     expect(overview.data.current).toEqual({ versionId: next!.id });

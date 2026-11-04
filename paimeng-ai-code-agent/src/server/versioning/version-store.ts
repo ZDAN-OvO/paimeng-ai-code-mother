@@ -9,6 +9,7 @@ import {
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   stat,
   unlink,
@@ -25,7 +26,6 @@ import {
   type VersionDiff,
 } from '@/shared/versioning';
 import { getConfig } from '../infra/config';
-import { installGitGuard } from './git-guard';
 import { insertVersionRow, listVersionRows, versionRowOf, type VersionRow } from './version-ledger';
 import { workspace, type WorkspaceApp } from '../workspace/workspace';
 
@@ -79,22 +79,32 @@ export class GitCommandError extends Error {
   }
 }
 
-/** 平台数据根：只放跨应用的东西（版本截图、标题缓存、跨进程锁）。应用历史在工作区的 .git 里。 */
+/** 平台数据根：版本库、截图、标题缓存、跨进程锁都在这里，应用工作区不再含 Git 元数据。 */
 export function versionRoot() {
   return join(getConfig().runtimeRoot, 'versionstore');
 }
 
 /**
- * 应用的 git 仓库就是工作区里的 .git（普通仓库），模型经 git 工具直接操作它；
- * 文件工具碰不到它（workspace 的 blocked 集合挡 .git）。
+ * 应用历史外置在平台数据根下：裸库 + 显式工作区。
+ *
+ * 同一份历史要能被应用工作区、生成执行目录、按 commit 构建的临时目录分别使用，
+ * 而工作区（以及容器里被模型和 shell 读写的那棵树）始终没有 `.git`：
+ * 容器内的进程无法改写历史，重置或删除工作区也不会顺手带走版本对象。
+ * 宿主所有 Git 操作都必须显式绑定 `--git-dir <repo> --work-tree <tree>`；
+ * 默认索引也在仓库目录里（`<repo>/index` 只代表应用工作区，执行目录一律用临时索引）。
  */
 export function versionRepo(app: WorkspaceApp) {
-  return join(workspace(app), '.git');
+  return join(versionRoot(), 'repos', `${app.codeGenType}_${app.id}.git`);
 }
 
 /** 一阶段裸库的位置：只在惰性迁移时读取，迁移后原库保留。 */
 function legacyBareRepo(app: WorkspaceApp) {
   return join(versionRoot(), `${app.codeGenType}_${app.id}.git`);
+}
+
+/** 迁移前应用历史所在的普通仓库；本 PR 之后它只作为一次性迁移来源出现。 */
+function legacyWorkspaceRepo(app: WorkspaceApp) {
+  return join(workspace(app), '.git');
 }
 
 export function versionThumbnailPath(app: WorkspaceApp, versionId: string) {
@@ -268,34 +278,96 @@ async function withLock<T>(app: WorkspaceApp, work: () => Promise<T>): Promise<T
 }
 
 /**
- * 显式写入口：初始化/迁移工作区里的普通仓库。
- * 一阶段裸库只复制不搬走——它是唯一来源，迁移后原样保留；也不强制检出，工作区内容由后续操作决定。
+ * 显式写入口：把应用历史放到平台数据根下的裸库。
+ *
+ * 首次调用按来源迁移一次，之后幂等：
+ * 1. 一阶段裸库（`versionstore/<key>.git`）只复制不搬走——迁移后原样保留；
+ * 2. 本 PR 之前的普通仓库（`<workspace>/.git`）搬进数据根，保留全部 SHA；
+ * 3. 都没有就新建空库。
+ *
+ * 迁移不检出内容，也不写台账：工作区文件保持原样，用哪一版由后续操作决定。
  */
 export async function ensureVersionRepo(app: WorkspaceApp) {
   const repo = versionRepo(app);
-  const tree = workspace(app);
   if (!(await exists(join(repo, 'HEAD')))) {
     await mkdir(versionRoot(), { recursive: true });
     const legacy = legacyBareRepo(app);
     if (await exists(join(legacy, 'HEAD'))) {
       await cp(legacy, repo, { recursive: true, force: true });
-      await git(repo, null, ['config', 'core.bare', 'false']);
-      // 裸库没有索引：按 HEAD 建一份，让「工作区脏不脏」先有可比对的基线，且不覆盖任何工作区文件。
-      const head = (
-        await gitRaw(repo, null, ['rev-parse', '--verify', '--quiet', 'HEAD'])
-      ).stdout.trim();
-      if (head) await git(repo, null, ['read-tree', head]);
+    } else if (await isDirectory(legacyWorkspaceRepo(app))) {
+      await adoptWorkspaceRepo(app, repo);
     } else {
-      await run('git', ['init', '--quiet', '-b', 'main', tree], { env: gitEnv });
+      await mkdir(repo, { recursive: true });
+      await run('git', ['init', '--quiet', '--bare', '-b', 'main', repo], { env: gitEnv });
     }
+  } else if (await isDirectory(legacyWorkspaceRepo(app))) {
+    // 仓库已经外置，工作区里剩下的 .git 是迁移残留：确认对象都在新库后才删。
+    await dropWorkspaceRepo(app, repo);
   }
-  await configureRepo(repo, tree);
+  await configureRepo(repo);
+  await ensureIndex(repo);
   return repo;
 }
 
-/** 仓库配置与安全闸：幂等，每次 ensure 都补一遍（hook 被删掉也会自动恢复）。 */
-async function configureRepo(repo: string, tree: string) {
+const isDirectory = (path: string) =>
+  stat(path).then(
+    (info) => info.isDirectory(),
+    () => false,
+  );
+
+/**
+ * 把工作区的普通仓库搬进数据根，保留所有 SHA。
+ * 同一文件系统用 rename（原子，不会「搬了一半」）；跨设备才复制，复制后核对 HEAD 再删源。
+ */
+async function adoptWorkspaceRepo(app: WorkspaceApp, repo: string) {
+  const source = legacyWorkspaceRepo(app);
+  const head = (
+    await gitRaw(source, null, ['rev-parse', '--verify', '--quiet', 'HEAD'])
+  ).stdout.trim();
+  // 目标路径上只可能是本次刚建的目录或上次中断的残片；它不是历史来源。
+  await rm(repo, { recursive: true, force: true });
+  try {
+    await rename(source, repo);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
+    await cp(source, repo, { recursive: true });
+    const copied = (
+      await gitRaw(repo, null, ['rev-parse', '--verify', '--quiet', 'HEAD'])
+    ).stdout.trim();
+    if (copied !== head)
+      throw new Error('版本库迁移失败：目标仓库的 HEAD 与工作区仓库不一致，未删除原仓库');
+    await rm(source, { recursive: true, force: true });
+  }
+  // 历史只增的 hook 只对工作区里的仓库有意义；外置库由宿主写入路径保证，不装 hook。
+  await rm(join(repo, 'hooks'), { recursive: true, force: true });
+}
+
+/**
+ * 删除迁移后残留的工作区 `.git`。
+ * 只在新库确实认得旧 HEAD 时删除：读不出来就留着——宁可多一个无用目录，也不能丢历史。
+ */
+async function dropWorkspaceRepo(app: WorkspaceApp, repo: string) {
+  const source = legacyWorkspaceRepo(app);
+  const head = (
+    await gitRaw(source, null, ['rev-parse', '--verify', '--quiet', 'HEAD'])
+  ).stdout.trim();
+  if (!head) return;
+  if ((await gitRaw(repo, null, ['cat-file', '-e', `${head}^{commit}`])).code !== 0) return;
+  await rm(source, { recursive: true, force: true });
+}
+
+/** 默认索引等于仓库 HEAD：迁移与新建都要先有这份基线，脏检查才有可比对象。 */
+async function ensureIndex(repo: string) {
+  const head = await headSha(repo);
+  if (!head) return;
+  if (await exists(join(repo, 'index'))) return;
+  await git(repo, null, ['read-tree', head]);
+}
+
+/** 仓库配置：幂等，每次 ensure 都补一遍（被删掉也会自动恢复）。 */
+async function configureRepo(repo: string) {
   for (const [key, value] of [
+    // 裸库目录 + 显式 --work-tree：read-tree/status 需要工作区语义，但仍不在工作区里放元数据。
     ['core.bare', 'false'],
     ['core.autocrlf', 'false'],
     ['core.fileMode', 'false'],
@@ -324,8 +396,6 @@ async function configureRepo(repo: string, tree: string) {
   const excludeFile = join(repo, 'info', 'exclude');
   await mkdir(dirname(excludeFile), { recursive: true });
   await writeFile(excludeFile, `${exclude.join('\n')}\n`);
-  // 历史只增的强制闸：删除分支与非快进更新由 git 自己拒绝。
-  await installGitGuard(tree);
 }
 
 /** 当前 HEAD 所在分支；游离 HEAD 或空仓库返回 null。 */
@@ -779,8 +849,11 @@ async function writeVersion(
       await moveHead(repo, prepared.sha);
     }
     // 应用工作区这条路沿用「提交后默认索引等于 HEAD」的老语义（git commit 本来就会写索引），
-    // 否则 restoreVersion 的脏检查会把已提交的文件当成本地改动。执行目录提交则完全不碰默认索引。
+    // 否则 restoreVersion 的脏检查会把已提交的文件当成本地改动。
+    // 执行目录提交不写内容进默认索引；只在索引还不存在时补一份 HEAD 基线，
+    // 让「工作区脏不脏」从第一版起就有可比对象，而不是等到某次读操作才顺手创建。
     if (input.syncIndex) await git(repo, null, ['read-tree', prepared.sha]);
+    else await ensureIndex(repo);
     await insertVersionRow({
       appId: app.id,
       commitSha: prepared.sha,
@@ -912,7 +985,39 @@ export type RestoreOutcome = { status: 'restored' | 'unchanged'; version: AppVer
 /** 写操作的租约检查：在写锁内执行，堵住「检查完到上锁之间」的窗口。 */
 export type WriteGuard = () => Promise<void>;
 
-/** 回退 = 只切到目标提交（detached HEAD），不新增提交、不动任何分支。 */
+/**
+ * 追加一版：树直接复用目标提交的树（不从工作区重新读取），父提交由调用方给定。
+ * 与 prepareCommitLocked 的区别是内容来源不同——恢复要的是「旧版字节」，
+ * 重新 add 一遍工作区会掺进被忽略文件或时间戳差异，也挡不住中间被改。
+ */
+async function appendCommit(input: {
+  repo: string;
+  tree: string;
+  parent: string | null;
+  title: string;
+}) {
+  const title = input.title.trim().slice(0, maxTitleLength) || '恢复版本';
+  const sha = (
+    await gitCommit(input.repo, null, [
+      'commit-tree',
+      input.tree,
+      ...(input.parent ? ['-p', input.parent] : []),
+      '-m',
+      title,
+    ])
+  ).trim();
+  // 钉子：主线之后继续前进时，这一版仍然可达，不会被 gc 回收。
+  await git(input.repo, null, ['update-ref', `refs/paimeng/versions/${sha}`, sha]);
+  return { sha, title };
+}
+
+/**
+ * 恢复 = 以目标树为内容、当前 HEAD 为父提交追加一版。
+ *
+ * 历史只增：恢复不把 HEAD 拨回旧提交，也不让主线出现缺口，旧版本全部留在历史里。
+ * 新版本的树原样复用目标提交，所以字节与旧版一致；改动清单是「相对当前 HEAD 改了什么」。
+ * 已经停在目标版本时是无操作，不产生重复版本。
+ */
 export async function restoreVersion(input: {
   app: WorkspaceApp;
   versionId: string;
@@ -926,12 +1031,32 @@ export async function restoreVersion(input: {
     const tree = workspace(app);
     const commit = await resolveCommit(repo, target);
     await assertCleanSource(repo, tree, commit.sha);
-    if ((await headSha(repo)) === commit.sha) {
-      return { status: 'unchanged' as const, version: await readVersion(app, commit.sha) };
+    const head = await headSha(repo);
+    if (head) {
+      const headTree = (
+        await gitRaw(repo, null, ['rev-parse', '--verify', `${head}^{tree}`])
+      ).stdout.trim();
+      // 已经停在同一棵树：既包括「就是当前版」，也包括「再点一次刚恢复过的那版」。
+      // 内容一样就不再落一版，否则连点两下会堆出一串完全相同的版本。
+      if (head === commit.sha || headTree === commit.tree) {
+        const current = await versionRowOf(app.id, head);
+        return {
+          status: 'unchanged' as const,
+          version: await readVersion(app, current ? head : commit.sha),
+        };
+      }
     }
+    // 标题用用户看到的版本标题，而不是把提交信息（可能是上一轮恢复的标题）再套一层。
+    const row = await versionRowOf(app.id, commit.sha);
+    const title = `恢复：${row?.title || commit.subject}`;
+    // 先造提交再动工作区：中途失败最多留一个带钉子的孤儿提交（自愈会补行），
+    // 不会停在「文件已换成旧版、HEAD 还在原处」——那种状态下次恢复会被脏检查拒绝。
+    const created = await appendCommit({ repo, tree: commit.tree, parent: head, title });
     await materialize(app, repo, tree, commit.sha);
-    await git(repo, null, ['update-ref', '--no-deref', 'HEAD', commit.sha]);
-    return { status: 'restored' as const, version: await readVersion(app, commit.sha) };
+    // materialize 的 read-tree 已把默认索引拨到目标树，而目标树就是新提交的树。
+    await moveHead(repo, created.sha);
+    await insertVersionRow({ appId: app.id, commitSha: created.sha, title: created.title });
+    return { status: 'restored' as const, version: await readVersion(app, created.sha) };
   });
 }
 

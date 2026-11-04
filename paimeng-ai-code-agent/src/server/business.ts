@@ -493,7 +493,8 @@ export async function restoreAppVersion(raw: unknown, user: User) {
       versionId: input.versionId,
       guard: () => assertVersionWritable(app, lockId),
     });
-    return { ...outcome, previewError: await pointPreviewAtVersion(app, input.versionId) };
+    // 恢复会追加一版：预览、截图和返回值都必须跟着新 SHA，不能拿输入的旧 SHA 冒充当前版。
+    return { ...outcome, previewError: await pointPreviewAtVersion(app, outcome.version.id) };
   } finally {
     await releaseVersionRestore(lockId);
   }

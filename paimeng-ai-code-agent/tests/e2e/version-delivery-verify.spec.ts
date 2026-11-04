@@ -13,7 +13,7 @@ import { loginAsProofAccount, proofAccount } from './support/proof-account';
  * verify-paimeng 证据：真实多文件应用的两版、真实版本切换和外部静态资源。
  *
  * 首版与第二版都由真实 Next + harness + 预览生成；没有 page.route API 桩。
- * 断言恢复会切换交付而不是新增版本，下载读恢复后的源码，部署读恢复后的交付。
+ * 断言恢复会追加一版并切换交付（历史只增），下载读恢复后的源码，部署读恢复后的交付。
  * 模型仍是仓库夹具，不调用真实 provider。
  */
 
@@ -170,8 +170,18 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
       .getByRole('heading', { name: firstPrompt, exact: true }),
   ).toBeVisible();
   const afterRestore = await versions(page);
-  expect(afterRestore.current?.versionId).toBe(firstVersion.id);
-  expect(afterRestore.versions).toHaveLength(2);
+  // 恢复不再把 HEAD 拨回旧提交：它追加一版，内容等于第一版，旧的两版都还在。
+  const restoredVersionId = afterRestore.current?.versionId;
+  expect(restoredVersionId).toBeTruthy();
+  expect(restoredVersionId).not.toBe(firstVersion.id);
+  expect(afterRestore.versions).toHaveLength(3);
+  expect(afterRestore.versions[0].id).toBe(restoredVersionId);
+  const restoredDelivery = await db.query<{ id: string }>(
+    'select id from generation_delivery where app_id = $1 and version_sha = $2',
+    [appId, restoredVersionId],
+  );
+  expect(restoredDelivery.rows).toHaveLength(1);
+  const restoredDeliveryId = restoredDelivery.rows[0].id;
   const countsAfterRestore = await db.query<{
     versions: number;
     deliveries: number;
@@ -198,12 +208,12 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
     [appId],
   );
   expect(countsAfterRestore.rows[0]).toMatchObject({
-    versions: 2,
-    deliveries: 2,
+    versions: 3,
+    deliveries: 3,
     running: 0,
-    pointer_version: firstVersion.id,
-    pointer_delivery: firstDeliveryId,
-    authority_delivery: firstDeliveryId,
+    pointer_version: restoredVersionId,
+    pointer_delivery: restoredDeliveryId,
+    authority_delivery: restoredDeliveryId,
   });
   expect(Number(countsAfterRestore.rows[0].pointer_revision)).toBeGreaterThanOrEqual(1);
   expect(Number(countsAfterRestore.rows[0].authority_revision)).toBe(
@@ -257,7 +267,7 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
        (select count(*)::int from app_deployment where app_id = $1 and status = 'running') as running`,
     [appId],
   );
-  expect(finalCounts.rows[0]).toEqual({ versions: 2, deliveries: 2, running: 0 });
+  expect(finalCounts.rows[0]).toEqual({ versions: 3, deliveries: 3, running: 0 });
   await page.screenshot({
     path: join(evidence, '03-deployed-restored-version.png'),
     fullPage: true,

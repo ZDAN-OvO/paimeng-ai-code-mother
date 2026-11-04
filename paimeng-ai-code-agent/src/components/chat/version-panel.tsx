@@ -273,10 +273,11 @@ export function VersionPanel({
       versionId: version.id,
     });
     return {
+      // 恢复会追加一版，列表里这一版的标题是「恢复：…」；提示用用户点的那个标题更好读。
       text:
         result.status === 'unchanged'
-          ? `「${result.version.title}」就是现在这一版`
-          : `已换成「${result.version.title}」这一版`,
+          ? `「${version.title}」就是现在这一版`
+          : `已换成「${version.title}」这一版`,
       changed: result.status !== 'unchanged',
       previewError: result.previewError,
     };
@@ -286,7 +287,7 @@ export function VersionPanel({
     modal.confirm({
       title: `使用「${version.title}」这一版？`,
       content:
-        '页面会换成这一版的样子，光标回到输入框，你可以接着说要改成什么样。其他版本都还留着，之后随时能再切回来，也不会新增版本。',
+        '页面会换成这一版的样子，光标回到输入框，你可以接着说要改成什么样。这次恢复会作为新的一版接在历史后面，其他版本都还留着，之后随时能再切回来。',
       okText: '使用这一版',
       cancelText: '取消',
       onOk: () =>
@@ -387,7 +388,7 @@ export function VersionPanel({
                   还没有版本记录。完成一次生成后，这里会出现第一个版本。
                 </p>
                 <p className="version-panel-empty-note">
-                  使用旧版本只会把页面换回去，不会删掉任何一版。
+                  使用旧版本不会删掉任何一版：恢复会作为新的一版接在历史后面。
                 </p>
               </div>
             ) : (

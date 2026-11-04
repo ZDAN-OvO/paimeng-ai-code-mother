@@ -15,5 +15,8 @@
  * 12：生成改为每轮独立 execution/conversation，conversation 携带 generation/execution 绑定，
  *    工具写入受产品 authority 与持久输入状态约束（docs/plans/archive/harness-reliability.md 的 harness 可靠性重构）。
  *    旧 harness 会继续复用共享工作区、绕过写入门禁，必须与 Next 一起升级并重启。
+ * 13：应用历史从 Workspace/.git 外置到平台数据根下的裸库，宿主 Git 操作显式绑定仓库与工作区。
+ *    旧 harness 的 git 工具仍拼 Workspace/.git，ensureVersionRepo 会在工作区重建仓库；
+ *    Next 与旧 harness 同时运行会让同一份历史出现两个入口，必须重启换掉。
  */
-export const harnessProtocol = 12;
+export const harnessProtocol = 13;

@@ -200,13 +200,15 @@ test('停在旧版本时明确提示「旧版本」，并提供一键回到最�
   ).toBeEnabled();
 });
 
-test('没有版本时显示空态，并说明回到旧版不新增版本', async ({ page }) => {
+test('没有版本时显示空态，并说明恢复会追加新版本', async ({ page }) => {
   await mockVersions(page, overviewOf([], null));
   await openPanel(page);
   await expect(
     page.getByText('还没有版本记录。完成一次生成后，这里会出现第一个版本。'),
   ).toBeVisible();
-  await expect(page.getByText('使用旧版本只会把页面换回去，不会删掉任何一版。')).toBeVisible();
+  await expect(
+    page.getByText('使用旧版本不会删掉任何一版：恢复会作为新的一版接在历史后面。'),
+  ).toBeVisible();
 });
 
 test('使用旧版本要二次确认，确认后按这一版恢复', async ({ page }) => {
