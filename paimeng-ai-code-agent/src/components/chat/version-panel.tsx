@@ -388,7 +388,7 @@ export function VersionPanel({
                   还没有版本记录。完成一次生成后，这里会出现第一个版本。
                 </p>
                 <p className="version-panel-empty-note">
-                  使用旧版本只会把页面换回去，不会删掉任何一版。
+                  使用旧版本不会删掉任何一版：恢复会作为新的一版接在历史后面。
                 </p>
               </div>
             ) : (

@@ -99,8 +99,8 @@ async function mainHead() {
 }
 
 /**
- * 历史里的提交总数：必须同时数分支与 HEAD，不能只数 HEAD——
- * 回退只切 HEAD，那份历史并没有消失（这正是「回退不新增版本」的另一半）。
+ * 历史里的提交总数：必须同时数分支与 HEAD。
+ * 恢复会追加新提交并移动分支指针；只数 HEAD 会漏掉分支上更早的历史。
  */
 async function commitCount() {
   return Number(await git(['rev-list', '--count', '--branches', 'HEAD']));

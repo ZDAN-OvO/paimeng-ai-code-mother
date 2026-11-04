@@ -111,10 +111,15 @@ test('两版之后恢复第一版：追加新版本、刷新仍在新版、下�
   const firstVersion = (await versions(page)).versions[0];
 
   await send(page, secondPrompt);
+  // 版本行是持久事实，先等它落地。静态 Preview 的地址只在页面加载时读取，
+  // 实时刷新要到 PR-05 才接 dev server；这里按当前产品行为刷新页面再核对画面。
   await waitForVersionCount(page, 2);
+  await page.reload();
   await expect(page.getByText(/文件已生成/)).toHaveCount(2, { timeout: 120_000 });
   await expect(page.getByText('可预览', { exact: true })).toBeVisible({ timeout: 120_000 });
-  await expect(preview.getByRole('heading', { name: secondPrompt, exact: true })).toBeVisible();
+  await expect(preview.getByRole('heading', { name: secondPrompt, exact: true })).toBeVisible({
+    timeout: 120_000,
+  });
   const secondOverview = await versions(page);
   const secondVersion = secondOverview.versions.find((version) => version.id !== firstVersion.id);
   expect(secondVersion, '第二轮必须产生新版本').toBeTruthy();
