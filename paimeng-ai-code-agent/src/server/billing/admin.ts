@@ -5,11 +5,20 @@ import { BusinessError } from '@/server/infra/http';
 import { creditCharges, users } from '@/server/infra/schema';
 import { idSchema } from '@/shared/contracts';
 import {
-  type AdminIssueReceipt, type AdminIssueRequest, type AdminUserUsage, type ChargeReversalReceipt, type ChargeStatus,
-  type IssueFailure, maxIssueUsers,
+  type AdminIssueReceipt,
+  type AdminIssueRequest,
+  type AdminUserUsage,
+  type ChargeReversalReceipt,
+  type IssueFailure,
+  maxIssueUsers,
 } from '@/shared/billing';
 import {
-  accountSnapshot, chargesOf, effectiveCreditsOf, entriesOfCharge, insertLedgerTx, reverseCharge,
+  accountSnapshot,
+  chargesOf,
+  effectiveCreditsOf,
+  entriesOfCharge,
+  insertLedgerTx,
+  reverseCharge,
 } from './ledger';
 import { ensureExpiryTx, lockBalance, rebuildBalanceTx } from './expiry';
 import { naiveTime, periodOf, periodRange } from './period';
@@ -25,21 +34,25 @@ export type AdminIssueInput = AdminIssueRequest & { operatorId: string };
  * `requestId` 是幂等键：重试同一请求不会重复发钱。
  */
 export async function issueCredits(input: AdminIssueInput): Promise<AdminIssueReceipt> {
-  const userIds = [...new Set(input.userId ? [idSchema.parse(input.userId)] : input.userIds ?? [])];
+  const userIds = [
+    ...new Set(input.userId ? [idSchema.parse(input.userId)] : (input.userIds ?? [])),
+  ];
   if (!userIds.length) throw new BusinessError(400, 40000, '请选择要发放的用户');
-  if (userIds.length > maxIssueUsers) throw new BusinessError(400, 40000, `一次最多发放给 ${maxIssueUsers} 个用户`);
+  if (userIds.length > maxIssueUsers)
+    throw new BusinessError(400, 40000, `一次最多发放给 ${maxIssueUsers} 个用户`);
 
   const at = new Date();
   const period = periodOf(at);
   const expiresAt = input.kind === 'limited' ? naiveTime(periodRange(period).end) : null;
-  const operationId = userIds.length > 1
-    ? await startOperation({
-      kind: 'issue_users',
-      period: input.kind === 'limited' ? period : null,
-      operatorId: input.operatorId,
-      targetCount: userIds.length,
-    })
-    : null;
+  const operationId =
+    userIds.length > 1
+      ? await startOperation({
+          kind: 'issue_users',
+          period: input.kind === 'limited' ? period : null,
+          operatorId: input.operatorId,
+          targetCount: userIds.length,
+        })
+      : null;
 
   let created = 0;
   let credits = 0;
@@ -49,9 +62,12 @@ export async function issueCredits(input: AdminIssueInput): Promise<AdminIssueRe
     try {
       const id = BigInt(userId);
       // 每次重算都要看到同一个人的最新余额与过期行；单人一个事务，失败不拖累其他人。
-      await db().transaction(async tx => {
-        const [user] = await tx.select({ id: users.id }).from(users)
-          .where(and(eq(users.id, id), eq(users.isDelete, 0))).limit(1);
+      await db().transaction(async (tx) => {
+        const [user] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(and(eq(users.id, id), eq(users.isDelete, 0)))
+          .limit(1);
         if (!user) throw new BusinessError(404, 40400, '用户不存在');
         await lockBalance(tx, id);
         await ensureExpiryTx(tx, userId, at);
@@ -98,8 +114,11 @@ export async function issueCredits(input: AdminIssueInput): Promise<AdminIssueRe
  */
 export async function userUsage(input: { userId: string; limit: number }): Promise<AdminUserUsage> {
   const userId = idSchema.parse(input.userId);
-  const [user] = await db().select({ id: users.id }).from(users)
-    .where(and(eq(users.id, BigInt(userId)), eq(users.isDelete, 0))).limit(1);
+  const [user] = await db()
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.id, BigInt(userId)), eq(users.isDelete, 0)))
+    .limit(1);
   if (!user) throw new BusinessError(404, 40400, '用户不存在');
 
   const [account, charges, credit] = await Promise.all([
@@ -112,14 +131,14 @@ export async function userUsage(input: { userId: string; limit: number }): Promi
     account,
     credit,
     charges,
-    estimatedRatio: ratioOf(charges.filter(charge => charge.estimated).length, charges.length),
-    unpricedRatio: ratioOf(charges.filter(charge => charge.unpriced).length, charges.length),
+    estimatedRatio: ratioOf(charges.filter((charge) => charge.estimated).length, charges.length),
+    unpricedRatio: ratioOf(charges.filter((charge) => charge.unpriced).length, charges.length),
   };
 }
 
 /** 按账单条数的比例，保留 4 位小数：界面乘 100 就是百分比。 */
 function ratioOf(matched: number, total: number): number {
-  return total === 0 ? 0 : Math.round(matched / total * 10_000) / 10_000;
+  return total === 0 ? 0 : Math.round((matched / total) * 10_000) / 10_000;
 }
 
 /**
@@ -131,20 +150,29 @@ export async function reverseChargeByAdmin(input: {
   reason: string;
   operatorId: string;
 }): Promise<ChargeReversalReceipt> {
-  const [charge] = await db().select({ generationId: creditCharges.generationId }).from(creditCharges)
-    .where(eq(creditCharges.generationId, input.chargeId)).limit(1);
+  const [charge] = await db()
+    .select({ generationId: creditCharges.generationId })
+    .from(creditCharges)
+    .where(eq(creditCharges.generationId, input.chargeId))
+    .limit(1);
   if (!charge) throw new BusinessError(404, 40400, '账单不存在');
 
-  const result = await reverseCharge(input.chargeId, { reason: input.reason, operatorId: input.operatorId });
+  const result = await reverseCharge(input.chargeId, {
+    reason: input.reason,
+    operatorId: input.operatorId,
+  });
   if (!result.reversed && (await entriesOfCharge(input.chargeId)).length === 0) {
     throw new BusinessError(409, 40900, '这笔账单没有可冲正的金额（待处理或 0 积分），无需冲正');
   }
-  const [projection] = await db().select({ status: creditCharges.status }).from(creditCharges)
-    .where(eq(creditCharges.generationId, input.chargeId)).limit(1);
+  const [projection] = await db()
+    .select({ status: creditCharges.status })
+    .from(creditCharges)
+    .where(eq(creditCharges.generationId, input.chargeId))
+    .limit(1);
   return {
     reversed: result.reversed,
     entries: result.entries,
-    status: projection.status as ChargeStatus,
+    status: projection.status,
     effectiveCredits: await effectiveCreditsOf(input.chargeId),
   };
 }

@@ -3,7 +3,7 @@ import { loadEnvFile } from 'node:process';
 import { testDatabaseUrl } from '../../support/test-database-url';
 import { eq } from 'drizzle-orm';
 import { GET, POST } from '@/app/api/[...path]/route';
-import { db, getPool, now } from '@/server/infra/db';
+import { db, getPool } from '@/server/infra/db';
 import { sessions, users } from '@/server/infra/schema';
 import { defaultModelProviderId, type ModelAliasInput } from '@/shared/model-config';
 import { initializeModelConfigFromEnv } from '@/server/models/store';
@@ -23,7 +23,12 @@ const speechAlias: ModelAliasInput = {
   alias: 'speech.transcribe',
   providerId: defaultModelProviderId,
   modelName: 'whisper-1',
-  capabilities: { streaming: false, toolCalling: false, structuredOutput: false, imageInput: false },
+  capabilities: {
+    streaming: false,
+    toolCalling: false,
+    structuredOutput: false,
+    imageInput: false,
+  },
   settings: {},
   enabled: true,
 };
@@ -32,7 +37,13 @@ let cookie = '';
 let userId = '';
 
 const savedEnvironment = new Map(
-  ['AI_MODEL', 'AI_BASE_URL', 'AI_API_KEY', 'MODEL_API_KEY_ENV_ALLOWLIST', 'MODEL_INTERNAL_BASE_URL_ORIGINS'].map(name => [name, process.env[name]]),
+  [
+    'AI_MODEL',
+    'AI_BASE_URL',
+    'AI_API_KEY',
+    'MODEL_API_KEY_ENV_ALLOWLIST',
+    'MODEL_INTERNAL_BASE_URL_ORIGINS',
+  ].map((name) => [name, process.env[name]]),
 );
 
 async function api(path: string, data?: unknown, session = cookie) {
@@ -40,8 +51,14 @@ async function api(path: string, data?: unknown, session = cookie) {
   const headers: Record<string, string> = { origin };
   if (session) headers.cookie = session;
   if (data !== undefined) headers['content-type'] = 'application/json';
-  const req = new Request(`${origin}/api/${path}`, { method, headers, body: data === undefined ? undefined : JSON.stringify(data) });
-  return (method === 'GET' ? GET : POST)(req, { params: Promise.resolve({ path: path.split('/') }) });
+  const req = new Request(`${origin}/api/${path}`, {
+    method,
+    headers,
+    body: data === undefined ? undefined : JSON.stringify(data),
+  });
+  return (method === 'GET' ? GET : POST)(req, {
+    params: Promise.resolve({ path: path.split('/') }),
+  });
 }
 
 async function json(response: Response) {
@@ -51,13 +68,17 @@ async function json(response: Response) {
 function getTranscribe(session?: string) {
   const headers: Record<string, string> = {};
   if (session) headers.cookie = session;
-  return GET(new Request(`${origin}/api/app/chat/transcribe`, { headers }), { params: Promise.resolve({ path: routePath }) });
+  return GET(new Request(`${origin}/api/app/chat/transcribe`, { headers }), {
+    params: Promise.resolve({ path: routePath }),
+  });
 }
 
 function postTranscribe(session: string | undefined, body: FormData) {
   const headers: Record<string, string> = { origin };
   if (session) headers.cookie = session;
-  return POST(new Request(`${origin}/api/app/chat/transcribe`, { method: 'POST', headers, body }), { params: Promise.resolve({ path: routePath }) });
+  return POST(new Request(`${origin}/api/app/chat/transcribe`, { method: 'POST', headers, body }), {
+    params: Promise.resolve({ path: routePath }),
+  });
 }
 
 function recordingForm(audio: Blob, filename = 'recording.webm') {
@@ -66,7 +87,8 @@ function recordingForm(audio: Blob, filename = 'recording.webm') {
   return form;
 }
 
-const audioBlob = (bytes: number, type = 'audio/webm') => new Blob([new Uint8Array(bytes)], { type });
+const audioBlob = (bytes: number, type = 'audio/webm') =>
+  new Blob([new Uint8Array(bytes)], { type });
 
 async function resetModelConfig() {
   await resetModelConfigRow();
@@ -74,7 +96,11 @@ async function resetModelConfig() {
 
 describe('语音转写接口', () => {
   beforeAll(async () => {
-    const credentials = { userAccount: prefix, userPassword: 'password123', checkPassword: 'password123' };
+    const credentials = {
+      userAccount: prefix,
+      userPassword: 'password123',
+      checkPassword: 'password123',
+    };
     userId = (await json(await api('user/register', credentials))).data as string;
     cookie = (await api('user/login', credentials)).headers.get('set-cookie')!.split(';')[0]!;
     await resetModelConfig();
@@ -86,8 +112,12 @@ describe('语音转写接口', () => {
   afterAll(async () => {
     await resetModelConfig();
     if (userId) {
-      await db().delete(sessions).where(eq(sessions.userId, BigInt(userId)));
-      await db().delete(users).where(eq(users.id, BigInt(userId)));
+      await db()
+        .delete(sessions)
+        .where(eq(sessions.userId, BigInt(userId)));
+      await db()
+        .delete(users)
+        .where(eq(users.id, BigInt(userId)));
     }
     for (const [name, value] of savedEnvironment) {
       if (value === undefined) delete process.env[name];
@@ -102,7 +132,10 @@ describe('语音转写接口', () => {
   });
 
   it('未配置别名时禁用并返回 409', async () => {
-    expect(await json(await getTranscribe(cookie))).toMatchObject({ code: 0, data: { enabled: false } });
+    expect(await json(await getTranscribe(cookie))).toMatchObject({
+      code: 0,
+      data: { enabled: false },
+    });
     const response = await postTranscribe(cookie, recordingForm(audioBlob(8)));
     expect(response.status).toBe(409);
     const payload = await json(response);
@@ -113,16 +146,21 @@ describe('语音转写接口', () => {
 
   it('配置别名后可用，音频转发到 /audio/transcriptions', async () => {
     await upsertTestAlias(speechAlias, { applyImmediately: true });
-    const upstream = vi.fn(async (_url: string, _init: RequestInit) => Response.json({ text: '你好，世界' }));
+    const upstream = vi.fn(async (_url: string, _init: RequestInit) =>
+      Response.json({ text: '你好，世界' }),
+    );
     vi.stubGlobal('fetch', upstream);
 
-    expect(await json(await getTranscribe(cookie))).toMatchObject({ code: 0, data: { enabled: true } });
+    expect(await json(await getTranscribe(cookie))).toMatchObject({
+      code: 0,
+      data: { enabled: true },
+    });
     const response = await postTranscribe(cookie, recordingForm(audioBlob(4)));
     expect(response.status).toBe(200);
     expect(await json(response)).toMatchObject({ code: 0, data: { text: '你好，世界' } });
 
     expect(upstream).toHaveBeenCalledTimes(1);
-    const [url, init] = upstream.mock.calls[0]!;
+    const [url, init] = upstream.mock.calls[0];
     expect(url).toBe('https://speech.example.test/v1/audio/transcriptions');
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>).authorization).toBe(`Bearer ${speechApiKey}`);
@@ -134,18 +172,27 @@ describe('语音转写接口', () => {
   });
 
   it('非音频格式、无法判定的类型与非 multipart 请求都返回 400/415', async () => {
-    const wrongType = await postTranscribe(cookie, recordingForm(audioBlob(4, 'text/plain'), 'notes.txt'));
+    const wrongType = await postTranscribe(
+      cookie,
+      recordingForm(audioBlob(4, 'text/plain'), 'notes.txt'),
+    );
     expect(wrongType.status).toBe(400);
     expect((await json(wrongType)).message).toContain('只支持 webm');
 
-    const noExtension = await postTranscribe(cookie, recordingForm(new Blob([new Uint8Array(4)]), 'clip'));
+    const noExtension = await postTranscribe(
+      cookie,
+      recordingForm(new Blob([new Uint8Array(4)]), 'clip'),
+    );
     expect(noExtension.status).toBe(400);
 
-    const notMultipart = await POST(new Request(`${origin}/api/app/chat/transcribe`, {
-      method: 'POST',
-      headers: { origin, cookie, 'content-type': 'application/json' },
-      body: '{}',
-    }), { params: Promise.resolve({ path: routePath }) });
+    const notMultipart = await POST(
+      new Request(`${origin}/api/app/chat/transcribe`, {
+        method: 'POST',
+        headers: { origin, cookie, 'content-type': 'application/json' },
+        body: '{}',
+      }),
+      { params: Promise.resolve({ path: routePath }) },
+    );
     expect(notMultipart.status).toBe(415);
   });
 
@@ -156,14 +203,20 @@ describe('语音转写接口', () => {
   });
 
   it('上游失败返回可读错误且不回显密钥', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('upstream boom', { status: 500 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('upstream boom', { status: 500 })),
+    );
     const failed = await postTranscribe(cookie, recordingForm(audioBlob(8)));
     expect(failed.status).toBe(502);
     const payload = await json(failed);
     expect(payload.message).toContain('语音转写服务返回 500');
     expect(payload.message).not.toContain(speechApiKey);
 
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 404 })),
+    );
     const missing = await postTranscribe(cookie, recordingForm(audioBlob(8)));
     expect(missing.status).toBe(502);
     expect((await json(missing)).message).toContain('/audio/transcriptions 接口（404）');

@@ -52,14 +52,26 @@ export const rateCardUnit = {
 const naiveTimestamp = z
   .string()
   .trim()
-  .regex(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/u, '生效时间必须形如 2026-10-01 00:00:00.000（UTC）')
-  .refine((value) => !Number.isNaN(Date.parse(`${value.replace(' ', 'T')}Z`)), '生效时间不是合法时刻');
+  .regex(
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/u,
+    '生效时间必须形如 2026-10-01 00:00:00.000（UTC）',
+  )
+  .refine(
+    (value) => !Number.isNaN(Date.parse(`${value.replace(' ', 'T')}Z`)),
+    '生效时间不是合法时刻',
+  );
 
 const creditRate = z.number().int('费率必须是整数积分').min(0, '费率不能是负数');
 
 /** 上游成本是可空的定点字符串，最多 6 位小数；空值表示未知，不用 0 代替。 */
 const optionalUsdRate = z
-  .union([z.null(), z.string().trim().regex(/^\d+(?:\.\d{1,6})?$/u, '上游成本是 USD / 1M tokens，最多 6 位小数')])
+  .union([
+    z.null(),
+    z
+      .string()
+      .trim()
+      .regex(/^\d+(?:\.\d{1,6})?$/u, '上游成本是 USD / 1M tokens，最多 6 位小数'),
+  ])
   .optional()
   .transform((value) => value ?? null);
 
@@ -128,7 +140,12 @@ export type RateCardVersionKey = z.infer<typeof rateCardVersionKeySchema>;
 
 export const rateCardListSchema = z.object({
   rates: z.array(rateCardViewSchema),
-  columns: z.array(z.object({ key: z.enum(['creditInputMiss', 'creditInputHit', 'creditOutput']), label: z.string() })),
+  columns: z.array(
+    z.object({
+      key: z.enum(['creditInputMiss', 'creditInputHit', 'creditOutput']),
+      label: z.string(),
+    }),
+  ),
   unit: z.object({
     creditPerYuan: z.number(),
     tokensPerMillion: z.number(),
@@ -159,7 +176,14 @@ export const creditEntryKindLabels: Record<CreditEntryKind, string> = {
 };
 
 /** 谁写的这一行：规则、人工、支付、结算、过期扫描、冲正。 */
-export const creditEntryOrigins = ['rule', 'manual', 'payment', 'charge', 'expiry', 'reversal'] as const;
+export const creditEntryOrigins = [
+  'rule',
+  'manual',
+  'payment',
+  'charge',
+  'expiry',
+  'reversal',
+] as const;
 export type CreditEntryOrigin = (typeof creditEntryOrigins)[number];
 export const creditEntryOriginLabels: Record<CreditEntryOrigin, string> = {
   rule: '每月规则',
@@ -267,16 +291,21 @@ export type QuotaPolicyAdminView = {
   defaultCredits: number;
   limits: { maxMonthlyQuotaCredits: number; maxIssueCredits: number };
   global: QuotaPolicyRange;
-  user: (QuotaPolicyRange & {
-    userId: string;
-    userAccount: string;
-    userName: string | null;
-    /** 当前账期的积分事实，供发放表单显示发放前可用。 */
-    account: AdminCreditAccount;
-  }) | null;
+  user:
+    | (QuotaPolicyRange & {
+        userId: string;
+        userAccount: string;
+        userName: string | null;
+        /** 当前账期的积分事实，供发放表单显示发放前可用。 */
+        account: AdminCreditAccount;
+      })
+    | null;
 };
 
-const quotaPeriod = z.string().trim().regex(/^\d{4}-(0[1-9]|1[0-2])$/u, '账期必须形如 2026-12');
+const quotaPeriod = z
+  .string()
+  .trim()
+  .regex(/^\d{4}-(0[1-9]|1[0-2])$/u, '账期必须形如 2026-12');
 
 /** 保存策略：expectedRevision 为 null 表示新建；带值表示替换该账期当前版本。 */
 export const quotaPolicySaveSchema = z
@@ -285,7 +314,12 @@ export const quotaPolicySaveSchema = z
     userId: idSchema.optional(),
     effectivePeriod: quotaPeriod,
     mode: z.enum(quotaPolicyModes),
-    credits: z.number().int('每月额度必须是整数积分').min(0, '每月额度不能是负数').max(maxMonthlyQuotaCredits, `每月额度不能超过 ${maxMonthlyQuotaCredits}`).nullish(),
+    credits: z
+      .number()
+      .int('每月额度必须是整数积分')
+      .min(0, '每月额度不能是负数')
+      .max(maxMonthlyQuotaCredits, `每月额度不能超过 ${maxMonthlyQuotaCredits}`)
+      .nullish(),
     expectedRevision: z.number().int().min(1).nullish(),
     note: z.string().trim().max(500).nullish(),
   })
@@ -327,14 +361,19 @@ export const adminIssueRequestSchema = z
     userId: idSchema.optional(),
     userIds: z.array(idSchema).min(1).max(maxIssueUsers).optional(),
     kind: z.enum(issueKinds),
-    credits: z.number().int(`发放数量必须是整数积分`).min(1, '发放数量必须大于 0').max(maxIssueCredits, `单次发放不能超过 ${maxIssueCredits} 积分`),
+    credits: z
+      .number()
+      .int(`发放数量必须是整数积分`)
+      .min(1, '发放数量必须大于 0')
+      .max(maxIssueCredits, `单次发放不能超过 ${maxIssueCredits} 积分`),
     reason: z.string().trim().min(1, '请填写发放理由').max(500, '发放理由最多 500 字'),
     requestId: z.string().trim().min(1).max(128),
   })
   .superRefine((value, ctx) => {
     const single = value.userId !== undefined;
     const batch = value.userIds !== undefined && value.userIds.length > 0;
-    if (single === batch) ctx.addIssue({ code: 'custom', message: '必须且只能指定 userId 或 userIds 之一' });
+    if (single === batch)
+      ctx.addIssue({ code: 'custom', message: '必须且只能指定 userId 或 userIds 之一' });
   });
 export type AdminIssueRequest = z.infer<typeof adminIssueRequestSchema>;
 
@@ -417,7 +456,7 @@ export type AdminCreditLedgerQuery = z.infer<typeof adminCreditLedgerQuerySchema
  * `unpriced` 一步都算不出钱、`reversed` 全部原始分录已被反向分录覆盖（90 的冲正）。
  */
 export const chargeStatuses = ['settled', 'estimated', 'partial', 'unpriced', 'reversed'] as const;
-export type ChargeStatus = typeof chargeStatuses[number];
+export type ChargeStatus = (typeof chargeStatuses)[number];
 export const chargeStatusLabels: Record<ChargeStatus, string> = {
   settled: '已结算',
   estimated: '估算',
@@ -464,7 +503,10 @@ export type UsageSnapshotStep = {
 /** 扣减落在哪种积分上：`limited` 是限时积分（有到期时间），`lasting` 是长期积分。 */
 export const creditBuckets = ['limited', 'lasting'] as const;
 export type CreditBucket = (typeof creditBuckets)[number];
-export const creditBucketLabels: Record<CreditBucket, string> = { limited: '限时积分', lasting: '长期积分' };
+export const creditBucketLabels: Record<CreditBucket, string> = {
+  limited: '限时积分',
+  lasting: '长期积分',
+};
 
 /** 一笔 Charge 的原始扣减分录（按积分种类拆分）：正数为扣减金额。 */
 export type ChargeEntryView = { bucket: CreditBucket; credits: number };
@@ -473,18 +515,28 @@ export type ChargeEntryView = { bucket: CreditBucket; credits: number };
  * 一条冲正分录：按原分录的积分种类同额退回，`credits` 为负数（退了多少），`reason` 说明退还原因
  * ——自动冲正固定写 `platformReversalReason`，人工冲正写管理员填的原因（92）。
  */
-export type ChargeReversalView = { bucket: CreditBucket; credits: number; reason: string | null; createTime: string };
+export type ChargeReversalView = {
+  bucket: CreditBucket;
+  credits: number;
+  reason: string | null;
+  createTime: string;
+};
 
 /**
  * 平台自身故障导致的终止：先按实收结算，再自动整笔冲正，用户实际不承担费用
  * （`docs/adr/0004-credit-billing.md`「Outcome decides reversibility, not amount」）。
  * 其余终态一律按实收——`interrupted` 也是：进程崩溃时 token 确实烧掉了。
  */
-export const platformFaultStopReasons = ['initialization-failed', 'lease-lost'] as const satisfies readonly GenerationStopReason[];
+export const platformFaultStopReasons = [
+  'initialization-failed',
+  'lease-lost',
+] as const satisfies readonly GenerationStopReason[];
 
 /** 归责判定的唯一实现处：服务端结算与界面文案都读它，不各自再写一份停止原因列表。 */
 export function isPlatformFault(stopReason: GenerationStopReason | null): boolean {
-  return stopReason !== null && (platformFaultStopReasons as readonly string[]).includes(stopReason);
+  return (
+    stopReason !== null && (platformFaultStopReasons as readonly string[]).includes(stopReason)
+  );
 }
 
 /** 自动冲正写进 `credit_entry.reason` 的固定文案：界面与对账据此区分自动退还与人工冲正。 */
@@ -575,7 +627,12 @@ export const reconcileOutcomeLabels: Record<ReconcileOutcome, string> = {
 export type ReconcileItem = { generationId: string; outcome: ReconcileOutcome; reason?: string };
 
 /** `reconcileSettlements` 的汇总：`settled`/`skipped` 只数新建与未变动的条目，补记与失败看 `results`。 */
-export type ReconcileRun = { scanned: number; settled: number; skipped: number; results: ReconcileItem[] };
+export type ReconcileRun = {
+  scanned: number;
+  settled: number;
+  skipped: number;
+  results: ReconcileItem[];
+};
 
 /** `POST admin/billing/reconcile` 的请求体：默认全库扫 50 条；`generationId` 用于后台单条重试。 */
 export const reconcileRequestSchema = z.object({
@@ -622,9 +679,15 @@ export const insufficientCreditsCode = 40201;
  * 支付通道尚未开通，所以唯一可执行的下一步是「联系管理员补充 Credit」——不给充值/购买入口，
  * 那是兑现不了的按钮。
  */
-export function insufficientCreditsMessage(available: { available: number; limited: number; lasting: number }): string {
-  return `当前可用积分为 ${available.available}（限时 ${available.limited} + 长期 ${available.lasting}），`
-    + '不足以开始新的生成。请联系管理员补充积分后再提交。';
+export function insufficientCreditsMessage(available: {
+  available: number;
+  limited: number;
+  lasting: number;
+}): string {
+  return (
+    `当前可用积分为 ${available.available}（限时 ${available.limited} + 长期 ${available.lasting}），` +
+    '不足以开始新的生成。请联系管理员补充积分后再提交。'
+  );
 }
 
 // ---- Admin 全用户额度总览 ----
@@ -639,7 +702,13 @@ export const adminCreditFilterLabels: Record<AdminCreditFilter, string> = {
 };
 
 /** 列表排序；金额字段是可用额与限时积分。 */
-export const adminCreditSorts = ['id_desc', 'available_desc', 'available_asc', 'limited_desc', 'limited_asc'] as const;
+export const adminCreditSorts = [
+  'id_desc',
+  'available_desc',
+  'available_asc',
+  'limited_desc',
+  'limited_asc',
+] as const;
 export type AdminCreditSort = (typeof adminCreditSorts)[number];
 export const adminCreditSortLabels: Record<AdminCreditSort, string> = {
   id_desc: '用户 ID（新到旧）',

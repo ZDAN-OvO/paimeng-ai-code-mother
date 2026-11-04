@@ -3,12 +3,22 @@ import { useEffect, useState } from 'react';
 import { App, Form, Input, InputNumber, Modal, Radio, Select } from 'antd';
 import { api } from '@/client/api';
 import {
-  maxMonthlyQuotaCredits, quotaPolicySourceLabels,
-  type AdminCreditUser, type QuotaPolicyAdminView, type QuotaPolicySaveReceipt, type QuotaPolicyView,
+  maxMonthlyQuotaCredits,
+  quotaPolicySourceLabels,
+  type AdminCreditUser,
+  type QuotaPolicyAdminView,
+  type QuotaPolicySaveReceipt,
+  type QuotaPolicyView,
 } from '@/shared/billing';
 import styles from './credit-page.module.css';
 
-type RuleForm = { scope: 'global' | 'user'; effectivePeriod: string; mode: 'inherit' | 'override'; credits: number; note: string };
+type RuleForm = {
+  scope: 'global' | 'user';
+  effectivePeriod: string;
+  mode: 'inherit' | 'override';
+  credits: number;
+  note: string;
+};
 
 function nextMonths(count: number): string[] {
   const now = new Date();
@@ -21,54 +31,99 @@ function nextMonths(count: number): string[] {
   });
 }
 
-function revisionFor(versions: QuotaPolicyView[], scope: 'global' | 'user', period: string): number | null {
-  const matching = versions.filter(version => version.effectivePeriod === period && version.scope === scope);
-  return matching.length ? Math.max(...matching.map(version => version.revision)) : null;
+function revisionFor(
+  versions: QuotaPolicyView[],
+  scope: 'global' | 'user',
+  period: string,
+): number | null {
+  const matching = versions.filter(
+    (version) => version.effectivePeriod === period && version.scope === scope,
+  );
+  return matching.length ? Math.max(...matching.map((version) => version.revision)) : null;
 }
 
 /**
  * 改规则：只影响从选定账期开始的每月自动发放，不改已发的月份。
  * 当月要改某个人，用发放弹窗追加条目——规则不追溯。
  */
-function RuleFormBody({ form, policy, user }: {
+function RuleFormBody({
+  form,
+  policy,
+  user,
+}: {
   form: ReturnType<typeof Form.useForm<RuleForm>>[0];
   policy: QuotaPolicyAdminView | null;
   user: AdminCreditUser | null;
 }) {
   const scope = Form.useWatch('scope', form) ?? 'global';
   const mode = Form.useWatch('mode', form) ?? 'override';
-  return <>
-    <p className={styles.hint}>这是一条规则，不是一次发放：保存只影响从这里选的账期开始，不改已发的月份。</p>
-    <Form form={form} layout="vertical" initialValues={{ scope: 'global', mode: 'override' }}>
-      <Form.Item name="scope" label="范围">
-        <Radio.Group optionType="button">
-          <Radio.Button value="global">全局默认</Radio.Button>
-          <Radio.Button value="user" disabled={!user}>该用户</Radio.Button>
-        </Radio.Group>
-      </Form.Item>
-      {scope === 'user' && <Form.Item name="mode" label="用户规则">
-        <Radio.Group optionType="button">
-          <Radio.Button value="inherit">继承全局</Radio.Button>
-          <Radio.Button value="override">覆盖金额</Radio.Button>
-        </Radio.Group>
-      </Form.Item>}
-      {!(scope === 'user' && mode === 'inherit') && <Form.Item name="credits" label="每月发放（积分）" rules={[{ required: true, message: '请填写金额' }]}>
-        <InputNumber min={0} max={maxMonthlyQuotaCredits} precision={0} style={{ width: '100%' }} />
-      </Form.Item>}
-      <Form.Item name="effectivePeriod" label="生效账期" rules={[{ required: true, message: '请选择生效账期' }]}>
-        <Select options={(policy ? [...new Set([policy.nextPeriod, ...nextMonths(4)])] : []).map(period => ({ value: period, label: period }))} />
-      </Form.Item>
-      <Form.Item name="note" label="备注（可选）">
-        <Input maxLength={500} />
-      </Form.Item>
-    </Form>
-    {user && policy?.user && <p className={styles.hint}>
-      该用户当前：{policy.user.current.credits} 积分/月（{quotaPolicySourceLabels[policy.user.current.source]}）
-    </p>}
-  </>;
+  return (
+    <>
+      <p className={styles.hint}>
+        这是一条规则，不是一次发放：保存只影响从这里选的账期开始，不改已发的月份。
+      </p>
+      <Form form={form} layout="vertical" initialValues={{ scope: 'global', mode: 'override' }}>
+        <Form.Item name="scope" label="范围">
+          <Radio.Group optionType="button">
+            <Radio.Button value="global">全局默认</Radio.Button>
+            <Radio.Button value="user" disabled={!user}>
+              该用户
+            </Radio.Button>
+          </Radio.Group>
+        </Form.Item>
+        {scope === 'user' && (
+          <Form.Item name="mode" label="用户规则">
+            <Radio.Group optionType="button">
+              <Radio.Button value="inherit">继承全局</Radio.Button>
+              <Radio.Button value="override">覆盖金额</Radio.Button>
+            </Radio.Group>
+          </Form.Item>
+        )}
+        {!(scope === 'user' && mode === 'inherit') && (
+          <Form.Item
+            name="credits"
+            label="每月发放（积分）"
+            rules={[{ required: true, message: '请填写金额' }]}
+          >
+            <InputNumber
+              min={0}
+              max={maxMonthlyQuotaCredits}
+              precision={0}
+              style={{ width: '100%' }}
+            />
+          </Form.Item>
+        )}
+        <Form.Item
+          name="effectivePeriod"
+          label="生效账期"
+          rules={[{ required: true, message: '请选择生效账期' }]}
+        >
+          <Select
+            options={(policy ? [...new Set([policy.nextPeriod, ...nextMonths(4)])] : []).map(
+              (period) => ({ value: period, label: period }),
+            )}
+          />
+        </Form.Item>
+        <Form.Item name="note" label="备注（可选）">
+          <Input maxLength={500} />
+        </Form.Item>
+      </Form>
+      {user && policy?.user && (
+        <p className={styles.hint}>
+          该用户当前：{policy.user.current.credits} 积分/月（
+          {quotaPolicySourceLabels[policy.user.current.source]}）
+        </p>
+      )}
+    </>
+  );
 }
 
-export function CreditRuleDialog({ open, user, onClose, onDone }: {
+export function CreditRuleDialog({
+  open,
+  user,
+  onClose,
+  onDone,
+}: {
   open: boolean;
   user: AdminCreditUser | null;
   onClose: () => void;
@@ -85,7 +140,7 @@ export function CreditRuleDialog({ open, user, onClose, onDone }: {
     setLoading(true);
     const suffix = user ? `?userId=${encodeURIComponent(user.userId)}` : '';
     api<QuotaPolicyAdminView>('admin/billing/quota/policy' + suffix)
-      .then(data => {
+      .then((data) => {
         setPolicy(data);
         form.setFieldsValue({
           scope: 'global',
@@ -95,7 +150,7 @@ export function CreditRuleDialog({ open, user, onClose, onDone }: {
           note: '',
         });
       })
-      .catch(problem => message.error((problem as Error).message))
+      .catch((problem) => message.error((problem as Error).message))
       .finally(() => setLoading(false));
   }, [open, user, form, message]);
 
@@ -109,7 +164,8 @@ export function CreditRuleDialog({ open, user, onClose, onDone }: {
     }
     setBusy(true);
     try {
-      const versions = values.scope === 'global' ? policy.global.versions : policy.user?.versions ?? [];
+      const versions =
+        values.scope === 'global' ? policy.global.versions : (policy.user?.versions ?? []);
       await api<QuotaPolicySaveReceipt>('admin/billing/quota/policy', {
         scope: values.scope,
         userId: values.scope === 'user' ? user?.userId : undefined,
@@ -129,16 +185,18 @@ export function CreditRuleDialog({ open, user, onClose, onDone }: {
     }
   }
 
-  return <Modal
-    open={open}
-    title="改「每月自动发放的限时积分」"
-    onCancel={onClose}
-    onOk={() => void submit()}
-    confirmLoading={busy || loading}
-    okText="保存规则"
-    cancelText="取消"
-    destroyOnHidden
-  >
-    {open && <RuleFormBody form={form} policy={policy} user={user} />}
-  </Modal>;
+  return (
+    <Modal
+      open={open}
+      title="改「每月自动发放的限时积分」"
+      onCancel={onClose}
+      onOk={() => void submit()}
+      confirmLoading={busy || loading}
+      okText="保存规则"
+      cancelText="取消"
+      destroyOnHidden
+    >
+      {open && <RuleFormBody form={form} policy={policy} user={user} />}
+    </Modal>
+  );
 }

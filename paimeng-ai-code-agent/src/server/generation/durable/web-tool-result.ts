@@ -9,5 +9,8 @@ import type { ToolStatus } from '../tools/web/types';
  * 「正在联网搜索…」这类占位，搜索结果全部看不见。
  */
 export function webToolResult<T>(value: ToolStatus<T>) {
-  return { output: [{ type: 'text' as const, text: JSON.stringify(value) }], details: value as unknown as JsonValue };
+  return {
+    output: [{ type: 'text' as const, text: JSON.stringify(value) }],
+    details: value as unknown as JsonValue,
+  };
 }

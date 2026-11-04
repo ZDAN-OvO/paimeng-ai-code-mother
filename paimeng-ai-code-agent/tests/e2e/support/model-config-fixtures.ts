@@ -1,5 +1,8 @@
 import pg from 'pg';
-import { emptyModelConfigDocument, type ModelConfigDocument } from '../../../src/shared/model-document';
+import {
+  emptyModelConfigDocument,
+  type ModelConfigDocument,
+} from '../../../src/shared/model-document';
 import { testDatabaseUrl } from '../../support/test-database-url';
 
 export async function testConnection(): Promise<pg.Client> {
@@ -14,7 +17,11 @@ export async function grantAdmin(client: pg.Client, account: string) {
   await client.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [account]);
 }
 
-async function writeModelConfig(client: pg.Client, document: ModelConfigDocument, revision: number) {
+async function writeModelConfig(
+  client: pg.Client,
+  document: ModelConfigDocument,
+  revision: number,
+) {
   await client.query(
     `INSERT INTO app_config (key, revision, refresh_epoch, value, updated_at)
      VALUES ('model_config', $1, 0, $2::jsonb, timezone('UTC', now()))
@@ -40,50 +47,66 @@ export async function seedModelConfig(client: pg.Client, baseUrl = 'https://api.
     upstreamUsd: null,
     note: null,
   };
-  await writeModelConfig(client, {
-    schemaVersion: 1,
-    providers: [{
-      id: 'env-default',
-      displayName: '默认提供商',
-      apiFormat: 'openai-chat',
-      baseUrl,
-      apiKey: { source: 'env', env: 'AI_API_KEY' },
-      options: {},
-      headers: {},
-      enabled: true,
-      models: [
+  await writeModelConfig(
+    client,
+    {
+      schemaVersion: 1,
+      providers: [
         {
-          id: 'pm_e2e1',
-          upstream: 'test-codegen-model',
-          displayName: 'test-codegen-model',
+          id: 'env-default',
+          displayName: '默认提供商',
+          apiFormat: 'openai-chat',
+          baseUrl,
+          apiKey: { source: 'env', env: 'AI_API_KEY' },
+          options: {},
+          headers: {},
           enabled: true,
-          capabilities: { streaming: true, toolCalling: true, structuredOutput: false, imageInput: false },
-          upstreamPrice: null,
-          prices: [{ ...price }],
-          createTime: timestamp,
-          updateTime: timestamp,
-        },
-        {
-          id: 'pm_e2e2',
-          upstream: 'test-route-model',
-          displayName: 'test-route-model',
-          enabled: true,
-          capabilities: { streaming: false, toolCalling: false, structuredOutput: true, imageInput: false },
-          upstreamPrice: null,
-          prices: [{ ...price }],
+          models: [
+            {
+              id: 'pm_e2e1',
+              upstream: 'test-codegen-model',
+              displayName: 'test-codegen-model',
+              enabled: true,
+              capabilities: {
+                streaming: true,
+                toolCalling: true,
+                structuredOutput: false,
+                imageInput: false,
+              },
+              upstreamPrice: null,
+              prices: [{ ...price }],
+              createTime: timestamp,
+              updateTime: timestamp,
+            },
+            {
+              id: 'pm_e2e2',
+              upstream: 'test-route-model',
+              displayName: 'test-route-model',
+              enabled: true,
+              capabilities: {
+                streaming: false,
+                toolCalling: false,
+                structuredOutput: true,
+                imageInput: false,
+              },
+              upstreamPrice: null,
+              prices: [{ ...price }],
+              createTime: timestamp,
+              updateTime: timestamp,
+            },
+          ],
           createTime: timestamp,
           updateTime: timestamp,
         },
       ],
-      createTime: timestamp,
-      updateTime: timestamp,
-    }],
-    slots: [
-      { slot: 'codegen.default', modelId: 'pm_e2e1', settings: {} },
-      { slot: 'route.classify', modelId: 'pm_e2e2', settings: {} },
-    ],
-    legacyPrices: [],
-  }, 1);
+      slots: [
+        { slot: 'codegen.default', modelId: 'pm_e2e1', settings: {} },
+        { slot: 'route.classify', modelId: 'pm_e2e2', settings: {} },
+      ],
+      legacyPrices: [],
+    },
+    1,
+  );
 }
 
 export async function readProviderHeaders(client: pg.Client): Promise<Record<string, string>> {

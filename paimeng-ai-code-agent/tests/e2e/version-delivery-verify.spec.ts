@@ -39,14 +39,20 @@ async function previewUrl(page: Page): Promise<string> {
   return data.previewUrl as string;
 }
 
-async function versions(page: Page): Promise<{ current: { versionId: string } | null; versions: { id: string; title: string }[] }> {
-  const response = await page.request.get('/api/app/versions?appId=' + appId, { headers: { origin } });
+async function versions(
+  page: Page,
+): Promise<{ current: { versionId: string } | null; versions: { id: string; title: string }[] }> {
+  const response = await page.request.get('/api/app/versions?appId=' + appId, {
+    headers: { origin },
+  });
   expect(response.ok()).toBe(true);
   return (await response.json()).data;
 }
 
 async function waitForVersionCount(page: Page, count: number) {
-  await expect.poll(async () => (await versions(page)).versions.length, { timeout: 120_000 }).toBe(count);
+  await expect
+    .poll(async () => (await versions(page)).versions.length, { timeout: 120_000 })
+    .toBe(count);
 }
 
 test.beforeAll(async () => {
@@ -57,8 +63,14 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   if (appId) {
-    await rm(join(workspaceRoot, 'runtime/code_output', 'multi_file_' + appId), { recursive: true, force: true }).catch(() => undefined);
-    await rm(join(workspaceRoot, 'runtime/versionstore/versions', 'multi_file_' + appId), { recursive: true, force: true }).catch(() => undefined);
+    await rm(join(workspaceRoot, 'runtime/code_output', 'multi_file_' + appId), {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
+    await rm(join(workspaceRoot, 'runtime/versionstore/versions', 'multi_file_' + appId), {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
     await db.query('delete from app where id = $1', [appId]).catch(() => undefined);
   }
   await db?.end().catch(() => undefined);
@@ -67,7 +79,7 @@ test.afterAll(async () => {
 test('两版真实切换、外部资源、下载和部署都使用对应交付', async ({ page }) => {
   test.setTimeout(240_000);
   const errors: string[] = [];
-  page.on('pageerror', error => errors.push(error.message));
+  page.on('pageerror', (error) => errors.push(error.message));
 
   const proofUser = await loginAsProofAccount(page);
 
@@ -92,10 +104,16 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
   await expect(firstPreview.getByText('交互成功', { exact: true })).toBeVisible();
 
   const firstPreviewUrl = await previewUrl(page);
-  const stylesheet = await page.request.get(new URL('style.css', firstPreviewUrl.endsWith('/') ? firstPreviewUrl : firstPreviewUrl + '/').href);
+  const stylesheet = await page.request.get(
+    new URL('style.css', firstPreviewUrl.endsWith('/') ? firstPreviewUrl : firstPreviewUrl + '/')
+      .href,
+  );
   expect(stylesheet.status()).toBe(200);
   expect(await stylesheet.text()).toContain('font-family');
-  const script = await page.request.get(new URL('script.js', firstPreviewUrl.endsWith('/') ? firstPreviewUrl : firstPreviewUrl + '/').href);
+  const script = await page.request.get(
+    new URL('script.js', firstPreviewUrl.endsWith('/') ? firstPreviewUrl : firstPreviewUrl + '/')
+      .href,
+  );
   expect(script.status()).toBe(200);
   expect(await script.text()).toContain('交互成功');
 
@@ -107,9 +125,13 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
   await expect(page.getByText('可预览', { exact: true })).toBeVisible({ timeout: 90_000 });
   const secondVersions = await versions(page);
   expect(secondVersions.versions).toHaveLength(2);
-  const secondVersion = secondVersions.versions.find(version => version.id !== firstVersion.id);
+  const secondVersion = secondVersions.versions.find((version) => version.id !== firstVersion.id);
   expect(secondVersion).toBeTruthy();
-  await expect(page.frameLocator('iframe[title="应用预览"]').getByRole('heading', { name: secondPrompt, exact: true })).toBeVisible();
+  await expect(
+    page
+      .frameLocator('iframe[title="应用预览"]')
+      .getByRole('heading', { name: secondPrompt, exact: true }),
+  ).toBeVisible();
 
   const beforeRestore = await db.query<{ versions: number; deliveries: number }>(
     `select
@@ -128,7 +150,11 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
   await page.getByRole('button', { name: /^版\s*本$/ }).click();
   await expect(page.getByRole('dialog', { name: /版本历史/ })).toBeVisible();
   await expect(page.locator('.version-tree-row')).toHaveCount(2);
-  await page.screenshot({ path: join(evidence, '01-two-versions.png'), fullPage: true, animations: 'disabled' });
+  await page.screenshot({
+    path: join(evidence, '01-two-versions.png'),
+    fullPage: true,
+    animations: 'disabled',
+  });
 
   // 夹具的版本标题都来自同一句最终回复，不保证唯一；清单按时间倒序，最早的第一版是最后一行。
   const firstRow = page.locator('.version-tree-row').last();
@@ -138,14 +164,24 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
   await expect(page.getByText(/已换成/)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByRole('dialog', { name: /版本历史/ })).toBeHidden({ timeout: 60_000 });
 
-  await expect(page.frameLocator('iframe[title="应用预览"]').getByRole('heading', { name: firstPrompt, exact: true })).toBeVisible();
+  await expect(
+    page
+      .frameLocator('iframe[title="应用预览"]')
+      .getByRole('heading', { name: firstPrompt, exact: true }),
+  ).toBeVisible();
   const afterRestore = await versions(page);
   expect(afterRestore.current?.versionId).toBe(firstVersion.id);
   expect(afterRestore.versions).toHaveLength(2);
   const countsAfterRestore = await db.query<{
-    versions: number; deliveries: number; running: number; pointer_version: string | null;
-    pointer_delivery: string | null; pointer_revision: number | null;
-    authority_delivery: string | null; authority_revision: number | null; authority_draft: string | null;
+    versions: number;
+    deliveries: number;
+    running: number;
+    pointer_version: string | null;
+    pointer_delivery: string | null;
+    pointer_revision: number | null;
+    authority_delivery: string | null;
+    authority_revision: number | null;
+    authority_draft: string | null;
   }>(
     `select
        (select count(*)::int from version_record where app_id = $1) as versions,
@@ -170,7 +206,9 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
     authority_delivery: firstDeliveryId,
   });
   expect(Number(countsAfterRestore.rows[0].pointer_revision)).toBeGreaterThanOrEqual(1);
-  expect(Number(countsAfterRestore.rows[0].authority_revision)).toBe(Number(countsAfterRestore.rows[0].pointer_revision));
+  expect(Number(countsAfterRestore.rows[0].authority_revision)).toBe(
+    Number(countsAfterRestore.rows[0].pointer_revision),
+  );
   expect(countsAfterRestore.rows[0].authority_draft).toBeNull();
   await page.screenshot({ path: join(evidence, '02-restored-first-version.png'), fullPage: true });
 
@@ -180,9 +218,13 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
   const download = await downloadPromise;
   const downloadPath = await download.path();
   expect(downloadPath).not.toBeNull();
-  const zippedIndex = execFileSync('unzip', ['-p', downloadPath!, 'index.html'], { encoding: 'utf8' });
-  const zippedCss = execFileSync('unzip', ['-p', downloadPath!, 'style.css'], { encoding: 'utf8' });
-  const zippedScript = execFileSync('unzip', ['-p', downloadPath!, 'script.js'], { encoding: 'utf8' });
+  const zippedIndex = execFileSync('unzip', ['-p', downloadPath, 'index.html'], {
+    encoding: 'utf8',
+  });
+  const zippedCss = execFileSync('unzip', ['-p', downloadPath, 'style.css'], { encoding: 'utf8' });
+  const zippedScript = execFileSync('unzip', ['-p', downloadPath, 'script.js'], {
+    encoding: 'utf8',
+  });
   expect(zippedIndex).toContain(firstPrompt);
   expect(zippedCss).toContain('font-family');
   expect(zippedScript).toContain('交互成功');
@@ -198,10 +240,15 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
   expect(deployedHtml).toContain(firstPrompt);
   expect(deployedHtml).not.toContain(secondPrompt);
   const deployedBase = new URL(deployUrl!, origin).href;
-  const deployedCss = await page.request.get(new URL('style.css', deployedBase.endsWith('/') ? deployedBase : deployedBase + '/').href);
+  const deployedCss = await page.request.get(
+    new URL('style.css', deployedBase.endsWith('/') ? deployedBase : deployedBase + '/').href,
+  );
   expect(deployedCss.status()).toBe(200);
   expect(await deployedCss.text()).toContain('font-family');
-  await page.getByRole('dialog').getByRole('button', { name: /^关\s*闭$/ }).click();
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: /^关\s*闭$/ })
+    .click();
 
   const finalCounts = await db.query<{ versions: number; deliveries: number; running: number }>(
     `select
@@ -211,23 +258,33 @@ test('两版真实切换、外部资源、下载和部署都使用对应交付',
     [appId],
   );
   expect(finalCounts.rows[0]).toEqual({ versions: 2, deliveries: 2, running: 0 });
-  await page.screenshot({ path: join(evidence, '03-deployed-restored-version.png'), fullPage: true });
+  await page.screenshot({
+    path: join(evidence, '03-deployed-restored-version.png'),
+    fullPage: true,
+  });
 
-  await writeFile(join(evidence, 'proof.json'), JSON.stringify({
-    account: proofUser.userAccount,
-    accountId: proofUser.id,
-    appId,
-    firstVersion: firstVersion.id,
-    secondVersionId: secondVersion!.id,
-    firstDeliveryId,
-    beforeRestore: beforeRestore.rows[0],
-    afterRestore: countsAfterRestore.rows[0],
-    final: finalCounts.rows[0],
-    firstPreviewAssets: { stylesheet: stylesheet.status(), script: script.status() },
-    download: { index: true, style: true, script: true },
-    deployed: { url: deployUrl, firstVersion: true, secondVersionExcluded: true },
-    generatedAt: stamp(),
-  }, null, 2) + '\n');
+  await writeFile(
+    join(evidence, 'proof.json'),
+    JSON.stringify(
+      {
+        account: proofUser.userAccount,
+        accountId: proofUser.id,
+        appId,
+        firstVersion: firstVersion.id,
+        secondVersionId: secondVersion!.id,
+        firstDeliveryId,
+        beforeRestore: beforeRestore.rows[0],
+        afterRestore: countsAfterRestore.rows[0],
+        final: finalCounts.rows[0],
+        firstPreviewAssets: { stylesheet: stylesheet.status(), script: script.status() },
+        download: { index: true, style: true, script: true },
+        deployed: { url: deployUrl, firstVersion: true, secondVersionExcluded: true },
+        generatedAt: stamp(),
+      },
+      null,
+      2,
+    ) + '\n',
+  );
 
   expect(errors).toEqual([]);
 });

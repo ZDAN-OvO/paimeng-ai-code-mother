@@ -7,16 +7,41 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { db, getPool, now } from '@/server/infra/db';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import {
-  appAuthority, apps, creditBalance, creditCharges, creditLedger, generationExecutions,
-  generationInputs, generationSteps, generationTransitions, generations, sessions, users, versionRecords,
+  appAuthority,
+  apps,
+  creditBalance,
+  creditCharges,
+  creditLedger,
+  generationExecutions,
+  generationInputs,
+  generationSteps,
+  generationTransitions,
+  generations,
+  sessions,
+  users,
+  versionRecords,
 } from '@/server/infra/schema';
 import { publicUser } from '@/server/auth/auth';
 import { rebuildBalance } from '@/server/billing/ledger';
 import { harnessChatResponse } from '@/server/generation/durable-engine';
 import { generationFor } from '@/server/generation/generation-store';
 import { testDatabaseUrl } from '../../support/test-database-url';
-import { applyBillingMigrations, billingRateProvider, purgeBillingRateCards, seedBillingRate } from '../../support/billing';
-import { baseUrl, freePort, harnessAvailable, postgresReachable, postgresUrl, startHarness, stopHarness, waitHealthy } from './support';
+import {
+  applyBillingMigrations,
+  billingRateProvider,
+  purgeBillingRateCards,
+  seedBillingRate,
+} from '../../support/billing';
+import {
+  baseUrl,
+  freePort,
+  harnessAvailable,
+  postgresReachable,
+  postgresUrl,
+  startHarness,
+  stopHarness,
+  waitHealthy,
+} from './support';
 
 /**
  * 运行期透支熔断的中止链路（票 95）：真 harness 子进程 + 真 `harnessChatResponse`。
@@ -31,14 +56,16 @@ import { baseUrl, freePort, harnessAvailable, postgresReachable, postgresUrl, st
  * 只有这条用量是注入的。纯计费口径在 tests/integration/billing/overdraft.test.ts 覆盖。
  */
 
-process.env.DATABASE_URL = testDatabaseUrl('postgres://postgres:postgres@127.0.0.1:5432/paimeng_app');
+process.env.DATABASE_URL = testDatabaseUrl(
+  'postgres://postgres:postgres@127.0.0.1:5432/paimeng_app',
+);
 process.env.AI_MODE = 'fixture';
 
-const available = harnessAvailable() && await postgresReachable(postgresUrl);
+const available = harnessAvailable() && (await postgresReachable(postgresUrl));
 if (!available) process.stderr.write('[overdraft-abort] 跳过：需要本地 Postgres 与产品 harness\n');
 
 const rateModel = 'model-overdraft-harness';
-const delay = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
+const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 let userId = 0n;
 let appId = 0n;
@@ -49,17 +76,33 @@ beforeAll(async () => {
   await applyBillingMigrations('024_credit_ledger.sql');
   userId = await nextSnowflakeId();
   appId = await nextSnowflakeId();
-  await db().insert(users).values({
-    id: userId, userAccount: `overdraft_${randomUUID()}`, userPassword: 'unused', userRole: 'user',
-    createTime: now(), updateTime: now(),
-  });
+  await db()
+    .insert(users)
+    .values({
+      id: userId,
+      userAccount: `overdraft_${randomUUID()}`,
+      userPassword: 'unused',
+      userRole: 'user',
+      createTime: now(),
+      updateTime: now(),
+    });
   await db().insert(apps).values({
-    id: appId, appName: '透支熔断验收', initPrompt: '透支熔断验收', codeGenType: 'html',
-    userId, createTime: now(), updateTime: now(),
+    id: appId,
+    appName: '透支熔断验收',
+    initPrompt: '透支熔断验收',
+    codeGenType: 'html',
+    userId,
+    createTime: now(),
+    updateTime: now(),
   });
   // 准入要求可用额度 > 0；透支线来自购买，这里没有 purchase，所以透支线是 0。
   await db().insert(creditLedger).values({
-    userId, kind: 'grant', origin: 'manual', credits: 500, reason: '透支熔断验收', createTime: now(),
+    userId,
+    kind: 'grant',
+    origin: 'manual',
+    credits: 500,
+    reason: '透支熔断验收',
+    createTime: now(),
   });
   await rebuildBalance(String(userId));
   await seedBillingRate({ modelName: rateModel });
@@ -68,9 +111,15 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (createdGenerations.length) {
-    await db().delete(versionRecords).where(inArray(versionRecords.generationId, createdGenerations));
-    await db().delete(generationTransitions).where(inArray(generationTransitions.generationId, createdGenerations));
-    await db().delete(generationSteps).where(inArray(generationSteps.generationId, createdGenerations));
+    await db()
+      .delete(versionRecords)
+      .where(inArray(versionRecords.generationId, createdGenerations));
+    await db()
+      .delete(generationTransitions)
+      .where(inArray(generationTransitions.generationId, createdGenerations));
+    await db()
+      .delete(generationSteps)
+      .where(inArray(generationSteps.generationId, createdGenerations));
     await db().delete(creditLedger).where(inArray(creditLedger.chargeId, createdGenerations));
     await db().delete(creditCharges).where(inArray(creditCharges.generationId, createdGenerations));
     await db().delete(generations).where(inArray(generations.id, createdGenerations));
@@ -85,13 +134,18 @@ afterAll(async () => {
   await db().delete(users).where(eq(users.id, userId));
   await purgeBillingRateCards();
   await rm(runDir, { recursive: true, force: true }).catch(() => undefined);
-  await getPool().end().catch(() => undefined);
+  await getPool()
+    .end()
+    .catch(() => undefined);
 });
 
 async function waitForGeneration(generationId: string, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const [row] = await db().select({ id: generations.id }).from(generations).where(eq(generations.id, generationId));
+    const [row] = await db()
+      .select({ id: generations.id })
+      .from(generations)
+      .where(eq(generations.id, generationId));
     if (row) return;
     await delay(50);
   }
@@ -102,7 +156,8 @@ async function waitForTerminal(generationId: string, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const task = await generationFor(String(appId));
-    if (task?.id === generationId && task.status !== 'generating' && task.status !== 'building') return task;
+    if (task?.id === generationId && task.status !== 'generating' && task.status !== 'building')
+      return task;
     await delay(100);
   }
   throw new Error('生成没有在预期时间内结束');
@@ -111,10 +166,18 @@ async function waitForTerminal(generationId: string, timeoutMs = 60_000) {
 /** 模型调用进行中注入一条用量：900 秒都不用等，这一步本身就是「一次响应越线」。 */
 async function injectOversizedStep(generationId: string): Promise<void> {
   await db().insert(generationSteps).values({
-    generationId, kind: 'model', round: 1, stepNumber: 99,
-    providerId: billingRateProvider, modelName: rateModel,
-    inputTokens: 2_000_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0,
-    status: 'ok', createTime: now(),
+    generationId,
+    kind: 'model',
+    round: 1,
+    stepNumber: 99,
+    providerId: billingRateProvider,
+    modelName: rateModel,
+    inputTokens: 2_000_000,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: 0,
+    status: 'ok',
+    createTime: now(),
   });
 }
 
@@ -125,14 +188,28 @@ describe.skipIf(!available)('运行期透支熔断：真实 harness 子进程', 
     const base = baseUrl(port);
     process.env.DURABLE_HARNESS_URL = base;
     // 首轮模型调用先等 6 秒：这段时间足够注入用量行，并在下一次步骤边界被 #flushPending 看到。
-    const harness = startHarness({ port, runDir, reset: true, waitMs: 6000, finalText: 'OVERDRAFT_DONE' });
+    const harness = startHarness({
+      port,
+      runDir,
+      reset: true,
+      waitMs: 6000,
+      finalText: 'OVERDRAFT_DONE',
+    });
     const requestId = randomUUID();
     createdGenerations.push(requestId);
     try {
       await waitHealthy(base, 60_000);
       const response = await harnessChatResponse(
         new Request('http://localhost:3000/api/app/chat/gen/code', { method: 'POST' }),
-        { appId: String(appId), requestId, message: { id: `${requestId}-user`, role: 'user', parts: [{ type: 'text', text: '透支熔断验收' }] } },
+        {
+          appId: String(appId),
+          requestId,
+          message: {
+            id: `${requestId}-user`,
+            role: 'user',
+            parts: [{ type: 'text', text: '透支熔断验收' }],
+          },
+        },
         publicUser(row),
       );
       expect(response.status).toBe(200);
@@ -146,19 +223,33 @@ describe.skipIf(!available)('运行期透支熔断：真实 harness 子进程', 
       expect(task.error).toContain('已超出透支线');
 
       // 没有被发布：ready 是 publishReady 的唯一产物，状态转移与版本行都不该出现。
-      const transitions = await db().select().from(generationTransitions).where(eq(generationTransitions.generationId, requestId));
-      expect(transitions.map(item => item.toState)).not.toContain('ready');
-      expect(await db().select().from(versionRecords).where(eq(versionRecords.generationId, requestId))).toEqual([]);
+      const transitions = await db()
+        .select()
+        .from(generationTransitions)
+        .where(eq(generationTransitions.generationId, requestId));
+      expect(transitions.map((item) => item.toState)).not.toContain('ready');
+      expect(
+        await db().select().from(versionRecords).where(eq(versionRecords.generationId, requestId)),
+      ).toEqual([]);
 
       // 账单：注入的 2000 token 档位 1200 Credit + faux 的两步（用量 0、无费率）照实汇总。
-      const [charge] = await db().select().from(creditCharges).where(eq(creditCharges.generationId, requestId));
+      const [charge] = await db()
+        .select()
+        .from(creditCharges)
+        .where(eq(creditCharges.generationId, requestId));
       expect(charge).toBeDefined();
       expect(charge.credits).toBe(1200);
-      expect((await db().select().from(creditLedger).where(eq(creditLedger.chargeId, requestId)))
-        .reduce((sum, entry) => sum + entry.credits, 0)).toBe(-1200);
+      expect(
+        (await db().select().from(creditLedger).where(eq(creditLedger.chargeId, requestId))).reduce(
+          (sum, entry) => sum + entry.credits,
+          0,
+        ),
+      ).toBe(-1200);
 
       // harness 侧真的停了：中断之后不该还有活着的 run。
-      const runtime = await fetch(`${base}/runtime?conversationId=${await conversationIdOfApp()}`).then(res => res.json()) as { live: { run?: unknown } };
+      const runtime = (await fetch(
+        `${base}/runtime?conversationId=${await conversationIdOfApp()}`,
+      ).then((res) => res.json())) as { live: { run?: unknown } };
       expect(runtime.live.run).toBeFalsy();
     } finally {
       await stopHarness(harness);
@@ -168,7 +259,9 @@ describe.skipIf(!available)('运行期透支熔断：真实 harness 子进程', 
 
 /** 应用的 harness 会话 id：中止之后只能靠它去问 harness「run 还在不在」。 */
 async function conversationIdOfApp(): Promise<number> {
-  const [row] = await db().select({ conversationId: apps.conversationId }).from(apps)
+  const [row] = await db()
+    .select({ conversationId: apps.conversationId })
+    .from(apps)
     .where(and(eq(apps.id, appId)));
   if (!row?.conversationId) throw new Error('应用没有绑定 harness 会话');
   return row.conversationId;

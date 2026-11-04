@@ -23,7 +23,13 @@ const speechUploadFieldName = 'audio';
 /** 请求体读取上限：音频上限加 64 KiB 表单与头部余量；超过直接 413，不进入解析。 */
 const speechUploadBodyLimitBytes = speechLimits.maxBytes + 64 * 1024;
 /** 只接受浏览器 MediaRecorder 实际会产出的容器。 */
-const speechMediaTypes = ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg', 'audio/wav'] as const;
+const speechMediaTypes = [
+  'audio/webm',
+  'audio/ogg',
+  'audio/mp4',
+  'audio/mpeg',
+  'audio/wav',
+] as const;
 const speechMediaTypeHint = '只支持 webm、ogg、mp4（m4a）、mpeg（mp3）、wav 音频';
 
 const mediaTypeByExtension: Readonly<Record<string, string>> = {
@@ -40,7 +46,8 @@ const mediaTypeByExtension: Readonly<Record<string, string>> = {
 /** 声明类型优先（去掉 `;codecs=…` 参数），缺失时按扩展名兜底；白名单外或无法判定返回 null。 */
 function speechMediaType(declared: string | null, filename: string | null): string | null {
   const normalized = declared?.split(';')[0]?.trim().toLowerCase() ?? '';
-  if (normalized) return (speechMediaTypes as readonly string[]).includes(normalized) ? normalized : null;
+  if (normalized)
+    return (speechMediaTypes as readonly string[]).includes(normalized) ? normalized : null;
   const extension = filename?.split('.').pop()?.trim().toLowerCase() ?? '';
   return mediaTypeByExtension[extension] ?? null;
 }
@@ -55,19 +62,28 @@ const invalidMultipart = () => badRequest('multipart/form-data 解析失败');
 /** 转写通道绕开了 http.ts 的 JSON 体积上限（100000 字节），所以自行做来源校验。 */
 function guardSpeechRequest(req: Request): void {
   const config = getConfig();
-  if (new URL(req.url).origin !== config.appOrigin) throw new BusinessError(403, 40300, '管理接口来源不合法');
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.get('origin') !== config.appOrigin) throw new BusinessError(403, 40300, '写请求必须来自管理界面');
+  if (new URL(req.url).origin !== config.appOrigin)
+    throw new BusinessError(403, 40300, '管理接口来源不合法');
+  if (
+    !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
+    req.headers.get('origin') !== config.appOrigin
+  )
+    throw new BusinessError(403, 40300, '写请求必须来自管理界面');
 }
 
 function multipartBoundary(req: Request): string {
   const header = req.headers.get('content-type') ?? '';
   const [type, ...params] = header.split(';');
-  if (type.trim().toLowerCase() !== 'multipart/form-data') throw new BusinessError(415, 40000, '转写接口只接受 multipart/form-data');
+  if (type.trim().toLowerCase() !== 'multipart/form-data')
+    throw new BusinessError(415, 40000, '转写接口只接受 multipart/form-data');
   for (const param of params) {
     const separator = param.indexOf('=');
     if (separator < 0) continue;
     if (param.slice(0, separator).trim().toLowerCase() !== 'boundary') continue;
-    const value = param.slice(separator + 1).trim().replace(/^"(.*)"$/, '$1');
+    const value = param
+      .slice(separator + 1)
+      .trim()
+      .replace(/^"(.*)"$/, '$1');
     if (value) return value;
   }
   throw badRequest('multipart/form-data 缺少 boundary');
@@ -97,7 +113,10 @@ async function readRequestBytes(req: Request, maxBytes: number): Promise<Buffer>
 }
 
 /** 只在参数边界上匹配，避免 `filename` 误命中 `name`。 */
-function dispositionParameter(disposition: string | undefined, key: 'name' | 'filename'): string | null {
+function dispositionParameter(
+  disposition: string | undefined,
+  key: 'name' | 'filename',
+): string | null {
   if (!disposition) return null;
   const quoted = new RegExp(`(?:^|;\\s*)${key}="([^"]*)"`, 'i').exec(disposition);
   if (quoted) return quoted[1];
@@ -110,7 +129,10 @@ function dispositionParameter(disposition: string | undefined, key: 'name' | 'fi
  * 图片通道（image-upload.ts）的解析器是私有的、只认 `images` 字段且要解析文本字段，所以这里
  * 按同一套做法写一个更小的版本，只找音频文件。
  */
-function readAudioPart(body: Buffer, boundary: string): { contentType: string | null; filename: string; data: Buffer } {
+function readAudioPart(
+  body: Buffer,
+  boundary: string,
+): { contentType: string | null; filename: string; data: Buffer } {
   const delimiter = Buffer.from(`--${boundary}`, 'latin1');
   let cursor = body.indexOf(delimiter);
   if (cursor < 0) throw invalidMultipart();
@@ -129,12 +151,20 @@ function readAudioPart(body: Buffer, boundary: string): { contentType: string | 
     const headers = new Map<string, string>();
     for (const line of part.subarray(0, headerEnd).toString('utf8').split('\r\n')) {
       const separator = line.indexOf(':');
-      if (separator > 0) headers.set(line.slice(0, separator).trim().toLowerCase(), line.slice(separator + 1).trim());
+      if (separator > 0)
+        headers.set(
+          line.slice(0, separator).trim().toLowerCase(),
+          line.slice(separator + 1).trim(),
+        );
     }
     const disposition = headers.get('content-disposition');
     const filename = dispositionParameter(disposition, 'filename');
     if (dispositionParameter(disposition, 'name') === speechUploadFieldName && filename) {
-      return { contentType: headers.get('content-type') ?? null, filename, data: Buffer.from(part.subarray(headerEnd + 4)) };
+      return {
+        contentType: headers.get('content-type') ?? null,
+        filename,
+        data: Buffer.from(part.subarray(headerEnd + 4)),
+      };
     }
     cursor = next + delimiter.length;
   }
@@ -158,7 +188,8 @@ async function transcribeBinding(): Promise<AliasModel | null> {
  */
 function providerApiKey(provider: ModelProvider): string | null {
   if (provider.apiKeySource === 'env') {
-    if (!isAllowedModelApiKeyEnv(provider.apiKeyEnv, getConfig().modelApiKeyEnvAllowlist)) return null;
+    if (!isAllowedModelApiKeyEnv(provider.apiKeyEnv, getConfig().modelApiKeyEnvAllowlist))
+      return null;
     return process.env[provider.apiKeyEnv] ?? null;
   }
   try {
@@ -179,7 +210,9 @@ async function transcribeTarget(): Promise<TranscriptionTarget | null> {
   const binding = await transcribeBinding();
   if (!binding) return null;
   const snapshot = await readConfigSnapshot();
-  const provider = snapshot.providers.find(candidate => candidate.id === binding.providerId && candidate.enabled);
+  const provider = snapshot.providers.find(
+    (candidate) => candidate.id === binding.providerId && candidate.enabled,
+  );
   if (!provider) return null;
   const apiKey = providerApiKey(provider);
   if (!apiKey) return null;
@@ -206,9 +239,16 @@ const transcriptSchema = z.object({ text: z.string() });
  * 调用别名的 /audio/transcriptions。密钥只出现在请求头，错误文案里绝不回显它；
  * 上游状态码分支与 models/probe.ts 的探测保持一致，给出可操作的提示。
  */
-async function requestTranscription(target: TranscriptionTarget, audio: { contentType: string; filename: string; data: Buffer }): Promise<string> {
+async function requestTranscription(
+  target: TranscriptionTarget,
+  audio: { contentType: string; filename: string; data: Buffer },
+): Promise<string> {
   const form = new FormData();
-  form.append('file', new Blob([new Uint8Array(audio.data)], { type: audio.contentType }), audio.filename);
+  form.append(
+    'file',
+    new Blob([new Uint8Array(audio.data)], { type: audio.contentType }),
+    audio.filename,
+  );
   form.append('model', target.modelName);
   let response: Response;
   try {
@@ -220,14 +260,29 @@ async function requestTranscription(target: TranscriptionTarget, audio: { conten
       signal: AbortSignal.timeout(speechLimits.timeoutMs),
     });
   } catch (error) {
-    const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
-    throw new BusinessError(502, 50200, timedOut
-      ? `语音转写超过 ${speechLimits.timeoutMs / 1000} 秒没有响应`
-      : '无法连接语音转写服务，请检查网络与提供商地址');
+    const timedOut =
+      error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+    throw new BusinessError(
+      502,
+      50200,
+      timedOut
+        ? `语音转写超过 ${speechLimits.timeoutMs / 1000} 秒没有响应`
+        : '无法连接语音转写服务，请检查网络与提供商地址',
+    );
   }
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) throw new BusinessError(502, 50200, `语音转写服务拒绝了密钥（${response.status}），请检查别名 ${speechTranscribeAlias} 的提供商密钥`);
-    if (response.status === 404) throw new BusinessError(502, 50200, `语音转写服务没有 /audio/transcriptions 接口（404），请检查别名 ${speechTranscribeAlias} 的提供商地址`);
+    if (response.status === 401 || response.status === 403)
+      throw new BusinessError(
+        502,
+        50200,
+        `语音转写服务拒绝了密钥（${response.status}），请检查别名 ${speechTranscribeAlias} 的提供商密钥`,
+      );
+    if (response.status === 404)
+      throw new BusinessError(
+        502,
+        50200,
+        `语音转写服务没有 /audio/transcriptions 接口（404），请检查别名 ${speechTranscribeAlias} 的提供商地址`,
+      );
     throw new BusinessError(502, 50200, `语音转写服务返回 ${response.status}`);
   }
   const payload = transcriptSchema.safeParse(await response.json().catch(() => null));
@@ -243,8 +298,22 @@ export async function transcribeSpeech(req: Request): Promise<string> {
   const audio = readAudioPart(raw, boundary);
   const mediaType = speechMediaType(audio.contentType, audio.filename);
   if (!mediaType) throw badRequest(`不支持的音频格式：${speechMediaTypeHint}`);
-  if (audio.data.length > speechLimits.maxBytes) throw new BusinessError(413, 40000, `录音不能超过 ${speechLimits.maxBytes / (1024 * 1024)} MiB`);
+  if (audio.data.length > speechLimits.maxBytes)
+    throw new BusinessError(
+      413,
+      40000,
+      `录音不能超过 ${speechLimits.maxBytes / (1024 * 1024)} MiB`,
+    );
   const target = await transcribeTarget();
-  if (!target) throw new BusinessError(409, 40900, `未配置语音转写模型：请在模型管理里新增别名 ${speechTranscribeAlias}（OpenAI 兼容的 /audio/transcriptions）`);
-  return requestTranscription(target, { contentType: mediaType, filename: audio.filename, data: audio.data });
+  if (!target)
+    throw new BusinessError(
+      409,
+      40900,
+      `未配置语音转写模型：请在模型管理里新增别名 ${speechTranscribeAlias}（OpenAI 兼容的 /audio/transcriptions）`,
+    );
+  return requestTranscription(target, {
+    contentType: mediaType,
+    filename: audio.filename,
+    data: audio.data,
+  });
 }

@@ -14,7 +14,9 @@ export function harnessInstructions(app: AppInfo, hasImages: boolean): string {
     app,
     template: app.template,
     entry: app.template ? templateEntry(app.template) : null,
-    webInstruction: webAccess.enabled ? ` ${webAccessInstructions({ images: webAccess.images, strictLicense: webAccess.strictLicense })}` : '',
+    webInstruction: webAccess.enabled
+      ? ` ${webAccessInstructions({ images: webAccess.images, strictLicense: webAccess.strictLicense })}`
+      : '',
     hasImages,
   });
 }

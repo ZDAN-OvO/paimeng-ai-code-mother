@@ -30,19 +30,28 @@ function badRequest(message: string): BusinessError {
 /** 上传通道绕开了 http.ts 的 JSON 体积上限（100000 字节），所以自行做来源校验。 */
 export function guardImageUploadRequest(req: Request): void {
   const config = getConfig();
-  if (new URL(req.url).origin !== config.appOrigin) throw new BusinessError(403, 40300, '管理接口来源不合法');
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.get('origin') !== config.appOrigin) throw new BusinessError(403, 40300, '写请求必须来自管理界面');
+  if (new URL(req.url).origin !== config.appOrigin)
+    throw new BusinessError(403, 40300, '管理接口来源不合法');
+  if (
+    !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
+    req.headers.get('origin') !== config.appOrigin
+  )
+    throw new BusinessError(403, 40300, '写请求必须来自管理界面');
 }
 
 function multipartBoundary(req: Request): string {
   const header = req.headers.get('content-type') ?? '';
   const [type, ...params] = header.split(';');
-  if (type.trim().toLowerCase() !== 'multipart/form-data') throw new BusinessError(415, 40000, '上传接口只接受 multipart/form-data');
+  if (type.trim().toLowerCase() !== 'multipart/form-data')
+    throw new BusinessError(415, 40000, '上传接口只接受 multipart/form-data');
   for (const param of params) {
     const separator = param.indexOf('=');
     if (separator < 0) continue;
     if (param.slice(0, separator).trim().toLowerCase() !== 'boundary') continue;
-    const value = param.slice(separator + 1).trim().replace(/^"(.*)"$/, '$1');
+    const value = param
+      .slice(separator + 1)
+      .trim()
+      .replace(/^"(.*)"$/, '$1');
     if (value) return value;
   }
   throw badRequest('multipart/form-data 缺少 boundary');
@@ -61,7 +70,10 @@ function parsePartHeaders(raw: string): Map<string, string> {
 }
 
 /** 只解析 `name` / `filename` 两个参数；参数名必须落在参数边界上，避免 `filename` 误匹配 `name`。 */
-function dispositionParameter(disposition: string | undefined, key: 'name' | 'filename'): string | null {
+function dispositionParameter(
+  disposition: string | undefined,
+  key: 'name' | 'filename',
+): string | null {
   if (!disposition) return null;
   const quoted = new RegExp(`(?:^|;\\s*)${key}="([^"]*)"`, 'i').exec(disposition);
   if (quoted) return quoted[1];
@@ -96,7 +108,12 @@ function parseMultipartForm(body: Buffer, boundary: string): MultipartField[] {
     const name = dispositionParameter(headers.get('content-disposition'), 'name');
     if (!name) throw invalidMultipart();
     const filename = dispositionParameter(headers.get('content-disposition'), 'filename');
-    fields.push({ name, filename: filename ? filename : null, contentType: headers.get('content-type') ?? null, data: Buffer.from(part.subarray(headerEnd + 4)) });
+    fields.push({
+      name,
+      filename: filename ? filename : null,
+      contentType: headers.get('content-type') ?? null,
+      data: Buffer.from(part.subarray(headerEnd + 4)),
+    });
     cursor = next + delimiter.length;
   }
   return fields;
@@ -126,7 +143,10 @@ async function readRequestBytes(req: Request, maxBytes: number): Promise<Buffer>
 }
 
 function textField(fields: readonly MultipartField[], name: string): string | null {
-  return fields.find(field => field.name === name && field.filename === null)?.data.toString('utf8') ?? null;
+  return (
+    fields.find((field) => field.name === name && field.filename === null)?.data.toString('utf8') ??
+    null
+  );
 }
 
 /** 数量校验：至少一张、不超过 imageLimits.maxImages；合规返回 null。 */
@@ -150,23 +170,36 @@ export function imageMediaTypeIssue(declared: string | null): string | null {
 
 /** 大小校验：单图不超过 5 MiB、同一消息图片总量不超过 12 MiB；合规返回 null。 */
 export function imageBytesIssue(fileBytes: readonly number[]): string | null {
-  if (fileBytes.some(bytes => bytes > imageLimits.maxBytes)) return `单张图片不能超过 ${imageLimits.maxBytes / (1024 * 1024)} MiB`;
+  if (fileBytes.some((bytes) => bytes > imageLimits.maxBytes))
+    return `单张图片不能超过 ${imageLimits.maxBytes / (1024 * 1024)} MiB`;
   const total = fileBytes.reduce((sum, bytes) => sum + bytes, 0);
-  if (total > imageLimits.maxMessageBytes) return `本条消息图片总大小不能超过 ${imageLimits.maxMessageBytes / (1024 * 1024)} MiB`;
+  if (total > imageLimits.maxMessageBytes)
+    return `本条消息图片总大小不能超过 ${imageLimits.maxMessageBytes / (1024 * 1024)} MiB`;
   return null;
 }
 
 /** 附件行 -> 客户端可见信息；objectKey/previewKey 不对外暴露。 */
 function toAttachmentInfo(row: AttachmentRow): AttachmentInfo {
   if (!isImageMediaType(row.mediaType)) throw new Error('附件图片类型不受支持');
-  return { id: row.id, originalName: row.originalName, mediaType: row.mediaType, bytes: row.bytes, width: row.width, height: row.height };
+  return {
+    id: row.id,
+    originalName: row.originalName,
+    mediaType: row.mediaType,
+    bytes: row.bytes,
+    width: row.width,
+    height: row.height,
+  };
 }
 
 /**
  * multipart 上传入口：校验来源、体积、数量、类型与字节，逐张交给 U1 附件存储落库。
  * 返回按上传顺序排列的附件信息；中途失败不返回部分结果（前面已落库的图片按未引用附件留存）。
  */
-export async function uploadImages(input: { userId: string; req: Request; signal?: AbortSignal }): Promise<AttachmentInfo[]> {
+export async function uploadImages(input: {
+  userId: string;
+  req: Request;
+  signal?: AbortSignal;
+}): Promise<AttachmentInfo[]> {
   guardImageUploadRequest(input.req);
   const boundary = multipartBoundary(input.req);
   const raw = await readRequestBytes(input.req, imageUploadBodyLimitBytes);
@@ -174,20 +207,28 @@ export async function uploadImages(input: { userId: string; req: Request; signal
   const appIdField = textField(fields, imageUploadAppIdField);
   if (!appIdField) throw badRequest('缺少应用标识');
   const appId = idSchema.parse(appIdField);
-  const files = fields.filter(field => field.name === imageUploadFieldName && field.filename !== null);
+  const files = fields.filter(
+    (field) => field.name === imageUploadFieldName && field.filename !== null,
+  );
   const countIssue = imageCountIssue(files.length);
   if (countIssue) throw badRequest(countIssue);
   for (const file of files) {
     const mediaTypeIssue = imageMediaTypeIssue(file.contentType);
     if (mediaTypeIssue) throw badRequest(mediaTypeIssue);
   }
-  const bytesIssue = imageBytesIssue(files.map(file => file.data.length));
+  const bytesIssue = imageBytesIssue(files.map((file) => file.data.length));
   if (bytesIssue) throw new BusinessError(413, 40000, bytesIssue);
 
   const uploaded: AttachmentInfo[] = [];
   for (const file of files) {
     input.signal?.throwIfAborted();
-    const row = await createImageAttachment({ userId: input.userId, appId, originalName: file.filename ?? 'image', data: file.data, signal: input.signal });
+    const row = await createImageAttachment({
+      userId: input.userId,
+      appId,
+      originalName: file.filename ?? 'image',
+      data: file.data,
+      signal: input.signal,
+    });
     uploaded.push(toAttachmentInfo(row));
   }
   return uploaded;

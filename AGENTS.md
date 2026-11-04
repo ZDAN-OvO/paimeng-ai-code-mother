@@ -20,21 +20,3 @@ This file covers the root level only. Layout, commands and code conventions for 
 ## Artifact locality
 
 Artifacts follow ownership: project-specific docs, specs, plans and prototypes belong under that project's `docs/`; root `docs/` is for repository-wide concerns. Follow the owning directory's `AGENTS.md` for placement and lifecycle; keep root instructions navigational, with detailed rules in the owning project.
-
-## Agent skills
-
-### Issue tracker
-
-Issues live as GitHub issues in `ZDAN-GHN/paimeng-ai-code-mother`, driven by the `gh` CLI. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-The five canonical triage roles use their own names as label strings. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context: root `GLOSSARY.md` plus ADRs in `paimeng-ai-code-agent/docs/adr/`. See `docs/agents/domain.md`.
-
-### Git identity
-
-The human pushes as the personal account; the agent pushes as the `zdan-coding-agent` GitHub App, and only from its own worktree. `main` accepts pull requests only. See `docs/agents/git-identity.md`.

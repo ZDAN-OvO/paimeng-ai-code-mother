@@ -45,7 +45,10 @@ function compareTime(left: string, right: string): number {
 }
 
 /** 按账期折叠：规则/手动发放算 issued，消费与退回算 consumed，过期行算 expired。 */
-export function periodsOf(rows: readonly LedgerLike[], at: Date = new Date()): Map<string, PeriodFacts> {
+export function periodsOf(
+  rows: readonly LedgerLike[],
+  at: Date = new Date(),
+): Map<string, PeriodFacts> {
   const periods = new Map<string, PeriodFacts>();
   const now = naiveTime(at);
   for (const row of rows) {
@@ -79,11 +82,14 @@ export function periodsOf(rows: readonly LedgerLike[], at: Date = new Date()): M
  * 还没写过期行、但已经到期的余量：列表页用它修正「扫描没跑」时的可用额。
  * 只统计已结束账期，且没有 `origin='expiry'` 的过期行。
  */
-export function pendingExpiryOf(rows: readonly LedgerLike[], at: Date = new Date()): { period: string; remainder: number }[] {
+export function pendingExpiryOf(
+  rows: readonly LedgerLike[],
+  at: Date = new Date(),
+): { period: string; remainder: number }[] {
   const currentPeriod = periodOf(at);
   return [...periodsOf(rows, at).values()]
-    .filter(facts => facts.period < currentPeriod && !facts.swept && facts.remaining > 0)
-    .map(facts => ({ period: facts.period, remainder: facts.remaining }));
+    .filter((facts) => facts.period < currentPeriod && !facts.swept && facts.remaining > 0)
+    .map((facts) => ({ period: facts.period, remainder: facts.remaining }));
 }
 
 /**
@@ -94,15 +100,17 @@ export function splitOf(rows: readonly LedgerLike[], at: Date = new Date()): Spl
   const now = naiveTime(at);
   const periods = periodsOf(rows, at);
   const pending = pendingExpiryOf(rows, at);
-  const available = rows.reduce((sum, row) => sum + row.credits, 0)
-    - pending.reduce((sum, item) => sum + item.remainder, 0);
+  const available =
+    rows.reduce((sum, row) => sum + row.credits, 0) -
+    pending.reduce((sum, item) => sum + item.remainder, 0);
   let limited = 0;
   let nextExpiryAt: string | null = null;
   for (const facts of periods.values()) {
     if (compareTime(facts.expiresAt, now) <= 0) continue;
     if (facts.remaining <= 0) continue;
     limited += facts.remaining;
-    if (nextExpiryAt === null || compareTime(facts.expiresAt, nextExpiryAt) < 0) nextExpiryAt = facts.expiresAt;
+    if (nextExpiryAt === null || compareTime(facts.expiresAt, nextExpiryAt) < 0)
+      nextExpiryAt = facts.expiresAt;
   }
   return { available, limited, lasting: available - limited, nextExpiryAt };
 }
@@ -111,14 +119,21 @@ export function splitOf(rows: readonly LedgerLike[], at: Date = new Date()): Spl
  * 按到期顺序分配一笔扣减：先扣最早到期的账期，扣完再落到长期积分。
  * 返回的 `slices` 每个账期一段，`lasting` 是溢出到长期积分的金额。
  */
-export function allocate(rows: readonly LedgerLike[], credits: number, at: Date = new Date()): {
+export function allocate(
+  rows: readonly LedgerLike[],
+  credits: number,
+  at: Date = new Date(),
+): {
   slices: AllocationSlice[];
   lasting: number;
 } {
   const now = naiveTime(at);
   const candidates = [...periodsOf(rows, at).values()]
-    .filter(facts => facts.remaining > 0 && compareTime(facts.expiresAt, now) > 0)
-    .sort((left, right) => compareTime(left.expiresAt, right.expiresAt) || left.period.localeCompare(right.period));
+    .filter((facts) => facts.remaining > 0 && compareTime(facts.expiresAt, now) > 0)
+    .sort(
+      (left, right) =>
+        compareTime(left.expiresAt, right.expiresAt) || left.period.localeCompare(right.period),
+    );
   let need = credits;
   const slices: AllocationSlice[] = [];
   for (const facts of candidates) {

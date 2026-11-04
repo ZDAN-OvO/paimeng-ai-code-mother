@@ -1,6 +1,10 @@
 import { getPool } from '../../src/server/infra/db';
 import { rebuildBalance } from '../../src/server/billing/ledger';
-import { auditAccount, pendingSettlements, reconcileSettlements } from '../../src/server/billing/settlement';
+import {
+  auditAccount,
+  pendingSettlements,
+  reconcileSettlements,
+} from '../../src/server/billing/settlement';
 
 /**
  * 补结算与余额核对的运维入口（issue #93）。默认 dry-run，`--apply` 才写库。
@@ -15,13 +19,14 @@ import { auditAccount, pendingSettlements, reconcileSettlements } from '../../sr
  */
 
 const url = new URL(process.env.DATABASE_URL ?? '');
-if (!/^paimeng_app(?:_test)?$/.test(url.pathname.slice(1))) throw new Error('仅允许对独立的 paimeng_app 库执行补结算');
+if (!/^paimeng_app(?:_test)?$/.test(url.pathname.slice(1)))
+  throw new Error('仅允许对独立的 paimeng_app 库执行补结算');
 
 const args = process.argv.slice(2);
 const apply = args.includes('--apply');
 
 function optionOf(flag: string): string | undefined {
-  const inline = args.find(arg => arg.startsWith(`${flag}=`));
+  const inline = args.find((arg) => arg.startsWith(`${flag}=`));
   if (inline !== undefined) return inline.slice(flag.length + 1);
   const index = args.indexOf(flag);
   if (index < 0) return undefined;
@@ -33,7 +38,8 @@ function optionOf(flag: string): string | undefined {
 const userId = optionOf('--user');
 const limitOption = optionOf('--limit');
 const limit = limitOption === undefined ? undefined : Number(limitOption);
-if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) throw new Error('--limit 需要正整数');
+if (limit !== undefined && (!Number.isInteger(limit) || limit < 1))
+  throw new Error('--limit 需要正整数');
 if (userId !== undefined && !/^\d+$/u.test(userId)) throw new Error('--user 需要数字用户 ID');
 
 try {
@@ -47,21 +53,30 @@ try {
     else if (!apply) console.log('  快照有差异；加 --apply 会按账本重写快照（不动账本）。');
     else {
       const repaired = await rebuildBalance(userId);
-      console.log(`  已按账本重写快照：可用 ${repaired.available}（限时 ${repaired.limited} / 长期 ${repaired.lasting}）`);
+      console.log(
+        `  已按账本重写快照：可用 ${repaired.available}（限时 ${repaired.limited} / 长期 ${repaired.lasting}）`,
+      );
     }
   } else if (!apply) {
     const items = await pendingSettlements({ limit });
     console.log(`待补结算 ${items.length} 条（dry-run，加 --apply 才写库）`);
     for (const item of items) {
-      const charge = item.chargeStatus === null ? '缺账' : `账单 ${item.chargeStatus} / ${item.credits ?? 0} Credit`;
+      const charge =
+        item.chargeStatus === null
+          ? '缺账'
+          : `账单 ${item.chargeStatus} / ${item.credits ?? 0} Credit`;
       console.log(`- ${item.generationId}（${charge}）：${item.reason}`);
     }
   } else {
     const run = await reconcileSettlements({ limit });
     const other = run.results.length - run.settled - run.skipped;
-    console.log(`扫描 ${run.scanned} 条：新结算 ${run.settled}，仍待处理 ${run.skipped}，补记或失败 ${other}`);
+    console.log(
+      `扫描 ${run.scanned} 条：新结算 ${run.settled}，仍待处理 ${run.skipped}，补记或失败 ${other}`,
+    );
     for (const item of run.results) {
-      console.log(`- ${item.generationId}  ${item.outcome}${item.reason ? `：${item.reason}` : ''}`);
+      console.log(
+        `- ${item.generationId}  ${item.outcome}${item.reason ? `：${item.reason}` : ''}`,
+      );
     }
   }
 } catch (error) {

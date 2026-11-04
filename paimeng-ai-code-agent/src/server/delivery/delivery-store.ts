@@ -42,7 +42,14 @@ export type Delivery = { id: string; directory: string; manifest: DeliveryManife
 export type DeliveryResolution = { directory: string; id: string; legacy: false };
 /** 旧工作区预览（code_output）。只作为没有指针时的回退，永远不算交付。 */
 export type LegacyDelivery = { directory: string; id: null; legacy: true };
-export type DeliveryPointer = { version: 1; appId: string; codeGenType: CodeGenType; deliveryId: string; revision: number; updatedAt: string };
+export type DeliveryPointer = {
+  version: 1;
+  appId: string;
+  codeGenType: CodeGenType;
+  deliveryId: string;
+  revision: number;
+  updatedAt: string;
+};
 
 function runtimeRootOf(runtimeRoot?: string) {
   const root = runtimeRoot ?? getConfig().runtimeRoot;
@@ -52,7 +59,8 @@ function runtimeRootOf(runtimeRoot?: string) {
 
 function validateApp(app: WorkspaceApp): WorkspaceApp {
   idSchema.parse(app.id);
-  if (!(codeGenTypes as readonly string[]).includes(app.codeGenType)) throw new Error('代码生成类型不合法');
+  if (!(codeGenTypes as readonly string[]).includes(app.codeGenType))
+    throw new Error('代码生成类型不合法');
   return app;
 }
 
@@ -74,7 +82,12 @@ export function deliveryRoot(app: WorkspaceApp, runtimeRoot?: string) {
 export function legacyDelivery(app: WorkspaceApp, runtimeRoot?: string): LegacyDelivery {
   const target = validateApp(app);
   return {
-    directory: join(runtimeRootOf(runtimeRoot), 'code_output', appKey(target), ...(isProjectCodeGenType(target.codeGenType) ? ['dist'] : [])),
+    directory: join(
+      runtimeRootOf(runtimeRoot),
+      'code_output',
+      appKey(target),
+      ...(isProjectCodeGenType(target.codeGenType) ? ['dist'] : []),
+    ),
     id: null,
     legacy: true,
   };
@@ -85,7 +98,8 @@ function pointerPath(app: WorkspaceApp, runtimeRoot?: string) {
 }
 
 function requiredToken(value: unknown, field: string) {
-  if (typeof value !== 'string' || !value.trim() || value.length > 200 || /[\0\r\n]/.test(value)) throw new Error(`${field} 不合法`);
+  if (typeof value !== 'string' || !value.trim() || value.length > 200 || /[\0\r\n]/.test(value))
+    throw new Error(`${field} 不合法`);
   return value;
 }
 
@@ -94,10 +108,11 @@ function comparePaths(a: DeliveryFile, b: DeliveryFile) {
 }
 
 async function assertSafeSourceDirectory(sourceDir: string) {
-  if (typeof sourceDir !== 'string' || !sourceDir || sourceDir.includes('\0')) throw new Error('交付源码目录不合法');
+  if (typeof sourceDir !== 'string' || !sourceDir || sourceDir.includes('\0'))
+    throw new Error('交付源码目录不合法');
   const info = await lstat(sourceDir);
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('交付源码必须是安全的普通目录');
-  if (await realpath(sourceDir) !== sourceDir) throw new Error('交付源码目录不允许软链接');
+  if ((await realpath(sourceDir)) !== sourceDir) throw new Error('交付源码目录不允许软链接');
   return sourceDir;
 }
 
@@ -109,8 +124,10 @@ async function collectSourceFiles(sourceDir: string) {
     if (depth > MAX_DELIVERY_DEPTH) throw new Error('交付源码目录过深');
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const name = entry.name;
-      if (!name || name.includes('\\') || name.includes('\0')) throw new Error('交付源码文件名不合法');
-      if (reservedNames.has(name) || name.startsWith('.env') || name.startsWith('.paimeng-')) throw new Error(`交付源码不能包含 ${name}`);
+      if (!name || name.includes('\\') || name.includes('\0'))
+        throw new Error('交付源码文件名不合法');
+      if (reservedNames.has(name) || name.startsWith('.env') || name.startsWith('.paimeng-'))
+        throw new Error(`交付源码不能包含 ${name}`);
       const path = prefix ? `${prefix}/${name}` : name;
       // manifest.json 是交付清单的固定文件名，避免被应用产物覆盖。
       if (path === 'manifest.json') throw new Error('交付源码根目录不能包含 manifest.json');
@@ -132,16 +149,24 @@ async function collectSourceFiles(sourceDir: string) {
 
 async function readManifest(directory: string): Promise<DeliveryManifest> {
   let parsed: unknown;
-  try { parsed = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')); }
-  catch (error) {
+  try {
+    parsed = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'));
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('交付清单缺失');
     throw new Error('交付清单不可读');
   }
   if (typeof parsed !== 'object' || parsed === null) throw new Error('交付清单格式错误');
   const manifest = parsed as Partial<DeliveryManifest>;
-  if (manifest.version !== DELIVERY_MANIFEST_VERSION || typeof manifest.id !== 'string' || typeof manifest.appId !== 'string'
-    || typeof manifest.generationId !== 'string' || typeof manifest.versionSha !== 'string'
-    || typeof manifest.digest !== 'string' || !Array.isArray(manifest.files) || typeof manifest.createdAt !== 'string') {
+  if (
+    manifest.version !== DELIVERY_MANIFEST_VERSION ||
+    typeof manifest.id !== 'string' ||
+    typeof manifest.appId !== 'string' ||
+    typeof manifest.generationId !== 'string' ||
+    typeof manifest.versionSha !== 'string' ||
+    typeof manifest.digest !== 'string' ||
+    !Array.isArray(manifest.files) ||
+    typeof manifest.createdAt !== 'string'
+  ) {
     throw new Error('交付清单格式错误');
   }
   return manifest as DeliveryManifest;
@@ -190,10 +215,20 @@ export async function createDelivery(input: {
       await writeFile(target, contents);
     }
     const manifest: DeliveryManifest = {
-      version: DELIVERY_MANIFEST_VERSION, id, appId: app.id, generationId, versionSha,
-      digest: hash.digest('hex'), files: sorted, createdAt: new Date().toISOString(),
+      version: DELIVERY_MANIFEST_VERSION,
+      id,
+      appId: app.id,
+      generationId,
+      versionSha,
+      digest: hash.digest('hex'),
+      files: sorted,
+      createdAt: new Date().toISOString(),
     };
-    await writeFile(join(temporary, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+    await writeFile(
+      join(temporary, 'manifest.json'),
+      JSON.stringify(manifest, null, 2) + '\n',
+      'utf8',
+    );
     await rename(temporary, directory);
     return { id, directory, manifest };
   } finally {
@@ -201,18 +236,29 @@ export async function createDelivery(input: {
   }
 }
 
-async function readPointer(app: WorkspaceApp, runtimeRoot?: string): Promise<DeliveryPointer | null> {
+async function readPointer(
+  app: WorkspaceApp,
+  runtimeRoot?: string,
+): Promise<DeliveryPointer | null> {
   const file = pointerPath(app, runtimeRoot);
   let parsed: unknown;
-  try { parsed = JSON.parse(await readFile(file, 'utf8')); }
-  catch (error) {
+  try {
+    parsed = JSON.parse(await readFile(file, 'utf8'));
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw new Error('预览指针不可读');
   }
   if (typeof parsed !== 'object' || parsed === null) throw new Error('预览指针格式错误');
   const pointer = parsed as Partial<DeliveryPointer>;
-  if (pointer.version !== 1 || pointer.appId !== app.id || pointer.codeGenType !== app.codeGenType
-    || typeof pointer.deliveryId !== 'string' || typeof pointer.revision !== 'number' || !Number.isSafeInteger(pointer.revision) || pointer.revision < 1) {
+  if (
+    pointer.version !== 1 ||
+    pointer.appId !== app.id ||
+    pointer.codeGenType !== app.codeGenType ||
+    typeof pointer.deliveryId !== 'string' ||
+    typeof pointer.revision !== 'number' ||
+    !Number.isSafeInteger(pointer.revision) ||
+    pointer.revision < 1
+  ) {
     throw new Error('预览指针格式错误');
   }
   assertDeliveryId(pointer.deliveryId);
@@ -227,11 +273,16 @@ function withPointerLock<T>(key: string, work: () => Promise<T>): Promise<T> {
   const previous = pointerLocks.get(key) ?? Promise.resolve();
   const next = previous.catch(() => {}).then(work);
   pointerLocks.set(key, next);
-  return next.finally(() => { if (pointerLocks.get(key) === next) pointerLocks.delete(key); });
+  return next.finally(() => {
+    if (pointerLocks.get(key) === next) pointerLocks.delete(key);
+  });
 }
 
 /** 当前预览指针；没有指针时返回 null（调用方可以回退 legacy，但必须标记 legacy）。 */
-export async function currentDelivery(input: { app: WorkspaceApp; runtimeRoot?: string }): Promise<{ deliveryId: string; revision: number } | null> {
+export async function currentDelivery(input: {
+  app: WorkspaceApp;
+  runtimeRoot?: string;
+}): Promise<{ deliveryId: string; revision: number } | null> {
   const pointer = await readPointer(input.app, input.runtimeRoot);
   return pointer ? { deliveryId: pointer.deliveryId, revision: pointer.revision } : null;
 }
@@ -240,7 +291,11 @@ export async function currentDelivery(input: { app: WorkspaceApp; runtimeRoot?: 
  * 按 id（缺省时按当前指针）解析交付目录。id 格式非法、目录是软链接、清单与应用不匹配都会抛错；
  * 目录不存在返回 null，让调用方按 404 处理，而不是悄悄回退到 legacy。
  */
-export async function resolveDelivery(input: { app: WorkspaceApp; deliveryId?: string; runtimeRoot?: string }): Promise<DeliveryResolution | null> {
+export async function resolveDelivery(input: {
+  app: WorkspaceApp;
+  deliveryId?: string;
+  runtimeRoot?: string;
+}): Promise<DeliveryResolution | null> {
   const app = validateApp(input.app);
   let id: string;
   if (input.deliveryId === undefined) {
@@ -250,13 +305,14 @@ export async function resolveDelivery(input: { app: WorkspaceApp; deliveryId?: s
   } else id = assertDeliveryId(input.deliveryId);
   const directory = join(deliveryRoot(app, input.runtimeRoot), id);
   let info;
-  try { info = await lstat(directory); }
-  catch (error) {
+  try {
+    info = await lstat(directory);
+  } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('交付目录不是安全的普通目录');
-  if (await realpath(directory) !== directory) throw new Error('交付目录不允许软链接');
+  if ((await realpath(directory)) !== directory) throw new Error('交付目录不允许软链接');
   const manifest = await readManifest(directory);
   if (manifest.id !== id || manifest.appId !== app.id) throw new Error('交付清单与应用不匹配');
   return { directory, id, legacy: false };
@@ -266,7 +322,11 @@ export async function resolveDelivery(input: { app: WorkspaceApp; deliveryId?: s
  * 原子切换当前预览指针：校验交付存在 → 读旧 revision → 写临时文件 → rename。
  * 返回单调递增的 revision，供发布事务比较“指针是否被别人动过”。
  */
-export async function setCurrentDelivery(input: { app: WorkspaceApp; deliveryId: string; runtimeRoot?: string }): Promise<{ deliveryId: string; revision: number }> {
+export async function setCurrentDelivery(input: {
+  app: WorkspaceApp;
+  deliveryId: string;
+  runtimeRoot?: string;
+}): Promise<{ deliveryId: string; revision: number }> {
   const app = validateApp(input.app);
   const deliveryId = assertDeliveryId(input.deliveryId);
   const file = pointerPath(app, input.runtimeRoot);
@@ -278,7 +338,12 @@ export async function setCurrentDelivery(input: { app: WorkspaceApp; deliveryId:
     const runtime = await ensureSafeDirectory(runtimeRootOf(input.runtimeRoot));
     const previews = await ensureSafeDirectory(join(runtime, 'previews'));
     const pointer: DeliveryPointer = {
-      version: 1, appId: app.id, codeGenType: app.codeGenType, deliveryId, revision, updatedAt: new Date().toISOString(),
+      version: 1,
+      appId: app.id,
+      codeGenType: app.codeGenType,
+      deliveryId,
+      revision,
+      updatedAt: new Date().toISOString(),
     };
     const temporary = join(previews, '.paimeng-' + randomUUID() + '.json');
     try {

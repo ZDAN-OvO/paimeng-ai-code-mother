@@ -1,35 +1,113 @@
 import 'server-only';
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { createUIMessageStream, createUIMessageStreamResponse, type UIMessage, type UIMessageStreamWriter } from 'ai';
-import type { AppInfo, Generation, GenerationQuestion, SteerLandedEvent, User } from '@/shared/contracts';
+import {
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  type UIMessage,
+  type UIMessageStreamWriter,
+} from 'ai';
+import type {
+  AppInfo,
+  Generation,
+  GenerationQuestion,
+  SteerLandedEvent,
+  User,
+} from '@/shared/contracts';
 import { attachmentPartsSchema, imageLimits, type ImageMediaType } from '@/shared/attachments';
-import { chatInputModeSchema, chatInputSchema, type ChatInputReceipt, type ChatMessage, type ChatRuntime, type PendingChatInput } from '@/shared/chat-runtime';
-import { generationRequestSchema as baseGenerationRequestSchema, uploadDirectory, uploadFileName } from './agent';
+import {
+  chatInputModeSchema,
+  chatInputSchema,
+  type ChatInputReceipt,
+  type ChatMessage,
+  type ChatRuntime,
+  type PendingChatInput,
+} from '@/shared/chat-runtime';
+import {
+  generationRequestSchema as baseGenerationRequestSchema,
+  uploadDirectory,
+  uploadFileName,
+} from './agent';
 import { readAttachmentBytes, readAttachmentOriginal } from './attachment-store';
 import { buildApp, sourceDigest, type BuildStageProgress } from '../delivery/artifacts';
 import { harnessProtocol } from './durable/protocol';
-import { conversationModelSchema, harnessModelFailureSchema, modelAdmissionSchema, type ModelAdmission } from '@/shared/durable-model';
-import { classifyBuildFailure, formatBuildFeedback, noProgressMessage } from '../delivery/build-feedback';
+import {
+  conversationModelSchema,
+  harnessModelFailureSchema,
+  modelAdmissionSchema,
+  type ModelAdmission,
+} from '@/shared/durable-model';
+import {
+  classifyBuildFailure,
+  formatBuildFeedback,
+  noProgressMessage,
+} from '../delivery/build-feedback';
 import { appForAdoption, getApp } from '../business';
 import { getConfig } from '../infra/config';
 import { db, now } from '../infra/db';
 import { generationControl, generationFor } from './generation-store';
 // 读路径的 ready 修复也要补一次结算；billing 侧不 import 本模块（否则终态路径 import 计费就成环）。
-import { evaluateRunningOverdraft, reconcileSettlements, settleGenerationBilling } from '../billing/settlement';
-import { activeExecution, appendInput, assertAuthority, beginChecking, bindExecutionConversation, completeAttempt, heartbeatAuthority, inputsSettled, setExecutionStatus, markInputPlaced, markInputUnanswered, markInputResolved, openQuestionOf, reserveAttempt, withdrawInput, type ExecutionRecord, type InputRecord } from './control-store';
-import { CandidateInvalidatedError, failOrCancel, getInputs, pauseForQuestion, publishReady, recoverStartup, settleGeneration, startGeneration } from './generation-lifecycle';
-import { recordAssistantStep, recordBuildStep, stopReasonOf, type AccountToolCall, type EntryUsage, type GenerationStopReason, type ModelIdentity } from './generation-accounting';
+
+import {
+  evaluateRunningOverdraft,
+  reconcileSettlements,
+  settleGenerationBilling,
+} from '../billing/settlement';
+import {
+  activeExecution,
+  appendInput,
+  assertAuthority,
+  beginChecking,
+  bindExecutionConversation,
+  completeAttempt,
+  heartbeatAuthority,
+  inputsSettled,
+  setExecutionStatus,
+  markInputPlaced,
+  markInputUnanswered,
+  markInputResolved,
+  openQuestionOf,
+  reserveAttempt,
+  withdrawInput,
+  type ExecutionRecord,
+} from './control-store';
+import {
+  CandidateInvalidatedError,
+  failOrCancel,
+  getInputs,
+  pauseForQuestion,
+  publishReady,
+  recoverStartup,
+  settleGeneration,
+  startGeneration,
+} from './generation-lifecycle';
+import {
+  recordAssistantStep,
+  recordBuildStep,
+  stopReasonOf,
+  type AccountToolCall,
+  type EntryUsage,
+  type GenerationStopReason,
+  type ModelIdentity,
+} from './generation-accounting';
 import { BusinessError } from '../infra/http';
 import { pendingChangeStatsFrom } from '../versioning/version-store';
 import { agentVersionTitle, summarizeVersion } from '../versioning/version-summary';
-import { versionThumbnail } from '../versioning/version-thumbnail';
+
 import { clientIp, refundChatRateLimit, reserveChatRateLimit } from '../infra/rate-limit';
-import { appAuthority, apps, generationExecutions, generationInputs, generationSteps, generations, versionRecords } from '../infra/schema';
+import {
+  appAuthority,
+  apps,
+  generationExecutions,
+  generationInputs,
+  generationSteps,
+  generations,
+  versionRecords,
+} from '../infra/schema';
 import { validatePrompt } from './prompt-safety';
 import { harnessInstructions } from './prompts/harness-instructions';
-import { projectAt, workspace, writeProjectFileBytes } from '../workspace/workspace';
+import { projectAt, writeProjectFileBytes } from '../workspace/workspace';
 
 const textBlockSchema = z.object({ type: z.literal('text'), text: z.string() });
 const thinkingBlockSchema = z.object({ type: z.literal('thinking'), thinking: z.string() });
@@ -71,11 +149,24 @@ const harnessEventSchema = z
     message: z.unknown().optional(),
     generation: z.object({ message: z.unknown().optional() }).optional(),
     entries: z.array(z.unknown()).optional(),
-    tools: z.array(z.object({ callId: z.string(), name: z.string(), status: z.string(), details: z.unknown().optional() })).optional(),
+    tools: z
+      .array(
+        z.object({
+          callId: z.string(),
+          name: z.string(),
+          status: z.string(),
+          details: z.unknown().optional(),
+        }),
+      )
+      .optional(),
   })
   .passthrough();
 
-const toolResultSchema = z.object({ role: z.literal('toolResult'), content: z.unknown(), isError: z.boolean().optional() });
+const toolResultSchema = z.object({
+  role: z.literal('toolResult'),
+  content: z.unknown(),
+  isError: z.boolean().optional(),
+});
 
 function textBlocksOf(message: unknown): Map<number, string> {
   const blocks = new Map<number, string>();
@@ -101,8 +192,14 @@ function thinkingBlocksOf(message: unknown): Map<number, string> {
 
 function entryAssistantMessage(entry: unknown): unknown {
   const parsed = z.object({ model: z.array(z.unknown()).optional() }).safeParse(entry);
-  for (const message of parsed.success ? parsed.data.model ?? [] : []) {
-    if (z.object({ role: z.literal('assistant') }).passthrough().safeParse(message).success) return message;
+  for (const message of parsed.success ? (parsed.data.model ?? []) : []) {
+    if (
+      z
+        .object({ role: z.literal('assistant') })
+        .passthrough()
+        .safeParse(message).success
+    )
+      return message;
   }
   return undefined;
 }
@@ -118,7 +215,10 @@ function askExecuted(event: HarnessEvent): boolean {
   if (event.type !== 'tool_execution_end') return false;
   const result = toolResultOf(event.entry);
   if (result.isError) return false;
-  const marked = z.object({ questionId: z.string().min(1) }).passthrough().safeParse(result.details).success;
+  const marked = z
+    .object({ questionId: z.string().min(1) })
+    .passthrough()
+    .safeParse(result.details).success;
   return event.toolName === 'ask' || marked;
 }
 
@@ -131,23 +231,36 @@ async function harnessFetchRaw(path: string, init?: RequestInit): Promise<Respon
     return await fetch(`${harnessBase()}${path}`, init);
   } catch (error) {
     if (init?.signal?.aborted) throw error;
-    throw new BusinessError(503, 50300, `生成服务未启动或不可达（${harnessBase()}）：请先运行 npm run durable:harness，或用 npm run dev 一次启动全套`);
+    throw new BusinessError(
+      503,
+      50300,
+      `生成服务未启动或不可达（${harnessBase()}）：请先运行 npm run durable:harness，或用 npm run dev 一次启动全套`,
+    );
   }
 }
 
 async function harnessFetch(path: string, init?: RequestInit): Promise<Response> {
   const response = await harnessFetchRaw(path, init);
-  if (!response.ok) throw new HarnessRequestError(response.status, `harness ${path} 返回 ${response.status}：${(await response.text()).slice(0, 300)}`);
+  if (!response.ok)
+    throw new HarnessRequestError(
+      response.status,
+      `harness ${path} 返回 ${response.status}：${(await response.text()).slice(0, 300)}`,
+    );
   return response;
 }
 
 async function admitGenerationModel(): Promise<ModelAdmission> {
   await ensureHarnessProtocol();
-  const response = await harnessFetchRaw('/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  const response = await harnessFetchRaw('/model', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
   const body: unknown = await response.json().catch(() => undefined);
   if (!response.ok) {
     const failure = harnessModelFailureSchema.safeParse(body);
-    if (failure.success) throw new BusinessError(response.status, failure.data.code, failure.data.error);
+    if (failure.success)
+      throw new BusinessError(response.status, failure.data.code, failure.data.error);
     throw new HarnessRequestError(response.status, `harness /model 返回 ${response.status}`);
   }
   const parsed = modelAdmissionSchema.safeParse(body);
@@ -156,15 +269,25 @@ async function admitGenerationModel(): Promise<ModelAdmission> {
 }
 
 async function harnessModelIdentity(conversationId: number): Promise<ModelIdentity | null> {
-  const parsed = conversationModelSchema.safeParse(await harnessJson<unknown>(`/model?conversationId=${conversationId}`));
+  const parsed = conversationModelSchema.safeParse(
+    await harnessJson<unknown>(`/model?conversationId=${conversationId}`),
+  );
   if (!parsed.success) return null;
   const { model, identity } = parsed.data;
-  if (identity) return { alias: identity.alias, providerId: identity.providerId, modelName: identity.modelName };
+  if (identity)
+    return {
+      alias: identity.alias,
+      providerId: identity.providerId,
+      modelName: identity.modelName,
+    };
   return model ? { alias: null, providerId: null, modelName: model.modelId } : null;
 }
 
 class HarnessRequestError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
     super(message);
   }
 }
@@ -180,7 +303,11 @@ function ensureHarnessProtocol(): Promise<void> {
   protocolChecked ??= (async () => {
     const health = (await (await harnessFetch('/health')).json()) as { protocol?: number };
     if (health.protocol !== harnessProtocol) {
-      throw new BusinessError(503, 50301, `harness 版本不匹配（运行中的 harness 协议 ${health.protocol ?? '未知'}，服务端需要 ${harnessProtocol}）：常驻 harness 不热加载，请重启 npm run dev`);
+      throw new BusinessError(
+        503,
+        50301,
+        `harness 版本不匹配（运行中的 harness 协议 ${health.protocol ?? '未知'}，服务端需要 ${harnessProtocol}）：常驻 harness 不热加载，请重启 npm run dev`,
+      );
     }
   })().catch((error: unknown) => {
     protocolChecked = undefined;
@@ -208,20 +335,26 @@ function blocksText(content: unknown): string {
   const parsed = contentSchema.safeParse(content);
   if (!parsed.success) return '';
   if (typeof parsed.data === 'string') return parsed.data;
-  return parsed.data.flatMap(block => {
-    if (typeof block === 'string') return [block];
-    const text = textBlockSchema.safeParse(block);
-    return text.success ? [text.data.text] : [];
-  }).join('');
+  return parsed.data
+    .flatMap((block) => {
+      if (typeof block === 'string') return [block];
+      const text = textBlockSchema.safeParse(block);
+      return text.success ? [text.data.text] : [];
+    })
+    .join('');
 }
 
 const messageOfText = (text: string) => ({ content: [{ type: 'text', text }] });
 
-const toolResultMessageSchema = toolResultSchema.extend({ toolCallId: z.string(), toolName: z.string(), details: z.unknown().optional() });
+const toolResultMessageSchema = toolResultSchema.extend({
+  toolCallId: z.string(),
+  toolName: z.string(),
+  details: z.unknown().optional(),
+});
 
 function toolResultMessageOf(entry: unknown): z.infer<typeof toolResultMessageSchema> | null {
   const parsedEntry = z.object({ model: z.array(z.unknown()).optional() }).safeParse(entry);
-  for (const message of parsedEntry.success ? parsedEntry.data.model ?? [] : []) {
+  for (const message of parsedEntry.success ? (parsedEntry.data.model ?? []) : []) {
     const parsed = toolResultMessageSchema.safeParse(message);
     if (parsed.success) return parsed.data;
   }
@@ -230,18 +363,30 @@ function toolResultMessageOf(entry: unknown): z.infer<typeof toolResultMessageSc
 
 function toolResultOf(entry: unknown): { text: string; details: unknown; isError: boolean } {
   const message = toolResultMessageOf(entry);
-  return message ? { text: blocksText(message.content), details: message.details, isError: message.isError === true } : { text: '', details: undefined, isError: false };
+  return message
+    ? {
+        text: blocksText(message.content),
+        details: message.details,
+        isError: message.isError === true,
+      }
+    : { text: '', details: undefined, isError: false };
 }
 
 function toolOutputPayload(toolName: string, details: unknown, text: string) {
-  return toolName === 'read' || toolName === 'write' || toolName === 'edit' ? text : details ?? text;
+  return toolName === 'read' || toolName === 'write' || toolName === 'edit'
+    ? text
+    : (details ?? text);
 }
 
 /**
  * 一次生成一个会话：cwd 与 app/execution 绑定在创建时固定，旧会话不再改 cwd。
  * apps.conversation_id 只保留「最近一次」供 attach 代理使用，不参与任何写入语义。
  */
-async function conversationForExecution(app: AppInfo, execution: ExecutionRecord, binding?: string): Promise<number> {
+async function conversationForExecution(
+  app: AppInfo,
+  execution: ExecutionRecord,
+  binding?: string,
+): Promise<number> {
   const created = await harnessJson<{ conversationId: number }>('/conversations', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -249,12 +394,20 @@ async function conversationForExecution(app: AppInfo, execution: ExecutionRecord
       workspace: execution.directory,
       instructions: harnessInstructions(app, false),
       title: app.id,
-      app: { id: app.id, codeGenType: app.codeGenType, generationId: execution.generationId, executionId: execution.id },
+      app: {
+        id: app.id,
+        codeGenType: app.codeGenType,
+        generationId: execution.generationId,
+        executionId: execution.id,
+      },
       binding,
     }),
   });
   await bindExecutionConversation(execution.id, created.conversationId);
-  await db().update(apps).set({ conversationId: created.conversationId }).where(eq(apps.id, BigInt(app.id)));
+  await db()
+    .update(apps)
+    .set({ conversationId: created.conversationId })
+    .where(eq(apps.id, BigInt(app.id)));
   return created.conversationId;
 }
 
@@ -262,7 +415,10 @@ async function conversationForExecution(app: AppInfo, execution: ExecutionRecord
  * 每次生成前把常驻指令对齐到当前轮次（带图轮次多一句「图片已随消息提供」）。
  * pi-durable 对相等的文档值不记录变更，所以内容没变时这次调用不产生新条目。
  */
-async function configureHarnessInstructions(conversationId: number, instructions: string): Promise<void> {
+async function configureHarnessInstructions(
+  conversationId: number,
+  instructions: string,
+): Promise<void> {
   await harnessJson('/configure', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -272,18 +428,22 @@ async function configureHarnessInstructions(conversationId: number, instructions
 
 /** 应用绑定的 harness 会话 ID（未开过会话为 undefined）；attach 路由用它校验/注入会话，避免信任调用方。 */
 export async function conversationIdOf(appId: string): Promise<number | undefined> {
-  const [row] = await db().select({ conversationId: apps.conversationId }).from(apps).where(eq(apps.id, BigInt(appId))).limit(1);
+  const [row] = await db()
+    .select({ conversationId: apps.conversationId })
+    .from(apps)
+    .where(eq(apps.id, BigInt(appId)))
+    .limit(1);
   return row?.conversationId ?? undefined;
 }
 
 async function abortHarnessRun(appId: string, conversation?: number | null): Promise<void> {
-  const conversationId = conversation ?? await conversationIdOf(appId);
+  const conversationId = conversation ?? (await conversationIdOf(appId));
   if (!conversationId) return;
   await harnessJson('/abort', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ conversationId }),
-  }).catch(problem => console.warn(`停止 harness 会话失败：${String(problem)}`));
+  }).catch((problem) => console.warn(`停止 harness 会话失败：${String(problem)}`));
 }
 
 class ChunkChannel {
@@ -305,16 +465,35 @@ class ChunkChannel {
     for (;;) {
       while (this.#pending.length > 0) yield this.#pending.shift()!;
       if (this.#finished) return;
-      await new Promise<void>(resolve => { this.#wake = () => { this.#wake = null; resolve(); }; });
+      await new Promise<void>((resolve) => {
+        this.#wake = () => {
+          this.#wake = null;
+          resolve();
+        };
+      });
     }
   }
 }
 
-type ToolSlot = { toolName: string; input: unknown; output?: unknown; details?: unknown; isError?: boolean };
+type ToolSlot = {
+  toolName: string;
+  input: unknown;
+  output?: unknown;
+  details?: unknown;
+  isError?: boolean;
+};
 type AssistantPart =
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string }
-  | { type: 'dynamic-tool'; toolName: string; toolCallId: string; state: 'input-available' | 'output-available' | 'output-error'; input: unknown; output?: unknown; errorText?: string };
+  | {
+      type: 'dynamic-tool';
+      toolName: string;
+      toolCallId: string;
+      state: 'input-available' | 'output-available' | 'output-error';
+      input: unknown;
+      output?: unknown;
+      errorText?: string;
+    };
 
 class AssistantTurn {
   #blocks = new Map<number, string>();
@@ -343,7 +522,15 @@ class AssistantTurn {
     this.#flush();
   }
 
-  applyChanges(changes: readonly { type: string; contentIndex?: number; delta?: string; block?: unknown; message?: unknown }[]) {
+  applyChanges(
+    changes: readonly {
+      type: string;
+      contentIndex?: number;
+      delta?: string;
+      block?: unknown;
+      message?: unknown;
+    }[],
+  ) {
     let changed = false;
     for (const change of changes) {
       if (change.type === 'text_delta' && change.delta) {
@@ -391,11 +578,17 @@ class AssistantTurn {
   }
 
   #authoritative(): string {
-    return [...this.#blocks.entries()].sort((left, right) => left[0] - right[0]).map(([, text]) => text).join('');
+    return [...this.#blocks.entries()]
+      .sort((left, right) => left[0] - right[0])
+      .map(([, text]) => text)
+      .join('');
   }
 
   #authoritativeThinking(): string {
-    return [...this.#thinking.entries()].sort((left, right) => left[0] - right[0]).map(([, text]) => text).join('');
+    return [...this.#thinking.entries()]
+      .sort((left, right) => left[0] - right[0])
+      .map(([, text]) => text)
+      .join('');
   }
 
   #flush() {
@@ -482,9 +675,16 @@ class AssistantTurn {
       slot.details = details ?? slot.details;
     }
     const rendered = toolOutputPayload(toolName, details ?? slot?.details, text);
-    this.channel.push(isError
-      ? { type: 'tool-output-error', toolCallId, errorText: text || '工具调用失败', dynamic: true }
-      : { type: 'tool-output-available', toolCallId, output: rendered, dynamic: true });
+    this.channel.push(
+      isError
+        ? {
+            type: 'tool-output-error',
+            toolCallId,
+            errorText: text || '工具调用失败',
+            dynamic: true,
+          }
+        : { type: 'tool-output-available', toolCallId, output: rendered, dynamic: true },
+    );
   }
 
   toolDetails(toolCallId: string, details: unknown) {
@@ -509,15 +709,30 @@ function entryIdOf(entry: unknown): string | null {
 declare global {
   var paimengGenerationObservers: Map<string, AbortController> | undefined;
 }
-const generationObservers = globalThis.paimengGenerationObservers ??= new Map<string, AbortController>();
+const generationObservers = (globalThis.paimengGenerationObservers ??= new Map<
+  string,
+  AbortController
+>());
 /** 内环硬上限（docs/plans/archive/harness-reliability.md §4）；模型、工具与自检构建在 harness 的 attempt 钩子里预留，这里只管平台验收。 */
 const platformBuildLimit = 3;
 const repairRoundLimit = 2;
 
-async function setRunStatus(appId: string, generationId: string, epoch: number, status: 'generating' | 'building'): Promise<void> {
+async function setRunStatus(
+  appId: string,
+  generationId: string,
+  epoch: number,
+  status: 'generating' | 'building',
+): Promise<void> {
   await assertAuthority({ appId, epoch });
-  await db().update(generations).set({ status, updateTime: now() })
-    .where(and(eq(generations.id, generationId), inArray(generations.status, ['generating', 'building'])));
+  await db()
+    .update(generations)
+    .set({ status, updateTime: now() })
+    .where(
+      and(
+        eq(generations.id, generationId),
+        inArray(generations.status, ['generating', 'building']),
+      ),
+    );
   if (status === 'building') {
     // 进入平台验收时记录候选覆盖到的输入水位；之后的新输入会把它作废并回到 editing。
     await beginChecking({ appId, generationId, epoch });
@@ -528,10 +743,18 @@ async function setRunStatus(appId: string, generationId: string, epoch: number, 
 }
 
 /** 内部 abort 不是用户取消：超时、写权限失效与普通模型错误各有自己的 stopReason。 */
-function abortStop(stop: AbortController): { status: 'failed' | 'cancelled'; error: string; stopReason: GenerationStopReason } {
+function abortStop(stop: AbortController): {
+  status: 'failed' | 'cancelled';
+  error: string;
+  stopReason: GenerationStopReason;
+} {
   const reason = stop.signal.reason;
   const text = reason instanceof Error ? reason.message : String(reason ?? '');
-  const stopReason = stopReasonOf({ current: 'model-error', cancelled: text.includes('取消'), abortedReason: reason });
+  const stopReason = stopReasonOf({
+    current: 'model-error',
+    cancelled: text.includes('取消'),
+    abortedReason: reason,
+  });
   return {
     status: stopReason === 'cancelled' ? 'cancelled' : 'failed',
     error: stopReason === 'timeout' ? text || '生成超时' : text || '生成失败',
@@ -543,7 +766,8 @@ function startHarnessObservation(options: Parameters<typeof observeHarnessRun>[0
   if (generationObservers.has(options.requestId)) return;
   generationObservers.set(options.requestId, options.stop);
   void observeHarnessRun(options).finally(() => {
-    if (generationObservers.get(options.requestId) === options.stop) generationObservers.delete(options.requestId);
+    if (generationObservers.get(options.requestId) === options.stop)
+      generationObservers.delete(options.requestId);
   });
 }
 
@@ -558,7 +782,8 @@ async function observeHarnessRun(options: {
   epoch: number;
   holder: string;
 }): Promise<void> {
-  const { conversationId, requestId, app, model, channel, stop, execution, epoch, holder } = options;
+  const { conversationId, requestId, app, model, channel, stop, execution, epoch, holder } =
+    options;
   const { buildRepairRounds } = getConfig();
   const effectiveRepairRounds = Math.min(repairRoundLimit, Math.max(0, buildRepairRounds));
   const executionTarget = projectAt(app, execution.directory);
@@ -572,17 +797,28 @@ async function observeHarnessRun(options: {
   /** 本轮已经用过 ask：收尾走 pauseForQuestion（保留提问），不走发布或失败/取消。 */
   let questionAsked = false;
   const pulse = setInterval(() => {
-    void heartbeatAuthority({ appId: app.id, epoch, holder }).then(current => {
-      if (current === 'lost') { stop.abort(new Error('生成任务已失效')); void abortHarnessRun(app.id, conversationId); }
-      else if (current === 'draining') { stop.abort(new Error('生成已停止写入')); void abortHarnessRun(app.id, conversationId); }
-    }).catch(() => { stop.abort(new Error('生成任务已失效')); void abortHarnessRun(app.id, conversationId); });
+    void heartbeatAuthority({ appId: app.id, epoch, holder })
+      .then((current) => {
+        if (current === 'lost') {
+          stop.abort(new Error('生成任务已失效'));
+          void abortHarnessRun(app.id, conversationId);
+        } else if (current === 'draining') {
+          stop.abort(new Error('生成已停止写入'));
+          void abortHarnessRun(app.id, conversationId);
+        }
+      })
+      .catch(() => {
+        stop.abort(new Error('生成任务已失效'));
+        void abortHarnessRun(app.id, conversationId);
+      });
   }, 5000);
   // deadline 在 start 时已按数据库时钟持久化：观察者重挂、followUp 和 repair 都沿用同一份剩余时间。
   const deadline = await generationControl(requestId);
   if (!deadline) throw new BusinessError(404, 40400, '生成任务不存在');
-  const timeout = deadline.remainingMs !== null && deadline.remainingMs > 0
-    ? setTimeout(() => stop.abort(new Error('生成超时')), deadline.remainingMs)
-    : undefined;
+  const timeout =
+    deadline.remainingMs !== null && deadline.remainingMs > 0
+      ? setTimeout(() => stop.abort(new Error('生成超时')), deadline.remainingMs)
+      : undefined;
   if (deadline.remainingMs !== null && deadline.remainingMs <= 0) stop.abort(new Error('生成超时'));
 
   const verify = async (round: number): Promise<{ ok: true } | { ok: false; problem: unknown }> => {
@@ -590,25 +826,50 @@ async function observeHarnessRun(options: {
     const stepNumber = buildSteps++;
     const watch = buildProgressWatch(channel);
     const buildAttempt = await reserveAttempt({
-      executionId: execution.id, kind: 'build', scope: 'platform', limit: platformBuildLimit,
+      executionId: execution.id,
+      kind: 'build',
+      scope: 'platform',
+      limit: platformBuildLimit,
       requestSummary: { stage: 'verify', round },
     });
     const settleAttempt = (status: 'succeeded' | 'failed', detail: string | null) =>
-      completeAttempt({ attemptId: buildAttempt.id, status, result: { status, detail } })
-        .catch(problem => console.warn(`平台构建 attempt 落账失败（生成 ${requestId}）：`, problem));
+      completeAttempt({ attemptId: buildAttempt.id, status, result: { status, detail } }).catch(
+        (problem) => console.warn(`平台构建 attempt 落账失败（生成 ${requestId}）：`, problem),
+      );
     try {
       await buildApp(executionTarget, stop.signal, watch.onStage);
       await settleAttempt('succeeded', null);
-      await recordBuildStep({ generationId: requestId, round, stepNumber, durationMs: Date.now() - startedAt, outcome: { status: 'ok' } });
+      await recordBuildStep({
+        generationId: requestId,
+        round,
+        stepNumber,
+        durationMs: Date.now() - startedAt,
+        outcome: { status: 'ok' },
+      });
       return { ok: true };
     } catch (problem) {
       const detail = problem instanceof Error ? problem.message.slice(0, 1000) : '构建失败';
       await settleAttempt('failed', detail);
       if (stop.signal.aborted) {
-        const reason = stop.signal.reason instanceof Error ? stop.signal.reason.message : String(stop.signal.reason);
-        await recordBuildStep({ generationId: requestId, round, stepNumber, durationMs: Date.now() - startedAt, outcome: { status: 'cancelled', detail: reason.slice(0, 1000) } });
+        const reason =
+          stop.signal.reason instanceof Error
+            ? stop.signal.reason.message
+            : String(stop.signal.reason);
+        await recordBuildStep({
+          generationId: requestId,
+          round,
+          stepNumber,
+          durationMs: Date.now() - startedAt,
+          outcome: { status: 'cancelled', detail: reason.slice(0, 1000) },
+        });
       } else {
-        await recordBuildStep({ generationId: requestId, round, stepNumber, durationMs: Date.now() - startedAt, outcome: { status: 'failed', verdict: classifyBuildFailure(problem), detail } });
+        await recordBuildStep({
+          generationId: requestId,
+          round,
+          stepNumber,
+          durationMs: Date.now() - startedAt,
+          outcome: { status: 'failed', verdict: classifyBuildFailure(problem), detail },
+        });
       }
       return { ok: false, problem };
     } finally {
@@ -616,12 +877,19 @@ async function observeHarnessRun(options: {
     }
   };
   try {
-    const accounted = await db().select({ stepNumber: generationSteps.stepNumber }).from(generationSteps).where(and(eq(generationSteps.generationId, requestId), eq(generationSteps.kind, 'model')));
-    turn.recordedModelSteps = new Set(accounted.map(step => step.stepNumber));
+    const accounted = await db()
+      .select({ stepNumber: generationSteps.stepNumber })
+      .from(generationSteps)
+      .where(and(eq(generationSteps.generationId, requestId), eq(generationSteps.kind, 'model')));
+    turn.recordedModelSteps = new Set(accounted.map((step) => step.stepNumber));
     let snapshot: string | null = null;
     let round = 1;
     for (;;) {
-      const run = new RunTranslator(channel, turn, anchor, requestId, model, round, { stop, appId: app.id, conversationId });
+      const run = new RunTranslator(channel, turn, anchor, requestId, model, round, {
+        stop,
+        appId: app.id,
+        conversationId,
+      });
       let failureText: string | null = null;
       const response = await harnessFetch(`/agent-events?conversationId=${conversationId}`, {
         headers: { accept: 'application/x-ndjson' },
@@ -634,13 +902,23 @@ async function observeHarnessRun(options: {
             run.handle(event);
             if (askExecuted(event)) questionAsked = true;
             if (event.type === 'run_start') failureText = null;
-            if (event.type === 'task_failed' && event.kind === 'pi.generation' && typeof event.message === 'string') failureText = event.message;
+            if (
+              event.type === 'task_failed' &&
+              event.kind === 'pi.generation' &&
+              typeof event.message === 'string'
+            )
+              failureText = event.message;
           }
         } catch (problem) {
           if (stop.signal.aborted) throw problem;
           // 观察连接失败不代表 durable 任务失败；用已提交快照补齐，再重新挂接仍活跃的运行。
           const runtime = await harnessRuntime(conversationId);
-          run.handle({ type: 'snapshot', entries: runtime.messages, generation: runtime.live.generation, tools: runtime.live.tools });
+          run.handle({
+            type: 'snapshot',
+            entries: runtime.messages,
+            generation: runtime.live.generation,
+            tools: runtime.live.tools,
+          });
         }
       } finally {
         await run.finalize();
@@ -652,10 +930,15 @@ async function observeHarnessRun(options: {
       // 基线来自同一个原子快照：新增 run 已开始时不能把它的输入当成“已完成生成”的验证基线。
       const baseline = await harnessRuntime(conversationId);
       if (baseline.live.run) continue;
-      await resolveConsumedInputs(app.id, requestId, baseline).catch(problem => console.warn('输入回执结算失败：', problem));
+      await resolveConsumedInputs(app.id, requestId, baseline).catch((problem) =>
+        console.warn('输入回执结算失败：', problem),
+      );
       // 观察者可能中途丢失后重新挂接：快照里没有 ask 事件，再问一次控制面，避免把提问当成已完成。
       // 开始新一轮时会拒绝有开放提问的 start（回答会消费它），所以活跃轮次里看到的提问只能属于这一轮。
-      if (!questionAsked) questionAsked = await openQuestionOf(app.id).then(question => question !== null).catch(() => false);
+      if (!questionAsked)
+        questionAsked = await openQuestionOf(app.id)
+          .then((question) => question !== null)
+          .catch(() => false);
       // ask 之后这一轮只等回答：不再构建、不发布，也不走失败/取消（也不去关掉提问）。
       if (questionAsked) {
         status = 'failed';
@@ -672,7 +955,16 @@ async function observeHarnessRun(options: {
         const userPrompt = versionPromptOf(messages);
         const stats = await pendingChangeStatsFrom(app, execution.directory).catch(() => []);
         const summarized = await summarizeVersion({
-          version: { id: '', title: '', createTime: '', changedFiles: stats.map(stat => stat.path), fileCount: stats.length, bytes: 0, statsKnown: true, thumbnailKey: null },
+          version: {
+            id: '',
+            title: '',
+            createTime: '',
+            changedFiles: stats.map((stat) => stat.path),
+            fileCount: stats.length,
+            bytes: 0,
+            statsKnown: true,
+            thumbnailKey: null,
+          },
           userPrompt,
           agentSummary: spoken,
           stats,
@@ -682,19 +974,27 @@ async function observeHarnessRun(options: {
           parentVersionSha: control?.parentVersionSha ?? null,
         };
       };
-      const finishChecked = async (outcome: 'ready' | 'failed', detail: string | null, reason: GenerationStopReason) => {
+      const finishChecked = async (
+        outcome: 'ready' | 'failed',
+        detail: string | null,
+        reason: GenerationStopReason,
+      ) => {
         const current = await harnessRuntime(conversationId);
         if (current.live.run || latestInputId(current) !== verifiedInput) return false;
         await assertAuthority({ appId: app.id, epoch });
-        if (!await inputsSettled({ appId: app.id, generationId: requestId })) return false;
+        if (!(await inputsSettled({ appId: app.id, generationId: requestId }))) return false;
         if (outcome === 'ready') {
           const meta = await versionTitle();
           let published: Awaited<ReturnType<typeof publishReady>>;
           try {
             published = await publishReady({
-              app, generationId: requestId, epoch,
+              app,
+              generationId: requestId,
+              epoch,
               execution: { id: execution.id, directory: execution.directory },
-              title: meta.title, parentVersionSha: meta.parentVersionSha, messageId: anchor.firstAssistantEntryId,
+              title: meta.title,
+              parentVersionSha: meta.parentVersionSha,
+              messageId: anchor.firstAssistantEntryId,
             });
           } catch (problem) {
             // 新输入让旧候选失效：回到 editing 继续消费输入，这一轮并不失败。
@@ -709,9 +1009,14 @@ async function observeHarnessRun(options: {
           stopReason = published.published ? 'completed' : 'no-changes';
         } else {
           await failOrCancel({
-            app, generationId: requestId, epoch,
+            app,
+            generationId: requestId,
+            epoch,
             execution: { id: execution.id, directory: execution.directory },
-            outcome: 'failed', error: detail ?? '生成失败', stopReason: reason, messageId: anchor.firstAssistantEntryId,
+            outcome: 'failed',
+            error: detail ?? '生成失败',
+            stopReason: reason,
+            messageId: anchor.firstAssistantEntryId,
           });
           status = 'failed';
           error = detail;
@@ -729,7 +1034,10 @@ async function observeHarnessRun(options: {
       const verdict = await verify(round);
       // 输入可能在最终验证期间直接启动下一 run；继续观察，等代码稳定后再做最终验证。
       const afterBuild = await harnessRuntime(conversationId);
-      if (!stop.signal.aborted && (afterBuild.live.run || latestInputId(afterBuild) !== verifiedInput)) {
+      if (
+        !stop.signal.aborted &&
+        (afterBuild.live.run || latestInputId(afterBuild) !== verifiedInput)
+      ) {
         await setRunStatus(app.id, requestId, epoch, 'generating');
         continue;
       }
@@ -751,19 +1059,37 @@ async function observeHarnessRun(options: {
       }
       const current = await sourceDigest(executionTarget);
       if (snapshot !== null && current === snapshot) {
-        if (await finishChecked('failed', noProgressMessage(problem).slice(0, 1000), 'verification-failed')) break;
+        if (
+          await finishChecked(
+            'failed',
+            noProgressMessage(problem).slice(0, 1000),
+            'verification-failed',
+          )
+        )
+          break;
         continue;
       }
       snapshot = current;
       await setRunStatus(app.id, requestId, epoch, 'generating');
       // 修复轮次也记在持久 attempt 账本里：followUp/重挂不会把额度重置。
       await reserveAttempt({
-        executionId: execution.id, kind: 'build', scope: 'repair', limit: effectiveRepairRounds,
+        executionId: execution.id,
+        kind: 'build',
+        scope: 'repair',
+        limit: effectiveRepairRounds,
         requestSummary: { stage: 'repair', round },
       });
-      channel.push({ type: 'data-build', data: { status: 'repairing', attempt: repairs + 1, maxAttempts: effectiveRepairRounds }, transient: true } as UiChunk);
+      channel.push({
+        type: 'data-build',
+        data: { status: 'repairing', attempt: repairs + 1, maxAttempts: effectiveRepairRounds },
+        transient: true,
+      });
       round += 1;
-      await submitHarness(conversationId, formatBuildFeedback(problem, repairs + 1, effectiveRepairRounds), undefined);
+      await submitHarness(
+        conversationId,
+        formatBuildFeedback(problem, repairs + 1, effectiveRepairRounds),
+        undefined,
+      );
     }
   } catch (problem) {
     if (stop.signal.aborted) {
@@ -771,7 +1097,11 @@ async function observeHarnessRun(options: {
     } else {
       status = 'failed';
       error = problem instanceof Error ? problem.message.slice(0, 1000) : '生成失败';
-      stopReason = error.includes('超时') ? 'timeout' : error.includes('上限') || error.includes('预算') ? 'step-limit' : 'model-error';
+      stopReason = error.includes('超时')
+        ? 'timeout'
+        : error.includes('上限') || error.includes('预算')
+          ? 'step-limit'
+          : 'model-error';
     }
   } finally {
     clearInterval(pulse);
@@ -779,31 +1109,47 @@ async function observeHarnessRun(options: {
     try {
       if (!turn.parts.length && !turn.tools.size) {
         const state = await harnessState(conversationId).catch(() => null);
-        const text = [...(state?.view.entries ?? [])].reverse().find(entry => entry.kind === 'pi.assistant')?.text ?? '';
+        const text =
+          [...(state?.view.entries ?? [])].reverse().find((entry) => entry.kind === 'pi.assistant')
+            ?.text ?? '';
         if (text) turn.seed(messageOfText(text));
       }
       if (!finished) {
         if (questionAsked) {
           await pauseForQuestion({
-            app, generationId: requestId, epoch,
+            app,
+            generationId: requestId,
+            epoch,
             execution: { id: execution.id, directory: execution.directory },
             messageId: anchor.firstAssistantEntryId,
-          }).catch(problem => console.error(`等待回答收尾失败（生成 ${requestId}）：`, problem));
+          }).catch((problem) => console.error(`等待回答收尾失败（生成 ${requestId}）：`, problem));
         } else {
           await failOrCancel({
-            app, generationId: requestId, epoch,
+            app,
+            generationId: requestId,
+            epoch,
             execution: { id: execution.id, directory: execution.directory },
             outcome: status === 'cancelled' ? 'cancelled' : 'failed',
-            error: error ?? '生成失败', stopReason, messageId: anchor.firstAssistantEntryId,
-          }).catch(problem => console.error(`生成收尾失败（生成 ${requestId}）：`, problem));
+            error: error ?? '生成失败',
+            stopReason,
+            messageId: anchor.firstAssistantEntryId,
+          }).catch((problem) => console.error(`生成收尾失败（生成 ${requestId}）：`, problem));
         }
       }
       const task = await generationFor(app.id);
-      if (task?.id === requestId && (task.status === 'ready' || task.status === 'failed' || task.status === 'cancelled')) status = task.status;
-      channel.push({ type: 'data-progress', data: { stage: status, at: Date.now() }, transient: true } as UiChunk);
+      if (
+        task?.id === requestId &&
+        (task.status === 'ready' || task.status === 'failed' || task.status === 'cancelled')
+      )
+        status = task.status;
+      channel.push({
+        type: 'data-progress',
+        data: { stage: status, at: Date.now() },
+        transient: true,
+      });
     } catch (problem) {
       console.error(`生成收尾失败（生成 ${requestId}）：`, problem);
-      channel.push({ type: 'error', errorText: '生成结果落库失败' } as UiChunk);
+      channel.push({ type: 'error', errorText: '生成结果落库失败' });
     }
     channel.finish();
   }
@@ -811,7 +1157,7 @@ async function observeHarnessRun(options: {
 
 /** agent 这一轮的收尾原话：写标题时的线索，也是模型不可用时的兜底来源。 */
 function versionClosingOf(messages: TranscriptEntry[]): string | null {
-  const entry = messages.findLast(item => entryAssistantMessage(item) !== undefined);
+  const entry = messages.findLast((item) => entryAssistantMessage(item) !== undefined);
   if (!entry) return null;
   const text = [...textBlocksOf(entryAssistantMessage(entry)).values()].join('\n').trim();
   return text || null;
@@ -819,19 +1165,16 @@ function versionClosingOf(messages: TranscriptEntry[]): string | null {
 
 /** 写标题时要知道用户这一轮想要什么：只取最后一条用户输入的首行，80 字以内。 */
 function versionPromptOf(messages: TranscriptEntry[]): string | null {
-  const entry = messages.findLast(item => item.kind === userEntryKind);
+  const entry = messages.findLast((item) => item.kind === userEntryKind);
   const bubble = entry ? userBubbleSchema.safeParse(entry.data) : null;
   if (!bubble?.success) return null;
-  const lines = bubble.data.parts.flatMap(part => {
+  const lines = bubble.data.parts.flatMap((part) => {
     const block = z.object({ type: z.literal('text'), text: z.string() }).safeParse(part);
     return block.success ? block.data.text.split('\n') : [];
   });
-  const first = lines.map(line => line.trim()).find(Boolean);
+  const first = lines.map((line) => line.trim()).find(Boolean);
   return first ? (first.length > 80 ? `${first.slice(0, 80)}…` : first) : null;
 }
-
-/** 「已完成」这类回话不描述改动，当标题等于没说：退回按改动文件生成的兜底标题。 */
-const fillerTitle = /^(?:好|好的|完成|完成了|已完成|搞定|已修复|已修改|ok|done)[。.!！~\s]*$/i;
 
 /**
  * 最终验证期间构建阶段的进度 + 静默保活：与 RunTranslator 的 buildPreview 看门狗同一套节奏
@@ -840,13 +1183,33 @@ const fillerTitle = /^(?:好|好的|完成|完成了|已完成|搞定|已修复|
 function buildProgressWatch(channel: ChunkChannel) {
   let running: { stage: (typeof buildStageNames)[number]; startedAt: number } | null = null;
   const timer = setInterval(() => {
-    if (running) channel.push({ type: 'data-progress', data: { stage: running.stage, status: 'started', ms: Date.now() - running.startedAt, at: Date.now() }, transient: true } as UiChunk);
+    if (running)
+      channel.push({
+        type: 'data-progress',
+        data: {
+          stage: running.stage,
+          status: 'started',
+          ms: Date.now() - running.startedAt,
+          at: Date.now(),
+        },
+        transient: true,
+      });
   }, 1000);
   const onStage: BuildStageProgress = (stage, stageStatus, ms) => {
     running = stageStatus === 'started' ? { stage, startedAt: Date.now() } : null;
-    channel.push({ type: 'data-progress', data: { stage, status: stageStatus, ms, at: Date.now() }, transient: true } as UiChunk);
+    channel.push({
+      type: 'data-progress',
+      data: { stage, status: stageStatus, ms, at: Date.now() },
+      transient: true,
+    });
   };
-  return { onStage, stop: () => { running = null; clearInterval(timer); } };
+  return {
+    onStage,
+    stop: () => {
+      running = null;
+      clearInterval(timer);
+    },
+  };
 }
 
 const buildStageNames = ['source', 'install', 'typecheck', 'build'] as const;
@@ -863,7 +1226,9 @@ function toolCallsOf(message: unknown): { id: string; name: string }[] {
   if (!parsed.success) return [];
   const calls: { id: string; name: string }[] = [];
   for (const block of parsed.data.content ?? []) {
-    const call = z.object({ type: z.literal('toolCall'), id: z.string(), name: z.string() }).safeParse(block);
+    const call = z
+      .object({ type: z.literal('toolCall'), id: z.string(), name: z.string() })
+      .safeParse(block);
     if (call.success) calls.push({ id: call.data.id, name: call.data.name });
   }
   return calls;
@@ -875,7 +1240,15 @@ const assistantUsageSchema = z.object({
   responseModel: z.string().optional(),
   stopReason: z.string().optional(),
   durationMs: z.number().optional(),
-  usage: z.object({ input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number(), reasoning: z.number().optional() }).optional(),
+  usage: z
+    .object({
+      input: z.number(),
+      output: z.number(),
+      cacheRead: z.number(),
+      cacheWrite: z.number(),
+      reasoning: z.number().optional(),
+    })
+    .optional(),
 });
 
 function finishReasonOf(stopReason: string | undefined): string | null {
@@ -915,7 +1288,15 @@ class RunTranslator {
   readonly #toolOutcomes = new Map<string, { ok: boolean; ms: number | null }>();
 
   /** `generationId` 就是这一轮 Generation 的 id（提交时用同一个 id 建行），不是请求幂等键。 */
-  constructor(readonly channel: ChunkChannel, private readonly turn: AssistantTurn, private readonly anchor: TranscriptAnchor, private readonly generationId: string, private readonly model: ModelIdentity, private readonly round: number, private readonly overdraft: OverdraftGuard) {
+  constructor(
+    readonly channel: ChunkChannel,
+    private readonly turn: AssistantTurn,
+    private readonly anchor: TranscriptAnchor,
+    private readonly generationId: string,
+    private readonly model: ModelIdentity,
+    private readonly round: number,
+    private readonly overdraft: OverdraftGuard,
+  ) {
     this.#seenEntries = turn.seenEntries;
     this.#endedTools = turn.endedTools;
   }
@@ -923,14 +1304,24 @@ class RunTranslator {
   handle(event: HarnessEvent) {
     switch (event.type) {
       case 'snapshot': {
-        const entries = (event.entries ?? []).flatMap(entry => {
+        const entries = (event.entries ?? []).flatMap((entry) => {
           const parsed = transcriptEntrySchema.safeParse(entry);
           return parsed.success ? [parsed.data] : [];
         });
-        const from = entries.findIndex(entry => entry.kind === userEntryKind && userBubbleSchema.safeParse(entry.data).data?.id === `${this.generationId}-user`);
+        const from = entries.findIndex(
+          (entry) =>
+            entry.kind === userEntryKind &&
+            userBubbleSchema.safeParse(entry.data).data?.id === `${this.generationId}-user`,
+        );
         for (const entry of from < 0 ? [] : entries.slice(from)) {
           const result = toolResultMessageOf(entry);
-          if (result) this.handle({ type: 'tool_execution_end', toolCallId: result.toolCallId, toolName: result.toolName, entry });
+          if (result)
+            this.handle({
+              type: 'tool_execution_end',
+              toolCallId: result.toolCallId,
+              toolName: result.toolName,
+              entry,
+            });
           else this.handle({ type: 'message_end', entry });
         }
         for (const tool of event.tools ?? []) {
@@ -942,7 +1333,8 @@ class RunTranslator {
         break;
       }
       case 'message_start':
-        if (z.object({ role: z.literal('assistant') }).safeParse(event.message).success) this.turn.seed(event.message);
+        if (z.object({ role: z.literal('assistant') }).safeParse(event.message).success)
+          this.turn.seed(event.message);
         break;
       case 'message_update':
         this.turn.applyChanges(event.changes ?? []);
@@ -959,7 +1351,11 @@ class RunTranslator {
           const entryId = steerEntryIdOf(event.entry);
           if (entryId) {
             this.turn.closeText();
-            this.channel.push({ type: 'data-steer', data: { id: entryId, index: this.turn.streamedParts } satisfies SteerLandedEvent, transient: true } as UiChunk);
+            this.channel.push({
+              type: 'data-steer',
+              data: { id: entryId, index: this.turn.streamedParts } satisfies SteerLandedEvent,
+              transient: true,
+            });
           }
           break;
         }
@@ -968,7 +1364,8 @@ class RunTranslator {
         this.turn.reconcile(message);
         this.turn.closeText();
         for (const part of assistantPartsOf(message)) {
-          if (part.type === 'dynamic-tool') this.turn.toolStart(part.toolCallId, part.toolName, part.input);
+          if (part.type === 'dynamic-tool')
+            this.turn.toolStart(part.toolCallId, part.toolName, part.input);
         }
         this.#chain = this.#chain.then(() => this.#recordAssistant(message)).catch(() => undefined);
         break;
@@ -980,16 +1377,21 @@ class RunTranslator {
         }
         break;
       case 'tool_execution_update':
-        if (event.toolCallId && event.details !== undefined) this.#toolDetails(event.toolCallId, event.details);
+        if (event.toolCallId && event.details !== undefined)
+          this.#toolDetails(event.toolCallId, event.details);
         break;
       case 'tool_execution_end': {
         if (!event.toolCallId || !event.toolName || this.#endedTools.has(event.toolCallId)) break;
         this.#endedTools.add(event.toolCallId);
         this.turn.toolEnd(event.toolCallId, event.toolName, event.entry);
-        this.#toolOutcomes.set(event.toolCallId, { ok: !toolResultOf(event.entry).isError, ms: null });
+        this.#toolOutcomes.set(event.toolCallId, {
+          ok: !toolResultOf(event.entry).isError,
+          ms: null,
+        });
         const paths = writtenPathsOf(event.toolName, this.turn.tools.get(event.toolCallId)?.input);
         if (paths.length) this.#progress({ stage: 'files', paths, at: Date.now() });
-        if (event.toolName === 'buildPreview') this.#finishBuild(this.turn.tools.get(event.toolCallId)?.details);
+        if (event.toolName === 'buildPreview')
+          this.#finishBuild(this.turn.tools.get(event.toolCallId)?.details);
         break;
       }
       default:
@@ -1004,7 +1406,7 @@ class RunTranslator {
   }
 
   #progress(data: unknown) {
-    this.channel.push({ type: 'data-progress', data, transient: true } as UiChunk);
+    this.channel.push({ type: 'data-progress', data, transient: true });
   }
 
   #toolDetails(toolCallId: string, details: unknown) {
@@ -1013,7 +1415,12 @@ class RunTranslator {
     if (!stage.success) return;
     this.#buildStage = stage.data.stage;
     this.#buildStageStartedAt = Date.now();
-    this.#progress({ stage: stage.data.stage, status: stage.data.status, ms: stage.data.ms, at: stage.data.at });
+    this.#progress({
+      stage: stage.data.stage,
+      status: stage.data.status,
+      ms: stage.data.ms,
+      at: stage.data.at,
+    });
   }
 
   /**
@@ -1026,7 +1433,12 @@ class RunTranslator {
     this.#buildStage = null;
     this.#buildTimer = setInterval(() => {
       if (!this.#buildStage) return;
-      this.#progress({ stage: this.#buildStage, status: 'started', ms: Date.now() - this.#buildStageStartedAt, at: Date.now() });
+      this.#progress({
+        stage: this.#buildStage,
+        status: 'started',
+        ms: Date.now() - this.#buildStageStartedAt,
+        at: Date.now(),
+      });
     }, 1000);
   }
 
@@ -1039,7 +1451,8 @@ class RunTranslator {
   #finishBuild(details: unknown) {
     this.#stopBuildWatch();
     const result = buildResultSchema.safeParse(details);
-    if (result.success && result.data.status === 'ok') this.#progress({ stage: 'preview', version: ++this.#previewVersion, at: Date.now() });
+    if (result.success && result.data.status === 'ok')
+      this.#progress({ stage: 'preview', version: ++this.#previewVersion, at: Date.now() });
   }
 
   async #recordAssistant(message: unknown) {
@@ -1051,10 +1464,22 @@ class RunTranslator {
     const { provider, model, responseModel, stopReason, durationMs, usage } = parsed.data;
     this.#pending = {
       stepNumber,
-      model: { alias: this.model.alias, providerId: this.model.providerId ?? provider ?? null, modelName: responseModel ?? model ?? this.model.modelName ?? null },
+      model: {
+        alias: this.model.alias,
+        providerId: this.model.providerId ?? provider ?? null,
+        modelName: responseModel ?? model ?? this.model.modelName ?? null,
+      },
       upstreamProvider: provider ?? null,
       upstreamModelId: responseModel ?? model ?? null,
-      usage: usage ? { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, reasoning: usage.reasoning ?? null } : null,
+      usage: usage
+        ? {
+            input: usage.input,
+            output: usage.output,
+            cacheRead: usage.cacheRead,
+            cacheWrite: usage.cacheWrite,
+            reasoning: usage.reasoning ?? null,
+          }
+        : null,
       finishReason: finishReasonOf(stopReason),
       durationMs: durationMs ?? null,
       toolCalls: toolCallsOf(message),
@@ -1065,11 +1490,11 @@ class RunTranslator {
     const pending = this.#pending;
     if (!pending) return;
     this.#pending = null;
-    const calls: AccountToolCall[] = pending.toolCalls.map(call => {
+    const calls: AccountToolCall[] = pending.toolCalls.map((call) => {
       const outcome = this.#toolOutcomes.get(call.id);
       return { name: call.name, ok: outcome?.ok ?? true, ms: outcome?.ms ?? null };
     });
-    const timed = calls.filter(call => call.ms !== null);
+    const timed = calls.filter((call) => call.ms !== null);
     await recordAssistantStep({
       generationId: this.generationId,
       round: this.round,
@@ -1095,7 +1520,7 @@ class RunTranslator {
    */
   async #stopOnOverdraft(): Promise<void> {
     if (this.overdraft.stop.signal.aborted) return;
-    const verdict = await evaluateRunningOverdraft(this.generationId).catch(problem => {
+    const verdict = await evaluateRunningOverdraft(this.generationId).catch((problem) => {
       console.warn(`运行期透支评估失败（生成 ${this.generationId}）：`, problem);
       return null;
     });
@@ -1141,7 +1566,9 @@ function writtenPathsOf(toolName: string, input: unknown): string[] {
   return [];
 }
 
-type SubmitContentBlock = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: ImageMediaType };
+type SubmitContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: ImageMediaType };
 
 const userEntryKind = 'app.user';
 /**
@@ -1149,7 +1576,13 @@ const userEntryKind = 'app.user';
  * 刷新后转录取回的气泡 id 与流式期间乐观展示的完全一致。
  */
 const steerEntryPrefix = 'steer-';
-const steerEntrySchema = z.object({ kind: z.literal(userEntryKind), data: z.object({ id: z.string(), metadata: z.object({ inputMode: chatInputModeSchema.optional() }).optional() }) });
+const steerEntrySchema = z.object({
+  kind: z.literal(userEntryKind),
+  data: z.object({
+    id: z.string(),
+    metadata: z.object({ inputMode: chatInputModeSchema.optional() }).optional(),
+  }),
+});
 
 /** 插话条目落进转录的 id；不是插话（普通用户消息）时返回 null。 */
 function steerEntryIdOf(entry: unknown): string | null {
@@ -1159,30 +1592,61 @@ function steerEntryIdOf(entry: unknown): string | null {
   return bubble.id.startsWith(steerEntryPrefix) || bubble.metadata?.inputMode ? bubble.id : null;
 }
 
-const harnessSubmissionSchema = z.object({ submissionId: z.number().int().positive(), status: z.enum(['queued', 'placed', 'done', 'unanswered']) });
+const harnessSubmissionSchema = z.object({
+  submissionId: z.number().int().positive(),
+  status: z.enum(['queued', 'placed', 'done', 'unanswered']),
+});
 
-async function submitHarness(conversationId: number, content: string | SubmitContentBlock[], requestId: string | undefined, options: { whenBusy?: 'steer' | 'followUp'; entry?: { kind: string; data: UIMessage }; binding?: string } = {}): Promise<z.infer<typeof harnessSubmissionSchema>> {
-  return harnessSubmissionSchema.parse(await harnessJson('/submit', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ conversationId, content, requestId, whenBusy: options.whenBusy, entry: options.entry, binding: options.binding }),
-  }));
+async function submitHarness(
+  conversationId: number,
+  content: string | SubmitContentBlock[],
+  requestId: string | undefined,
+  options: {
+    whenBusy?: 'steer' | 'followUp';
+    entry?: { kind: string; data: UIMessage };
+    binding?: string;
+  } = {},
+): Promise<z.infer<typeof harnessSubmissionSchema>> {
+  return harnessSubmissionSchema.parse(
+    await harnessJson('/submit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        conversationId,
+        content,
+        requestId,
+        whenBusy: options.whenBusy,
+        entry: options.entry,
+        binding: options.binding,
+      }),
+    }),
+  );
 }
 
 const transcriptEntrySchema = z.object({
-  id: z.number(), kind: z.string(), model: z.array(z.unknown()).optional(), data: z.unknown().optional(),
+  id: z.number(),
+  kind: z.string(),
+  model: z.array(z.unknown()).optional(),
+  data: z.unknown().optional(),
 });
 const harnessMessagesSchema = z.object({ messages: z.array(transcriptEntrySchema) });
 type TranscriptEntry = z.infer<typeof harnessMessagesSchema>['messages'][number];
 
-const userBubbleSchema = z.object({ id: z.string(), role: z.literal('user'), parts: z.array(z.unknown()) }).passthrough();
+const userBubbleSchema = z
+  .object({ id: z.string(), role: z.literal('user'), parts: z.array(z.unknown()) })
+  .passthrough();
 
-const toolCallBlockSchema = z.object({ type: z.literal('toolCall'), id: z.string(), name: z.string(), arguments: z.unknown().optional() });
+const toolCallBlockSchema = z.object({
+  type: z.literal('toolCall'),
+  id: z.string(),
+  name: z.string(),
+  arguments: z.unknown().optional(),
+});
 
 function assistantPartsOf(message: unknown): AssistantPart[] {
   const parsed = z.object({ content: z.array(z.unknown()).optional() }).safeParse(message);
   const parts: AssistantPart[] = [];
-  for (const block of parsed.success ? parsed.data.content ?? [] : []) {
+  for (const block of parsed.success ? (parsed.data.content ?? []) : []) {
     const text = textBlockSchema.safeParse(block);
     if (text.success) {
       if (text.data.text) parts.push({ type: 'text', text: text.data.text });
@@ -1194,7 +1658,14 @@ function assistantPartsOf(message: unknown): AssistantPart[] {
       continue;
     }
     const call = toolCallBlockSchema.safeParse(block);
-    if (call.success) parts.push({ type: 'dynamic-tool', toolName: call.data.name, toolCallId: call.data.id, state: 'input-available', input: call.data.arguments ?? {} });
+    if (call.success)
+      parts.push({
+        type: 'dynamic-tool',
+        toolName: call.data.name,
+        toolCallId: call.data.id,
+        state: 'input-available',
+        input: call.data.arguments ?? {},
+      });
   }
   return parts;
 }
@@ -1248,25 +1719,45 @@ const harnessRuntimeSchema = harnessMessagesSchema.extend({
   live: z.object({
     run: z.object({ taskId: z.number(), inputs: z.array(z.number()) }).optional(),
     generation: z.object({ message: z.unknown().optional() }).optional(),
-    tools: z.array(z.object({ callId: z.string(), name: z.string(), status: z.enum(['pending', 'running', 'done']), details: z.unknown().optional() })).optional(),
+    tools: z
+      .array(
+        z.object({
+          callId: z.string(),
+          name: z.string(),
+          status: z.enum(['pending', 'running', 'done']),
+          details: z.unknown().optional(),
+        }),
+      )
+      .optional(),
   }),
-  inbox: z.object({ items: z.array(z.object({
-    id: z.number().int().positive(), mode: z.enum(['steer', 'followUp', 'write']),
-    entry: z.object({ kind: z.string(), data: z.unknown().optional() }).optional(),
-  })) }),
+  inbox: z.object({
+    items: z.array(
+      z.object({
+        id: z.number().int().positive(),
+        mode: z.enum(['steer', 'followUp', 'write']),
+        entry: z.object({ kind: z.string(), data: z.unknown().optional() }).optional(),
+      }),
+    ),
+  }),
 });
 type HarnessRuntime = z.infer<typeof harnessRuntimeSchema>;
 
 async function harnessRuntime(conversationId: number): Promise<HarnessRuntime> {
-  return harnessRuntimeSchema.parse(await harnessJson<unknown>(`/runtime?conversationId=${conversationId}`));
+  return harnessRuntimeSchema.parse(
+    await harnessJson<unknown>(`/runtime?conversationId=${conversationId}`),
+  );
 }
 
 function latestInputId(runtime: HarnessRuntime): number | null {
-  return runtime.messages.findLast(entry => entry.kind === userEntryKind)?.id ?? null;
+  return runtime.messages.findLast((entry) => entry.kind === userEntryKind)?.id ?? null;
 }
 
 /** SDK 条目真的进了转录，才把持久输入从 placed 推进到 resolved；水位只认连续前缀。 */
-async function resolveConsumedInputs(appId: string, generationId: string, runtime: HarnessRuntime): Promise<void> {
+async function resolveConsumedInputs(
+  appId: string,
+  generationId: string,
+  runtime: HarnessRuntime,
+): Promise<void> {
   const seen = new Set<string>();
   for (const entry of runtime.messages) {
     if (entry.kind !== userEntryKind) continue;
@@ -1275,21 +1766,35 @@ async function resolveConsumedInputs(appId: string, generationId: string, runtim
   }
   for (const input of await getInputs({ appId, generationId })) {
     if (input.status !== 'accepted' && input.status !== 'placed') continue;
-    if (seen.has(input.requestId) || seen.has(`${input.requestId}-user`) || seen.has(`${input.id}-user`)) {
+    if (
+      seen.has(input.requestId) ||
+      seen.has(`${input.requestId}-user`) ||
+      seen.has(`${input.id}-user`)
+    ) {
       await markInputResolved({ appId, inputId: input.id });
     }
   }
 }
 
 function finalModelFailure(runtime: HarnessRuntime): string | null {
-  const final = runtime.messages.findLast(entry => entry.kind === 'pi.assistant');
-  const failure = z.object({ stopReason: z.enum(['error', 'aborted']), errorMessage: z.string().optional() }).safeParse(final && entryAssistantMessage(final));
-  return failure.success ? failure.data.errorMessage ?? '模型调用未完成' : null;
+  const final = runtime.messages.findLast((entry) => entry.kind === 'pi.assistant');
+  const failure = z
+    .object({ stopReason: z.enum(['error', 'aborted']), errorMessage: z.string().optional() })
+    .safeParse(final && entryAssistantMessage(final));
+  return failure.success ? (failure.data.errorMessage ?? '模型调用未完成') : null;
 }
 
 const queuedBubbleSchema = z.object({
-  id: z.string(), role: z.literal('user'), parts: z.array(textBlockSchema),
-  metadata: z.object({ attachments: attachmentPartsSchema.optional(), generationId: z.string().optional(), inputMode: chatInputModeSchema.optional() }).optional(),
+  id: z.string(),
+  role: z.literal('user'),
+  parts: z.array(textBlockSchema),
+  metadata: z
+    .object({
+      attachments: attachmentPartsSchema.optional(),
+      generationId: z.string().optional(),
+      inputMode: chatInputModeSchema.optional(),
+    })
+    .optional(),
 });
 
 function runtimeMessages(runtime: HarnessRuntime): ChatMessage[] {
@@ -1298,53 +1803,92 @@ function runtimeMessages(runtime: HarnessRuntime): ChatMessage[] {
   const parts = assistantPartsOf(partial);
   if (parts.length) {
     const last = messages.at(-1);
-    if (last?.role === 'assistant') last.parts.push(...parts as ChatMessage['parts']);
-    else messages.push({ id: `live-${runtime.live.run?.taskId ?? 'assistant'}`, role: 'assistant', parts: parts as ChatMessage['parts'] });
+    if (last?.role === 'assistant') last.parts.push(...(parts as ChatMessage['parts']));
+    else
+      messages.push({
+        id: `live-${runtime.live.run?.taskId ?? 'assistant'}`,
+        role: 'assistant',
+        parts: parts as ChatMessage['parts'],
+      });
   }
-  const done = new Set(runtime.live.tools?.filter(tool => tool.status === 'done').map(tool => tool.callId));
+  const done = new Set(
+    runtime.live.tools?.filter((tool) => tool.status === 'done').map((tool) => tool.callId),
+  );
   if (!runtime.live.run) {
     // 任务异常退出可能没有产出结果条目；此时也不能继续显示“正在执行”。
     for (const message of messages) {
-      message.parts = message.parts.map(part => part.type === 'dynamic-tool' && part.state === 'input-available'
-        ? { type: 'dynamic-tool', toolName: part.toolName, toolCallId: part.toolCallId, input: part.input, state: 'output-error', errorText: '工具执行已结束，未返回结果' }
-        : part);
+      message.parts = message.parts.map((part) =>
+        part.type === 'dynamic-tool' && part.state === 'input-available'
+          ? {
+              type: 'dynamic-tool',
+              toolName: part.toolName,
+              toolCallId: part.toolCallId,
+              input: part.input,
+              state: 'output-error',
+              errorText: '工具执行已结束，未返回结果',
+            }
+          : part,
+      );
     }
   } else if (done.size) {
     for (const message of messages) {
-      message.parts = message.parts.map(part => part.type === 'dynamic-tool' && part.state === 'input-available' && done.has(part.toolCallId)
-        ? { type: 'dynamic-tool', toolName: part.toolName, toolCallId: part.toolCallId, input: part.input, state: 'output-error', errorText: '工具执行未完成，请查看后续回复' }
-        : part);
+      message.parts = message.parts.map((part) =>
+        part.type === 'dynamic-tool' &&
+        part.state === 'input-available' &&
+        done.has(part.toolCallId)
+          ? {
+              type: 'dynamic-tool',
+              toolName: part.toolName,
+              toolCallId: part.toolCallId,
+              input: part.input,
+              state: 'output-error',
+              errorText: '工具执行未完成，请查看后续回复',
+            }
+          : part,
+      );
     }
   }
   return messages;
 }
 
 async function executionRows(appId: string) {
-  return db().select().from(generationExecutions)
+  return db()
+    .select()
+    .from(generationExecutions)
     .where(eq(generationExecutions.appId, BigInt(appId)))
     .orderBy(generationExecutions.createTime, generationExecutions.id);
 }
 
 /** 应用的所有执行会话按 entry id 合并；同一 entry 只出现一次，旧会话不因新会话开始而丢历史。 */
-async function mergedRuntime(appId: string): Promise<{ runtime: HarnessRuntime; conversationId: number | undefined } | null> {
+async function mergedRuntime(
+  appId: string,
+): Promise<{ runtime: HarnessRuntime; conversationId: number | undefined } | null> {
   const rows = await executionRows(appId);
-  const conversations = rows.flatMap(row => row.conversationId === null ? [] : [{ id: row.conversationId }]);
+  const conversations = rows.flatMap((row) =>
+    row.conversationId === null ? [] : [{ id: row.conversationId }],
+  );
   // 旧应用在升级前只有一个共享会话，不在 generation_execution 里；按 code_output 工作区把它补进来，历史不丢。
-  const known = new Set(conversations.map(item => item.id));
-  const listed = await harnessJson<{ conversations: { conversationId: number; workspace: string }[] }>('/conversations').catch(() => null);
+  const known = new Set(conversations.map((item) => item.id));
+  const listed = await harnessJson<{
+    conversations: { conversationId: number; workspace: string }[];
+  }>('/conversations').catch(() => null);
   for (const item of listed?.conversations ?? []) {
     if (known.has(item.conversationId)) continue;
-    if (!item.workspace.includes('/code_output/') || !item.workspace.endsWith(`_${appId}`)) continue;
+    if (!item.workspace.includes('/code_output/') || !item.workspace.endsWith(`_${appId}`))
+      continue;
     conversations.unshift({ id: item.conversationId });
     known.add(item.conversationId);
   }
   if (conversations.length === 0) return null;
-  const loaded = await Promise.all(conversations.map(async item => ({
-    id: item.id,
-    runtime: await harnessRuntime(item.id).catch(() => null),
-  })));
+  const loaded = await Promise.all(
+    conversations.map(async (item) => ({
+      id: item.id,
+      runtime: await harnessRuntime(item.id).catch(() => null),
+    })),
+  );
   const entries = new Map<number, TranscriptEntry>();
-  for (const item of loaded) for (const entry of item.runtime?.messages ?? []) entries.set(entry.id, entry);
+  for (const item of loaded)
+    for (const entry of item.runtime?.messages ?? []) entries.set(entry.id, entry);
   const messages = [...entries.values()].sort((left, right) => left.id - right.id);
   const active = loaded.at(-1);
   return {
@@ -1353,7 +1897,7 @@ async function mergedRuntime(appId: string): Promise<{ runtime: HarnessRuntime; 
       messages,
       live: active?.runtime?.live ?? {},
       inbox: active?.runtime?.inbox ?? { items: [] },
-    } as HarnessRuntime,
+    },
   };
 }
 
@@ -1365,18 +1909,29 @@ export async function chatRuntime(appId: string, user: User): Promise<ChatRuntim
   const question = generation?.question ?? null;
   const merged = await mergedRuntime(appId);
   if (!merged) return { generation, busy: false, pending: [], messages: [], inputs: [], question };
-  const pending: PendingChatInput[] = merged.runtime.inbox.items.flatMap(item => {
+  const pending: PendingChatInput[] = merged.runtime.inbox.items.flatMap((item) => {
     if (item.mode === 'write' || item.entry?.kind !== userEntryKind) return [];
     const parsed = queuedBubbleSchema.safeParse(item.entry.data);
-    return parsed.success ? [{
-      id: parsed.data.id, submissionId: item.id, mode: item.mode,
-      text: parsed.data.parts.map(part => part.text).join('\n'), attachments: parsed.data.metadata?.attachments ?? [],
-    }] : [];
+    return parsed.success
+      ? [
+          {
+            id: parsed.data.id,
+            submissionId: item.id,
+            mode: item.mode,
+            text: parsed.data.parts.map((part) => part.text).join('\n'),
+            attachments: parsed.data.metadata?.attachments ?? [],
+          },
+        ]
+      : [];
   });
   const inputs = generation
-    ? (await getInputs({ appId, generationId: generation.id })).map(input => ({
-        id: input.id, seq: input.seq, mode: input.mode, text: input.message,
-        status: input.status, submissionId: input.sdkSubmissionId,
+    ? (await getInputs({ appId, generationId: generation.id })).map((input) => ({
+        id: input.id,
+        seq: input.seq,
+        mode: input.mode,
+        text: input.message,
+        status: input.status,
+        submissionId: input.sdkSubmissionId,
       }))
     : [];
   return {
@@ -1393,7 +1948,9 @@ export async function chatRuntime(appId: string, user: User): Promise<ChatRuntim
 /** 待回答提问的公开视图：旧后端不返回它（缺省），页面按「没有提问」处理。 */
 async function openQuestionView(appId: string): Promise<GenerationQuestion | null> {
   const question = await openQuestionOf(appId);
-  return question ? { id: question.id, prompt: question.prompt, generationId: question.generationId } : null;
+  return question
+    ? { id: question.id, prompt: question.prompt, generationId: question.generationId }
+    : null;
 }
 
 export async function harnessSubmitInput(raw: unknown, user: User): Promise<ChatInputReceipt> {
@@ -1402,55 +1959,118 @@ export async function harnessSubmitInput(raw: unknown, user: User): Promise<Chat
   validatePrompt(input.text);
   await ensureRecovered();
   const task = await generationStatus(input.appId);
-  if (!task || (task.status !== 'generating' && task.status !== 'building')) throw new BusinessError(409, 40900, '当前任务已结束，请直接发送消息');
+  if (!task || (task.status !== 'generating' && task.status !== 'building'))
+    throw new BusinessError(409, 40900, '当前任务已结束，请直接发送消息');
   // 提问暂停期间只能回答（走 start），不能把插话/排队消息塞进已经停写的一轮。
   if (task.question) throw new BusinessError(409, 40900, '正在等待用户回答，请直接发送回答');
   const execution = await activeExecution(input.appId);
-  if (!execution || execution.generationId !== task.id) throw new BusinessError(409, 40900, '应用还没有运行中的执行');
+  if (!execution || execution.generationId !== task.id)
+    throw new BusinessError(409, 40900, '应用还没有运行中的执行');
   await assertAuthority({ appId: app.id, epoch: execution.epoch });
   const appended = await appendInput({
-    appId: app.id, generationId: task.id, requestId: input.id, mode: input.mode, message: input.text,
+    appId: app.id,
+    generationId: task.id,
+    requestId: input.id,
+    mode: input.mode,
+    message: input.text,
   });
   if (appended.input.status !== 'accepted' && appended.input.status !== 'placed') {
     throw new BusinessError(409, 40900, '这条输入已经结算，不能再发送');
   }
   if (appended.input.sdkSubmissionId !== null && !appended.created) {
-    return { id: input.id, submissionId: appended.input.sdkSubmissionId, generationId: task.id, state: 'queued' };
+    return {
+      id: input.id,
+      submissionId: appended.input.sdkSubmissionId,
+      generationId: task.id,
+      state: 'queued',
+    };
   }
   const conversationId = execution.conversationId;
   if (conversationId === null) throw new BusinessError(409, 40900, '应用还没有运行中的会话');
   if (input.attachments.length) {
-    const capability = z.object({ imageInput: z.boolean() }).parse(await harnessJson<unknown>(`/model?conversationId=${conversationId}`));
+    const capability = z
+      .object({ imageInput: z.boolean() })
+      .parse(await harnessJson<unknown>(`/model?conversationId=${conversationId}`));
     if (!capability.imageInput) throw new BusinessError(400, 40000, '当前生成模型不支持图片输入');
   }
-  const images: AttachmentImage[] = await Promise.all(input.attachments.map(async part => ({
-    attachmentId: part.attachmentId,
-    ...await readAttachmentBytes({ attachmentId: part.attachmentId, userId: user.id, appId: app.id }),
-  })));
-  const bubble: ChatMessage = { id: input.id, role: 'user', parts: [{ type: 'text', text: input.text }], metadata: {
-    generationId: task.id, inputMode: input.mode, ...(input.attachments.length ? { attachments: input.attachments } : {}),
-  } };
-  const content: SubmitContentBlock[] = [{ type: 'text', text: input.text }, ...images.map(image => ({ type: 'image' as const, data: image.bytes.toString('base64'), mimeType: image.mediaType }))];
+  const images: AttachmentImage[] = await Promise.all(
+    input.attachments.map(async (part) => ({
+      attachmentId: part.attachmentId,
+      ...(await readAttachmentBytes({
+        attachmentId: part.attachmentId,
+        userId: user.id,
+        appId: app.id,
+      })),
+    })),
+  );
+  const bubble: ChatMessage = {
+    id: input.id,
+    role: 'user',
+    parts: [{ type: 'text', text: input.text }],
+    metadata: {
+      generationId: task.id,
+      inputMode: input.mode,
+      ...(input.attachments.length ? { attachments: input.attachments } : {}),
+    },
+  };
+  const content: SubmitContentBlock[] = [
+    { type: 'text', text: input.text },
+    ...images.map((image) => ({
+      type: 'image' as const,
+      data: image.bytes.toString('base64'),
+      mimeType: image.mediaType,
+    })),
+  ];
   await uploadAttachmentImages(app, user, images, projectAt(app, execution.directory));
-  const submission = await submitHarness(conversationId, content, input.id, { whenBusy: input.mode, entry: { kind: userEntryKind, data: bubble } });
+  const submission = await submitHarness(conversationId, content, input.id, {
+    whenBusy: input.mode,
+    entry: { kind: userEntryKind, data: bubble },
+  });
   if (submission.status === 'unanswered') {
     await markInputUnanswered({ appId: app.id, generationId: task.id });
     throw new BusinessError(409, 40900, '消息已被撤回或未能进入上下文');
   }
-  await markInputPlaced({ appId: app.id, inputId: appended.input.id, submissionId: submission.submissionId });
-  return { id: input.id, submissionId: submission.submissionId, generationId: task.id, state: submission.status === 'queued' ? 'queued' : 'placed' };
+  await markInputPlaced({
+    appId: app.id,
+    inputId: appended.input.id,
+    submissionId: submission.submissionId,
+  });
+  return {
+    id: input.id,
+    submissionId: submission.submissionId,
+    generationId: task.id,
+    state: submission.status === 'queued' ? 'queued' : 'placed',
+  };
 }
 
-export async function harnessCancelInput(appId: string, submissionId: number, user: User): Promise<{ state: 'aborted' | 'already_placed' | 'settled' }> {
+export async function harnessCancelInput(
+  appId: string,
+  submissionId: number,
+  user: User,
+): Promise<{ state: 'aborted' | 'already_placed' | 'settled' }> {
   await getApp(appId, user, true);
   const execution = await activeExecution(appId);
-  if (!execution || execution.conversationId === null) throw new BusinessError(404, 40400, '会话不存在');
+  if (!execution || execution.conversationId === null)
+    throw new BusinessError(404, 40400, '会话不存在');
   const result = z.object({ state: z.enum(['aborted', 'already_placed', 'settled']) });
-  const outcome = result.parse(await harnessJson<unknown>('/input/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ conversationId: execution.conversationId, submissionId }) }));
+  const outcome = result.parse(
+    await harnessJson<unknown>('/input/cancel', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ conversationId: execution.conversationId, submissionId }),
+    }),
+  );
   if (outcome.state === 'aborted') {
-    const [row] = await db().select().from(generationInputs).where(and(
-      eq(generationInputs.appId, BigInt(appId)), eq(generationInputs.sdkSubmissionId, submissionId),
-    )).limit(1);
+    const [row] = await db()
+      .select()
+      .from(generationInputs)
+      .where(
+        and(
+          eq(generationInputs.appId, BigInt(appId)),
+          eq(generationInputs.sdkSubmissionId, submissionId),
+        ),
+      )
+      .limit(1);
     if (row) await withdrawInput({ appId, inputId: row.id });
   }
   return outcome;
@@ -1474,10 +2094,11 @@ let recoveryTask: Promise<void> | undefined;
 function ensureRecovered(): Promise<void> {
   recoveryTask ??= recoverStartup({ holder: `next:${process.pid}:${randomUUID()}` })
     .then(() => {
-      void reconcileSettlements({ limit: startupReconcileLimit })
-        .catch(problem => console.warn('启动补结算失败，稍后可用 admin/billing/reconcile 重试：', problem));
+      void reconcileSettlements({ limit: startupReconcileLimit }).catch((problem) =>
+        console.warn('启动补结算失败，稍后可用 admin/billing/reconcile 重试：', problem),
+      );
     })
-    .catch(problem => {
+    .catch((problem) => {
       recoveryTask = undefined;
       console.warn('启动恢复失败，后续请求会重试：', problem);
     });
@@ -1488,21 +2109,37 @@ function ensureRecovered(): Promise<void> {
  * 观察者丢失但 harness 里的 run 已经结束时，read 路径重新挂接一次观察器：
  * 只对仍持有 authority 的活跃 generation 生效，模型调用不会被重发，最终验证与发布照常补齐。
  */
-async function attachOrphanedExecution(appId: string, task: { id: string; status: string }): Promise<void> {
+async function attachOrphanedExecution(
+  appId: string,
+  task: { id: string; status: string },
+): Promise<void> {
   if (task.status !== 'generating' && task.status !== 'building') return;
   if (generationObservers.has(task.id)) return;
   const execution = await activeExecution(appId);
   if (!execution || execution.generationId !== task.id || execution.conversationId === null) return;
-  const [authority] = await db().select().from(appAuthority).where(eq(appAuthority.appId, BigInt(appId)));
+  const [authority] = await db()
+    .select()
+    .from(appAuthority)
+    .where(eq(appAuthority.appId, BigInt(appId)));
   if (!authority || authority.state !== 'active' || authority.holder === null) return;
   if (authority.expiresAt !== null && authority.expiresAt <= now()) return;
   const app = await appForAdoption(appId);
   if (!app) return;
-  const model = await harnessModelIdentity(execution.conversationId) ?? { alias: null, providerId: null, modelName: null };
+  const model = (await harnessModelIdentity(execution.conversationId)) ?? {
+    alias: null,
+    providerId: null,
+    modelName: null,
+  };
   startHarnessObservation({
-    conversationId: execution.conversationId, requestId: task.id, app, model,
-    channel: new DetachedChannel(), stop: new AbortController(),
-    execution, epoch: execution.epoch, holder: authority.holder,
+    conversationId: execution.conversationId,
+    requestId: task.id,
+    app,
+    model,
+    channel: new DetachedChannel(),
+    stop: new AbortController(),
+    execution,
+    epoch: execution.epoch,
+    holder: authority.holder,
   });
   console.warn(`重新挂接遗留生成 ${task.id}（应用 ${appId}，会话 ${execution.conversationId}）`);
 }
@@ -1514,42 +2151,73 @@ export async function generationStatus(appId: string) {
   if (!task) return null;
   if (task.status === 'generating' || task.status === 'building') {
     // 发布事务已提交但状态曾被手工/旧进程改回 generating 时，版本行是已完成的证据。
-    const [published] = await db().select({ commitSha: versionRecords.commitSha }).from(versionRecords)
-      .where(eq(versionRecords.generationId, task.id)).limit(1);
+    const [published] = await db()
+      .select({ commitSha: versionRecords.commitSha })
+      .from(versionRecords)
+      .where(eq(versionRecords.generationId, task.id))
+      .limit(1);
     if (published) {
-      await db().update(generations).set({ status: 'ready', error: null, stopReason: 'completed', updateTime: now() })
-        .where(and(eq(generations.id, task.id), inArray(generations.status, ['generating', 'building'])));
-      await db().execute(sql`update generation set phase = 'finished', update_time = ${now()} where id = ${task.id}`);
+      await db()
+        .update(generations)
+        .set({ status: 'ready', error: null, stopReason: 'completed', updateTime: now() })
+        .where(
+          and(eq(generations.id, task.id), inArray(generations.status, ['generating', 'building'])),
+        );
+      await db().execute(
+        sql`update generation set phase = 'finished', update_time = ${now()} where id = ${task.id}`,
+      );
       task = (await generationFor(appId)) ?? task;
       // 状态在这里被改成 ready，没有别的路径会再通知结算；异步补一次、不阻塞这次轮询。
       // 失败由对账扫描（93）兜底，`settleGenerationBilling` 本身不抛错。
       void settleGenerationBilling(task.id);
     } else {
-      await attachOrphanedExecution(appId, task).catch(problem => console.warn(`重新挂接 ${task?.id} 失败：`, problem));
+      await attachOrphanedExecution(appId, task).catch((problem) =>
+        console.warn(`重新挂接 ${task?.id} 失败：`, problem),
+      );
     }
   }
   const control = await generationControl(task.id);
-  const [authority] = await db().select().from(appAuthority).where(eq(appAuthority.appId, BigInt(appId)));
+  const [authority] = await db()
+    .select()
+    .from(appAuthority)
+    .where(eq(appAuthority.appId, BigInt(appId)));
   return {
     ...task,
     phase: (control?.phase ?? 'editing') as NonNullable<Generation['phase']>,
     draftPending: authority?.draftSnapshotId !== null && authority?.draftSnapshotId !== undefined,
-    handoff: authority?.state === 'draining' ? { state: 'sealing' as const, reason: task.error } : null,
+    handoff:
+      authority?.state === 'draining' ? { state: 'sealing' as const, reason: task.error } : null,
     question: await openQuestionView(appId),
   };
 }
 
-type AttachmentImage = { attachmentId: string; bytes: Buffer; mediaType: ImageMediaType; filename: string };
+type AttachmentImage = {
+  attachmentId: string;
+  bytes: Buffer;
+  mediaType: ImageMediaType;
+  filename: string;
+};
 
-async function uploadAttachmentImages(app: AppInfo, user: User, images: readonly AttachmentImage[], target?: ReturnType<typeof projectAt>): Promise<void> {
+async function uploadAttachmentImages(
+  app: AppInfo,
+  user: User,
+  images: readonly AttachmentImage[],
+  target?: ReturnType<typeof projectAt>,
+): Promise<void> {
   if (!images.length) return;
   const destination = target ?? app;
   const directory = uploadDirectory(app.codeGenType);
   for (const image of images) {
     try {
-      const original = await readAttachmentOriginal({ attachmentId: image.attachmentId, userId: user.id, appId: app.id });
+      const original = await readAttachmentOriginal({
+        attachmentId: image.attachmentId,
+        userId: user.id,
+        appId: app.id,
+      });
       const path = `${directory}/${uploadFileName(image.attachmentId, original.filename)}`;
-      await writeProjectFileBytes(destination, path, original.bytes, { maxBytes: imageLimits.maxBytes });
+      await writeProjectFileBytes(destination, path, original.bytes, {
+        maxBytes: imageLimits.maxBytes,
+      });
     } catch (problem) {
       console.warn(`上传图片写入工作区失败（应用 ${app.id}）：`, problem);
     }
@@ -1559,39 +2227,74 @@ async function uploadAttachmentImages(app: AppInfo, user: User, images: readonly
 /**
  * 生成入口。返回 UI 消息流响应（`data-progress` / 文本增量 / 工具条目 / 用量块挂载方式不变，前端不需要改）。
  */
-export async function harnessChatResponse(req: Request, raw: unknown, user: User): Promise<Response> {
+export async function harnessChatResponse(
+  req: Request,
+  raw: unknown,
+  user: User,
+): Promise<Response> {
   const input = generationRequestSchema.parse(raw);
   const app = await getApp(input.appId, user, true);
-  const prompt = input.message.parts.filter(part => part.type === 'text').map(part => part.text).join('\n');
+  const prompt = input.message.parts
+    .filter((part) => part.type === 'text')
+    .map((part) => part.text)
+    .join('\n');
   validatePrompt(prompt);
   await ensureRecovered();
   // 回答提问：每条 generation 是新会话，模型看不到上一轮自己问了什么，所以把问题原文带进这一轮的提示里。
   // 持久输入与用户气泡仍然只存用户的原话（prompt），不带前缀。
-  const answeredQuestion = input.expectedQuestionId === undefined ? null : await openQuestionOf(input.appId);
-  if (input.expectedQuestionId !== undefined && (!answeredQuestion || answeredQuestion.id !== input.expectedQuestionId)) {
+  const answeredQuestion =
+    input.expectedQuestionId === undefined ? null : await openQuestionOf(input.appId);
+  if (
+    input.expectedQuestionId !== undefined &&
+    (!answeredQuestion || answeredQuestion.id !== input.expectedQuestionId)
+  ) {
     throw new BusinessError(409, 40900, '当前没有等待回答的问题，可能已经被回答或关闭');
   }
-  const modelText = answeredQuestion ? `（上一轮向用户提出的问题：${answeredQuestion.prompt}）\n\n用户的回答：${prompt}` : prompt;
-  const attachmentParts = input.message.parts.filter(part => part.type === 'attachment');
+  const modelText = answeredQuestion
+    ? `（上一轮向用户提出的问题：${answeredQuestion.prompt}）\n\n用户的回答：${prompt}`
+    : prompt;
+  const attachmentParts = input.message.parts.filter((part) => part.type === 'attachment');
   const incoming: ChatMessage = {
-    id: `${input.requestId}-user`, role: 'user',
-    parts: input.message.parts.filter(part => part.type === 'text'),
-    metadata: { generationId: input.requestId, ...(attachmentParts.length ? { attachments: attachmentParts } : {}) },
+    id: `${input.requestId}-user`,
+    role: 'user',
+    parts: input.message.parts.filter((part) => part.type === 'text'),
+    metadata: {
+      generationId: input.requestId,
+      ...(attachmentParts.length ? { attachments: attachmentParts } : {}),
+    },
   };
   const admission = await admitGenerationModel();
   if (attachmentParts.length > 0 && !admission.imageInput) {
-    throw new BusinessError(400, 40000, '当前生成模型不支持图片输入：请在模型管理的模型分配里为该槽位开启「图片输入」，或换用支持视觉的模型');
+    throw new BusinessError(
+      400,
+      40000,
+      '当前生成模型不支持图片输入：请在模型管理的模型分配里为该槽位开启「图片输入」，或换用支持视觉的模型',
+    );
   }
-  const attachmentImages: AttachmentImage[] = await Promise.all(attachmentParts.map(async part => ({
-    attachmentId: part.attachmentId,
-    ...await readAttachmentBytes({ attachmentId: part.attachmentId, userId: user.id, appId: input.appId }),
-  })));
+  const attachmentImages: AttachmentImage[] = await Promise.all(
+    attachmentParts.map(async (part) => ({
+      attachmentId: part.attachmentId,
+      ...(await readAttachmentBytes({
+        attachmentId: part.attachmentId,
+        userId: user.id,
+        appId: input.appId,
+      })),
+    })),
+  );
   const content: SubmitContentBlock[] = [
     { type: 'text', text: modelText },
-    ...attachmentImages.map(image => ({ type: 'image' as const, data: image.bytes.toString('base64'), mimeType: image.mediaType })),
+    ...attachmentImages.map((image) => ({
+      type: 'image' as const,
+      data: image.bytes.toString('base64'),
+      mimeType: image.mediaType,
+    })),
   ];
   const instructions = harnessInstructions(app, attachmentImages.length > 0);
-  const model: ModelIdentity = { alias: admission.identity.alias, providerId: admission.identity.providerId, modelName: admission.identity.modelName };
+  const model: ModelIdentity = {
+    alias: admission.identity.alias,
+    providerId: admission.identity.providerId,
+    modelName: admission.identity.modelName,
+  };
   const binding = admission.token ?? undefined;
   const stop = new AbortController();
   const holder = `next:${process.pid}:${randomUUID()}`;
@@ -1599,8 +2302,14 @@ export async function harnessChatResponse(req: Request, raw: unknown, user: User
   let started: Awaited<ReturnType<typeof startGeneration>>;
   try {
     started = await startGeneration({
-      app, userId: user.id, requestId: input.requestId, holder, prompt,
-      ...(input.expectedQuestionId === undefined ? {} : { expectedQuestionId: input.expectedQuestionId }),
+      app,
+      userId: user.id,
+      requestId: input.requestId,
+      holder,
+      prompt,
+      ...(input.expectedQuestionId === undefined
+        ? {}
+        : { expectedQuestionId: input.expectedQuestionId }),
     });
   } catch (problem) {
     if (reservation) await refundChatRateLimit(reservation);
@@ -1617,37 +2326,69 @@ export async function harnessChatResponse(req: Request, raw: unknown, user: User
     conversationId = await conversationForExecution(app, execution, binding);
     await setExecutionStatus(execution.id, 'active');
     await configureHarnessInstructions(conversationId, instructions);
-    const submission = await submitHarness(conversationId, content, input.requestId, { entry: { kind: userEntryKind, data: incoming }, binding });
-    if (submission.status === 'unanswered') throw new BusinessError(409, 40900, '消息未能进入生成上下文');
-    await markInputPlaced({ appId: app.id, inputId: started.input.id, submissionId: submission.submissionId });
+    const submission = await submitHarness(conversationId, content, input.requestId, {
+      entry: { kind: userEntryKind, data: incoming },
+      binding,
+    });
+    if (submission.status === 'unanswered')
+      throw new BusinessError(409, 40900, '消息未能进入生成上下文');
+    await markInputPlaced({
+      appId: app.id,
+      inputId: started.input.id,
+      submissionId: submission.submissionId,
+    });
   } catch (problem) {
-    const detail = problem instanceof Error ? problem.message.slice(0, 1000) : '提交给 harness 失败';
+    const detail =
+      problem instanceof Error ? problem.message.slice(0, 1000) : '提交给 harness 失败';
     await failOrCancel({
-      app, generationId: started.generationId, epoch: started.epoch,
+      app,
+      generationId: started.generationId,
+      epoch: started.epoch,
       execution: { id: execution.id, directory: execution.directory },
-      outcome: 'failed', error: detail, stopReason: 'initialization-failed',
+      outcome: 'failed',
+      error: detail,
+      stopReason: 'initialization-failed',
     }).catch(() => undefined);
     throw problem;
   }
 
   const channel = new ChunkChannel();
   startHarnessObservation({
-    conversationId, requestId: started.generationId, app, model, channel, stop,
-    execution, epoch: started.epoch, holder,
+    conversationId,
+    requestId: started.generationId,
+    app,
+    model,
+    channel,
+    stop,
+    execution,
+    epoch: started.epoch,
+    holder,
   });
 
   const stream = createUIMessageStream({
     onError: () => (stop.signal.aborted ? '生成已取消' : '生成失败，请查看任务状态'),
     execute: async ({ writer }) => {
-      writer.write({ type: 'start', messageId: `${started.generationId}-assistant`, messageMetadata: { generationId: started.generationId } });
+      writer.write({
+        type: 'start',
+        messageId: `${started.generationId}-assistant`,
+        messageMetadata: { generationId: started.generationId },
+      });
       for await (const chunk of channel.drain()) {
-        try { writer.write(chunk); } catch {}
+        try {
+          writer.write(chunk);
+        } catch {
+          // 客户端断开后仍消费队列，让服务端生成正常收尾。
+        }
       }
     },
   });
   return createUIMessageStreamResponse({
     stream,
-    headers: { 'Cache-Control': 'no-store', 'X-Generation-Id': started.generationId, 'X-Accel-Buffering': 'no' },
+    headers: {
+      'Cache-Control': 'no-store',
+      'X-Generation-Id': started.generationId,
+      'X-Accel-Buffering': 'no',
+    },
   });
 }
 
@@ -1667,24 +2408,49 @@ export async function harnessCancelGeneration(appId: string, user: User): Promis
     await waitHarnessIdle(execution.conversationId);
   }
   if (execution) {
-    const assistant = execution.conversationId ? await firstAssistantEntry(execution.conversationId) : undefined;
-    return (await failOrCancel({
-      app, generationId: task.id, epoch: execution.epoch,
-      execution: { id: execution.id, directory: execution.directory },
-      outcome: 'cancelled', error: '生成已取消', stopReason: 'cancelled', messageId: assistant ? String(assistant.id) : null,
-    })).status === 'cancelled';
+    const assistant = execution.conversationId
+      ? await firstAssistantEntry(execution.conversationId)
+      : undefined;
+    return (
+      (
+        await failOrCancel({
+          app,
+          generationId: task.id,
+          epoch: execution.epoch,
+          execution: { id: execution.id, directory: execution.directory },
+          outcome: 'cancelled',
+          error: '生成已取消',
+          stopReason: 'cancelled',
+          messageId: assistant ? String(assistant.id) : null,
+        })
+      ).status === 'cancelled'
+    );
   }
-  return (await settleGeneration({
-    appId: app.id, generationId: task.id, epoch: null, outcome: 'cancelled', error: '生成已取消', stopReason: 'cancelled',
-  })).status === 'cancelled';
+  return (
+    (
+      await settleGeneration({
+        appId: app.id,
+        generationId: task.id,
+        epoch: null,
+        outcome: 'cancelled',
+        error: '生成已取消',
+        stopReason: 'cancelled',
+      })
+    ).status === 'cancelled'
+  );
 }
 
-async function firstAssistantEntry(conversationId: number, timeoutMs = 3000): Promise<{ id: number } | undefined> {
+async function firstAssistantEntry(
+  conversationId: number,
+  timeoutMs = 3000,
+): Promise<{ id: number } | undefined> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const entry = (await harnessState(conversationId).catch(() => null))?.view.entries.find(item => item.kind === 'pi.assistant');
+    const entry = (await harnessState(conversationId).catch(() => null))?.view.entries.find(
+      (item) => item.kind === 'pi.assistant',
+    );
     if (entry) return entry;
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return undefined;
 }
@@ -1694,7 +2460,7 @@ async function waitHarnessIdle(conversationId: number, timeoutMs = 5000): Promis
   while (Date.now() < deadline) {
     const runtime = await harnessRuntime(conversationId).catch(() => null);
     if (!runtime?.live.run) return;
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
 
@@ -1708,7 +2474,14 @@ async function waitHarnessIdle(conversationId: number, timeoutMs = 5000): Promis
  *
  * 返回写进转录的气泡 id：调用方（前端）拿它当乐观气泡的标识，与运行中 `data-steer` 给的落地位置对上。
  */
-export async function harnessSteerGeneration(appId: string, user: User, text: string): Promise<string> {
-  const receipt = await harnessSubmitInput({ appId, id: `${steerEntryPrefix}${randomUUID()}`, mode: 'steer', text }, user);
+export async function harnessSteerGeneration(
+  appId: string,
+  user: User,
+  text: string,
+): Promise<string> {
+  const receipt = await harnessSubmitInput(
+    { appId, id: `${steerEntryPrefix}${randomUUID()}`, mode: 'steer', text },
+    user,
+  );
   return receipt.id;
 }

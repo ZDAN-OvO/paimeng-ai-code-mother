@@ -16,20 +16,37 @@ import { workspace, writeProjectFile } from '@/server/workspace/workspace';
 import { commitVersion, ensureVersionRepo, listVersions } from '@/server/versioning/version-store';
 import type { User } from '@/shared/contracts';
 import { testDatabaseUrl } from '../../support/test-database-url';
-import { baseUrl, freePort, harnessAvailable, postgresReachable, postgresUrl, startHarness, stopHarness, waitHealthy } from '../harness/support';
+import {
+  baseUrl,
+  freePort,
+  harnessAvailable,
+  postgresReachable,
+  postgresUrl,
+  startHarness,
+  stopHarness,
+  waitHealthy,
+} from '../harness/support';
 
 const harnessReady = harnessAvailable();
 const postgresReady = harnessReady && (await postgresReachable(postgresUrl));
-if (!harnessReady) process.stderr.write('[version-generation] 跳过：找不到产品 harness 入口或 tsx，先装依赖（npm install）\n');
-else if (!postgresReady) process.stderr.write(`[version-generation] 跳过：Postgres 不可达（${postgresUrl}），先跑 npm run durable:pg -- start\n`);
+if (!harnessReady)
+  process.stderr.write(
+    '[version-generation] 跳过：找不到产品 harness 入口或 tsx，先装依赖（npm install）\n',
+  );
+else if (!postgresReady)
+  process.stderr.write(
+    `[version-generation] 跳过：Postgres 不可达（${postgresUrl}），先跑 npm run durable:pg -- start\n`,
+  );
 
-process.env.DATABASE_URL = testDatabaseUrl('postgres://postgres:postgres@127.0.0.1:5432/paimeng_app');
+process.env.DATABASE_URL = testDatabaseUrl(
+  'postgres://postgres:postgres@127.0.0.1:5432/paimeng_app',
+);
 process.env.AI_MODE = 'fixture';
 
 type TestApp = { id: string; codeGenType: 'html' };
 type TestAccount = { owner: User; app: TestApp };
 
-const delay = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
+const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 const owned: TestAccount[] = [];
 
 const gitEnv = {
@@ -60,7 +77,14 @@ function commitCount(app: TestApp): number {
 async function addUser(): Promise<User> {
   const id = await nextSnowflakeId();
   const account = 'ts_version_gen_' + randomUUID();
-  await db().insert(users).values({ id, userAccount: account, userPassword: 'unused', userRole: 'user', createTime: now(), updateTime: now() });
+  await db().insert(users).values({
+    id,
+    userAccount: account,
+    userPassword: 'unused',
+    userRole: 'user',
+    createTime: now(),
+    updateTime: now(),
+  });
   const [row] = await db().select().from(users).where(eq(users.id, id));
   return publicUser(row);
 }
@@ -68,7 +92,16 @@ async function addUser(): Promise<User> {
 async function createApp(initPrompt: string): Promise<TestAccount> {
   const owner = await addUser();
   const value = await nextSnowflakeId();
-  await db().insert(apps).values({ id: value, initPrompt, codeGenType: 'html', userId: BigInt(owner.id), createTime: now(), updateTime: now() });
+  await db()
+    .insert(apps)
+    .values({
+      id: value,
+      initPrompt,
+      codeGenType: 'html',
+      userId: BigInt(owner.id),
+      createTime: now(),
+      updateTime: now(),
+    });
   const account: TestAccount = { owner, app: { id: value.toString(), codeGenType: 'html' } };
   owned.push(account);
   return account;
@@ -78,7 +111,8 @@ async function waitForTerminal(appId: string, requestId: string, timeoutMs: numb
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const task = await generationFor(appId);
-    if (task?.id === requestId && task.status !== 'generating' && task.status !== 'building') return task;
+    if (task?.id === requestId && task.status !== 'generating' && task.status !== 'building')
+      return task;
     await delay(250);
   }
   throw new Error('生成没有在预期时间内结束');
@@ -88,17 +122,40 @@ async function waitForTerminal(appId: string, requestId: string, timeoutMs: numb
  * 跑一次真实生成：faux 模型按脚本写一个文件，收尾走 durable-engine 的版本落账。
  * 返回后生成已结终态，版本行与截图都在收尾里写完了。
  */
-async function runGeneration(options: { account: TestAccount; tool: string; args: unknown; text: string; finalText: string; expectedStatus?: 'ready' | 'failed' }) {
+async function runGeneration(options: {
+  account: TestAccount;
+  tool: string;
+  args: unknown;
+  text: string;
+  finalText: string;
+  expectedStatus?: 'ready' | 'failed';
+}) {
   const port = await freePort();
   const runDir = mkdtempSync(join(tmpdir(), 'version-generation-'));
   process.env.DURABLE_HARNESS_URL = baseUrl(port);
-  const harness = startHarness({ port, runDir, reset: true, waitMs: 0, finalText: options.finalText, tool: options.tool, args: options.args });
+  const harness = startHarness({
+    port,
+    runDir,
+    reset: true,
+    waitMs: 0,
+    finalText: options.finalText,
+    tool: options.tool,
+    args: options.args,
+  });
   try {
     await waitHealthy(baseUrl(port), 60_000);
     const requestId = randomUUID();
     const response = await harnessChatResponse(
       new Request('http://localhost:3000/api/app/chat/gen/code', { method: 'POST' }),
-      { appId: options.account.app.id, requestId, message: { id: `${requestId}-user`, role: 'user', parts: [{ type: 'text', text: options.text }] } },
+      {
+        appId: options.account.app.id,
+        requestId,
+        message: {
+          id: `${requestId}-user`,
+          role: 'user',
+          parts: [{ type: 'text', text: options.text }],
+        },
+      },
       options.account.owner,
     );
     expect(response.status).toBe(200);
@@ -125,10 +182,16 @@ async function seedVersion(app: TestApp, body: string, title: string): Promise<s
 afterAll(async () => {
   for (const { owner, app } of owned) {
     rmSync(workspace(app), { recursive: true, force: true });
-    await db().delete(apps).where(eq(apps.id, BigInt(app.id)));
-    await db().delete(users).where(eq(users.id, BigInt(owner.id)));
+    await db()
+      .delete(apps)
+      .where(eq(apps.id, BigInt(app.id)));
+    await db()
+      .delete(users)
+      .where(eq(users.id, BigInt(owner.id)));
   }
-  await getPool().end().catch(() => undefined);
+  await getPool()
+    .end()
+    .catch(() => undefined);
 });
 
 describe.skipIf(!harnessReady || !postgresReady)('生成收尾的版本', () => {
@@ -142,7 +205,10 @@ describe.skipIf(!harnessReady || !postgresReady)('生成收尾的版本', () => 
       text: '把正文换成第二版',
       finalText: '把首页正文换成了第二版，导航保持原样',
       tool: 'write',
-      args: { path: 'index.html', content: '<!doctype html><html><body>VERSION_GEN_V2</body></html>' },
+      args: {
+        path: 'index.html',
+        content: '<!doctype html><html><body>VERSION_GEN_V2</body></html>',
+      },
     });
 
     // agent 不再自己提交：这一轮只有收尾的那一次提交。
@@ -151,7 +217,7 @@ describe.skipIf(!harnessReady || !postgresReady)('生成收尾的版本', () => 
 
     const rows = await listVersionRows(app.id);
     expect(rows).toHaveLength(2);
-    const head = rows[0]!;
+    const head = rows[0];
     expect(head.commitSha).toBe(headSha(app));
     // 没有可用的总结模型时标题取助手这一轮的原话，只留第一个短句：
     // 后半截「导航保持原样」是解释，标签里不要。
@@ -159,11 +225,13 @@ describe.skipIf(!harnessReady || !postgresReady)('生成收尾的版本', () => 
     expect(git(app, ['log', '-1', '--pretty=%s']).trim()).toBe(head.title);
     expect(head.generationId).toBe(requestId);
     // 钉子让这一版在 HEAD 离开后依然可达。
-    expect(git(app, ['rev-parse', `refs/paimeng/versions/${head.commitSha}`]).trim()).toBe(head.commitSha);
+    expect(git(app, ['rev-parse', `refs/paimeng/versions/${head.commitSha}`]).trim()).toBe(
+      head.commitSha,
+    );
 
     const overview = await listVersions(app);
     expect(overview.current).toEqual({ versionId: head.commitSha });
-    expect(overview.versions.map(version => version.id)).toEqual([head.commitSha, v1]);
+    expect(overview.versions.map((version) => version.id)).toEqual([head.commitSha, v1]);
   }, 180_000);
 
   it('agent 只回「完成了」这类空话时，标题退回按改动文件描述', async () => {
@@ -176,10 +244,13 @@ describe.skipIf(!harnessReady || !postgresReady)('生成收尾的版本', () => 
       text: '把正文换掉',
       finalText: '已完成',
       tool: 'write',
-      args: { path: 'index.html', content: '<!doctype html><html><body>VERSION_GEN_DIRTY</body></html>' },
+      args: {
+        path: 'index.html',
+        content: '<!doctype html><html><body>VERSION_GEN_DIRTY</body></html>',
+      },
     });
 
-    const head = (await listVersionRows(app.id))[0]!;
+    const head = (await listVersionRows(app.id))[0];
     expect(head.title).not.toBe('已完成');
     expect(head.title).toMatch(/^改 index\.html/);
     // 提交信息跟着台账标题走，git log 里不会出现「已完成」。
@@ -204,7 +275,7 @@ describe.skipIf(!harnessReady || !postgresReady)('生成收尾的版本', () => 
     expect(commitCount(app)).toBe(2);
 
     const rows = await listVersionRows(app.id);
-    expect(rows.map(row => row.commitSha)).toEqual([v2, v1]);
+    expect(rows.map((row) => row.commitSha)).toEqual([v2, v1]);
 
     const overview = await listVersions(app);
     expect(overview.current).toEqual({ versionId: v2 });
@@ -213,11 +284,22 @@ describe.skipIf(!harnessReady || !postgresReady)('生成收尾的版本', () => 
   it('版本库不可写时生成失败并保留草稿，不留下半截版本', async () => {
     const account = await createApp('版本库不可写');
     const { app } = account;
-    await writeProjectFile(app, 'index.html', '<!doctype html><html><body>BLOCKED_REPO</body></html>');
+    await writeProjectFile(
+      app,
+      'index.html',
+      '<!doctype html><html><body>BLOCKED_REPO</body></html>',
+    );
     // 在 .git 该在的位置放一个普通文件：git 初始化必然失败，发布事务不能凭空造出版本。
     writeFileSync(join(workspace(app), '.git'), 'not-a-repo');
 
-    const requestId = await runGeneration({ account, text: '照常生成', finalText: '照常完成', tool: 'm1_wait', args: { ms: 0 }, expectedStatus: 'failed' });
+    const requestId = await runGeneration({
+      account,
+      text: '照常生成',
+      finalText: '照常完成',
+      tool: 'm1_wait',
+      args: { ms: 0 },
+      expectedStatus: 'failed',
+    });
 
     expect(await listVersionRows(app.id)).toHaveLength(0);
     expect(await versionRowOf(app.id, 'a'.repeat(40))).toBe(null);
@@ -225,7 +307,10 @@ describe.skipIf(!harnessReady || !postgresReady)('生成收尾的版本', () => 
     const control = await generationControl(requestId);
     expect(control?.phase).toBe('finished');
     // 失败收尾必须留下可继承的草稿引用，下一轮才能接着改。
-    const [authority] = await db().select().from(appAuthority).where(eq(appAuthority.appId, BigInt(app.id)));
+    const [authority] = await db()
+      .select()
+      .from(appAuthority)
+      .where(eq(appAuthority.appId, BigInt(app.id)));
     expect(authority?.draftSnapshotId).not.toBeNull();
   }, 180_000);
 });

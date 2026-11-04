@@ -31,12 +31,19 @@ export function snowflakeCandidate(previous: bigint, milliseconds: bigint): Cand
 }
 
 async function allocate(tx: Transaction) {
-  const [state] = await tx.select().from(snowflakeState).where(eq(snowflakeState.nodeId, Number(SNOWFLAKE_NODE))).for('update');
+  const [state] = await tx
+    .select()
+    .from(snowflakeState)
+    .where(eq(snowflakeState.nodeId, Number(SNOWFLAKE_NODE)))
+    .for('update');
   if (!state) throw new Error('雪花 ID 状态未初始化，请先执行数据库迁移');
   for (let attempt = 0; attempt < 10; attempt++) {
     const candidate = snowflakeCandidate(state.lastId, BigInt(Date.now()));
     if ('id' in candidate) {
-      await tx.update(snowflakeState).set({ lastId: candidate.id }).where(eq(snowflakeState.nodeId, state.nodeId));
+      await tx
+        .update(snowflakeState)
+        .set({ lastId: candidate.id })
+        .where(eq(snowflakeState.nodeId, state.nodeId));
       return candidate.id;
     }
     await wait(candidate.waitMilliseconds);
@@ -48,10 +55,17 @@ export async function nextSnowflakeId(): Promise<bigint> {
   return db().transaction(allocate);
 }
 
-export async function reserveImportedSnowflakeIds(tx: Pick<Transaction, 'update'>, ids: Iterable<bigint>) {
+export async function reserveImportedSnowflakeIds(
+  tx: Pick<Transaction, 'update'>,
+  ids: Iterable<bigint>,
+) {
   let maximum = 0n;
   for (const id of ids) {
     if (id > maximum && id <= maxId && ((id >> 12n) & 1023n) === SNOWFLAKE_NODE) maximum = id;
   }
-  if (maximum > 0n) await tx.update(snowflakeState).set({ lastId: sql`GREATEST(${snowflakeState.lastId}, ${maximum.toString()}::bigint)` }).where(eq(snowflakeState.nodeId, Number(SNOWFLAKE_NODE)));
+  if (maximum > 0n)
+    await tx
+      .update(snowflakeState)
+      .set({ lastId: sql`GREATEST(${snowflakeState.lastId}, ${maximum.toString()}::bigint)` })
+      .where(eq(snowflakeState.nodeId, Number(SNOWFLAKE_NODE)));
 }

@@ -16,8 +16,20 @@ export const MAX_FILE_BYTES = 256 * 1024;
 export const MAX_BINARY_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_PROJECT_BYTES = 16 * 1024 * 1024;
 export const MAX_PROJECT_FILES = 256;
-const blocked = new Set(['node_modules', 'dist', '.git', '.next', '.nuxt', '.cache', '.npmrc', '.yarnrc', '.yarnrc.yml', '.ssh']);
-const deployKey = /^(?:[A-Za-z0-9]{6}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/;
+const blocked = new Set([
+  'node_modules',
+  'dist',
+  '.git',
+  '.next',
+  '.nuxt',
+  '.cache',
+  '.npmrc',
+  '.yarnrc',
+  '.yarnrc.yml',
+  '.ssh',
+]);
+const deployKey =
+  /^(?:[A-Za-z0-9]{6}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/;
 
 export function validateDeployKey(value: string) {
   if (!deployKey.test(value)) throw new Error('非法发布标识');
@@ -25,9 +37,29 @@ export function validateDeployKey(value: string) {
 }
 
 export function safeRelativePath(value: string) {
-  if (!value || value.length > 512 || value.includes('\\') || value.includes('\0') || isAbsolute(value) || /^[A-Za-z]:/.test(value)) throw new Error('非法文件路径');
+  if (
+    !value ||
+    value.length > 512 ||
+    value.includes('\\') ||
+    value.includes('\0') ||
+    isAbsolute(value) ||
+    /^[A-Za-z]:/.test(value)
+  )
+    throw new Error('非法文件路径');
   const segments = value.split('/');
-  if (segments.length > 20 || segments.some(part => !part || part === '.' || part === '..' || blocked.has(part) || part.startsWith('.env') || part.startsWith('.paimeng-'))) throw new Error('文件路径不允许访问');
+  if (
+    segments.length > 20 ||
+    segments.some(
+      (part) =>
+        !part ||
+        part === '.' ||
+        part === '..' ||
+        blocked.has(part) ||
+        part.startsWith('.env') ||
+        part.startsWith('.paimeng-'),
+    )
+  )
+    throw new Error('文件路径不允许访问');
   return segments.join('/');
 }
 
@@ -60,11 +92,14 @@ export function projectRootPath(target: ProjectTarget) {
 }
 
 export async function ensureSafeDirectory(path: string) {
-  try { await mkdir(path); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  try {
+    await mkdir(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
   const info = await lstat(path);
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('目录不是安全的普通目录');
-  if (await realpath(path) !== path) throw new Error('目录路径不允许软链接');
+  if ((await realpath(path)) !== path) throw new Error('目录路径不允许软链接');
   return path;
 }
 
@@ -116,7 +151,12 @@ async function inspectProject(target: ProjectTarget) {
   async function walk(directory: string, depth: number) {
     if (depth > 20) throw new Error('目录深度超过限制');
     for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (blocked.has(entry.name) || entry.name.startsWith('.env') || entry.name.startsWith('.paimeng-')) continue;
+      if (
+        blocked.has(entry.name) ||
+        entry.name.startsWith('.env') ||
+        entry.name.startsWith('.paimeng-')
+      )
+        continue;
       const path = join(directory, entry.name);
       const info = await lstat(path);
       if (info.isSymbolicLink()) throw new Error('应用包含不安全的符号链接');
@@ -124,7 +164,8 @@ async function inspectProject(target: ProjectTarget) {
       else if (info.isFile()) {
         bytes += info.size;
         files.push({ path: relative(root, path), size: info.size });
-        if (files.length > MAX_PROJECT_FILES || bytes > MAX_PROJECT_BYTES) throw new Error('工程超过文件数量或大小限制');
+        if (files.length > MAX_PROJECT_FILES || bytes > MAX_PROJECT_BYTES)
+          throw new Error('工程超过文件数量或大小限制');
       } else throw new Error('工程只能包含普通文件和目录');
     }
   }
@@ -133,7 +174,7 @@ async function inspectProject(target: ProjectTarget) {
 }
 
 export async function listProjectFiles(target: ProjectTarget) {
-  return (await inspectProject(target)).files.map(file => file.path).sort();
+  return (await inspectProject(target)).files.map((file) => file.path).sort();
 }
 
 export async function readProjectFile(target: ProjectTarget, path: string) {
@@ -143,7 +184,9 @@ export async function readProjectFile(target: ProjectTarget, path: string) {
     const info = await handle.stat();
     if (!info.isFile() || info.size > MAX_FILE_BYTES) throw new Error('文件过大或不是普通文件');
     return await handle.readFile('utf8');
-  } finally { await handle.close(); }
+  } finally {
+    await handle.close();
+  }
 }
 
 /** 读取原始字节：用于图片与构建指纹，不受文本工具的 256 KiB 上限约束。 */
@@ -154,16 +197,27 @@ export async function readProjectFileBytes(target: ProjectTarget, path: string):
     const info = await handle.stat();
     if (!info.isFile() || info.size > MAX_PROJECT_BYTES) throw new Error('文件过大或不是普通文件');
     return await handle.readFile();
-  } finally { await handle.close(); }
+  } finally {
+    await handle.close();
+  }
 }
 
-async function writeAtomically(target: ProjectTarget, path: string, data: string | Buffer, encoding: 'utf8' | null) {
+async function writeAtomically(
+  target: ProjectTarget,
+  path: string,
+  data: string | Buffer,
+  encoding: 'utf8' | null,
+) {
   const file = await resolveFile(target, path, true);
   const temp = join(file.slice(0, file.lastIndexOf('/')), `.paimeng-${randomUUID()}`);
-  const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  const handle = await open(
+    temp,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
   try {
-    if (encoding) await handle.writeFile(data as string, 'utf8');
-    else await handle.writeFile(data as Buffer);
+    if (encoding) await handle.writeFile(data, 'utf8');
+    else await handle.writeFile(data);
     await handle.close();
     await resolveFile(target, path);
     await rename(temp, file);
@@ -179,18 +233,31 @@ export async function writeProjectFile(target: ProjectTarget, path: string, cont
   const size = Buffer.byteLength(content);
   if (size > MAX_FILE_BYTES) throw new Error('文件内容超过限制');
   const snapshot = await inspectProject(target);
-  const existing = snapshot.files.find(entry => entry.path === path);
-  if (snapshot.files.length + (existing ? 0 : 1) > MAX_PROJECT_FILES || snapshot.bytes - (existing?.size ?? 0) + size > MAX_PROJECT_BYTES) throw new Error('工程超过文件数量或大小限制');
+  const existing = snapshot.files.find((entry) => entry.path === path);
+  if (
+    snapshot.files.length + (existing ? 0 : 1) > MAX_PROJECT_FILES ||
+    snapshot.bytes - (existing?.size ?? 0) + size > MAX_PROJECT_BYTES
+  )
+    throw new Error('工程超过文件数量或大小限制');
   await writeAtomically(target, path, content, 'utf8');
 }
 
 /** 写入二进制资源（图片）。与文本写入共用路径校验、配额与原子替换，但另有自己的大小上限。 */
-export async function writeProjectFileBytes(target: ProjectTarget, path: string, data: Buffer, options: { maxBytes?: number } = {}) {
+export async function writeProjectFileBytes(
+  target: ProjectTarget,
+  path: string,
+  data: Buffer,
+  options: { maxBytes?: number } = {},
+) {
   const limit = options.maxBytes ?? MAX_BINARY_FILE_BYTES;
   if (data.byteLength > limit) throw new Error('二进制文件超过限制');
   const snapshot = await inspectProject(target);
-  const existing = snapshot.files.find(entry => entry.path === path);
-  if (snapshot.files.length + (existing ? 0 : 1) > MAX_PROJECT_FILES || snapshot.bytes - (existing?.size ?? 0) + data.byteLength > MAX_PROJECT_BYTES) throw new Error('工程超过文件数量或大小限制');
+  const existing = snapshot.files.find((entry) => entry.path === path);
+  if (
+    snapshot.files.length + (existing ? 0 : 1) > MAX_PROJECT_FILES ||
+    snapshot.bytes - (existing?.size ?? 0) + data.byteLength > MAX_PROJECT_BYTES
+  )
+    throw new Error('工程超过文件数量或大小限制');
   await writeAtomically(target, path, data, null);
 }
 

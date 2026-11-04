@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
 import pg from 'pg';
 import { loadEnvFile } from 'node:process';
 import { testDatabaseUrl } from '../support/test-database-url';
@@ -21,17 +22,29 @@ async function testConnection(): Promise<pg.Client> {
 async function login(page: Page, account: string) {
   await page.getByLabel('账号', { exact: true }).fill(account);
   await page.getByLabel('密码', { exact: true }).fill(password);
-  await page.locator('form').getByRole('button', { name: /^登\s*录$/ }).click();
+  await page
+    .locator('form')
+    .getByRole('button', { name: /^登\s*录$/ })
+    .click();
 }
 async function registerSample(page: Page, account: string) {
-  const response = await page.request.post('/api/user/register', { headers: { origin }, data: { userAccount: account, userPassword: password, checkPassword: password } });
+  const response = await page.request.post('/api/user/register', {
+    headers: { origin },
+    data: { userAccount: account, userPassword: password, checkPassword: password },
+  });
   expect(response.ok()).toBe(true);
 }
 async function createSample(page: Page, prompt: string, type: CodeGenType = 'html') {
-  const response = await page.request.post('/api/app/add', { headers: { origin }, data: { initPrompt: prompt, codeGenType: type } });
+  const response = await page.request.post('/api/app/add', {
+    headers: { origin },
+    data: { initPrompt: prompt, codeGenType: type },
+  });
   expect(response.ok()).toBe(true);
   const { data: id } = await response.json();
-  const updated = await page.request.post('/api/app/update', { headers: { origin }, data: { id, appName: prompt } });
+  const updated = await page.request.post('/api/app/update', {
+    headers: { origin },
+    data: { id, appName: prompt },
+  });
   expect(updated.ok()).toBe(true);
   return id as string;
 }
@@ -40,19 +53,25 @@ test('浏览器完成注册、登录、生成、编辑、预览、发布和下�
   const account = uniqueAccount();
   const appName = '浏览器重命名_' + account.slice(-8);
   const errors: string[] = [];
-  page.on('pageerror', error => errors.push(error.message));
+  page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/user/register');
+  await page.screenshot({ path: evidencePath('platform', '01-register.png'), fullPage: true });
   await page.getByLabel('账号', { exact: true }).fill(account);
   await page.getByLabel('密码', { exact: true }).fill(password);
   await page.getByLabel('确认密码', { exact: true }).fill(password);
   await page.getByRole('button', { name: /^注\s*册$/ }).click();
   await expect(page).toHaveURL(/\/user\/login/);
+  await page.screenshot({ path: evidencePath('platform', '02-login.png'), fullPage: true });
   await login(page, account);
   await expect(page.getByRole('heading', { name: 'AI 应用生成平台' })).toBeVisible();
   await expect(page.locator('.site-header')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
   await expect(page.locator('.site-layout')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await page.screenshot({ path: evidencePath('platform', '03-home.png'), fullPage: true });
   await page.getByLabel('技术栈', { exact: true }).click();
-  await page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('原生 HTML', { exact: true }).click();
+  await page
+    .locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')
+    .getByText('原生 HTML', { exact: true })
+    .click();
   await page.getByLabel('应用描述').fill('浏览器测试首页');
   await page.getByRole('button', { name: '创建应用', exact: true }).click();
   await expect(page).toHaveURL(/\/app\/chat\/\d+/);
@@ -75,6 +94,10 @@ test('浏览器完成注册、登录、生成、编辑、预览、发布和下�
   await expect(usage).toContainText('模型绑定');
   const preview = page.frameLocator('iframe[title="应用预览"]');
   await expect(preview.getByRole('heading', { name: '浏览器测试首页' })).toBeVisible();
+  await page.screenshot({
+    path: evidencePath('platform', '04-generated-preview.png'),
+    fullPage: true,
+  });
   await page.getByRole('button', { name: '可视化编辑', exact: true }).click();
   await preview.getByRole('heading', { name: '浏览器测试首页' }).click();
   await expect(page.getByText(/已选中/)).toBeVisible();
@@ -84,34 +107,72 @@ test('浏览器完成注册、登录、生成、编辑、预览、发布和下�
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe(appId + '.zip');
   await page.getByRole('button', { name: '应用详情', exact: true }).click();
-  await page.getByRole('dialog').getByRole('button', { name: /^修\s*改$/ }).click();
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: /^修\s*改$/ })
+    .click();
   await page.getByLabel('应用名称', { exact: true }).fill(appName);
-  const ownerSaved = page.waitForResponse(response => response.url().endsWith('/api/app/update') && response.request().method() === 'POST');
+  const ownerSaved = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/app/update') && response.request().method() === 'POST',
+  );
   await page.getByRole('button', { name: '保存修改' }).click();
   expect((await ownerSaved).status()).toBe(200);
   await expect(page).toHaveURL(new RegExp('/app/edit/' + appId + '$'));
   await expect(page.getByRole('heading', { name: '编辑应用信息', exact: true })).toBeVisible();
   await expect(page.getByLabel('应用名称', { exact: true })).toHaveValue(appName);
-  expect((await (await page.request.get('/api/app/get/vo?id=' + appId)).json()).data.appName).toBe(appName);
+  await page.screenshot({ path: evidencePath('platform', '05-edited.png'), fullPage: true });
+  expect((await (await page.request.get('/api/app/get/vo?id=' + appId)).json()).data.appName).toBe(
+    appName,
+  );
   await page.getByRole('button', { name: '进入对话' }).click();
   await expect(page).toHaveURL(new RegExp('/app/chat/' + appId + '$'));
   await expect(page.getByRole('heading', { name: appName, exact: true })).toBeVisible();
   await page.getByRole('button', { name: '部署', exact: true }).click();
   await expect(page.getByText('网站部署成功！')).toBeVisible({ timeout: 30000 });
-  await page.getByRole('dialog').getByRole('button', { name: /^关\s*闭$/ }).click();
+  await page.screenshot({ path: evidencePath('platform', '06-deployed.png'), fullPage: true });
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: /^关\s*闭$/ })
+    .click();
   await expect(page.getByRole('link', { name: '访问作品' })).toBeVisible();
   const info = (await (await page.request.get('/api/app/get/vo?id=' + appId)).json()).data;
   const coverUrl = new URL(info.cover);
   expect(coverUrl.origin).toBe(previewOrigin);
   expect(coverUrl.pathname).toMatch(/^\/covers\/.+\.png$/);
-  expect((await page.request.get(info.cover)).status()).toBe(200);
+  const coverStatus = (await page.request.get(info.cover)).status();
+  expect(coverStatus).toBe(200);
   await page.reload();
   await expect(page.getByText('可预览', { exact: true })).toBeVisible();
-  await expect(page.getByText('文件已生成，正在验证与构建。此回复来自可控测试模型。', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('文件已生成，正在验证与构建。此回复来自可控测试模型。', { exact: true }),
+  ).toBeVisible();
+  const refreshed = (await (await page.request.get('/api/app/get/vo?id=' + appId)).json()).data;
+  expect(refreshed.appName).toBe(appName);
+  expect(refreshed.deployKey).toBe(info.deployKey);
+  await writeFile(
+    evidencePath('platform', 'quality-regression.json'),
+    JSON.stringify(
+      {
+        account,
+        appId,
+        expectedName: appName,
+        storedName: refreshed.appName,
+        deployKey: refreshed.deployKey,
+        coverStatus,
+        downloadName: download.suggestedFilename(),
+        browserErrors: errors,
+      },
+      null,
+      2,
+    ) + '\n',
+  );
   await page.screenshot({ path: evidencePath('platform', 'chat-desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByLabel('对话消息')).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
   await page.screenshot({ path: evidencePath('platform', 'chat-mobile.png'), fullPage: true });
   expect(errors).toEqual([]);
 });
@@ -127,8 +188,13 @@ test('普通用户不能打开管理员页面，管理员可查询和编辑', as
   await page.goto('/admin/userManage');
   await expect(page).toHaveURL(/\/user\/login\?redirect=/);
   const connection = await testConnection();
-  try { await connection.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [account]); }
-  finally { await connection.end(); }
+  try {
+    await connection.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [
+      account,
+    ]);
+  } finally {
+    await connection.end();
+  }
   await login(page, account);
   await expect(page.getByRole('heading', { name: '用户管理', exact: true })).toBeVisible();
   await page.getByLabel('搜索账号').fill(account);
@@ -142,7 +208,9 @@ test('普通用户不能打开管理员页面，管理员可查询和编辑', as
   await expect(page.getByRole('heading', { name: '应用管理', exact: true })).toBeVisible();
   await page.getByLabel('搜索应用').fill(appName);
   await page.getByRole('button', { name: /^搜\s*索$/ }).click();
-  const appRow = page.getByRole('row').filter({ has: page.getByRole('cell', { name: appName, exact: true }) });
+  const appRow = page
+    .getByRole('row')
+    .filter({ has: page.getByRole('cell', { name: appName, exact: true }) });
   await expect(appRow.locator('td').nth(1)).toHaveText(appName);
   await page.getByRole('button', { name: /^编\s*辑$/ }).click();
   await page.getByRole('dialog').getByLabel('优先级', { exact: true }).fill('99');
@@ -155,21 +223,45 @@ test('普通用户不能打开管理员页面，管理员可查询和编辑', as
   try {
     const foreignAccount = uniqueAccount();
     const headers = { origin };
-    expect((await ownerContext.request.post('/api/user/register', { headers, data: { userAccount: foreignAccount, userPassword: password, checkPassword: password } })).ok()).toBe(true);
-    expect((await ownerContext.request.post('/api/user/login', { headers, data: { userAccount: foreignAccount, userPassword: password } })).ok()).toBe(true);
-    const created = await ownerContext.request.post('/api/app/add', { headers, data: { initPrompt: '其他用户应用_' + account.slice(-8), codeGenType: 'html' } });
+    expect(
+      (
+        await ownerContext.request.post('/api/user/register', {
+          headers,
+          data: { userAccount: foreignAccount, userPassword: password, checkPassword: password },
+        })
+      ).ok(),
+    ).toBe(true);
+    expect(
+      (
+        await ownerContext.request.post('/api/user/login', {
+          headers,
+          data: { userAccount: foreignAccount, userPassword: password },
+        })
+      ).ok(),
+    ).toBe(true);
+    const created = await ownerContext.request.post('/api/app/add', {
+      headers,
+      data: { initPrompt: '其他用户应用_' + account.slice(-8), codeGenType: 'html' },
+    });
     expect(created.ok()).toBe(true);
     foreignId = (await created.json()).data;
-  } finally { await ownerContext.close(); }
+  } finally {
+    await ownerContext.close();
+  }
   await page.goto('/app/edit/' + foreignId);
   await expect(page.getByRole('heading', { name: '编辑应用信息' })).toBeVisible();
   await page.getByLabel('应用名称', { exact: true }).fill(foreignName);
-  const adminSaved = page.waitForResponse(response => response.url().endsWith('/api/app/admin/update') && response.request().method() === 'POST');
+  const adminSaved = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/app/admin/update') && response.request().method() === 'POST',
+  );
   await page.getByRole('button', { name: '保存修改' }).click();
   expect((await adminSaved).status()).toBe(200);
   await expect(page).toHaveURL(new RegExp('/app/edit/' + foreignId + '$'));
   await expect(page.getByLabel('应用名称', { exact: true })).toHaveValue(foreignName);
-  expect((await (await page.request.get('/api/app/get/vo?id=' + foreignId)).json()).data.appName).toBe(foreignName);
+  expect(
+    (await (await page.request.get('/api/app/get/vo?id=' + foreignId)).json()).data.appName,
+  ).toBe(foreignName);
   await page.goto('/admin/appManage');
   await page.getByLabel('用户 ID', { exact: true }).fill('');
   await page.getByLabel('搜索应用').fill(foreignName);

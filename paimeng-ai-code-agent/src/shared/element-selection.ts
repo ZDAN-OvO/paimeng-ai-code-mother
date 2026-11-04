@@ -21,7 +21,7 @@ export const selectedElementsSchema = z.array(selectedElementSchema).max(maxSele
  */
 export function selectionContext(selected: readonly SelectedElement[]): string {
   if (!selected.length) return '';
-  const pages = [...new Set(selected.map(item => item.pagePath).filter(Boolean))];
+  const pages = [...new Set(selected.map((item) => item.pagePath).filter(Boolean))];
   const lines = [`\n\n选中元素信息（${selected.length} 个）：`];
   if (pages.length === 1) lines.push('- 页面路径: ' + pages[0]);
   selected.forEach((item, index) => {

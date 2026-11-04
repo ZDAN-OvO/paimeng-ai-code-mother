@@ -2,12 +2,34 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { answers, attachSse, baseUrl, freePort, getState, postgresReachable, postgresUrl, readSse, readToolEvents, harnessAvailable, startHarness, stopHarness, submit, waitForState, waitHealthy } from './support';
+import {
+  answers,
+  attachSse,
+  baseUrl,
+  freePort,
+  getState,
+  postgresReachable,
+  postgresUrl,
+  readSse,
+  readToolEvents,
+  harnessAvailable,
+  startHarness,
+  stopHarness,
+  submit,
+  waitForState,
+  waitHealthy,
+} from './support';
 
 const harnessReady = harnessAvailable();
 const postgresReady = harnessReady && (await postgresReachable(postgresUrl));
-if (!harnessReady) process.stderr.write('[durable-m1] 跳过：找不到产品 harness 入口或 tsx，先装依赖（npm install）\n');
-else if (!postgresReady) process.stderr.write(`[durable-m1] 跳过：Postgres 不可达（${postgresUrl}），先跑 npm run durable:pg -- start\n`);
+if (!harnessReady)
+  process.stderr.write(
+    '[durable-m1] 跳过：找不到产品 harness 入口或 tsx，先装依赖（npm install）\n',
+  );
+else if (!postgresReady)
+  process.stderr.write(
+    `[durable-m1] 跳过：Postgres 不可达（${postgresUrl}），先跑 npm run durable:pg -- start\n`,
+  );
 
 describe.skipIf(!harnessReady || !postgresReady)('durable M1：断开 SSE 连接不取消任务', () => {
   it('断连后任务继续跑完、重连读到完整结果、工具只跑一次', async () => {
@@ -23,7 +45,15 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M1：断开 SSE 连接
       const sse = attachSse(base);
       await sse.firstByte;
 
-      const running = await waitForState(base, (state) => state.view.live.tools.some((tool) => tool.name === 'm1_wait' && tool.status === 'running'), 30_000, 'm1_wait running');
+      const running = await waitForState(
+        base,
+        (state) =>
+          state.view.live.tools.some(
+            (tool) => tool.name === 'm1_wait' && tool.status === 'running',
+          ),
+        30_000,
+        'm1_wait running',
+      );
       expect(running.tasks.length).toBeGreaterThan(0);
 
       sse.socket.destroy();
@@ -34,7 +64,10 @@ describe.skipIf(!harnessReady || !postgresReady)('durable M1：断开 SSE 连接
 
       const settled = await waitForState(
         base,
-        (state) => state.tasks.length === 0 && state.submissions.length === 0 && answers(state).join(' ').includes(finalText),
+        (state) =>
+          state.tasks.length === 0 &&
+          state.submissions.length === 0 &&
+          answers(state).join(' ').includes(finalText),
         30_000,
         'run settles after the disconnect',
       );

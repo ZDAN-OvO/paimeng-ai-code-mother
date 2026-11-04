@@ -68,7 +68,9 @@ import {
   type ModelPriceVersion,
 } from '@/shared/model-document';
 
-type AdminOutcome<T> = { ok: true; data: T } | { ok: false; status: number; code: number; message: string };
+type AdminOutcome<T> =
+  | { ok: true; data: T }
+  | { ok: false; status: number; code: number; message: string };
 type ProviderHeaderRow = { name: string; value: string };
 
 type ProviderFormValues = {
@@ -125,7 +127,12 @@ type SlotFormValues = {
   };
 };
 
-const emptyCapabilities = { streaming: false, toolCalling: false, structuredOutput: false, imageInput: false };
+const emptyCapabilities = {
+  streaming: false,
+  toolCalling: false,
+  structuredOutput: false,
+  imageInput: false,
+};
 
 export function ModelManager() {
   return (
@@ -143,10 +150,15 @@ function ModelConfigManager() {
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string[]>([]);
-  const [providerEditor, setProviderEditor] = useState<{ mode: 'create' } | { mode: 'edit'; original: ModelAdminProviderView } | null>(null);
+  const [providerEditor, setProviderEditor] = useState<
+    { mode: 'create' } | { mode: 'edit'; original: ModelAdminProviderView } | null
+  >(null);
   const [addModelFor, setAddModelFor] = useState<ModelAdminProviderView | null>(null);
   const [modelEditor, setModelEditor] = useState<ModelAdminModelView | null>(null);
-  const [slotEditor, setSlotEditor] = useState<{ slot: ModelSlotView; assignment: ModelAssignmentView | null } | null>(null);
+  const [slotEditor, setSlotEditor] = useState<{
+    slot: ModelSlotView;
+    assignment: ModelAssignmentView | null;
+  } | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeText, setProbeText] = useState<string | null>(null);
   const [upstreamModels, setUpstreamModels] = useState<ProviderModelsView['models']>([]);
@@ -157,7 +169,9 @@ function ModelConfigManager() {
 
   const reload = useCallback(async () => {
     setLoading(true);
-    const outcome = await adminPost('model/admin/config', {}, data => modelAdminConfigViewSchema.parse(data));
+    const outcome = await adminPost('model/admin/config', {}, (data) =>
+      modelAdminConfigViewSchema.parse(data),
+    );
     if (outcome.ok) {
       setConfig(outcome.data);
       setError(null);
@@ -168,12 +182,17 @@ function ModelConfigManager() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
 
   useEffect(() => {
     if (!providerEditor) return;
     setProbeText(null);
-    const values = providerEditor.mode === 'edit' ? providerFormValues(providerEditor.original) : emptyProviderValues();
+    const values =
+      providerEditor.mode === 'edit'
+        ? providerFormValues(providerEditor.original)
+        : emptyProviderValues();
     const timer = window.setTimeout(() => providerForm.setFieldsValue(values), 0);
     return () => window.clearTimeout(timer);
   }, [providerEditor, providerForm]);
@@ -187,27 +206,42 @@ function ModelConfigManager() {
 
   useEffect(() => {
     if (!modelEditor) return;
-    const timer = window.setTimeout(() => priceForm.setFieldsValue(priceFormValues(modelEditor)), 0);
+    const timer = window.setTimeout(
+      () => priceForm.setFieldsValue(priceFormValues(modelEditor)),
+      0,
+    );
     return () => window.clearTimeout(timer);
   }, [modelEditor, priceForm]);
 
   useEffect(() => {
     if (!slotEditor) return;
-    const timer = window.setTimeout(() => slotForm.setFieldsValue(slotFormValues(slotEditor.assignment)), 0);
+    const timer = window.setTimeout(
+      () => slotForm.setFieldsValue(slotFormValues(slotEditor.assignment)),
+      0,
+    );
     return () => window.clearTimeout(timer);
   }, [slotEditor, slotForm]);
 
   async function runMutation(
     mutation: unknown,
-    options: { successText: string; applyImmediately?: boolean; revision?: string; close?: () => void },
+    options: {
+      successText: string;
+      applyImmediately?: boolean;
+      revision?: string;
+      close?: () => void;
+    },
   ): Promise<ModelConfigVersion | null> {
     if (!config) return null;
     setSaving(true);
     try {
       const outcome = await adminPost(
         'model/admin/config/mutate',
-        { expectedRevision: options.revision ?? config.revision, applyImmediately: options.applyImmediately, mutation },
-        data => modelConfigVersionViewSchema.parse(data),
+        {
+          expectedRevision: options.revision ?? config.revision,
+          applyImmediately: options.applyImmediately,
+          mutation,
+        },
+        (data) => modelConfigVersionViewSchema.parse(data),
       );
       if (!outcome.ok) {
         if (outcome.status === 409 && outcome.code === 40901) setConflict(outcome.message);
@@ -249,7 +283,7 @@ function ModelConfigManager() {
           close: () => {
             const id = provider.id;
             setProviderEditor(null);
-            setExpanded(keys => keys.includes(id) ? keys : [...keys, id]);
+            setExpanded((keys) => (keys.includes(id) ? keys : [...keys, id]));
           },
         },
       );
@@ -273,13 +307,18 @@ function ModelConfigManager() {
       const outcome = await adminPost(
         'model/admin/provider/models',
         { provider: toProviderInput(values) },
-        data => providerModelsViewSchema.parse(data),
+        (data) => providerModelsViewSchema.parse(data),
       );
       if (outcome.ok) {
         setUpstreamModels(outcome.data.models);
-        const ids = outcome.data.models.slice(0, 20).map(model => model.id).join('、');
+        const ids = outcome.data.models
+          .slice(0, 20)
+          .map((model) => model.id)
+          .join('、');
         const suffix = outcome.data.models.length > 20 ? ' 等' : '';
-        setProbeText(`连接正常，共 ${outcome.data.models.length} 个模型${modelListLimitHint(outcome.data.models.length)}：${ids}${suffix}`);
+        setProbeText(
+          `连接正常，共 ${outcome.data.models.length} 个模型${modelListLimitHint(outcome.data.models.length)}：${ids}${suffix}`,
+        );
       } else {
         setProbeText(outcome.message);
       }
@@ -290,18 +329,23 @@ function ModelConfigManager() {
     }
   }
 
-  async function fetchProviderModels(provider: ModelAdminProviderView, onSuccess: (models: ProviderModelsView['models']) => void) {
+  async function fetchProviderModels(
+    provider: ModelAdminProviderView,
+    onSuccess: (models: ProviderModelsView['models']) => void,
+  ) {
     setProbing(true);
     setProbeText(null);
     const outcome = await adminPost(
       'model/admin/provider/models',
       { provider: providerWriteFromView(provider) },
-      data => providerModelsViewSchema.parse(data),
+      (data) => providerModelsViewSchema.parse(data),
     );
     setProbing(false);
     if (outcome.ok) {
       onSuccess(outcome.data.models);
-      message.success(`已获取 ${outcome.data.models.length} 个上游模型${modelListLimitHint(outcome.data.models.length)}`);
+      message.success(
+        `已获取 ${outcome.data.models.length} 个上游模型${modelListLimitHint(outcome.data.models.length)}`,
+      );
       return;
     }
     setProbeText(outcome.message);
@@ -317,7 +361,7 @@ function ModelConfigManager() {
 
   async function fetchModelsForAddModel() {
     if (!addModelFor) return;
-    await fetchProviderModels(addModelFor, models => {
+    await fetchProviderModels(addModelFor, (models) => {
       setUpstreamModels(models);
       setProbeText(`已获取 ${models.length} 个上游模型${modelListLimitHint(models.length)}`);
     });
@@ -343,7 +387,7 @@ function ModelConfigManager() {
             upstreamPrice: null,
           },
         },
-        data => modelConfigVersionViewSchema.parse(data),
+        (data) => modelConfigVersionViewSchema.parse(data),
       );
       if (!created.ok) {
         if (created.status === 409 && created.code === 40901) setConflict(created.message);
@@ -357,9 +401,19 @@ function ModelConfigManager() {
           'model/admin/config/mutate',
           {
             expectedRevision: created.data.revision,
-            mutation: { kind: 'model.price', modelId: await findCreatedModelId(created.data.revision, providerId, values.upstream.trim()), ...price, upstreamUsd: null, note: null },
+            mutation: {
+              kind: 'model.price',
+              modelId: await findCreatedModelId(
+                created.data.revision,
+                providerId,
+                values.upstream.trim(),
+              ),
+              ...price,
+              upstreamUsd: null,
+              note: null,
+            },
           },
-          data => modelConfigVersionViewSchema.parse(data),
+          (data) => modelConfigVersionViewSchema.parse(data),
         );
         if (!priced.ok) {
           message.warning(priced.message);
@@ -380,10 +434,18 @@ function ModelConfigManager() {
   }
 
   /** 新建模型后从当前配置里按 (provider, upstream) 找回服务端生成的 modelId。 */
-  async function findCreatedModelId(_revision: string, providerId: string, upstream: string): Promise<string> {
-    const outcome = await adminPost('model/admin/config', {}, data => modelAdminConfigViewSchema.parse(data));
+  async function findCreatedModelId(
+    _revision: string,
+    providerId: string,
+    upstream: string,
+  ): Promise<string> {
+    const outcome = await adminPost('model/admin/config', {}, (data) =>
+      modelAdminConfigViewSchema.parse(data),
+    );
     if (!outcome.ok) throw new Error(outcome.message);
-    const model = outcome.data.providers.find(provider => provider.id === providerId)?.models.find(candidate => candidate.upstream === upstream);
+    const model = outcome.data.providers
+      .find((provider) => provider.id === providerId)
+      ?.models.find((candidate) => candidate.upstream === upstream);
     if (!model) throw new Error('新建模型后无法定位模型标识');
     return model.id;
   }
@@ -391,7 +453,11 @@ function ModelConfigManager() {
   async function toggleModel(model: ModelAdminModelView, enabled: boolean) {
     await runMutation(
       { kind: 'model.enabled', modelId: model.id, enabled },
-      { successText: enabled ? `已启用模型 ${model.displayName}` : `已停用模型 ${model.displayName}` },
+      {
+        successText: enabled
+          ? `已启用模型 ${model.displayName}`
+          : `已停用模型 ${model.displayName}`,
+      },
     );
   }
 
@@ -402,9 +468,10 @@ function ModelConfigManager() {
       let revision = config.revision;
       let changed = false;
       const displayName = values.displayName.trim();
-      const modelChanged = displayName !== modelEditor.displayName
-        || Boolean(values.enabled) !== modelEditor.enabled
-        || JSON.stringify(values.capabilities) !== JSON.stringify(modelEditor.capabilities);
+      const modelChanged =
+        displayName !== modelEditor.displayName ||
+        Boolean(values.enabled) !== modelEditor.enabled ||
+        JSON.stringify(values.capabilities) !== JSON.stringify(modelEditor.capabilities);
       if (modelChanged) {
         setSaving(true);
         const updated = await adminPost(
@@ -422,7 +489,7 @@ function ModelConfigManager() {
               upstreamPrice: modelEditor.upstreamPrice,
             },
           },
-          data => modelConfigVersionViewSchema.parse(data),
+          (data) => modelConfigVersionViewSchema.parse(data),
         );
         setSaving(false);
         if (!updated.ok) {
@@ -435,20 +502,28 @@ function ModelConfigManager() {
       }
       const price = priceInputOf(values.inputMissYuan, values.inputHitYuan, values.outputYuan);
       const current = modelEditor.currentPrice;
-      const priceChanged = price !== null && (!current
-        || current.inputMissFen !== price.inputMissFen
-        || current.inputHitFen !== price.inputHitFen
-        || current.outputFen !== price.outputFen
-        || (values.note?.trim() || '') !== (current.note ?? ''));
+      const priceChanged =
+        price !== null &&
+        (!current ||
+          current.inputMissFen !== price.inputMissFen ||
+          current.inputHitFen !== price.inputHitFen ||
+          current.outputFen !== price.outputFen ||
+          (values.note?.trim() || '') !== (current.note ?? ''));
       if (price && priceChanged) {
         setSaving(true);
         const priced = await adminPost(
           'model/admin/config/mutate',
           {
             expectedRevision: revision,
-            mutation: { kind: 'model.price', modelId: modelEditor.id, ...price, upstreamUsd: upstreamUsdOf(modelEditor), note: values.note?.trim() || null },
+            mutation: {
+              kind: 'model.price',
+              modelId: modelEditor.id,
+              ...price,
+              upstreamUsd: upstreamUsdOf(modelEditor),
+              note: values.note?.trim() || null,
+            },
           },
-          data => modelConfigVersionViewSchema.parse(data),
+          (data) => modelConfigVersionViewSchema.parse(data),
         );
         setSaving(false);
         if (!priced.ok) {
@@ -505,7 +580,7 @@ function ModelConfigManager() {
     const outcome = await adminPost(
       'model/admin/apply',
       { expectedRevision: config.revision },
-      data => modelConfigVersionViewSchema.parse(data),
+      (data) => modelConfigVersionViewSchema.parse(data),
     );
     setSaving(false);
     if (!outcome.ok) {
@@ -518,7 +593,7 @@ function ModelConfigManager() {
   }
 
   const providerById = useMemo(
-    () => new Map((config?.providers ?? []).map(provider => [provider.id, provider])),
+    () => new Map((config?.providers ?? []).map((provider) => [provider.id, provider])),
     [config],
   );
   const modelById = useMemo(() => {
@@ -530,7 +605,11 @@ function ModelConfigManager() {
   }, [config]);
 
   if (loading && !config) {
-    return <main className={styles.adminPage}><p>正在加载模型配置…</p></main>;
+    return (
+      <main className={styles.adminPage}>
+        <p>正在加载模型配置…</p>
+      </main>
+    );
   }
 
   if (!config) {
@@ -541,29 +620,48 @@ function ModelConfigManager() {
           showIcon
           title="模型配置加载失败"
           description={error ?? '未知错误'}
-          action={<Button size="small" onClick={() => void reload()}>重试</Button>}
+          action={
+            <Button size="small" onClick={() => void reload()}>
+              重试
+            </Button>
+          }
         />
       </main>
     );
   }
 
-  const providerItems = config.providers.map(provider => {
-    const eligible = provider.models.filter(model => !modelEligibilityIssue(provider, model, null)).length;
+  const providerItems = config.providers.map((provider) => {
+    const eligible = provider.models.filter(
+      (model) => !modelEligibilityIssue(provider, model, null),
+    ).length;
     const header = (
       <div className={styles.providerHeader}>
         <div className={styles.providerTitle}>
           <strong>{provider.displayName}</strong>
           <span className={styles.slotName}>{provider.id}</span>
           {provider.enabled ? <Tag color="blue">启用</Tag> : <Tag>停用</Tag>}
-          {provider.apiKeyConfigured ? <Tag color="green">密钥已配置</Tag> : <Tag color="red">密钥未配置</Tag>}
+          {provider.apiKeyConfigured ? (
+            <Tag color="green">密钥已配置</Tag>
+          ) : (
+            <Tag color="red">密钥未配置</Tag>
+          )}
           <Tag>模型 {provider.models.length}</Tag>
           <Tag color={eligible > 0 ? 'cyan' : 'default'}>可用 {eligible}</Tag>
         </div>
-        <Space onClick={event => event.stopPropagation()}>
-          <Button size="small" onClick={() => openAddModel(provider)}>添加模型</Button>
-          <Button size="small" onClick={() => openEditProvider(provider)}>编辑提供商</Button>
-          <Popconfirm title="删除该提供商？仅空提供商可以删除" onConfirm={() => void deleteProvider(provider)}>
-            <Button size="small" danger>删除</Button>
+        <Space onClick={(event) => event.stopPropagation()}>
+          <Button size="small" onClick={() => openAddModel(provider)}>
+            添加模型
+          </Button>
+          <Button size="small" onClick={() => openEditProvider(provider)}>
+            编辑提供商
+          </Button>
+          <Popconfirm
+            title="删除该提供商？仅空提供商可以删除"
+            onConfirm={() => void deleteProvider(provider)}
+          >
+            <Button size="small" danger>
+              删除
+            </Button>
           </Popconfirm>
         </Space>
       </div>
@@ -571,37 +669,45 @@ function ModelConfigManager() {
     return {
       key: provider.id,
       label: header,
-      children: provider.models.length === 0 ? (
-        <div className={styles.emptyModels}>
-          <span>还没有配置模型</span>
-          <Space wrap>
-            <Button type="primary" onClick={() => openAddModel(provider)}>添加第一个模型</Button>
-            <Button loading={probing} onClick={() => void fetchModelsForProvider(provider)}>从上游获取</Button>
-          </Space>
-        </div>
-      ) : (
-        <div className={styles.modelList}>
-          {provider.models.map(model => (
-            <ModelRow
-              key={model.id}
-              provider={provider}
-              model={model}
-              saving={saving}
-              onConfigure={() => { setConflict(null); setModelEditor(model); }}
-              onToggle={enabled => void toggleModel(model, enabled)}
-            />
-          ))}
-        </div>
-      ),
+      children:
+        provider.models.length === 0 ? (
+          <div className={styles.emptyModels}>
+            <span>还没有配置模型</span>
+            <Space wrap>
+              <Button type="primary" onClick={() => openAddModel(provider)}>
+                添加第一个模型
+              </Button>
+              <Button loading={probing} onClick={() => void fetchModelsForProvider(provider)}>
+                从上游获取
+              </Button>
+            </Space>
+          </div>
+        ) : (
+          <div className={styles.modelList}>
+            {provider.models.map((model) => (
+              <ModelRow
+                key={model.id}
+                provider={provider}
+                model={model}
+                saving={saving}
+                onConfigure={() => {
+                  setConflict(null);
+                  setModelEditor(model);
+                }}
+                onToggle={(enabled) => void toggleModel(model, enabled)}
+              />
+            ))}
+          </div>
+        ),
     };
   });
 
-  const assignmentRows = config.slotDefinitions.map(slot => ({
+  const assignmentRows = config.slotDefinitions.map((slot) => ({
     slot,
-    assignment: config.assignments.find(candidate => candidate.slot === slot.slot) ?? null,
+    assignment: config.assignments.find((candidate) => candidate.slot === slot.slot) ?? null,
   }));
 
-  const assignmentColumns: ColumnsType<typeof assignmentRows[number]> = [
+  const assignmentColumns: ColumnsType<(typeof assignmentRows)[number]> = [
     {
       title: '槽位',
       key: 'slot',
@@ -613,7 +719,11 @@ function ModelConfigManager() {
         </div>
       ),
     },
-    { title: '用途', key: 'purpose', render: (_, row) => <span className={styles.slotPurpose}>{row.slot.purpose}</span> },
+    {
+      title: '用途',
+      key: 'purpose',
+      render: (_, row) => <span className={styles.slotPurpose}>{row.slot.purpose}</span>,
+    },
     {
       title: '当前模型',
       key: 'model',
@@ -623,7 +733,9 @@ function ModelConfigManager() {
         if (!found) return <span className={styles.textGray}>模型 {row.assignment.modelId}</span>;
         return (
           <div className={styles.identityCell}>
-            <span>{found.provider.displayName} / {found.model.displayName}</span>
+            <span>
+              {found.provider.displayName} / {found.model.displayName}
+            </span>
             <span className={styles.slotName}>{found.model.upstream}</span>
             <span>{capabilityTags(found.model.capabilities)}</span>
           </div>
@@ -634,12 +746,24 @@ function ModelConfigManager() {
       title: '状态',
       key: 'status',
       render: (_, row) => {
-        if (!row.assignment) return <Tag color={row.slot.optional ? 'default' : 'red'}>{row.slot.optional ? '可选未分配' : '必需槽位未分配'}</Tag>;
+        if (!row.assignment)
+          return (
+            <Tag color={row.slot.optional ? 'default' : 'red'}>
+              {row.slot.optional ? '可选未分配' : '必需槽位未分配'}
+            </Tag>
+          );
         const found = modelById.get(row.assignment.modelId);
-        const issue = found ? modelEligibilityIssue(found.provider, found.model, row.slot) : '模型已不存在';
-        return issue
-          ? <div className={styles.identityCell}><Tag color="red">需重新配置</Tag><span className={styles.slotImpact}>{issue}</span></div>
-          : <Tag color="green">可用</Tag>;
+        const issue = found
+          ? modelEligibilityIssue(found.provider, found.model, row.slot)
+          : '模型已不存在';
+        return issue ? (
+          <div className={styles.identityCell}>
+            <Tag color="red">需重新配置</Tag>
+            <span className={styles.slotImpact}>{issue}</span>
+          </div>
+        ) : (
+          <Tag color="green">可用</Tag>
+        );
       },
     },
     {
@@ -649,7 +773,13 @@ function ModelConfigManager() {
         const found = row.assignment ? modelById.get(row.assignment.modelId) : null;
         const issue = found ? modelEligibilityIssue(found.provider, found.model, row.slot) : null;
         return (
-          <Button size="small" onClick={() => { setConflict(null); setSlotEditor({ slot: row.slot, assignment: row.assignment }); }}>
+          <Button
+            size="small"
+            onClick={() => {
+              setConflict(null);
+              setSlotEditor({ slot: row.slot, assignment: row.assignment });
+            }}
+          >
             {issue ? '去配置' : '配置'}
           </Button>
         );
@@ -662,22 +792,46 @@ function ModelConfigManager() {
       <div className={styles.toolbar}>
         <h1>模型管理</h1>
         <Space className={styles.headingActions}>
-          <Button onClick={() => void reload()} loading={loading}>刷新</Button>
+          <Button onClick={() => void reload()} loading={loading}>
+            刷新
+          </Button>
           {config.initialized ? (
             <Popconfirm title="让所有实例立即重新加载模型配置？" onConfirm={() => void applyNow()}>
-              <Button disabled={saving} loading={saving}>立即生效</Button>
+              <Button disabled={saving} loading={saving}>
+                立即生效
+              </Button>
             </Popconfirm>
           ) : null}
         </Space>
       </div>
 
-      {error ? <Alert type="error" showIcon title="模型配置刷新失败" description={error} style={{ marginBottom: 16 }} /> : null}
+      {error ? (
+        <Alert
+          type="error"
+          showIcon
+          title="模型配置刷新失败"
+          description={error}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
       {conflict && !providerEditor && !addModelFor && !modelEditor && !slotEditor ? (
         <Alert
           type="error"
           showIcon
           title="操作失败：模型配置已被其他操作修改"
-          description={<Space orientation="vertical" size={4}><span>{conflict}</span><Space><Button size="small" onClick={() => void reload()}>重新加载</Button><Button size="small" onClick={() => setConflict(null)}>忽略</Button></Space></Space>}
+          description={
+            <Space orientation="vertical" size={4}>
+              <span>{conflict}</span>
+              <Space>
+                <Button size="small" onClick={() => void reload()}>
+                  重新加载
+                </Button>
+                <Button size="small" onClick={() => setConflict(null)}>
+                  忽略
+                </Button>
+              </Space>
+            </Space>
+          }
           style={{ marginBottom: 16 }}
         />
       ) : null}
@@ -690,8 +844,12 @@ function ModelConfigManager() {
             title="模型配置尚未初始化"
             description={
               <div>
-                <p>当前数据库中没有可用的模型提供商与槽位分配。请在服务器上执行一次初始化命令，从环境变量导入默认提供商与必需槽位：</p>
-                <p><code>npm run db:init-models</code></p>
+                <p>
+                  当前数据库中没有可用的模型提供商与槽位分配。请在服务器上执行一次初始化命令，从环境变量导入默认提供商与必需槽位：
+                </p>
+                <p>
+                  <code>npm run db:init-models</code>
+                </p>
                 <p>初始化完成后再点击“刷新”。本页面不会自动初始化，也不会写入任何密钥。</p>
               </div>
             }
@@ -702,7 +860,9 @@ function ModelConfigManager() {
         <>
           <div className={styles.sectionHeading}>
             <h2>当前实例状态</h2>
-            <span className={styles.statusHint}>仅反映处理本次请求的实例，其他实例可能尚未刷新</span>
+            <span className={styles.statusHint}>
+              仅反映处理本次请求的实例，其他实例可能尚未刷新
+            </span>
           </div>
           <Descriptions
             bordered
@@ -710,12 +870,41 @@ function ModelConfigManager() {
             column={2}
             items={[
               { key: 'revision', label: '数据库配置版本', children: config.revision },
-              { key: 'instanceRevision', label: '实例生效版本', children: config.instance.revision ?? '未加载' },
-              { key: 'source', label: '实例配置来源', children: config.instance.source === 'database' ? '数据库' : config.instance.source === 'environment' ? '环境变量' : '未知' },
-              { key: 'epoch', label: '实例刷新批次', children: config.instance.refreshEpoch ?? '未加载' },
-              { key: 'degraded', label: '实例状态', children: config.instance.degraded ? <Tag color="red">降级</Tag> : <Tag color="green">正常</Tag> },
+              {
+                key: 'instanceRevision',
+                label: '实例生效版本',
+                children: config.instance.revision ?? '未加载',
+              },
+              {
+                key: 'source',
+                label: '实例配置来源',
+                children:
+                  config.instance.source === 'database'
+                    ? '数据库'
+                    : config.instance.source === 'environment'
+                      ? '环境变量'
+                      : '未知',
+              },
+              {
+                key: 'epoch',
+                label: '实例刷新批次',
+                children: config.instance.refreshEpoch ?? '未加载',
+              },
+              {
+                key: 'degraded',
+                label: '实例状态',
+                children: config.instance.degraded ? (
+                  <Tag color="red">降级</Tag>
+                ) : (
+                  <Tag color="green">正常</Tag>
+                ),
+              },
               { key: 'bytes', label: '配置文档大小', children: `${config.documentBytes} 字节` },
-              { key: 'readAt', label: '最近读取时间', children: formatClock(config.instance.readAt) },
+              {
+                key: 'readAt',
+                label: '最近读取时间',
+                children: formatClock(config.instance.readAt),
+              },
               { key: 'lastError', label: '最近错误', children: config.instance.lastError ?? '无' },
             ]}
           />
@@ -723,23 +912,31 @@ function ModelConfigManager() {
           <div className={styles.sectionHeading}>
             <h2>提供商与模型</h2>
             <div className={styles.headingActions}>
-              <Button type="primary" onClick={openCreateProvider} disabled={saving}>新增提供商</Button>
+              <Button type="primary" onClick={openCreateProvider} disabled={saving}>
+                新增提供商
+              </Button>
             </div>
           </div>
           <Collapse
             className={styles.providerCollapse}
             activeKey={expanded}
-            onChange={keys => setExpanded(Array.isArray(keys) ? keys.map(String) : [String(keys)])}
+            onChange={(keys) =>
+              setExpanded(Array.isArray(keys) ? keys.map(String) : [String(keys)])
+            }
             items={providerItems}
           />
-          {config.providers.length === 0 ? <Empty description="还没有提供商" style={{ marginTop: 16 }} /> : null}
+          {config.providers.length === 0 ? (
+            <Empty description="还没有提供商" style={{ marginTop: 16 }} />
+          ) : null}
 
           <div className={styles.sectionHeading}>
             <h2>模型分配</h2>
-            <span className={styles.statusHint}>四个槽位由代码定义；下拉只列出已启用、已定价且能力满足的模型</span>
+            <span className={styles.statusHint}>
+              四个槽位由代码定义；下拉只列出已启用、已定价且能力满足的模型
+            </span>
           </div>
           <Table
-            rowKey={row => row.slot.slot}
+            rowKey={(row) => row.slot.slot}
             size="small"
             dataSource={assignmentRows}
             pagination={false}
@@ -755,12 +952,20 @@ function ModelConfigManager() {
           title={providerEditor.mode === 'create' ? '新增提供商' : '编辑提供商'}
           destroyOnHidden
           width={720}
-          onCancel={() => { if (!saving) setProviderEditor(null); }}
+          onCancel={() => {
+            if (!saving) setProviderEditor(null);
+          }}
           footer={
             <Space>
-              <Button onClick={() => setProviderEditor(null)} disabled={saving}>取消</Button>
-              <Button onClick={() => void submitProvider(true)} loading={saving}>保存并立即生效</Button>
-              <Button type="primary" onClick={() => void submitProvider(false)} loading={saving}>保存</Button>
+              <Button onClick={() => setProviderEditor(null)} disabled={saving}>
+                取消
+              </Button>
+              <Button onClick={() => void submitProvider(true)} loading={saving}>
+                保存并立即生效
+              </Button>
+              <Button type="primary" onClick={() => void submitProvider(false)} loading={saving}>
+                保存
+              </Button>
             </Space>
           }
         >
@@ -770,73 +975,174 @@ function ModelConfigManager() {
             form={providerForm}
             layout="vertical"
             preserve={false}
-            initialValues={providerEditor.mode === 'edit' ? providerFormValues(providerEditor.original) : emptyProviderValues()}
+            initialValues={
+              providerEditor.mode === 'edit'
+                ? providerFormValues(providerEditor.original)
+                : emptyProviderValues()
+            }
           >
-            <Form.Item name="id" label="提供商 ID" tooltip="稳定标识，创建后不可修改" rules={[
-              { required: true, message: '请输入提供商 ID' },
-              { max: 64, message: '最多 64 个字符' },
-              { pattern: /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/, message: '仅小写字母、数字、点、下划线、连字符，且首尾为字母或数字' },
-            ]}>
-              <Input disabled={providerEditor.mode === 'edit'} placeholder="例如 env-default" aria-label="提供商 ID" />
-            </Form.Item>
-            <Form.Item name="displayName" label="名称" rules={[{ required: true, message: '请输入名称' }, { max: 128, message: '最多 128 个字符' }]}>
-              <Input aria-label="名称" />
-            </Form.Item>
-            <Form.Item name="apiFormat" label="API 格式" rules={[{ required: true, message: '请选择 API 格式' }]}>
-              <Select
-                aria-label="API 格式"
-                options={modelProviderFormatViews.map(format => ({ value: format.value, label: format.label }))}
-                onChange={(value: ProviderApiFormat) => providerForm.setFieldValue('options', pickProviderOptions(value, providerForm.getFieldValue('options')))}
+            <Form.Item
+              name="id"
+              label="提供商 ID"
+              tooltip="稳定标识，创建后不可修改"
+              rules={[
+                { required: true, message: '请输入提供商 ID' },
+                { max: 64, message: '最多 64 个字符' },
+                {
+                  pattern: /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/,
+                  message: '仅小写字母、数字、点、下划线、连字符，且首尾为字母或数字',
+                },
+              ]}
+            >
+              <Input
+                disabled={providerEditor.mode === 'edit'}
+                placeholder="例如 env-default"
+                aria-label="提供商 ID"
               />
             </Form.Item>
-            <Form.Item name="baseUrl" label="地址" rules={[{ required: true, message: '请输入地址' }, { max: 2048, message: '最多 2048 个字符' }]}>
+            <Form.Item
+              name="displayName"
+              label="名称"
+              rules={[
+                { required: true, message: '请输入名称' },
+                { max: 128, message: '最多 128 个字符' },
+              ]}
+            >
+              <Input aria-label="名称" />
+            </Form.Item>
+            <Form.Item
+              name="apiFormat"
+              label="API 格式"
+              rules={[{ required: true, message: '请选择 API 格式' }]}
+            >
+              <Select
+                aria-label="API 格式"
+                options={modelProviderFormatViews.map((format) => ({
+                  value: format.value,
+                  label: format.label,
+                }))}
+                onChange={(value: ProviderApiFormat) =>
+                  providerForm.setFieldValue(
+                    'options',
+                    pickProviderOptions(value, providerForm.getFieldValue('options')),
+                  )
+                }
+              />
+            </Form.Item>
+            <Form.Item
+              name="baseUrl"
+              label="地址"
+              rules={[
+                { required: true, message: '请输入地址' },
+                { max: 2048, message: '最多 2048 个字符' },
+              ]}
+            >
               <Input aria-label="地址" placeholder="https://api.example.com/v1" />
             </Form.Item>
-            <Form.Item name="apiKeySource" label="密钥来源" rules={[{ required: true, message: '请选择密钥来源' }]}>
-              <Select aria-label="密钥来源" options={[{ value: 'env', label: '引用环境变量' }, { value: 'inline', label: '直接输入密钥' }]} />
+            <Form.Item
+              name="apiKeySource"
+              label="密钥来源"
+              rules={[{ required: true, message: '请选择密钥来源' }]}
+            >
+              <Select
+                aria-label="密钥来源"
+                options={[
+                  { value: 'env', label: '引用环境变量' },
+                  { value: 'inline', label: '直接输入密钥' },
+                ]}
+              />
             </Form.Item>
-            <Form.Item noStyle shouldUpdate={(previous, current) => previous.apiKeySource !== current.apiKeySource}>
-              {({ getFieldValue }) => getFieldValue('apiKeySource') === 'env' ? (
-                <Form.Item name="apiKeyEnv" label="密钥环境变量" rules={[{ required: true, message: '请选择密钥环境变量' }]}>
-                  <Select aria-label="密钥环境变量" options={config.allowedApiKeyEnvs.map(name => ({ value: name, label: name }))} />
-                </Form.Item>
-              ) : (
-                <Form.Item
-                  name="apiKey"
-                  label="密钥"
-                  tooltip="保存后仅以密文入库；编辑时留空表示保持已保存的密钥"
-                  rules={[{ required: !(providerEditor.mode === 'edit' && providerEditor.original.apiKeySource === 'inline'), message: '请输入密钥' }, { max: 1024, message: '最多 1024 个字符' }]}
-                >
-                  <Input.Password aria-label="密钥" autoComplete="new-password" placeholder="直接粘贴上游密钥" />
-                </Form.Item>
-              )}
+            <Form.Item
+              noStyle
+              shouldUpdate={(previous, current) => previous.apiKeySource !== current.apiKeySource}
+            >
+              {({ getFieldValue }) =>
+                getFieldValue('apiKeySource') === 'env' ? (
+                  <Form.Item
+                    name="apiKeyEnv"
+                    label="密钥环境变量"
+                    rules={[{ required: true, message: '请选择密钥环境变量' }]}
+                  >
+                    <Select
+                      aria-label="密钥环境变量"
+                      options={config.allowedApiKeyEnvs.map((name) => ({
+                        value: name,
+                        label: name,
+                      }))}
+                    />
+                  </Form.Item>
+                ) : (
+                  <Form.Item
+                    name="apiKey"
+                    label="密钥"
+                    tooltip="保存后仅以密文入库；编辑时留空表示保持已保存的密钥"
+                    rules={[
+                      {
+                        required: !(
+                          providerEditor.mode === 'edit' &&
+                          providerEditor.original.apiKeySource === 'inline'
+                        ),
+                        message: '请输入密钥',
+                      },
+                      { max: 1024, message: '最多 1024 个字符' },
+                    ]}
+                  >
+                    <Input.Password
+                      aria-label="密钥"
+                      autoComplete="new-password"
+                      placeholder="直接粘贴上游密钥"
+                    />
+                  </Form.Item>
+                )
+              }
             </Form.Item>
-            <Form.Item label="连通性" tooltip="按当前填写的地址与密钥请求一次上游 /models，只做检测，不保存配置">
+            <Form.Item
+              label="连通性"
+              tooltip="按当前填写的地址与密钥请求一次上游 /models，只做检测，不保存配置"
+            >
               <Space orientation="vertical" size={4} style={{ width: '100%' }}>
-                <Button onClick={() => void testProviderConnection()} loading={probing} aria-label="测试连接">测试连接</Button>
+                <Button
+                  onClick={() => void testProviderConnection()}
+                  loading={probing}
+                  aria-label="测试连接"
+                >
+                  测试连接
+                </Button>
                 {probeText ? <span className={styles.textGray}>{probeText}</span> : null}
               </Space>
             </Form.Item>
-            <Form.Item noStyle shouldUpdate={(previous, current) => previous.apiFormat !== current.apiFormat}>
+            <Form.Item
+              noStyle
+              shouldUpdate={(previous, current) => previous.apiFormat !== current.apiFormat}
+            >
               {({ getFieldValue }) => {
-                const optionKeys = providerOptionKeysByFormat[getFieldValue('apiFormat') as ProviderApiFormat] ?? [];
+                const optionKeys =
+                  providerOptionKeysByFormat[getFieldValue('apiFormat') as ProviderApiFormat] ?? [];
                 const choiceKeys = optionKeys.filter(isChoiceOptionKey);
-                const switchKeys = optionKeys.filter(key => !isChoiceOptionKey(key));
+                const switchKeys = optionKeys.filter((key) => !isChoiceOptionKey(key));
                 return (
                   <Form.Item label="提供商选项" tooltip="不同 API 格式支持的协议选项不同">
-                    {optionKeys.length === 0 ? <span className={styles.textGray}>该 API 格式没有可配置的选项</span> : (
+                    {optionKeys.length === 0 ? (
+                      <span className={styles.textGray}>该 API 格式没有可配置的选项</span>
+                    ) : (
                       <Space orientation="vertical" size={8}>
-                        {choiceKeys.map(key => (
+                        {choiceKeys.map((key) => (
                           <Space key={key} size={8}>
                             <span>{modelProviderOptionLabels[key]}</span>
                             <Form.Item name={['options', key]} noStyle>
-                              <Select allowClear aria-label={modelProviderOptionLabels[key]} placeholder="不指定" options={[...modelProviderOptionChoices[key]]} style={{ minWidth: 180 }} />
+                              <Select
+                                allowClear
+                                aria-label={modelProviderOptionLabels[key]}
+                                placeholder="不指定"
+                                options={[...modelProviderOptionChoices[key]]}
+                                style={{ minWidth: 180 }}
+                              />
                             </Form.Item>
                           </Space>
                         ))}
                         {switchKeys.length ? (
                           <Space size={16} wrap>
-                            {switchKeys.map(key => (
+                            {switchKeys.map((key) => (
                               <Space key={key} size={8}>
                                 <span>{modelProviderOptionLabels[key]}</span>
                                 <Form.Item name={['options', key]} valuePropName="checked" noStyle>
@@ -852,46 +1158,87 @@ function ModelConfigManager() {
                 );
               }}
             </Form.Item>
-            <Form.Item label="自定义请求头" tooltip="随每个上游请求发送；鉴权与传输头由系统生成，不能覆盖">
+            <Form.Item
+              label="自定义请求头"
+              tooltip="随每个上游请求发送；鉴权与传输头由系统生成，不能覆盖"
+            >
               <Form.List name="requestHeaders">
                 {(fields, { add, remove }) => (
                   <Space orientation="vertical" size={8} style={{ width: '100%' }}>
-                    {fields.map(field => (
+                    {fields.map((field) => (
                       <Space key={field.key} size={8} align="start">
-                        <Form.Item preserve name={[field.name, 'name']} rules={[
-                          { required: true, message: '请输入请求头名称' },
-                          { validator: (_rule, value) => {
-                            if (value === undefined || value === null || value === '') return Promise.resolve();
-                            const parsed = providerHeaderNameSchema.safeParse(value);
-                            if (!parsed.success) return Promise.reject(new Error(parsed.error.issues[0]?.message ?? '请求头名称不合法'));
-                            const rows: ProviderHeaderRow[] = providerForm.getFieldValue('requestHeaders') ?? [];
-                            const target = String(value).trim().toLowerCase();
-                            return rows.filter(row => (row?.name ?? '').trim().toLowerCase() === target).length > 1
-                              ? Promise.reject(new Error('请求头名称重复'))
-                              : Promise.resolve();
-                          } },
-                        ]}>
+                        <Form.Item
+                          preserve
+                          name={[field.name, 'name']}
+                          rules={[
+                            { required: true, message: '请输入请求头名称' },
+                            {
+                              validator: (_rule, value) => {
+                                if (value === undefined || value === null || value === '')
+                                  return Promise.resolve();
+                                const parsed = providerHeaderNameSchema.safeParse(value);
+                                if (!parsed.success)
+                                  return Promise.reject(
+                                    new Error(
+                                      parsed.error.issues[0]?.message ?? '请求头名称不合法',
+                                    ),
+                                  );
+                                const rows: ProviderHeaderRow[] =
+                                  providerForm.getFieldValue('requestHeaders') ?? [];
+                                const target = String(value).trim().toLowerCase();
+                                return rows.filter(
+                                  (row) => (row?.name ?? '').trim().toLowerCase() === target,
+                                ).length > 1
+                                  ? Promise.reject(new Error('请求头名称重复'))
+                                  : Promise.resolve();
+                              },
+                            },
+                          ]}
+                        >
                           <Input aria-label="请求头名称" placeholder="User-Agent" />
                         </Form.Item>
-                        <Form.Item preserve name={[field.name, 'value']} rules={[
-                          { required: true, message: '请输入请求头值' },
-                          { validator: (_rule, value) => {
-                            if (value === undefined || value === null || value === '') return Promise.resolve();
-                            const parsed = providerHeaderValueSchema.safeParse(value);
-                            return parsed.success ? Promise.resolve() : Promise.reject(new Error(parsed.error.issues[0]?.message ?? '请求头值不合法'));
-                          } },
-                        ]}>
+                        <Form.Item
+                          preserve
+                          name={[field.name, 'value']}
+                          rules={[
+                            { required: true, message: '请输入请求头值' },
+                            {
+                              validator: (_rule, value) => {
+                                if (value === undefined || value === null || value === '')
+                                  return Promise.resolve();
+                                const parsed = providerHeaderValueSchema.safeParse(value);
+                                return parsed.success
+                                  ? Promise.resolve()
+                                  : Promise.reject(
+                                      new Error(
+                                        parsed.error.issues[0]?.message ?? '请求头值不合法',
+                                      ),
+                                    );
+                              },
+                            },
+                          ]}
+                        >
                           <Input aria-label="请求头值" placeholder="paimeng-ai-code-mother/1.0" />
                         </Form.Item>
-                        <Button danger onClick={() => remove(field.name)} aria-label="删除请求头">删除</Button>
+                        <Button danger onClick={() => remove(field.name)} aria-label="删除请求头">
+                          删除
+                        </Button>
                       </Space>
                     ))}
-                    <Button onClick={() => add({ name: '', value: '' })} disabled={fields.length >= providerHeaderLimit} aria-label="添加请求头">添加请求头</Button>
+                    <Button
+                      onClick={() => add({ name: '', value: '' })}
+                      disabled={fields.length >= providerHeaderLimit}
+                      aria-label="添加请求头"
+                    >
+                      添加请求头
+                    </Button>
                   </Space>
                 )}
               </Form.List>
             </Form.Item>
-            <Form.Item name="enabled" label="启用" valuePropName="checked"><Switch aria-label="启用" /></Form.Item>
+            <Form.Item name="enabled" label="启用" valuePropName="checked">
+              <Switch aria-label="启用" />
+            </Form.Item>
           </Form>
         </Modal>
       ) : null}
@@ -902,11 +1249,17 @@ function ModelConfigManager() {
           title={`在 ${addModelFor.displayName} 下添加模型`}
           destroyOnHidden
           width={680}
-          onCancel={() => { if (!saving) setAddModelFor(null); }}
+          onCancel={() => {
+            if (!saving) setAddModelFor(null);
+          }}
           footer={
             <Space>
-              <Button onClick={() => setAddModelFor(null)} disabled={saving}>取消</Button>
-              <Button type="primary" onClick={() => void submitAddModel()} loading={saving}>添加模型</Button>
+              <Button onClick={() => setAddModelFor(null)} disabled={saving}>
+                取消
+              </Button>
+              <Button type="primary" onClick={() => void submitAddModel()} loading={saving}>
+                添加模型
+              </Button>
             </Space>
           }
         >
@@ -919,47 +1272,118 @@ function ModelConfigManager() {
             initialValues={emptyAddModelValues()}
           >
             <Descriptions size="small" column={1} style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="提供商">{addModelFor.displayName}（{addModelFor.id}）</Descriptions.Item>
+              <Descriptions.Item label="提供商">
+                {addModelFor.displayName}（{addModelFor.id}）
+              </Descriptions.Item>
             </Descriptions>
             <div className={styles.stackRow}>
-              <Form.Item name="upstream" label="上游模型名" tooltip="请求实际使用的模型名；创建后不可修改" rules={[{ required: true, message: '请输入上游模型名' }, { max: 256, message: '最多 256 个字符' }]} style={{ flex: 1, minWidth: 0 }}>
+              <Form.Item
+                name="upstream"
+                label="上游模型名"
+                tooltip="请求实际使用的模型名；创建后不可修改"
+                rules={[
+                  { required: true, message: '请输入上游模型名' },
+                  { max: 256, message: '最多 256 个字符' },
+                ]}
+                style={{ flex: 1, minWidth: 0 }}
+              >
                 <AutoComplete
                   style={{ width: '100%' }}
                   aria-label="上游模型名"
                   placeholder="例如 deepseek-chat"
-                  options={upstreamModels.map(model => ({ value: model.id, label: model.label }))}
-                  filterOption={(input, option) => `${option?.value ?? ''} ${option?.label ?? ''}`.toLowerCase().includes(input.toLowerCase())}
+                  options={upstreamModels.map((model) => ({ value: model.id, label: model.label }))}
+                  filterOption={(input, option) =>
+                    `${option?.value ?? ''} ${option?.label ?? ''}`
+                      .toLowerCase()
+                      .includes(input.toLowerCase())
+                  }
                 />
               </Form.Item>
-              <Button onClick={() => void fetchModelsForAddModel()} loading={probing} className={styles.fetchButton}>获取上游模型</Button>
+              <Button
+                onClick={() => void fetchModelsForAddModel()}
+                loading={probing}
+                className={styles.fetchButton}
+              >
+                获取上游模型
+              </Button>
             </div>
             {probeText ? <div className={styles.textGray}>{probeText}</div> : null}
-            <Form.Item name="displayName" label="显示名称" rules={[{ required: true, message: '请输入显示名称' }, { max: 256, message: '最多 256 个字符' }]}>
+            <Form.Item
+              name="displayName"
+              label="显示名称"
+              rules={[
+                { required: true, message: '请输入显示名称' },
+                { max: 256, message: '最多 256 个字符' },
+              ]}
+            >
               <Input aria-label="显示名称" placeholder="例如 DeepSeek Chat" />
             </Form.Item>
             <Form.Item label="能力" tooltip="能力属于模型本身，所有引用它的槽位共用">
               <Space size={16} wrap>
-                {(['streaming', 'toolCalling', 'structuredOutput', 'imageInput'] as const).map(capability => (
-                  <span key={capability}>
-                    <Form.Item name={['capabilities', capability]} valuePropName="checked" noStyle>
-                      <Switch aria-label={modelCapabilityLabels[capability]} />
-                    </Form.Item>
-                    <span>{modelCapabilityLabels[capability]}</span>
-                  </span>
-                ))}
+                {(['streaming', 'toolCalling', 'structuredOutput', 'imageInput'] as const).map(
+                  (capability) => (
+                    <span key={capability}>
+                      <Form.Item
+                        name={['capabilities', capability]}
+                        valuePropName="checked"
+                        noStyle
+                      >
+                        <Switch aria-label={modelCapabilityLabels[capability]} />
+                      </Form.Item>
+                      <span>{modelCapabilityLabels[capability]}</span>
+                    </span>
+                  ),
+                )}
               </Space>
             </Form.Item>
-            <Form.Item name="enabled" label="启用" valuePropName="checked"><Switch aria-label="启用" /></Form.Item>
-            <div className={styles.sectionHeading}><h3>初始单价（可选）</h3><span className={styles.statusHint}>人民币 / 1M tokens；留空表示先登记为未定价，不能分配槽位</span></div>
+            <Form.Item name="enabled" label="启用" valuePropName="checked">
+              <Switch aria-label="启用" />
+            </Form.Item>
+            <div className={styles.sectionHeading}>
+              <h3>初始单价（可选）</h3>
+              <span className={styles.statusHint}>
+                人民币 / 1M tokens；留空表示先登记为未定价，不能分配槽位
+              </span>
+            </div>
             <div className={styles.priceInputs}>
-              <Form.Item name="inputMissYuan" label="输入未命中" rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}>
-                <InputNumber min={0} step={0.01} precision={2} aria-label="输入未命中单价" style={{ width: '100%' }} />
+              <Form.Item
+                name="inputMissYuan"
+                label="输入未命中"
+                rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}
+              >
+                <InputNumber
+                  min={0}
+                  step={0.01}
+                  precision={2}
+                  aria-label="输入未命中单价"
+                  style={{ width: '100%' }}
+                />
               </Form.Item>
-              <Form.Item name="inputHitYuan" label="输入命中" rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}>
-                <InputNumber min={0} step={0.01} precision={2} aria-label="输入命中单价" style={{ width: '100%' }} />
+              <Form.Item
+                name="inputHitYuan"
+                label="输入命中"
+                rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}
+              >
+                <InputNumber
+                  min={0}
+                  step={0.01}
+                  precision={2}
+                  aria-label="输入命中单价"
+                  style={{ width: '100%' }}
+                />
               </Form.Item>
-              <Form.Item name="outputYuan" label="输出" rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}>
-                <InputNumber min={0} step={0.01} precision={2} aria-label="输出单价" style={{ width: '100%' }} />
+              <Form.Item
+                name="outputYuan"
+                label="输出"
+                rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}
+              >
+                <InputNumber
+                  min={0}
+                  step={0.01}
+                  precision={2}
+                  aria-label="输出单价"
+                  style={{ width: '100%' }}
+                />
               </Form.Item>
             </div>
           </Form>
@@ -971,30 +1395,46 @@ function ModelConfigManager() {
         title={modelEditor ? `配置模型 · ${modelEditor.displayName}` : '配置模型'}
         size={620}
         destroyOnHidden
-        onClose={() => { if (!saving) setModelEditor(null); }}
-        extra={modelEditor ? (
-          <Space>
-            <Button onClick={() => setModelEditor(null)} disabled={saving}>取消</Button>
-            <Button type="primary" onClick={() => void saveModelEditor()} loading={saving}>保存</Button>
-          </Space>
-        ) : null}
+        onClose={() => {
+          if (!saving) setModelEditor(null);
+        }}
+        extra={
+          modelEditor ? (
+            <Space>
+              <Button onClick={() => setModelEditor(null)} disabled={saving}>
+                取消
+              </Button>
+              <Button type="primary" onClick={() => void saveModelEditor()} loading={saving}>
+                保存
+              </Button>
+            </Space>
+          ) : null
+        }
       >
         {modelEditor ? (
           <>
             {conflict ? <ConflictAlert message={conflict} onReload={() => void reload()} /> : null}
             <Descriptions size="small" column={1} style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="提供商">{providerById.get(modelEditor.providerId)?.displayName ?? modelEditor.providerId}</Descriptions.Item>
-              <Descriptions.Item label="上游模型名"><code>{modelEditor.upstream}</code></Descriptions.Item>
-              <Descriptions.Item label="模型标识"><span className={styles.slotName}>{modelEditor.id}</span></Descriptions.Item>
+              <Descriptions.Item label="提供商">
+                {providerById.get(modelEditor.providerId)?.displayName ?? modelEditor.providerId}
+              </Descriptions.Item>
+              <Descriptions.Item label="上游模型名">
+                <code>{modelEditor.upstream}</code>
+              </Descriptions.Item>
+              <Descriptions.Item label="模型标识">
+                <span className={styles.slotName}>{modelEditor.id}</span>
+              </Descriptions.Item>
               <Descriptions.Item label="上游参考价">
                 {modelEditor.upstreamPrice
                   ? `${formatUsd(modelEditor.upstreamPrice.inputMiss)} · ${formatUsd(modelEditor.upstreamPrice.inputHit)} · ${formatUsd(modelEditor.upstreamPrice.output)} USD / 1M`
                   : '未记录（上游价只作参考，不参与售价计算）'}
               </Descriptions.Item>
               <Descriptions.Item label="当前单价">
-                {modelEditor.currentPrice
-                  ? `${formatCny(modelEditor.currentPrice.inputMissFen)} · ${formatCny(modelEditor.currentPrice.inputHitFen)} · ${formatCny(modelEditor.currentPrice.outputFen)} / 1M（版本 ${modelEditor.currentPrice.version}）`
-                  : <Tag color="red">未定价</Tag>}
+                {modelEditor.currentPrice ? (
+                  `${formatCny(modelEditor.currentPrice.inputMissFen)} · ${formatCny(modelEditor.currentPrice.inputHitFen)} · ${formatCny(modelEditor.currentPrice.outputFen)} / 1M（版本 ${modelEditor.currentPrice.version}）`
+                ) : (
+                  <Tag color="red">未定价</Tag>
+                )}
               </Descriptions.Item>
             </Descriptions>
             <Form
@@ -1004,51 +1444,124 @@ function ModelConfigManager() {
               preserve={false}
               initialValues={priceFormValues(modelEditor)}
             >
-              <Form.Item name="displayName" label="显示名称" rules={[{ required: true, message: '请输入显示名称' }, { max: 256, message: '最多 256 个字符' }]}>
+              <Form.Item
+                name="displayName"
+                label="显示名称"
+                rules={[
+                  { required: true, message: '请输入显示名称' },
+                  { max: 256, message: '最多 256 个字符' },
+                ]}
+              >
                 <Input aria-label="显示名称" />
               </Form.Item>
-              <Form.Item label="能力" tooltip="能力属于模型本身，所有引用它的槽位共用；修改后请检查槽位状态">
+              <Form.Item
+                label="能力"
+                tooltip="能力属于模型本身，所有引用它的槽位共用；修改后请检查槽位状态"
+              >
                 <Space size={16} wrap>
-                  {(['streaming', 'toolCalling', 'structuredOutput', 'imageInput'] as const).map(capability => (
-                    <span key={capability}>
-                      <Form.Item name={['capabilities', capability]} valuePropName="checked" noStyle>
-                        <Switch aria-label={modelCapabilityLabels[capability]} />
-                      </Form.Item>
-                      <span>{modelCapabilityLabels[capability]}</span>
-                    </span>
-                  ))}
+                  {(['streaming', 'toolCalling', 'structuredOutput', 'imageInput'] as const).map(
+                    (capability) => (
+                      <span key={capability}>
+                        <Form.Item
+                          name={['capabilities', capability]}
+                          valuePropName="checked"
+                          noStyle
+                        >
+                          <Switch aria-label={modelCapabilityLabels[capability]} />
+                        </Form.Item>
+                        <span>{modelCapabilityLabels[capability]}</span>
+                      </span>
+                    ),
+                  )}
                 </Space>
               </Form.Item>
-              <Form.Item name="enabled" label="启用" valuePropName="checked"><Switch aria-label="启用" /></Form.Item>
+              <Form.Item name="enabled" label="启用" valuePropName="checked">
+                <Switch aria-label="启用" />
+              </Form.Item>
               <div className={styles.priceInputs}>
-                <Form.Item name="inputMissYuan" label="输入未命中（¥ / 1M）" rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}>
-                  <InputNumber min={0} step={0.01} precision={2} aria-label="输入未命中单价" style={{ width: '100%' }} />
+                <Form.Item
+                  name="inputMissYuan"
+                  label="输入未命中（¥ / 1M）"
+                  rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}
+                >
+                  <InputNumber
+                    min={0}
+                    step={0.01}
+                    precision={2}
+                    aria-label="输入未命中单价"
+                    style={{ width: '100%' }}
+                  />
                 </Form.Item>
-                <Form.Item name="inputHitYuan" label="输入命中（¥ / 1M）" rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}>
-                  <InputNumber min={0} step={0.01} precision={2} aria-label="输入命中单价" style={{ width: '100%' }} />
+                <Form.Item
+                  name="inputHitYuan"
+                  label="输入命中（¥ / 1M）"
+                  rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}
+                >
+                  <InputNumber
+                    min={0}
+                    step={0.01}
+                    precision={2}
+                    aria-label="输入命中单价"
+                    style={{ width: '100%' }}
+                  />
                 </Form.Item>
-                <Form.Item name="outputYuan" label="输出（¥ / 1M）" rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}>
-                  <InputNumber min={0} step={0.01} precision={2} aria-label="输出单价" style={{ width: '100%' }} />
+                <Form.Item
+                  name="outputYuan"
+                  label="输出（¥ / 1M）"
+                  rules={[{ type: 'number', min: 0, message: '单价不能是负数' }]}
+                >
+                  <InputNumber
+                    min={0}
+                    step={0.01}
+                    precision={2}
+                    aria-label="输出单价"
+                    style={{ width: '100%' }}
+                  />
                 </Form.Item>
               </div>
-              <Form.Item name="note" label="价格备注" rules={[{ max: 2000, message: '最多 2000 个字符' }]}>
+              <Form.Item
+                name="note"
+                label="价格备注"
+                rules={[{ max: 2000, message: '最多 2000 个字符' }]}
+              >
                 <Input.TextArea rows={2} aria-label="价格备注" />
               </Form.Item>
-              <div className={styles.statusHint}>保存单价会追加一个新版本；历史账单保留当时的快照，不会重算。没有倍率、汇率或自动按上游价生成售价。</div>
+              <div className={styles.statusHint}>
+                保存单价会追加一个新版本；历史账单保留当时的快照，不会重算。没有倍率、汇率或自动按上游价生成售价。
+              </div>
             </Form>
-            <div className={styles.sectionHeading}><h3>价格版本</h3></div>
+            <div className={styles.sectionHeading}>
+              <h3>价格版本</h3>
+            </div>
             <Table<ModelPriceVersion>
               rowKey="version"
               size="small"
               pagination={false}
-              dataSource={[...modelEditor.prices].sort((left, right) => right.version - left.version)}
+              dataSource={[...modelEditor.prices].sort(
+                (left, right) => right.version - left.version,
+              )}
               scroll={{ x: 520 }}
               columns={[
                 { title: '版本', dataIndex: 'version', width: 70 },
                 { title: '生效时间（UTC）', dataIndex: 'effectiveAt', width: 200 },
-                { title: '输入未命中', dataIndex: 'inputMissFen', align: 'right', render: value => formatCny(value) },
-                { title: '输入命中', dataIndex: 'inputHitFen', align: 'right', render: value => formatCny(value) },
-                { title: '输出', dataIndex: 'outputFen', align: 'right', render: value => formatCny(value) },
+                {
+                  title: '输入未命中',
+                  dataIndex: 'inputMissFen',
+                  align: 'right',
+                  render: (value) => formatCny(value),
+                },
+                {
+                  title: '输入命中',
+                  dataIndex: 'inputHitFen',
+                  align: 'right',
+                  render: (value) => formatCny(value),
+                },
+                {
+                  title: '输出',
+                  dataIndex: 'outputFen',
+                  align: 'right',
+                  render: (value) => formatCny(value),
+                },
               ]}
             />
           </>
@@ -1060,24 +1573,41 @@ function ModelConfigManager() {
           open
           title={`配置${slotEditor.slot.label}`}
           destroyOnHidden
-          onCancel={() => { if (!saving) setSlotEditor(null); }}
+          onCancel={() => {
+            if (!saving) setSlotEditor(null);
+          }}
           footer={
             <Space>
-              <Button onClick={() => setSlotEditor(null)} disabled={saving}>取消</Button>
+              <Button onClick={() => setSlotEditor(null)} disabled={saving}>
+                取消
+              </Button>
               {slotEditor.slot.optional && slotEditor.assignment ? (
                 <Popconfirm title="清除这个槽位的模型分配？" onConfirm={() => void clearSlot()}>
-                  <Button danger disabled={saving}>清除分配</Button>
+                  <Button danger disabled={saving}>
+                    清除分配
+                  </Button>
                 </Popconfirm>
               ) : null}
-              <Button type="primary" onClick={() => void saveSlot()} loading={saving}>保存</Button>
+              <Button type="primary" onClick={() => void saveSlot()} loading={saving}>
+                保存
+              </Button>
             </Space>
           }
         >
           {conflict ? <ConflictAlert message={conflict} onReload={() => void reload()} /> : null}
           <Descriptions size="small" column={1} style={{ marginBottom: 16 }}>
-            <Descriptions.Item label="槽位">{slotEditor.slot.label}<span className={styles.slotName} style={{ marginLeft: 8 }}>{slotEditor.slot.slot}</span></Descriptions.Item>
+            <Descriptions.Item label="槽位">
+              {slotEditor.slot.label}
+              <span className={styles.slotName} style={{ marginLeft: 8 }}>
+                {slotEditor.slot.slot}
+              </span>
+            </Descriptions.Item>
             <Descriptions.Item label="用途">{slotEditor.slot.purpose}</Descriptions.Item>
-            <Descriptions.Item label="要求能力">{slotEditor.slot.requires.length ? slotEditor.slot.requires.map(item => modelCapabilityLabels[item]).join('、') : '无硬性要求'}</Descriptions.Item>
+            <Descriptions.Item label="要求能力">
+              {slotEditor.slot.requires.length
+                ? slotEditor.slot.requires.map((item) => modelCapabilityLabels[item]).join('、')
+                : '无硬性要求'}
+            </Descriptions.Item>
           </Descriptions>
           <Form
             key={slotEditor.slot.slot}
@@ -1086,12 +1616,28 @@ function ModelConfigManager() {
             preserve={false}
             initialValues={slotFormValues(slotEditor.assignment)}
           >
-            {slotEditor.assignment ? (() => {
-              const found = modelById.get(slotEditor.assignment.modelId);
-              const issue = found ? modelEligibilityIssue(found.provider, found.model, slotEditor.slot) : '模型已不存在';
-              return issue ? <Alert type="warning" showIcon title="当前分配不可用" description={issue} style={{ marginBottom: 16 }} /> : null;
-            })() : null}
-            <Form.Item name="modelId" label="模型" rules={[{ required: true, message: '请选择模型' }]}>
+            {slotEditor.assignment
+              ? (() => {
+                  const found = modelById.get(slotEditor.assignment.modelId);
+                  const issue = found
+                    ? modelEligibilityIssue(found.provider, found.model, slotEditor.slot)
+                    : '模型已不存在';
+                  return issue ? (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      title="当前分配不可用"
+                      description={issue}
+                      style={{ marginBottom: 16 }}
+                    />
+                  ) : null;
+                })()
+              : null}
+            <Form.Item
+              name="modelId"
+              label="模型"
+              rules={[{ required: true, message: '请选择模型' }]}
+            >
               <Select
                 aria-label="模型"
                 placeholder="选择已启用、已定价且能力满足的模型"
@@ -1099,19 +1645,59 @@ function ModelConfigManager() {
               />
             </Form.Item>
             <Space size={16} wrap>
-              <Form.Item name={['settings', 'temperature']} label="temperature" rules={[{ type: 'number', min: 0, max: 2, message: 'temperature 需在 0 到 2 之间' }]}>
+              <Form.Item
+                name={['settings', 'temperature']}
+                label="temperature"
+                rules={[
+                  { type: 'number', min: 0, max: 2, message: 'temperature 需在 0 到 2 之间' },
+                ]}
+              >
                 <InputNumber min={0} max={2} step={0.1} aria-label="temperature" />
               </Form.Item>
-              <Form.Item name={['settings', 'topP']} label="topP" rules={[{ type: 'number', min: 0, max: 1, message: 'topP 需在 0 到 1 之间' }]}>
+              <Form.Item
+                name={['settings', 'topP']}
+                label="topP"
+                rules={[{ type: 'number', min: 0, max: 1, message: 'topP 需在 0 到 1 之间' }]}
+              >
                 <InputNumber min={0} max={1} step={0.05} aria-label="topP" />
               </Form.Item>
-              <Form.Item name={['settings', 'maxOutputTokens']} label="最大输出 tokens" rules={[{ type: 'integer', min: 1, max: 1000000, message: '最大输出 tokens 需为 1 到 1000000 的整数' }]}>
-                <InputNumber min={1} max={1000000} step={1} precision={0} aria-label="最大输出 tokens" />
+              <Form.Item
+                name={['settings', 'maxOutputTokens']}
+                label="最大输出 tokens"
+                rules={[
+                  {
+                    type: 'integer',
+                    min: 1,
+                    max: 1000000,
+                    message: '最大输出 tokens 需为 1 到 1000000 的整数',
+                  },
+                ]}
+              >
+                <InputNumber
+                  min={1}
+                  max={1000000}
+                  step={1}
+                  precision={0}
+                  aria-label="最大输出 tokens"
+                />
               </Form.Item>
               <Form.Item name={['settings', 'reasoning']} label="思考强度">
-                <Select allowClear aria-label="思考强度" placeholder="不指定" style={{ minWidth: 140 }} options={reasoningLevels.map(level => ({ value: level, label: reasoningLevelLabels[level] }))} />
+                <Select
+                  allowClear
+                  aria-label="思考强度"
+                  placeholder="不指定"
+                  style={{ minWidth: 140 }}
+                  options={reasoningLevels.map((level) => ({
+                    value: level,
+                    label: reasoningLevelLabels[level],
+                  }))}
+                />
               </Form.Item>
-              <Form.Item name={['settings', 'reasoningContentPassthrough']} label="回传思考内容" valuePropName="checked">
+              <Form.Item
+                name={['settings', 'reasoningContentPassthrough']}
+                label="回传思考内容"
+                valuePropName="checked"
+              >
                 <Switch aria-label="回传思考内容" />
               </Form.Item>
             </Space>
@@ -1122,7 +1708,7 @@ function ModelConfigManager() {
   );
 
   async function fetchModelsForProvider(provider: ModelAdminProviderView) {
-    await fetchProviderModels(provider, models => {
+    await fetchProviderModels(provider, (models) => {
       openAddModel(provider);
       setUpstreamModels(models);
       setProbeText(`已获取 ${models.length} 个上游模型${modelListLimitHint(models.length)}`);
@@ -1153,21 +1739,45 @@ function ModelRow(props: {
       <div className={styles.modelPrices}>
         {current ? (
           <>
-            <span><i>未命中</i><b>{formatCny(current.inputMissFen)}</b></span>
-            <span><i>命中</i><b>{formatCny(current.inputHitFen)}</b></span>
-            <span><i>输出</i><b>{formatCny(current.outputFen)}</b></span>
-            <span className={styles.statusHint}>版本 {current.version} · {current.effectiveAt} UTC</span>
+            <span>
+              <i>未命中</i>
+              <b>{formatCny(current.inputMissFen)}</b>
+            </span>
+            <span>
+              <i>命中</i>
+              <b>{formatCny(current.inputHitFen)}</b>
+            </span>
+            <span>
+              <i>输出</i>
+              <b>{formatCny(current.outputFen)}</b>
+            </span>
+            <span className={styles.statusHint}>
+              版本 {current.version} · {current.effectiveAt} UTC
+            </span>
           </>
-        ) : <Tag color="red">未定价</Tag>}
+        ) : (
+          <Tag color="red">未定价</Tag>
+        )}
       </div>
       <div className={styles.modelUpstream}>
         <span className={styles.statusHint}>上游参考</span>
-        <span>{upstream ? `${formatUsd(upstream.inputMiss)} · ${formatUsd(upstream.inputHit)} · ${formatUsd(upstream.output)} USD / 1M` : '未记录'}</span>
+        <span>
+          {upstream
+            ? `${formatUsd(upstream.inputMiss)} · ${formatUsd(upstream.inputHit)} · ${formatUsd(upstream.output)} USD / 1M`
+            : '未记录'}
+        </span>
       </div>
       <div className={styles.modelActions}>
         {issue ? <Tag color="orange">不可分配</Tag> : <Tag color="green">可分配</Tag>}
-        <Switch checked={model.enabled} onChange={onToggle} disabled={saving} aria-label={`启用模型 ${model.displayName}`} />
-        <Button size="small" onClick={onConfigure}>配置</Button>
+        <Switch
+          checked={model.enabled}
+          onChange={onToggle}
+          disabled={saving}
+          aria-label={`启用模型 ${model.displayName}`}
+        />
+        <Button size="small" onClick={onConfigure}>
+          配置
+        </Button>
       </div>
     </section>
   );
@@ -1183,7 +1793,9 @@ function ConflictAlert({ message, onReload }: { message: string; onReload: () =>
         <Space orientation="vertical" size={4}>
           <span>{message}</span>
           <span>当前输入已保留，可先重新加载最新配置再保存。</span>
-          <Button size="small" onClick={onReload}>重新加载</Button>
+          <Button size="small" onClick={onReload}>
+            重新加载
+          </Button>
         </Space>
       }
       style={{ marginBottom: 16 }}
@@ -1191,7 +1803,11 @@ function ConflictAlert({ message, onReload }: { message: string; onReload: () =>
   );
 }
 
-function eligibleOptions(config: ModelAdminConfigView, slot: ModelSlotView, current: ModelAssignmentView | null) {
+function eligibleOptions(
+  config: ModelAdminConfigView,
+  slot: ModelSlotView,
+  current: ModelAssignmentView | null,
+) {
   const options: { value: string; label: string; disabled?: boolean }[] = [];
   for (const provider of config.providers) {
     for (const model of provider.models) {
@@ -1203,18 +1819,26 @@ function eligibleOptions(config: ModelAdminConfigView, slot: ModelSlotView, curr
       });
     }
   }
-  if (current && !options.some(option => option.value === current.modelId)) {
-    const found = config.providers.flatMap(provider => provider.models.map(model => ({ provider, model }))).find(item => item.model.id === current.modelId);
+  if (current && !options.some((option) => option.value === current.modelId)) {
+    const found = config.providers
+      .flatMap((provider) => provider.models.map((model) => ({ provider, model })))
+      .find((item) => item.model.id === current.modelId);
     options.unshift({
       value: current.modelId,
-      label: found ? `${found.provider.displayName} / ${found.model.displayName}（当前分配，不可用）` : `${current.modelId}（当前分配，不可用）`,
+      label: found
+        ? `${found.provider.displayName} / ${found.model.displayName}（当前分配，不可用）`
+        : `${current.modelId}（当前分配，不可用）`,
       disabled: true,
     });
   }
   return options;
 }
 
-function priceInputOf(miss: number | null | undefined, hit: number | null | undefined, output: number | null | undefined) {
+function priceInputOf(
+  miss: number | null | undefined,
+  hit: number | null | undefined,
+  output: number | null | undefined,
+) {
   const inputMissFen = yuanToFen(miss);
   const inputHitFen = yuanToFen(hit);
   const outputFen = yuanToFen(output);
@@ -1262,13 +1886,18 @@ function settingsOf(settings: SlotFormValues['settings']): ModelAliasSettings {
   const next: ModelAliasSettings = {};
   if (typeof settings?.temperature === 'number') next.temperature = settings.temperature;
   if (typeof settings?.topP === 'number') next.topP = settings.topP;
-  if (typeof settings?.maxOutputTokens === 'number') next.maxOutputTokens = settings.maxOutputTokens;
+  if (typeof settings?.maxOutputTokens === 'number')
+    next.maxOutputTokens = settings.maxOutputTokens;
   if (settings?.reasoning) next.reasoning = settings.reasoning;
   if (settings?.reasoningContentPassthrough) next.reasoningContentPassthrough = true;
   return next;
 }
 
-async function adminPost<T>(path: string, payload: unknown, parse: (data: unknown) => T): Promise<AdminOutcome<T>> {
+async function adminPost<T>(
+  path: string,
+  payload: unknown,
+  parse: (data: unknown) => T,
+): Promise<AdminOutcome<T>> {
   try {
     const response = await fetch('/api/' + path, {
       method: 'POST',
@@ -1284,7 +1913,8 @@ async function adminPost<T>(path: string, payload: unknown, parse: (data: unknow
       return { ok: false, status: response.status, code: 0, message: '响应格式不正确' };
     }
   } catch (error) {
-    if (error instanceof ApiResponseError) return { ok: false, status: error.status, code: error.code, message: error.message };
+    if (error instanceof ApiResponseError)
+      return { ok: false, status: error.status, code: error.code, message: error.message };
     return { ok: false, status: 0, code: 0, message: '网络请求失败，请稍后重试' };
   }
 }
@@ -1326,7 +1956,10 @@ function providerFormValues(provider: ModelAdminProviderView): ProviderFormValue
     apiKeyEnv: provider.apiKeySource === 'env' ? provider.apiKeyEnv : baseModelApiKeyEnv,
     apiKey: '',
     options: { ...provider.options },
-    requestHeaders: Object.entries(provider.headers ?? {}).map(([name, value]) => ({ name, value })),
+    requestHeaders: Object.entries(provider.headers ?? {}).map(([name, value]) => ({
+      name,
+      value,
+    })),
     enabled: provider.enabled,
   };
 }
@@ -1361,7 +1994,10 @@ function toProviderInput(values: ProviderFormValues): ModelProviderWriteInput {
     : { ...common, apiKeySource: 'inline' as const, apiKey: values.apiKey ?? '' };
 }
 
-function pickProviderOptions(apiFormat: ProviderApiFormat, options: ModelProviderOptions | undefined): ModelProviderOptions {
+function pickProviderOptions(
+  apiFormat: ProviderApiFormat,
+  options: ModelProviderOptions | undefined,
+): ModelProviderOptions {
   const allowed = providerOptionKeysByFormat[apiFormat];
   const candidate: Record<string, unknown> = {};
   for (const key of modelProviderOptionKeys) {
@@ -1388,14 +2024,23 @@ function isChoiceOptionKey(key: string): key is 'thinkingSwitch' {
   return modelProviderChoiceOptionKeys.includes(key as never);
 }
 
-function capabilityTags(capabilities: { streaming: boolean; toolCalling: boolean; structuredOutput: boolean; imageInput: boolean }) {
-  const active = (['streaming', 'toolCalling', 'structuredOutput', 'imageInput'] as const).filter(key => capabilities[key]);
+function capabilityTags(capabilities: {
+  streaming: boolean;
+  toolCalling: boolean;
+  structuredOutput: boolean;
+  imageInput: boolean;
+}) {
+  const active = (['streaming', 'toolCalling', 'structuredOutput', 'imageInput'] as const).filter(
+    (key) => capabilities[key],
+  );
   if (!active.length) return <span className={styles.textGray}>无</span>;
-  return active.map(key => <Tag key={key}>{modelCapabilityLabels[key]}</Tag>);
+  return active.map((key) => <Tag key={key}>{modelCapabilityLabels[key]}</Tag>);
 }
 
 function modelListLimitHint(count: number): string {
-  return count >= providerModelListLimit ? `（已达到 ${providerModelListLimit} 条上限，其余未显示）` : '';
+  return count >= providerModelListLimit
+    ? `（已达到 ${providerModelListLimit} 条上限，其余未显示）`
+    : '';
 }
 
 function formatClock(value: number | null): string {

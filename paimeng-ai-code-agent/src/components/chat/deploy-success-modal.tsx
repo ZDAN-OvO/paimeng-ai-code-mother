@@ -6,7 +6,12 @@ import { CheckCircleOutlined, CopyOutlined } from '@ant-design/icons';
 // path keeps the copy button working when the async API is unavailable.
 async function writeClipboard(value: string) {
   if (navigator.clipboard?.writeText) {
-    try { await navigator.clipboard.writeText(value); return true; } catch {}
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      // Clipboard API 不可用或被拒绝时，继续尝试下面的兼容方案。
+    }
   }
   const helper = document.createElement('textarea');
   helper.value = value;
@@ -22,7 +27,12 @@ async function writeClipboard(value: string) {
   }
 }
 
-export function DeploySuccessModal({ open, deployUrl, onClose, onOpenSite }: {
+export function DeploySuccessModal({
+  open,
+  deployUrl,
+  onClose,
+  onOpenSite,
+}: {
   open: boolean;
   deployUrl: string;
   onClose: () => void;
@@ -38,16 +48,36 @@ export function DeploySuccessModal({ open, deployUrl, onClose, onOpenSite }: {
       message.error('复制失败');
     }
   }
-  return <Modal open={open} title="部署成功" footer={null} width={600} onCancel={onClose}>
-    <div className="deploy-success">
-      <div className="deploy-success-icon"><CheckCircleOutlined aria-hidden="true" /></div>
-      <h3>网站部署成功！</h3>
-      <p>你的网站已经成功部署，可以通过以下链接访问：</p>
-      <Input readOnly value={deployUrl} aria-label="部署链接" suffix={<Button type="text" aria-label="复制部署链接" icon={<CopyOutlined />} onClick={() => { void copy(); }} />} />
-      <div className="deploy-success-actions">
-        <Button type="primary" onClick={onOpenSite}>访问网站</Button>
-        <Button onClick={onClose}>关闭</Button>
+  return (
+    <Modal open={open} title="部署成功" footer={null} width={600} onCancel={onClose}>
+      <div className="deploy-success">
+        <div className="deploy-success-icon">
+          <CheckCircleOutlined aria-hidden="true" />
+        </div>
+        <h3>网站部署成功！</h3>
+        <p>你的网站已经成功部署，可以通过以下链接访问：</p>
+        <Input
+          readOnly
+          value={deployUrl}
+          aria-label="部署链接"
+          suffix={
+            <Button
+              type="text"
+              aria-label="复制部署链接"
+              icon={<CopyOutlined />}
+              onClick={() => {
+                void copy();
+              }}
+            />
+          }
+        />
+        <div className="deploy-success-actions">
+          <Button type="primary" onClick={onOpenSite}>
+            访问网站
+          </Button>
+          <Button onClick={onClose}>关闭</Button>
+        </div>
       </div>
-    </div>
-  </Modal>;
+    </Modal>
+  );
 }

@@ -2,12 +2,27 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { baseUrl, freePort, harnessAvailable, postgresReachable, postgresUrl, startHarness, stopHarness, waitHealthy } from './support';
+import {
+  baseUrl,
+  freePort,
+  harnessAvailable,
+  postgresReachable,
+  postgresUrl,
+  startHarness,
+  stopHarness,
+  waitHealthy,
+} from './support';
 
 const harnessReady = harnessAvailable();
 const postgresReady = harnessReady && (await postgresReachable(postgresUrl));
-if (!harnessReady) process.stderr.write('[durable-m1] 跳过联网工具：找不到产品 harness 入口或 tsx，先装依赖（npm install）\n');
-else if (!postgresReady) process.stderr.write(`[durable-m1] 跳过联网工具：Postgres 不可达（${postgresUrl}），先跑 npm run durable:pg -- start\n`);
+if (!harnessReady)
+  process.stderr.write(
+    '[durable-m1] 跳过联网工具：找不到产品 harness 入口或 tsx，先装依赖（npm install）\n',
+  );
+else if (!postgresReady)
+  process.stderr.write(
+    `[durable-m1] 跳过联网工具：Postgres 不可达（${postgresUrl}），先跑 npm run durable:pg -- start\n`,
+  );
 
 type ToolsBody = { tools: { name: string; replay: string }[] };
 
@@ -16,7 +31,12 @@ async function toolsOf(options: { enabled: boolean }): Promise<ToolsBody> {
   const runDir = mkdtempSync(join(tmpdir(), 'durable-m3-web-'));
   const base = baseUrl(port);
   const harness = startHarness({
-    port, runDir, reset: true, waitMs: 0, finalText: 'M3_WEB_DONE', workspace: join(runDir, 'workspace'),
+    port,
+    runDir,
+    reset: true,
+    waitMs: 0,
+    finalText: 'M3_WEB_DONE',
+    workspace: join(runDir, 'workspace'),
     env: options.enabled ? { WEB_ACCESS_ENABLED: '1' } : { WEB_ACCESS_ENABLED: '0' },
   });
   try {

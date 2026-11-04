@@ -15,7 +15,13 @@ export const webAccessEndpoints = {
  * 免密钥搜索实测可达 10 秒，因此搜索超时单独放宽到 20 秒。
  */
 export const webAccessLimits = {
-  search: { results: 5, snippetChars: 500, totalChars: 4000, maxBytes: 1024 * 1024, timeoutMs: 20000 },
+  search: {
+    results: 5,
+    snippetChars: 500,
+    totalChars: 4000,
+    maxBytes: 1024 * 1024,
+    timeoutMs: 20000,
+  },
   page: { chars: 8000, maxBytes: 2 * 1024 * 1024, timeoutMs: 15000 },
   images: { results: 6, maxBytes: 2 * 1024 * 1024, timeoutMs: 30000, downloadTimeoutMs: 15000 },
 } as const;

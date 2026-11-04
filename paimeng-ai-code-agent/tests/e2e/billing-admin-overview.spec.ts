@@ -24,7 +24,7 @@ async function registerUser(page: Page, account: string): Promise<string> {
     data: { userAccount: account, userPassword: password, checkPassword: password },
   });
   expect(response.ok()).toBe(true);
-  const envelope = await response.json() as { code: number; data: string };
+  const envelope = (await response.json()) as { code: number; data: string };
   expect(envelope.code).toBe(0);
   createdUserIds.push(envelope.data);
   return envelope.data;
@@ -34,7 +34,10 @@ async function login(page: Page, account: string) {
   await page.goto('/user/login');
   await page.getByLabel('账号', { exact: true }).fill(account);
   await page.getByLabel('密码', { exact: true }).fill(password);
-  await page.locator('form').getByRole('button', { name: /^登\s*录$/ }).click();
+  await page
+    .locator('form')
+    .getByRole('button', { name: /^登\s*录$/ })
+    .click();
   await expect(page).toHaveURL('/');
 }
 
@@ -42,7 +45,9 @@ async function adminLogin(page: Page, account: string) {
   adminId = await registerUser(page, account);
   const connection = await testConnection();
   try {
-    await connection.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [account]);
+    await connection.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [
+      account,
+    ]);
   } finally {
     await connection.end();
   }
@@ -63,11 +68,17 @@ test.afterAll(async () => {
   if (!createdUserIds.length) return;
   const connection = await testConnection();
   try {
-    await connection.query('DELETE FROM credit_ledger WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
-    await connection.query('DELETE FROM credit_balance WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
+    await connection.query('DELETE FROM credit_ledger WHERE user_id = ANY($1::bigint[])', [
+      createdUserIds,
+    ]);
+    await connection.query('DELETE FROM credit_balance WHERE user_id = ANY($1::bigint[])', [
+      createdUserIds,
+    ]);
     await connection.query('DELETE FROM credit_operation WHERE operator_id = $1', [adminId]);
     await connection.query('DELETE FROM credit_quota_policy WHERE created_by = $1', [adminId]);
-    await connection.query('DELETE FROM user_session WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
+    await connection.query('DELETE FROM user_session WHERE user_id = ANY($1::bigint[])', [
+      createdUserIds,
+    ]);
     await connection.query('DELETE FROM app_user WHERE id = ANY($1::bigint[])', [createdUserIds]);
   } finally {
     await connection.end();
@@ -76,7 +87,7 @@ test.afterAll(async () => {
 
 test('主从账本：选人、发放限时积分、流水与统计同步，刷新后仍在', async ({ page }) => {
   const account = 'e2e_credit_' + randomUUID().slice(0, 8);
-  const userId = await registerUser(page, account);
+  await registerUser(page, account);
   await adminLogin(page, 'e2e_credit_admin_' + randomUUID().slice(0, 8));
 
   await page.goto('/admin/billing');
@@ -109,7 +120,7 @@ test('主从账本：选人、发放限时积分、流水与统计同步，刷�
 
 test('长期积分与限时积分分开显示，发放长期积分不动到期时间', async ({ page }) => {
   const account = 'e2e_credit_long_' + randomUUID().slice(0, 8);
-  const userId = await registerUser(page, account);
+  await registerUser(page, account);
   await adminLogin(page, 'e2e_credit_admin2_' + randomUUID().slice(0, 8));
 
   await page.goto('/admin/billing');
@@ -125,7 +136,10 @@ test('长期积分与限时积分分开显示，发放长期积分不动到期�
   await expect(detail).toContainText('+200');
   await expect(detail).toContainText('700');
   expect(await detail.locator('text=到期').locator('..').textContent()).toBe(expiryBefore);
-  await page.screenshot({ path: evidencePath('billing', 'credit-page-lasting.png'), fullPage: true });
+  await page.screenshot({
+    path: evidencePath('billing', 'credit-page-lasting.png'),
+    fullPage: true,
+  });
 });
 
 test('待发与欠款筛选：统计卡也是入口', async ({ page }) => {
@@ -140,7 +154,8 @@ test('待发与欠款筛选：统计卡也是入口', async ({ page }) => {
     await connection.query('DELETE FROM credit_ledger WHERE user_id = $1', [debtId]);
     await connection.query(
       `INSERT INTO credit_ledger (user_id, kind, origin, credits, create_time)
-       VALUES ($1, 'grant', 'manual', -50, timezone('UTC', now())::timestamp(3))`, [debtId],
+       VALUES ($1, 'grant', 'manual', -50, timezone('UTC', now())::timestamp(3))`,
+      [debtId],
     );
     await connection.query(
       `INSERT INTO credit_balance (user_id, available, next_expiry_at, update_time)
@@ -161,7 +176,10 @@ test('待发与欠款筛选：统计卡也是入口', async ({ page }) => {
   await search.press('Enter');
   await expect(page.getByRole('button').filter({ hasText: pendingAccount }).first()).toBeVisible();
   await expect(page.getByRole('region', { name: '用户积分详情' })).toContainText('待发');
-  await page.screenshot({ path: evidencePath('billing', 'credit-page-pending.png'), fullPage: true });
+  await page.screenshot({
+    path: evidencePath('billing', 'credit-page-pending.png'),
+    fullPage: true,
+  });
 
   await page.locator('.ant-segmented').getByText('欠款', { exact: true }).click();
   await search.fill(debtAccount);
@@ -175,7 +193,9 @@ test('改规则只影响未来账期；定向批量补发写一条可查的操�
   const account = 'e2e_credit_rule_' + randomUUID().slice(0, 8);
   const userId = await registerUser(page, account);
   await adminLogin(page, 'e2e_credit_admin4_' + randomUUID().slice(0, 8));
-  const adminCookie = (await page.context().cookies()).map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+  const adminCookie = (await page.context().cookies())
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .join('; ');
 
   await page.goto('/admin/billing');
   await selectUser(page, account);
@@ -191,7 +211,10 @@ test('改规则只影响未来账期；定向批量补发写一条可查的操�
   // 定向补发：先删掉本期规则行，再只对这个人跑一次，产生一条操作日志。
   const connection = await testConnection();
   try {
-    await connection.query('DELETE FROM credit_ledger WHERE user_id = $1 AND kind = $2', [userId, 'quota']);
+    await connection.query('DELETE FROM credit_ledger WHERE user_id = $1 AND kind = $2', [
+      userId,
+      'quota',
+    ]);
   } finally {
     await connection.end();
   }
@@ -200,7 +223,10 @@ test('改规则只影响未来账期；定向批量补发写一条可查的操�
     data: { userIds: [userId], requestId: randomUUID() },
   });
   expect(response.ok()).toBe(true);
-  const envelope = await response.json() as { code: number; data: { issued: number; operationId: string | null } };
+  const envelope = (await response.json()) as {
+    code: number;
+    data: { issued: number; operationId: string | null };
+  };
   expect(envelope.data).toMatchObject({ issued: 1 });
   expect(envelope.data.operationId).toBeTruthy();
 
@@ -208,5 +234,8 @@ test('改规则只影响未来账期；定向批量补发写一条可查的操�
   const drawer = page.locator('.ant-drawer-section');
   await expect(drawer).toContainText('补发待发');
   await expect(drawer).toContainText('1 成功');
-  await page.screenshot({ path: evidencePath('billing', 'credit-page-operations.png'), fullPage: true });
+  await page.screenshot({
+    path: evidencePath('billing', 'credit-page-operations.png'),
+    fullPage: true,
+  });
 });

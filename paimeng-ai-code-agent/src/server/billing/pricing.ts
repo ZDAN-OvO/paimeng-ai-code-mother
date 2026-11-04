@@ -1,4 +1,9 @@
-import type { ChargeStatus, RateCardVersionKey, RateCardView, UsageSnapshotStep } from '@/shared/billing';
+import type {
+  ChargeStatus,
+  RateCardVersionKey,
+  RateCardView,
+  UsageSnapshotStep,
+} from '@/shared/billing';
 import { resolveRate } from './rate-card';
 
 /**
@@ -53,8 +58,8 @@ export type PricingResult = {
 
 /**
  * 费率候选键的固定顺序（为什么不能只认 (provider_id, model_name)：见下一段）：
- * 1. (provider_id, model_name)　2. (provider_id 去掉 `#…` 后缀, model_name)
- * 3. (provider_id, upstream_model_id)　4. (provider_id 去后缀, upstream_model_id)
+ * 1. (provider_id, model_name)  2. (provider_id 去掉 `#…` 后缀, model_name)
+ * 3. (provider_id, upstream_model_id)  4. (provider_id 去后缀, upstream_model_id)
  *
  * `generation_step.provider_id` 在环境变量覆盖时是 `durable`、夹具里是 `fixture`、重挂接失败时可能是
  * `alias#8位随机`（pi-ai 的 instance provider id），所以 (provider_id, model_name) 不是不变量。
@@ -70,17 +75,27 @@ export function candidateRateKeys(
   const candidates = [
     { providerId, modelName: step.modelName },
     { providerId: baseProvider, modelName: step.modelName },
-    ...(upstream ? [
-      { providerId, modelName: upstream },
-      { providerId: baseProvider, modelName: upstream },
-    ] : []),
+    ...(upstream
+      ? [
+          { providerId, modelName: upstream },
+          { providerId: baseProvider, modelName: upstream },
+        ]
+      : []),
   ];
-  return candidates.filter((candidate, index) =>
-    candidates.findIndex(other => other.providerId === candidate.providerId && other.modelName === candidate.modelName) === index);
+  return candidates.filter(
+    (candidate, index) =>
+      candidates.findIndex(
+        (other) =>
+          other.providerId === candidate.providerId && other.modelName === candidate.modelName,
+      ) === index,
+  );
 }
 
 /** 按候选顺序取第一个命中的费率版本；全部未命中返回 null（该步骤待处理）。 */
-export function resolveStepRate(rates: readonly RateCardView[], step: PricedStep): RateCardView | null {
+export function resolveStepRate(
+  rates: readonly RateCardView[],
+  step: PricedStep,
+): RateCardView | null {
   for (const key of candidateRateKeys(step)) {
     const matched = resolveRate(rates, key.providerId, key.modelName, step.at);
     if (matched) return matched;
@@ -96,7 +111,10 @@ function usageMissing(step: PricedStep): boolean {
   return step.input === null && step.output === null;
 }
 
-function meanOf(samples: readonly PricedStep[], pick: (step: PricedStep) => number | null): number | null {
+function meanOf(
+  samples: readonly PricedStep[],
+  pick: (step: PricedStep) => number | null,
+): number | null {
   if (!samples.length) return null;
   const total = samples.reduce((sum, step) => sum + (pick(step) ?? 0), 0);
   return Math.round(total / samples.length);
@@ -121,9 +139,9 @@ function usdMicroRate(rate: string | null): number | null {
 export function priceSteps(steps: readonly RatedStep[]): PricingResult {
   // 已知样本：同一个 Generation 里有上报用量的模型步骤；缺用量的步骤按它们的均值估算。
   const samples = steps.filter(({ step }) => !usageMissing(step)).map(({ step }) => step);
-  const sampleInput = meanOf(samples, step => step.input);
-  const sampleCacheRead = meanOf(samples, step => step.cacheRead);
-  const sampleOutput = meanOf(samples, step => step.output);
+  const sampleInput = meanOf(samples, (step) => step.input);
+  const sampleCacheRead = meanOf(samples, (step) => step.cacheRead);
+  const sampleOutput = meanOf(samples, (step) => step.output);
 
   const snapshots: UsageSnapshotStep[] = [];
   const rates: RateCardView[] = [];
@@ -145,7 +163,7 @@ export function priceSteps(steps: readonly RatedStep[]): PricingResult {
       continue;
     }
     pricedSteps += 1;
-    if (!rates.some(item => sameRateVersion(item, rate))) rates.push(rate);
+    if (!rates.some((item) => sameRateVersion(item, rate))) rates.push(rate);
 
     const estimated = missing;
     if (estimated) estimatedSteps += 1;
@@ -153,9 +171,10 @@ export function priceSteps(steps: readonly RatedStep[]): PricingResult {
     const billedCacheRead = estimated ? sampleCacheRead : step.cacheRead;
     const billedOutput = estimated ? sampleOutput : step.output;
 
-    const stepMicro = (billedInput ?? 0) * rate.creditInputMiss
-      + (billedCacheRead ?? 0) * rate.creditInputHit
-      + (billedOutput ?? 0) * rate.creditOutput;
+    const stepMicro =
+      (billedInput ?? 0) * rate.creditInputMiss +
+      (billedCacheRead ?? 0) * rate.creditInputHit +
+      (billedOutput ?? 0) * rate.creditOutput;
     sumCredit += stepMicro;
     stepCredits.push(stepMicro);
 
@@ -164,17 +183,20 @@ export function priceSteps(steps: readonly RatedStep[]): PricingResult {
     const usdOutput = usdMicroRate(rate.usdOutput);
     // 三档 USD 费率都已知才累计该步成本：拿半份成本算毛利比不算更糟。
     if (usdInputMiss !== null && usdInputHit !== null && usdOutput !== null) {
-      sumUsdMicro += (billedInput ?? 0) * usdInputMiss
-        + (billedCacheRead ?? 0) * usdInputHit
-        + (billedOutput ?? 0) * usdOutput;
+      sumUsdMicro +=
+        (billedInput ?? 0) * usdInputMiss +
+        (billedCacheRead ?? 0) * usdInputHit +
+        (billedOutput ?? 0) * usdOutput;
       usdSteps += 1;
     }
 
-    snapshots.push(snapshotOf(step, rate, {
-      estimated,
-      sampleSteps: samples.length,
-      billed: { input: billedInput, cacheRead: billedCacheRead, output: billedOutput },
-    }));
+    snapshots.push(
+      snapshotOf(step, rate, {
+        estimated,
+        sampleSteps: samples.length,
+        billed: { input: billedInput, cacheRead: billedCacheRead, output: billedOutput },
+      }),
+    );
   }
 
   return {
@@ -190,17 +212,29 @@ export function priceSteps(steps: readonly RatedStep[]): PricingResult {
 }
 
 /** 状态投影只在这里判一次（`reversed` 由分录投影得到，见 ledger 的 reprojectCharge）。 */
-function statusOf(input: { pricedSteps: number; unpricedSteps: number; estimatedSteps: number }): PricingResult['status'] {
+function statusOf(input: {
+  pricedSteps: number;
+  unpricedSteps: number;
+  estimatedSteps: number;
+}): PricingResult['status'] {
   if (input.unpricedSteps > 0) return input.pricedSteps > 0 ? 'partial' : 'unpriced';
   return input.estimatedSteps > 0 ? 'estimated' : 'settled';
 }
 
 function sameRateVersion(left: RateCardView, right: RateCardView): boolean {
-  return left.providerId === right.providerId && left.modelName === right.modelName && left.effectiveFrom === right.effectiveFrom;
+  return (
+    left.providerId === right.providerId &&
+    left.modelName === right.modelName &&
+    left.effectiveFrom === right.effectiveFrom
+  );
 }
 
 function rateKeyOf(rate: RateCardView): RateCardVersionKey {
-  return { providerId: rate.providerId, modelName: rate.modelName, effectiveFrom: rate.effectiveFrom };
+  return {
+    providerId: rate.providerId,
+    modelName: rate.modelName,
+    effectiveFrom: rate.effectiveFrom,
+  };
 }
 
 function snapshotOf(

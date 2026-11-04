@@ -5,9 +5,15 @@ import { BusinessError } from '@/server/infra/http';
 import { creditBalance, creditLedger, users } from '@/server/infra/schema';
 import { idSchema } from '@/shared/contracts';
 import {
-  type AdminCreditAccount, type AdminCreditFilter, type AdminCreditOverview, type AdminCreditOverviewItem,
-  type AdminCreditOverviewQuery, type AdminCreditSort, type AdminCreditUser, type AdminUserCreditDetail,
-  type CreditLedgerEntryView, type QuotaPolicySource,
+  type AdminCreditAccount,
+  type AdminCreditFilter,
+  type AdminCreditOverview,
+  type AdminCreditOverviewItem,
+  type AdminCreditOverviewQuery,
+  type AdminCreditSort,
+  type AdminCreditUser,
+  type AdminUserCreditDetail,
+  type CreditLedgerEntryView,
 } from '@/shared/billing';
 import { naiveTime, periodOf, periodRange } from './period';
 import { accountSnapshot, ledgerEntryView } from './ledger';
@@ -125,11 +131,16 @@ function filterWhere(input: { q?: string; filter: AdminCreditFilter }): SQL {
 
 function sortOrder(sort: AdminCreditSort): SQL {
   switch (sort) {
-    case 'available_desc': return sql`available desc, user_id desc`;
-    case 'available_asc': return sql`available asc, user_id asc`;
-    case 'limited_desc': return sql`limited desc, user_id desc`;
-    case 'limited_asc': return sql`limited asc, user_id asc`;
-    default: return sql`user_id desc`;
+    case 'available_desc':
+      return sql`available desc, user_id desc`;
+    case 'available_asc':
+      return sql`available asc, user_id asc`;
+    case 'limited_desc':
+      return sql`limited desc, user_id desc`;
+    case 'limited_asc':
+      return sql`limited asc, user_id asc`;
+    default:
+      return sql`user_id desc`;
   }
 }
 
@@ -152,7 +163,9 @@ function itemOf(row: RawRow, period: string): AdminCreditOverviewItem {
   };
 }
 
-export async function adminCreditOverview(input: AdminCreditOverviewQuery): Promise<AdminCreditOverview> {
+export async function adminCreditOverview(
+  input: AdminCreditOverviewQuery,
+): Promise<AdminCreditOverview> {
   const at = new Date();
   const period = periodOf(at);
   const cte = factsCte(period, at);
@@ -184,7 +197,7 @@ export async function adminCreditOverview(input: AdminCreditOverviewQuery): Prom
     page: input.page,
     pageSize: input.pageSize,
     total: number(stats.user_count),
-    items: rows.rows.map(row => itemOf(row as RawRow, period)),
+    items: rows.rows.map((row) => itemOf(row as RawRow, period)),
     stats: {
       userCount: number(stats.user_count),
       pendingCount: number(stats.pending_count),
@@ -199,7 +212,10 @@ export async function adminCreditOverview(input: AdminCreditOverviewQuery): Prom
 }
 
 /** 管理面用户搜索：只返回身份，不暴露余额；完整 ID 精确命中，账号/用户名大小写不敏感。 */
-export async function searchAdminUsers(input: { q?: string; limit: number }): Promise<AdminCreditUser[]> {
+export async function searchAdminUsers(input: {
+  q?: string;
+  limit: number;
+}): Promise<AdminCreditUser[]> {
   const q = input.q?.trim();
   const pattern = q ? searchPattern(q) : '%';
   const id = q ? exactId(q) : null;
@@ -211,7 +227,7 @@ export async function searchAdminUsers(input: { q?: string; limit: number }): Pr
         ${id === null ? sql`` : sql`or id = ${id}`})
     order by ${id === null ? sql`` : sql`(id = ${id}) desc,`} user_account asc
     limit ${input.limit}`);
-  return rows.rows.map(row => ({
+  return rows.rows.map((row) => ({
     userId: text(row.id),
     userAccount: text(row.user_account),
     userName: row.user_name === null || row.user_name === undefined ? null : String(row.user_name),
@@ -227,8 +243,11 @@ export async function adminUserCreditDetail(userId: string): Promise<AdminUserCr
   const period = periodOf(at);
   await ensureExpiry(userId, at);
 
-  const [identity] = await db().select({ id: users.id, account: users.userAccount, name: users.userName }).from(users)
-    .where(eq(users.id, BigInt(userId))).limit(1);
+  const [identity] = await db()
+    .select({ id: users.id, account: users.userAccount, name: users.userName })
+    .from(users)
+    .where(eq(users.id, BigInt(userId)))
+    .limit(1);
   if (!identity) throw new BusinessError(404, 40400, '用户不存在');
 
   const [snapshot, currentRule, nextRule, ledgerPage, balanceRow] = await Promise.all([
@@ -236,25 +255,42 @@ export async function adminUserCreditDetail(userId: string): Promise<AdminUserCr
     resolveQuotaPolicy(db(), BigInt(userId), period),
     resolveQuotaPolicy(db(), BigInt(userId), nextPeriodOf(period)),
     adminCreditLedger({ userId, limit: 50 }),
-    db().select().from(creditBalance).where(eq(creditBalance.userId, BigInt(userId))).limit(1),
+    db()
+      .select()
+      .from(creditBalance)
+      .where(eq(creditBalance.userId, BigInt(userId)))
+      .limit(1),
   ]);
 
-  const [ruleRow] = await db().select({ id: creditLedger.id }).from(creditLedger)
-    .where(sql`${creditLedger.userId} = ${BigInt(userId)} and ${creditLedger.kind} = 'quota'
-      and ${creditLedger.origin} = 'rule' and ${creditLedger.period} = ${period}`).limit(1);
-  const [totals] = await db().execute(sql`select
+  const [ruleRow] = await db()
+    .select({ id: creditLedger.id })
+    .from(creditLedger)
+    .where(
+      sql`${creditLedger.userId} = ${BigInt(userId)} and ${creditLedger.kind} = 'quota'
+      and ${creditLedger.origin} = 'rule' and ${creditLedger.period} = ${period}`,
+    )
+    .limit(1);
+  const [totals] = await db()
+    .execute(
+      sql`select
     coalesce(sum(case when kind = 'quota' and period = ${period} then credits else 0 end), 0) as issued,
     coalesce(sum(case when kind = 'topup' then credits else 0 end), 0) as purchased,
     coalesce(sum(case when kind = 'topup' and create_time > ${naiveTime(new Date(at.getTime() - 60 * 86_400_000))} then credits else 0 end), 0) as purchased_60d,
     coalesce(sum(case when kind = 'grant' and origin = 'manual' then credits else 0 end), 0) as admin_granted,
     coalesce(sum(case when kind = 'consume' then -credits else 0 end), 0) as consumed
-    from credit_ledger where user_id = ${BigInt(userId)}`).then(result => result.rows);
-  const [spent] = await db().execute(sql`select coalesce(sum(-ledger.credits), 0) as spent
+    from credit_ledger where user_id = ${BigInt(userId)}`,
+    )
+    .then((result) => result.rows);
+  const [spent] = await db()
+    .execute(
+      sql`select coalesce(sum(-ledger.credits), 0) as spent
     from credit_ledger ledger
     join credit_charge charge on charge.generation_id = ledger.charge_id
     where ledger.user_id = ${BigInt(userId)} and ledger.kind = 'consume'
       and charge.create_time >= ${naiveTime(periodRange(period).start)}
-      and charge.create_time < ${naiveTime(periodRange(period).end)}`).then(result => result.rows);
+      and charge.create_time < ${naiveTime(periodRange(period).end)}`,
+    )
+    .then((result) => result.rows);
 
   const account: AdminCreditAccount = {
     period,
@@ -266,7 +302,7 @@ export async function adminUserCreditDetail(userId: string): Promise<AdminUserCr
     issued: number(totals?.issued),
     spent: number(spent?.spent),
     status: ruleRow ? 'granted' : 'pending',
-    policySource: currentRule.source as QuotaPolicySource,
+    policySource: currentRule.source,
     policyVersion: currentRule.version,
   };
 
@@ -290,7 +326,11 @@ export async function adminUserCreditDetail(userId: string): Promise<AdminUserCr
 }
 
 /** 单人流水分页：带累计可用额，供「加载更早」使用。 */
-export async function adminCreditLedger(input: { userId: string; limit: number; beforeId?: number }): Promise<{
+export async function adminCreditLedger(input: {
+  userId: string;
+  limit: number;
+  beforeId?: number;
+}): Promise<{
   entries: CreditLedgerEntryView[];
   hasMore: boolean;
 }> {
@@ -309,22 +349,27 @@ export async function adminCreditLedger(input: { userId: string; limit: number; 
     limit ${input.limit + 1}`);
   const rows = result.rows.slice(0, input.limit);
   return {
-    entries: rows.map(row => ledgerEntryView({
-      id: BigInt(row.id as string),
-      userId: BigInt(row.user_id as string),
-      kind: row.kind as CreditLedgerEntryView['kind'],
-      origin: row.origin as CreditLedgerEntryView['origin'],
-      credits: Number(row.credits),
-      period: (row.period as string | null) ?? null,
-      expiresAt: (row.expires_at as string | null) ?? null,
-      chargeId: (row.charge_id as string | null) ?? null,
-      reversalOf: row.reversal_of === null ? null : BigInt(row.reversal_of as string),
-      reason: (row.reason as string | null) ?? null,
-      operatorId: row.operator_id === null ? null : BigInt(row.operator_id as string),
-      requestId: (row.request_id as string | null) ?? null,
-      ref: (row.ref as string | null) ?? null,
-      createTime: row.create_time as string,
-    }, Number(row.balance_after))),
+    entries: rows.map((row) =>
+      ledgerEntryView(
+        {
+          id: BigInt(row.id as string),
+          userId: BigInt(row.user_id as string),
+          kind: row.kind as CreditLedgerEntryView['kind'],
+          origin: row.origin as CreditLedgerEntryView['origin'],
+          credits: Number(row.credits),
+          period: (row.period as string | null) ?? null,
+          expiresAt: (row.expires_at as string | null) ?? null,
+          chargeId: (row.charge_id as string | null) ?? null,
+          reversalOf: row.reversal_of === null ? null : BigInt(row.reversal_of as string),
+          reason: (row.reason as string | null) ?? null,
+          operatorId: row.operator_id === null ? null : BigInt(row.operator_id as string),
+          requestId: (row.request_id as string | null) ?? null,
+          ref: (row.ref as string | null) ?? null,
+          createTime: row.create_time as string,
+        },
+        Number(row.balance_after),
+      ),
+    ),
     hasMore: result.rows.length > input.limit,
   };
 }

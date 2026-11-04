@@ -16,7 +16,10 @@ async function login(page: Page, account: string) {
   await page.goto('/user/login');
   await page.getByLabel('账号', { exact: true }).fill(account);
   await page.getByLabel('密码', { exact: true }).fill(password);
-  await page.locator('form').getByRole('button', { name: /^登\s*录$/ }).click();
+  await page
+    .locator('form')
+    .getByRole('button', { name: /^登\s*录$/ })
+    .click();
   await expect(page).toHaveURL('/');
 }
 
@@ -26,7 +29,7 @@ async function registerUser(page: Page, account: string): Promise<string> {
     data: { userAccount: account, userPassword: password, checkPassword: password },
   });
   expect(response.ok()).toBe(true);
-  const envelope = await response.json() as { code: number; data: string };
+  const envelope = (await response.json()) as { code: number; data: string };
   expect(envelope.code).toBe(0);
   createdUserIds.push(envelope.data);
   return envelope.data;
@@ -36,7 +39,9 @@ async function adminLogin(page: Page, account: string) {
   await registerUser(page, account);
   const connection = await testConnection();
   try {
-    await connection.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [account]);
+    await connection.query("UPDATE app_user SET user_role='admin' WHERE user_account=$1", [
+      account,
+    ]);
   } finally {
     await connection.end();
   }
@@ -47,9 +52,15 @@ test.afterAll(async () => {
   if (!createdUserIds.length) return;
   const connection = await testConnection();
   try {
-    await connection.query('DELETE FROM credit_ledger WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
-    await connection.query('DELETE FROM credit_balance WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
-    await connection.query('DELETE FROM user_session WHERE user_id = ANY($1::bigint[])', [createdUserIds]);
+    await connection.query('DELETE FROM credit_ledger WHERE user_id = ANY($1::bigint[])', [
+      createdUserIds,
+    ]);
+    await connection.query('DELETE FROM credit_balance WHERE user_id = ANY($1::bigint[])', [
+      createdUserIds,
+    ]);
+    await connection.query('DELETE FROM user_session WHERE user_id = ANY($1::bigint[])', [
+      createdUserIds,
+    ]);
     await connection.query('DELETE FROM app_user WHERE id = ANY($1::bigint[])', [createdUserIds]);
   } finally {
     await connection.end();
@@ -58,7 +69,7 @@ test.afterAll(async () => {
 
 test('管理员发放长期积分后，Owner 的额度条显示长期积分与透支线', async ({ page, browser }) => {
   const ownerAccount = uniqueAccount();
-  const ownerId = await registerUser(page, ownerAccount);
+  await registerUser(page, ownerAccount);
   await adminLogin(page, uniqueAccount());
 
   await page.goto('/admin/billing');
@@ -91,7 +102,10 @@ test('管理员发放长期积分后，Owner 的额度条显示长期积分与�
     await expect(bar).toContainText('300');
     await expect(bar).toContainText('透支线 0 积分');
     await bar.screenshot({ path: evidencePath('billing', 'credit-summary-bar.png') });
-    await ownerPage.screenshot({ path: evidencePath('billing', 'owner-balance.png'), fullPage: true });
+    await ownerPage.screenshot({
+      path: evidencePath('billing', 'owner-balance.png'),
+      fullPage: true,
+    });
   } finally {
     await ownerContext.close();
   }

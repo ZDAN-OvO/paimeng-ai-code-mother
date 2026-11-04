@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { formatBeijingTime, formatCodeGenType, formatStoredTime, parseStoredTime } from '@/shared/display';
+import {
+  formatBeijingTime,
+  formatCodeGenType,
+  formatStoredTime,
+  parseStoredTime,
+} from '@/shared/display';
 
 /** 库里存的是 UTC 朴素时间：解析必须按 UTC，展示必须转本地。断言用 toLocaleString 独立复算，不引用被测函数自身。 */
 const local = (date: Date) => date.toLocaleString('sv-SE', { hour12: false });
@@ -8,7 +13,9 @@ describe('存储时间的解析与展示', () => {
   it('空串按 UTC 解释，毫秒部分被忽略', () => {
     expect(parseStoredTime('2026-10-21 03:09:12')?.toISOString()).toBe('2026-10-21T03:09:12.000Z');
     expect(parseStoredTime('2026-10-21 03:09')?.toISOString()).toBe('2026-10-21T03:09:00.000Z');
-    expect(parseStoredTime('2026-10-21T03:09:12.345')?.toISOString()).toBe('2026-10-21T03:09:12.000Z');
+    expect(parseStoredTime('2026-10-21T03:09:12.345')?.toISOString()).toBe(
+      '2026-10-21T03:09:12.000Z',
+    );
     expect(parseStoredTime(null)).toBeNull();
     expect(parseStoredTime('not a time')).toBeNull();
   });

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  allocate, periodsOf, pendingExpiryOf, remainderOfPeriod, splitOf, type LedgerLike,
+  allocate,
+  periodsOf,
+  pendingExpiryOf,
+  remainderOfPeriod,
+  splitOf,
+  type LedgerLike,
 } from '@/server/billing/allocation';
 
 /**
@@ -17,7 +22,7 @@ function row(input: Partial<LedgerLike> & Pick<LedgerLike, 'kind' | 'credits'>):
     expiresAt: null,
     createTime: '2026-10-01 00:00:00.000',
     ...input,
-  } as LedgerLike;
+  };
 }
 
 const october = { period: '2026-10', expiresAt: '2026-10-31 16:00:00.000' };
@@ -35,8 +40,20 @@ describe('账期折叠', () => {
       row({ kind: 'expire', origin: 'expiry', credits: -300, ...october }),
     ];
     const facts = periodsOf(rows, now);
-    expect(facts.get('2026-11')).toMatchObject({ issued: 500, consumed: 100, expired: 0, remaining: 400, swept: false });
-    expect(facts.get('2026-10')).toMatchObject({ issued: 300, consumed: 0, expired: 300, remaining: 0, swept: true });
+    expect(facts.get('2026-11')).toMatchObject({
+      issued: 500,
+      consumed: 100,
+      expired: 0,
+      remaining: 400,
+      swept: false,
+    });
+    expect(facts.get('2026-10')).toMatchObject({
+      issued: 300,
+      consumed: 0,
+      expired: 300,
+      remaining: 0,
+      swept: true,
+    });
   });
 
   it('越过到期时刻但还没写过期行：剩余按 0 计入，pending 列出真实余量', () => {

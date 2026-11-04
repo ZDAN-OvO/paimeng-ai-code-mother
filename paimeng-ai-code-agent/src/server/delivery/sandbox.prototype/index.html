@@ -1,131 +1,852 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>单槽位沙箱 · 可丢弃逻辑原型</title>
-<style>
-:root{color-scheme:light dark;--bg:#f4f4ef;--panel:#fff;--ink:#242620;--muted:#62665c;--line:#d9dcd1;--accent:#426437;--tint:#eaf0e5;--warn:#8a491b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 system-ui,sans-serif}main{max-width:1120px;margin:auto;padding:32px 24px 64px}h1{font-size:28px;line-height:1.3;margin:8px 0 16px}h2{font-size:18px;margin:0 0 16px}h3{font-size:15px;margin:0 0 10px}p{margin:8px 0 16px}.muted,small{color:var(--muted)}.tag{color:var(--accent);font-size:12px;letter-spacing:1px}.panel{padding:22px;background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-top:18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.grid .panel{margin-top:0}.notice{padding:12px 16px;background:var(--tint);border-left:3px solid var(--accent)}dl{margin:0;display:grid;grid-template-columns:110px 1fr;gap:8px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}button,select{font:inherit;border:1px solid var(--line);border-radius:5px;padding:8px 12px;background:var(--panel);color:var(--ink)}button{cursor:pointer}button:hover{border-color:var(--accent);background:var(--tint)}button:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}button:disabled{opacity:.45;cursor:default}.actions,.tabs{display:flex;gap:8px;flex-wrap:wrap}.tabs button[aria-selected=true]{background:var(--accent);color:white;border-color:var(--accent)}.steps{display:grid;gap:7px;margin-top:15px}.steps button{text-align:left}.steps .done{color:var(--muted)}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-weight:500}.table-wrap{overflow:auto}.summary{font-size:19px;color:var(--accent);margin:0 0 12px}.log{margin:0;padding-left:22px;max-height:220px;overflow:auto;font-size:14px}.fine{font-size:13px}.warn{color:var(--warn)}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0}.intro{max-width:860px}code{font-size:13px}.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}@media(max-width:720px){main{padding:24px 14px}.grid{grid-template-columns:1fr}h1{font-size:24px}.panel{padding:16px}}@media(prefers-color-scheme:dark){:root{--bg:#1b1e19;--panel:#252922;--ink:#e6e9e0;--muted:#abb2a1;--line:#454c3e;--accent:#a5c58e;--tint:#303c29;--warn:#e6b284}.tabs button[aria-selected=true]{color:#182014}}
-</style>
-</head>
-<body><main>
-<div class="tag">THROWAWAY PROTOTYPE · 可丢弃原型</div>
-<h1>一个执行槽位，多个应用怎样排队？</h1>
-<p class="intro">验证问题：模型生成可以并发，但构建和沙箱命令只允许一个 Execution 占用槽位。同一次占用内复用容器与依赖；释放时销毁容器。取消、超时或进程重启后，能否确认旧环境已清理，再允许下一个应用执行？</p>
-<p class="notice">本页是内存中的逻辑模拟，不连接 Docker、不测内存、不接产品数据库。真实 React / Vue 构建实验运行 <code>npm run prototype:sandbox</code>，结果可在页面下方载入。当前预览使用静态 Delivery，不占槽位。</p>
-<section class="panel" aria-labelledby="walkthrough-title">
-<h2 id="walkthrough-title">按场景试一遍</h2>
-<div class="tabs" role="tablist" aria-label="场景"></div>
-<p id="scenario-description"></p><div id="steps" class="steps"></div>
-</section>
-<section class="panel" aria-labelledby="state-title">
-<h2 id="state-title">当前调度状态</h2><p id="message" class="notice" role="status" aria-live="polite"></p>
-<div class="grid">
-<div><h3>唯一执行槽位</h3><dl id="slot"></dl></div>
-<div><h3>资源与隔离</h3><dl id="resources"></dl></div>
-</div>
-<div class="table-wrap"><table><caption class="sr">所有请求的状态</caption><thead><tr><th>请求 / 模板</th><th>状态</th><th>容器 / 权限代数</th><th>已完成构建</th><th>收尾目标</th></tr></thead><tbody id="jobs"></tbody></table></div>
-</section>
-<section class="panel" aria-labelledby="free-title">
-<h2 id="free-title">自由操作</h2><p class="muted">可以按任意顺序尝试；不合法操作会解释拒绝原因。手动操作后，场景步骤停止推进。</p>
-<div class="actions"><button data-action="enqueue-react">新增 React 请求</button><button data-action="enqueue-vue">新增 Vue 请求</button><button data-action="start">让队首进入槽位</button><button data-action="round">执行一次构建</button><button data-action="finish">请求成功收尾</button></div>
-<div class="row"><label for="target">操作对象</label><select id="target" aria-label="选择请求"></select><button data-action="cancel">取消该请求</button></div>
-<div class="actions"><button data-action="timeout">模拟执行超时</button><button data-action="cleanup">确认容器已销毁</button><button data-action="cleanup-failed">模拟销毁失败</button><button data-action="crash">模拟 Harness 重启</button><button data-action="late">送达旧执行回调</button><button data-action="reset">全部重置</button></div>
-</section>
-<div class="grid" style="margin-top:18px"><section class="panel"><h2>操作记录</h2><ol id="log" class="log"></ol></section><section class="panel"><h2>这次原型的边界</h2><p>只读依赖可以跨请求共用；可写源码、输出与临时目录不能跨 App 共用。成功不直接释放槽位，必须先销毁旧容器。</p><p class="fine muted">跨进程锁、数据库持久恢复、磁盘配额、gVisor 隔离和真实平台接入尚未验证。这个页面不能证明容器安全。</p></section></div>
-<section class="panel"><h2>真实 Docker 实验结果</h2><p class="muted">下方已内嵌本机缓存命中后的实测报告。也可选择新实验输出的 <code>report.json</code>；文件只在本页内存中读取，不上传。</p><input id="report-file" type="file" accept="application/json,.json" aria-label="选择实验报告"><div id="real-report" aria-live="polite"></div></section>
-</main>
-<script id="sandbox-model">
-// Portable pure state model. It never reads the DOM, clock, Docker or storage.
-const SandboxModel = (() => {
-  const initial = () => ({jobs:[],queue:[],owner:null,epoch:0,slot:'idle',created:0,maxLive:0,cache:[],events:[],message:'等待第一个请求。'});
-  function reduce(previous, action) {
-    const s = structuredClone(previous);
-    const say = text => {s.message=text;s.events.push(text);return s;};
-    const owner = () => s.jobs.find(job=>job.id===s.owner);
-    const stop = (result, reason) => {const j=owner();j.status='stopping';j.result=result;s.slot='stopping';return say(reason+'；正在停止旧进程，槽位暂不释放。');};
-    switch(action.type) {
-      case 'enqueue': {
-        const id=action.id || String.fromCharCode(65+s.jobs.length);
-        if(s.jobs.some(job=>job.id===id))return say('拒绝：请求标识已经存在。');
-        s.jobs.push({id,template:action.template||'react-ts',status:'queued',container:null,epoch:null,rounds:0,result:null});s.queue.push(id);
-        return say(id+' 已排队；模型阶段不占用这里的执行槽位。');
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>单槽位沙箱 · 可丢弃逻辑原型</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f4f4ef;
+        --panel: #fff;
+        --ink: #242620;
+        --muted: #62665c;
+        --line: #d9dcd1;
+        --accent: #426437;
+        --tint: #eaf0e5;
+        --warn: #8a491b;
       }
-      case 'start': {
-        if(s.slot!=='idle')return say('拒绝：旧容器仍占用槽位，必须确认销毁后再执行下一个请求。');
-        if(!s.queue.length)return say('没有等待执行的请求。');
-        const id=s.queue.shift();const j=s.jobs.find(job=>job.id===id);
-        s.epoch++;s.owner=id;s.slot='running';s.created++;s.maxLive=Math.max(s.maxLive,1);
-        Object.assign(j,{status:'running',epoch:s.epoch,container:'container-'+s.epoch});
-        const reused=s.cache.includes(j.template);if(!reused)s.cache.push(j.template);
-        return say(id+' 开始执行，分配独立容器；'+(reused?'复用已准备的只读依赖。':'首次准备该模板依赖，后续可共享。'));
+      * {
+        box-sizing: border-box;
       }
-      case 'round': {
-        if(s.slot!=='running')return say('拒绝：只有正在执行的请求才能构建。');
-        const j=owner();j.rounds++;return say(j.id+' 完成第 '+j.rounds+' 次构建，仍复用 '+j.container+'。');
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          15px/1.65 system-ui,
+          sans-serif;
       }
-      case 'finish': {
-        const j=owner();
-        if(action.epoch!==undefined && (!j||action.epoch!==j.epoch||action.id!==j.id))return say('已拒绝旧执行回调：权限代数或请求不匹配，当前请求未受影响。');
-        if(s.slot!=='running')return say('拒绝：请求不在执行阶段，不能再次完成。');
-        if(!j.rounds)return say('拒绝：还没有成功构建，不能声称可交付。');
-        return stop('succeeded','构建完成，准备接受产物');
+      main {
+        max-width: 1120px;
+        margin: auto;
+        padding: 32px 24px 64px;
       }
-      case 'cancel': {
-        const j=s.jobs.find(job=>job.id===action.id);if(!j)return say('请先选择一个请求。');
-        if(j.status==='queued'){s.queue=s.queue.filter(id=>id!==j.id);j.status='cancelled';return say(j.id+' 已取消排队，没有启动容器。');}
-        if(j.id===s.owner && s.slot==='running')return stop('cancelled','收到取消请求');
-        return say('拒绝：该请求已停止、正在清理或等待恢复确认。');
+      h1 {
+        font-size: 28px;
+        line-height: 1.3;
+        margin: 8px 0 16px;
       }
-      case 'timeout':if(s.slot!=='running')return say('拒绝：当前没有可超时的执行。');return stop('timed-out','执行超过期限');
-      case 'cleanup-failed':if(!['stopping','blocked'].includes(s.slot))return say('拒绝：当前没有待销毁的容器。');s.slot='blocked';return say('销毁失败，槽位保持阻塞；不能启动下一请求。');
-      case 'crash': {
-        if(!s.owner)return say('没有活动容器；重启不改变空闲状态。');
-        s.slot='blocked';const j=owner();j.status='interrupted';j.result='failed';return say('Harness 重启：旧容器状态未知，槽位阻塞，必须对账并确认销毁。');
+      h2 {
+        font-size: 18px;
+        margin: 0 0 16px;
       }
-      case 'cleanup': {
-        if(!['stopping','blocked'].includes(s.slot))return say('拒绝：运行中的容器必须先请求收尾，不能直接释放槽位。');
-        const j=owner();j.status=j.result;j.result=null;s.owner=null;s.slot='idle';return say(j.id+' 的容器已确认销毁，槽位释放；源码和 Delivery 的持久保存由平台负责。');
+      h3 {
+        font-size: 15px;
+        margin: 0 0 10px;
       }
-      default:return say('未知操作。');
-    }
-  }
-  return {initial,reduce};
-})();
-</script>
-<script type="application/json" id="measured-report">{"prototype":true,"runId":"627d8c33","startedAt":"2026-10-31T04:26:37.565Z","image":"node:24-alpine","memoryLimitMiB":768,"cpuLimit":1,"dependencies":[{"template":"react-ts","key":"5cb6d5aaf21604b9","reused":true,"elapsedMs":1},{"template":"vue-ts","key":"77d74535f53eeb28","reused":true,"elapsedMs":0}],"jobs":[{"id":"A","template":"react-ts","kind":"build","status":"succeeded","queuedAt":1793420797599,"rounds":[{"round":1,"elapsedMs":4074,"memory":{"currentBytes":25337856,"peakBytes":221343744}},{"round":2,"elapsedMs":4196,"memory":{"currentBytes":25530368,"peakBytes":225697792}}],"waitMs":5,"container":"paimeng-prototype-627d8c33-a","idleMemory":{"currentBytes":21696512,"peakBytes":21872640},"probe":{"sharedWriteBlocked":true,"interfaces":["lo"],"platformSecretVisible":false,"dockerSocketVisible":false},"memory":{"currentBytes":25174016,"peakBytes":225697792},"elapsedMs":8870},{"id":"B","template":"vue-ts","kind":"build","status":"succeeded","queuedAt":1793420797599,"rounds":[{"round":1,"elapsedMs":4371,"memory":{"currentBytes":26959872,"peakBytes":242839552}}],"waitMs":8878,"container":"paimeng-prototype-627d8c33-b","idleMemory":{"currentBytes":22446080,"peakBytes":22446080},"probe":{"sharedWriteBlocked":true,"interfaces":["lo"],"platformSecretVisible":false,"dockerSocketVisible":false},"memory":{"currentBytes":26595328,"peakBytes":242839552},"elapsedMs":4877},{"id":"C","template":"react-ts","kind":"build","status":"cancelled-before-start","queuedAt":1793420797599,"rounds":[]},{"id":"D","template":"react-ts","kind":"timeout","status":"timed-out","queuedAt":1793420797599,"rounds":[],"waitMs":13758,"container":"paimeng-prototype-627d8c33-d","idleMemory":{"currentBytes":21610496,"peakBytes":21794816},"probe":{"sharedWriteBlocked":true,"interfaces":["lo"],"platformSecretVisible":false,"dockerSocketVisible":false},"stopReason":"timeout","memory":{"currentBytes":43180032,"peakBytes":44683264},"stopAfterMs":862,"elapsedMs":1231},{"id":"E","template":"react-ts","kind":"cancel","status":"cancelled-running","queuedAt":1793420797599,"rounds":[],"waitMs":14993,"container":"paimeng-prototype-627d8c33-e","idleMemory":{"currentBytes":21815296,"peakBytes":24023040},"probe":{"sharedWriteBlocked":true,"interfaces":["lo"],"platformSecretVisible":false,"dockerSocketVisible":false},"stopReason":"cancel","memory":{"currentBytes":43589632,"peakBytes":43589632},"stopAfterMs":872,"elapsedMs":1219},{"id":"F","template":"react-ts","kind":"build","status":"succeeded","queuedAt":1793420797599,"rounds":[{"round":1,"elapsedMs":4362,"memory":{"currentBytes":25501696,"peakBytes":219471872}}],"waitMs":16215,"container":"paimeng-prototype-627d8c33-f","idleMemory":{"currentBytes":21880832,"peakBytes":25792512},"probe":{"sharedWriteBlocked":true,"interfaces":["lo"],"platformSecretVisible":false,"dockerSocketVisible":false},"memory":{"currentBytes":24850432,"peakBytes":219471872},"elapsedMs":4887}],"maxActive":1,"remainingContainers":[],"descendantsStarted":true,"descendantSurvived":false,"passed":true,"finishedAt":"2026-10-31T04:26:58.715Z"}</script>
-<script>
-const $=id=>document.getElementById(id);
-const textMap={idle:'空闲',running:'执行中',stopping:'等待销毁确认',blocked:'阻塞，等待对账',queued:'排队',succeeded:'已成功',cancelled:'已取消','timed-out':'已超时',failed:'失败',interrupted:'执行中断'};
-const scenarios=[
- {name:'串行与复用',description:'三个请求一起排队。A 的两次构建复用一个容器；收尾未确认时，B 不能进入。后续 React 请求共享依赖。',steps:[['A 排队',{type:'enqueue',id:'A'}],['B 排队',{type:'enqueue',id:'B',template:'vue-ts'}],['C 排队',{type:'enqueue',id:'C'}],['启动 A',{type:'start'}],['A 第一次构建',{type:'round'}],['A 第二次构建',{type:'round'}],['A 请求成功收尾',{type:'finish'}],['尝试提前启动 B',{type:'start'}],['确认 A 容器销毁',{type:'cleanup'}],['启动 B',{type:'start'}],['B 构建',{type:'round'}],['B 收尾',{type:'finish'}],['确认 B 容器销毁',{type:'cleanup'}],['启动 C，复用 React 依赖',{type:'start'}]]},
- {name:'取消排队',description:'取消尚未开始的请求，不创建容器、不消耗执行槽位，后面的请求继续排队。',steps:[['A 排队',{type:'enqueue',id:'A'}],['B 排队',{type:'enqueue',id:'B'}],['C 排队',{type:'enqueue',id:'C'}],['取消 B',{type:'cancel',id:'B'}],['启动 A',{type:'start'}],['A 构建',{type:'round'}],['A 收尾',{type:'finish'}],['确认销毁 A',{type:'cleanup'}],['下一位应当是 C',{type:'start'}]]},
- {name:'执行中取消与超时',description:'取消正在执行的请求必须停止整个容器。超时遵循同一收尾流程，清理完成前不能启动下一请求。',steps:[['A 排队',{type:'enqueue',id:'A'}],['B 排队',{type:'enqueue',id:'B'}],['启动 A',{type:'start'}],['取消 A',{type:'cancel',id:'A'}],['尝试提前启动 B',{type:'start'}],['确认 A 容器销毁',{type:'cleanup'}],['启动 B',{type:'start'}],['B 超时',{type:'timeout'}],['确认 B 容器销毁',{type:'cleanup'}]]},
- {name:'重启与迟到回调',description:'进程重启后不能假设容器已停止。先阻塞和对账，再启动 B；A 的迟到完成回调不能结束 B。此处只模拟持久记录的恢复。',steps:[['A 排队',{type:'enqueue',id:'A'}],['B 排队',{type:'enqueue',id:'B'}],['启动 A',{type:'start'}],['模拟 Harness 重启',{type:'crash'}],['尝试启动 B',{type:'start'}],['对账并确认旧容器销毁',{type:'cleanup'}],['启动 B',{type:'start'}],['送达 A 的迟到完成回调',{type:'finish',id:'A',epoch:1}],['B 构建',{type:'round'}],['B 收尾',{type:'finish'}],['确认销毁 B',{type:'cleanup'}]]},
- {name:'清理失败',description:'容器销毁失败时，宁可暂停队列。仅仅清空工作目录、杀死命令客户端，都不能作为槽位释放的依据。',steps:[['A 排队',{type:'enqueue',id:'A'}],['B 排队',{type:'enqueue',id:'B'}],['启动 A',{type:'start'}],['A 超时',{type:'timeout'}],['模拟销毁失败',{type:'cleanup-failed'}],['尝试启动 B',{type:'start'}],['重试并确认销毁 A',{type:'cleanup'}],['现在启动 B',{type:'start'}]]}
-];
-let state=SandboxModel.initial(),scenarioIndex=0,stepIndex=0,guided=true;
-const escape=value=>String(value??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fields=values=>values.map(([key,value])=>`<dt>${escape(key)}</dt><dd>${escape(value)}</dd>`).join('');
-function render(){
- $('message').textContent=state.message;
- const job=state.jobs.find(j=>j.id===state.owner);
- $('slot').innerHTML=fields([['槽位状态',textMap[state.slot]],['当前请求',state.owner],['容器',job?.container],['权限代数',state.epoch],['等待顺序',state.queue.join(' → ')||'无']]);
- $('resources').innerHTML=fields([['当前容器数',state.owner?1:0],['累计创建',state.created],['最多同时运行',state.maxLive],['已准备依赖',state.cache.join('、')||'无'],['浏览器预览','静态 Delivery，不占槽位'],['内存与耗时','本页不模拟数值，请运行真实实验']]);
- $('jobs').innerHTML=state.jobs.map(j=>`<tr><td>${escape(j.id)} / ${escape(j.template)}</td><td>${escape(textMap[j.status])}</td><td>${escape(j.container)} / ${escape(j.epoch)}</td><td>${j.rounds}</td><td>${escape(textMap[j.result]||j.result)}</td></tr>`).join('')||'<tr><td colspan="5" class="muted">尚无请求</td></tr>';
- const selected=$('target').value;$('target').innerHTML=state.jobs.map(j=>`<option value="${escape(j.id)}">${escape(j.id)} · ${escape(textMap[j.status])}</option>`).join('');if(state.jobs.some(j=>j.id===selected))$('target').value=selected;
- $('log').innerHTML=state.events.slice().reverse().map(event=>`<li>${escape(event)}</li>`).join('');
- $('steps').innerHTML=scenarios[scenarioIndex].steps.map(([label],i)=>`<button data-step="${i}" ${!guided||i!==stepIndex?'disabled':''} class="${i<stepIndex?'done':''}">${i<stepIndex?'已操作 · ':''}${i+1}. ${escape(label)}</button>`).join('');
-}
-function selectScenario(index){scenarioIndex=index;stepIndex=0;guided=true;state=SandboxModel.initial();document.querySelectorAll('[role=tab]').forEach((tab,i)=>{tab.setAttribute('aria-selected',String(i===index));tab.tabIndex=i===index?0:-1;});$('scenario-description').textContent=scenarios[index].description;render();}
-const tabs=document.querySelector('.tabs');scenarios.forEach((scenario,i)=>{const b=document.createElement('button');b.textContent=scenario.name;b.setAttribute('role','tab');b.onclick=()=>selectScenario(i);b.onkeydown=e=>{if(e.key==='ArrowRight'||e.key==='ArrowLeft'){e.preventDefault();const next=(i+(e.key==='ArrowRight'?1:-1)+scenarios.length)%scenarios.length;selectScenario(next);tabs.children[next].focus();}};tabs.append(b);});
-$('steps').onclick=event=>{const button=event.target.closest('[data-step]');if(!button)return;const index=Number(button.dataset.step);if(!guided||index!==stepIndex)return;state=SandboxModel.reduce(state,scenarios[scenarioIndex].steps[index][1]);stepIndex++;render();};
-document.querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>{guided=false;const type=button.dataset.action;if(type==='reset'){selectScenario(scenarioIndex);return;}const action=type.startsWith('enqueue-')?{type:'enqueue',template:type==='enqueue-react'?'react-ts':'vue-ts'}:type==='late'?{type:'finish',id:'old-execution',epoch:0}:{type,id:$('target').value};state=SandboxModel.reduce(state,action);render();});
-function renderReport(r){
- if(!r.prototype||!Array.isArray(r.jobs))throw new Error('请选择原型生成的 report.json');
- $('real-report').innerHTML=`<p class="summary">${r.passed?'本次真实实验通过':'本次真实实验未通过'}</p><p>时间：${escape(r.startedAt)}；镜像：${escape(r.image)}；最多同时运行 ${escape(r.maxActive)} 个任务容器；剩余容器 ${escape(r.remainingContainers?.length??'未知')} 个。</p><p class="fine muted">内存为 cgroup memory.peak，含文件缓存；不是应用堆内存，也不是 Docker stats 扣除缓存后的数值。只有执行完成后的实测报告才会显示这些数字。</p><div class="table-wrap"><table><thead><tr><th>请求</th><th>结果</th><th>占用槽位</th><th>cgroup 峰值</th><th>构建次数</th></tr></thead><tbody>${r.jobs.map(j=>`<tr><td>${escape(j.id)} / ${escape(j.template)}</td><td>${escape(j.status)}</td><td>${j.elapsedMs===undefined?'—':(j.elapsedMs/1000).toFixed(2)+' 秒'}</td><td>${j.memory?Math.round(j.memory.peakBytes/1024**2)+' MiB':'—'}</td><td>${escape(j.rounds?.length??0)}</td></tr>`).join('')}</tbody></table></div><p>子进程延迟写入：${r.descendantSurvived===false?'未发生':r.descendantSurvived===true?'发现残留进程写入':'未知'}。跨进程调度和崩溃恢复未由此实验验证。</p>`;
- };
-$('report-file').onchange=async event=>{try{renderReport(JSON.parse(await event.target.files[0].text()));}catch(error){$('real-report').textContent=error.message;}};
-selectScenario(0);
-const measuredReport=document.getElementById('measured-report');
-if(measuredReport)renderReport(JSON.parse(measuredReport.textContent));
-</script></body></html>
+      p {
+        margin: 8px 0 16px;
+      }
+      .muted,
+      small {
+        color: var(--muted);
+      }
+      .tag {
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 1px;
+      }
+      .panel {
+        padding: 22px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        margin-top: 18px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+      }
+      .grid .panel {
+        margin-top: 0;
+      }
+      .notice {
+        padding: 12px 16px;
+        background: var(--tint);
+        border-left: 3px solid var(--accent);
+      }
+      dl {
+        margin: 0;
+        display: grid;
+        grid-template-columns: 110px 1fr;
+        gap: 8px;
+      }
+      dt {
+        color: var(--muted);
+      }
+      dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+      button,
+      select {
+        font: inherit;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 8px 12px;
+        background: var(--panel);
+        color: var(--ink);
+      }
+      button {
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+        background: var(--tint);
+      }
+      button:focus-visible,
+      select:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 2px;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .actions,
+      .tabs {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .tabs button[aria-selected='true'] {
+        background: var(--accent);
+        color: white;
+        border-color: var(--accent);
+      }
+      .steps {
+        display: grid;
+        gap: 7px;
+        margin-top: 15px;
+      }
+      .steps button {
+        text-align: left;
+      }
+      .steps .done {
+        color: var(--muted);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+      th,
+      td {
+        padding: 9px 8px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .table-wrap {
+        overflow: auto;
+      }
+      .summary {
+        font-size: 19px;
+        color: var(--accent);
+        margin: 0 0 12px;
+      }
+      .log {
+        margin: 0;
+        padding-left: 22px;
+        max-height: 220px;
+        overflow: auto;
+        font-size: 14px;
+      }
+      .fine {
+        font-size: 13px;
+      }
+      .warn {
+        color: var(--warn);
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin: 14px 0;
+      }
+      .intro {
+        max-width: 860px;
+      }
+      code {
+        font-size: 13px;
+      }
+      .sr {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+      }
+      @media (max-width: 720px) {
+        main {
+          padding: 24px 14px;
+        }
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        h1 {
+          font-size: 24px;
+        }
+        .panel {
+          padding: 16px;
+        }
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1b1e19;
+          --panel: #252922;
+          --ink: #e6e9e0;
+          --muted: #abb2a1;
+          --line: #454c3e;
+          --accent: #a5c58e;
+          --tint: #303c29;
+          --warn: #e6b284;
+        }
+        .tabs button[aria-selected='true'] {
+          color: #182014;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="tag">THROWAWAY PROTOTYPE · 可丢弃原型</div>
+      <h1>一个执行槽位，多个应用怎样排队？</h1>
+      <p class="intro">
+        验证问题：模型生成可以并发，但构建和沙箱命令只允许一个 Execution
+        占用槽位。同一次占用内复用容器与依赖；释放时销毁容器。取消、超时或进程重启后，能否确认旧环境已清理，再允许下一个应用执行？
+      </p>
+      <p class="notice">
+        本页是内存中的逻辑模拟，不连接 Docker、不测内存、不接产品数据库。真实 React / Vue
+        构建实验运行 <code>npm run prototype:sandbox</code>，结果可在页面下方载入。当前预览使用静态
+        Delivery，不占槽位。
+      </p>
+      <section class="panel" aria-labelledby="walkthrough-title">
+        <h2 id="walkthrough-title">按场景试一遍</h2>
+        <div class="tabs" role="tablist" aria-label="场景"></div>
+        <p id="scenario-description"></p>
+        <div id="steps" class="steps"></div>
+      </section>
+      <section class="panel" aria-labelledby="state-title">
+        <h2 id="state-title">当前调度状态</h2>
+        <p id="message" class="notice" role="status" aria-live="polite"></p>
+        <div class="grid">
+          <div>
+            <h3>唯一执行槽位</h3>
+            <dl id="slot"></dl>
+          </div>
+          <div>
+            <h3>资源与隔离</h3>
+            <dl id="resources"></dl>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <caption class="sr">
+              所有请求的状态
+            </caption>
+            <thead>
+              <tr>
+                <th>请求 / 模板</th>
+                <th>状态</th>
+                <th>容器 / 权限代数</th>
+                <th>已完成构建</th>
+                <th>收尾目标</th>
+              </tr>
+            </thead>
+            <tbody id="jobs"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel" aria-labelledby="free-title">
+        <h2 id="free-title">自由操作</h2>
+        <p class="muted">
+          可以按任意顺序尝试；不合法操作会解释拒绝原因。手动操作后，场景步骤停止推进。
+        </p>
+        <div class="actions">
+          <button data-action="enqueue-react">新增 React 请求</button
+          ><button data-action="enqueue-vue">新增 Vue 请求</button
+          ><button data-action="start">让队首进入槽位</button
+          ><button data-action="round">执行一次构建</button
+          ><button data-action="finish">请求成功收尾</button>
+        </div>
+        <div class="row">
+          <label for="target">操作对象</label
+          ><select id="target" aria-label="选择请求"></select
+          ><button data-action="cancel">取消该请求</button>
+        </div>
+        <div class="actions">
+          <button data-action="timeout">模拟执行超时</button
+          ><button data-action="cleanup">确认容器已销毁</button
+          ><button data-action="cleanup-failed">模拟销毁失败</button
+          ><button data-action="crash">模拟 Harness 重启</button
+          ><button data-action="late">送达旧执行回调</button
+          ><button data-action="reset">全部重置</button>
+        </div>
+      </section>
+      <div class="grid" style="margin-top: 18px">
+        <section class="panel">
+          <h2>操作记录</h2>
+          <ol id="log" class="log"></ol>
+        </section>
+        <section class="panel">
+          <h2>这次原型的边界</h2>
+          <p>
+            只读依赖可以跨请求共用；可写源码、输出与临时目录不能跨 App
+            共用。成功不直接释放槽位，必须先销毁旧容器。
+          </p>
+          <p class="fine muted">
+            跨进程锁、数据库持久恢复、磁盘配额、gVisor
+            隔离和真实平台接入尚未验证。这个页面不能证明容器安全。
+          </p>
+        </section>
+      </div>
+      <section class="panel">
+        <h2>真实 Docker 实验结果</h2>
+        <p class="muted">
+          下方已内嵌本机缓存命中后的实测报告。也可选择新实验输出的
+          <code>report.json</code>；文件只在本页内存中读取，不上传。
+        </p>
+        <input
+          id="report-file"
+          type="file"
+          accept="application/json,.json"
+          aria-label="选择实验报告"
+        />
+        <div id="real-report" aria-live="polite"></div>
+      </section>
+    </main>
+    <script id="sandbox-model">
+      // Portable pure state model. It never reads the DOM, clock, Docker or storage.
+      const SandboxModel = (() => {
+        const initial = () => ({
+          jobs: [],
+          queue: [],
+          owner: null,
+          epoch: 0,
+          slot: 'idle',
+          created: 0,
+          maxLive: 0,
+          cache: [],
+          events: [],
+          message: '等待第一个请求。',
+        });
+        function reduce(previous, action) {
+          const s = structuredClone(previous);
+          const say = (text) => {
+            s.message = text;
+            s.events.push(text);
+            return s;
+          };
+          const owner = () => s.jobs.find((job) => job.id === s.owner);
+          const stop = (result, reason) => {
+            const j = owner();
+            j.status = 'stopping';
+            j.result = result;
+            s.slot = 'stopping';
+            return say(reason + '；正在停止旧进程，槽位暂不释放。');
+          };
+          switch (action.type) {
+            case 'enqueue': {
+              const id = action.id || String.fromCharCode(65 + s.jobs.length);
+              if (s.jobs.some((job) => job.id === id)) return say('拒绝：请求标识已经存在。');
+              s.jobs.push({
+                id,
+                template: action.template || 'react-ts',
+                status: 'queued',
+                container: null,
+                epoch: null,
+                rounds: 0,
+                result: null,
+              });
+              s.queue.push(id);
+              return say(id + ' 已排队；模型阶段不占用这里的执行槽位。');
+            }
+            case 'start': {
+              if (s.slot !== 'idle')
+                return say('拒绝：旧容器仍占用槽位，必须确认销毁后再执行下一个请求。');
+              if (!s.queue.length) return say('没有等待执行的请求。');
+              const id = s.queue.shift();
+              const j = s.jobs.find((job) => job.id === id);
+              s.epoch++;
+              s.owner = id;
+              s.slot = 'running';
+              s.created++;
+              s.maxLive = Math.max(s.maxLive, 1);
+              Object.assign(j, {
+                status: 'running',
+                epoch: s.epoch,
+                container: 'container-' + s.epoch,
+              });
+              const reused = s.cache.includes(j.template);
+              if (!reused) s.cache.push(j.template);
+              return say(
+                id +
+                  ' 开始执行，分配独立容器；' +
+                  (reused ? '复用已准备的只读依赖。' : '首次准备该模板依赖，后续可共享。'),
+              );
+            }
+            case 'round': {
+              if (s.slot !== 'running') return say('拒绝：只有正在执行的请求才能构建。');
+              const j = owner();
+              j.rounds++;
+              return say(j.id + ' 完成第 ' + j.rounds + ' 次构建，仍复用 ' + j.container + '。');
+            }
+            case 'finish': {
+              const j = owner();
+              if (
+                action.epoch !== undefined &&
+                (!j || action.epoch !== j.epoch || action.id !== j.id)
+              )
+                return say('已拒绝旧执行回调：权限代数或请求不匹配，当前请求未受影响。');
+              if (s.slot !== 'running') return say('拒绝：请求不在执行阶段，不能再次完成。');
+              if (!j.rounds) return say('拒绝：还没有成功构建，不能声称可交付。');
+              return stop('succeeded', '构建完成，准备接受产物');
+            }
+            case 'cancel': {
+              const j = s.jobs.find((job) => job.id === action.id);
+              if (!j) return say('请先选择一个请求。');
+              if (j.status === 'queued') {
+                s.queue = s.queue.filter((id) => id !== j.id);
+                j.status = 'cancelled';
+                return say(j.id + ' 已取消排队，没有启动容器。');
+              }
+              if (j.id === s.owner && s.slot === 'running')
+                return stop('cancelled', '收到取消请求');
+              return say('拒绝：该请求已停止、正在清理或等待恢复确认。');
+            }
+            case 'timeout':
+              if (s.slot !== 'running') return say('拒绝：当前没有可超时的执行。');
+              return stop('timed-out', '执行超过期限');
+            case 'cleanup-failed':
+              if (!['stopping', 'blocked'].includes(s.slot))
+                return say('拒绝：当前没有待销毁的容器。');
+              s.slot = 'blocked';
+              return say('销毁失败，槽位保持阻塞；不能启动下一请求。');
+            case 'crash': {
+              if (!s.owner) return say('没有活动容器；重启不改变空闲状态。');
+              s.slot = 'blocked';
+              const j = owner();
+              j.status = 'interrupted';
+              j.result = 'failed';
+              return say('Harness 重启：旧容器状态未知，槽位阻塞，必须对账并确认销毁。');
+            }
+            case 'cleanup': {
+              if (!['stopping', 'blocked'].includes(s.slot))
+                return say('拒绝：运行中的容器必须先请求收尾，不能直接释放槽位。');
+              const j = owner();
+              j.status = j.result;
+              j.result = null;
+              s.owner = null;
+              s.slot = 'idle';
+              return say(
+                j.id + ' 的容器已确认销毁，槽位释放；源码和 Delivery 的持久保存由平台负责。',
+              );
+            }
+            default:
+              return say('未知操作。');
+          }
+        }
+        return { initial, reduce };
+      })();
+    </script>
+    <script type="application/json" id="measured-report">
+      {
+        "prototype": true,
+        "runId": "627d8c33",
+        "startedAt": "2026-10-31T04:26:37.565Z",
+        "image": "node:24-alpine",
+        "memoryLimitMiB": 768,
+        "cpuLimit": 1,
+        "dependencies": [
+          { "template": "react-ts", "key": "5cb6d5aaf21604b9", "reused": true, "elapsedMs": 1 },
+          { "template": "vue-ts", "key": "77d74535f53eeb28", "reused": true, "elapsedMs": 0 }
+        ],
+        "jobs": [
+          {
+            "id": "A",
+            "template": "react-ts",
+            "kind": "build",
+            "status": "succeeded",
+            "queuedAt": 1793420797599,
+            "rounds": [
+              {
+                "round": 1,
+                "elapsedMs": 4074,
+                "memory": { "currentBytes": 25337856, "peakBytes": 221343744 }
+              },
+              {
+                "round": 2,
+                "elapsedMs": 4196,
+                "memory": { "currentBytes": 25530368, "peakBytes": 225697792 }
+              }
+            ],
+            "waitMs": 5,
+            "container": "paimeng-prototype-627d8c33-a",
+            "idleMemory": { "currentBytes": 21696512, "peakBytes": 21872640 },
+            "probe": {
+              "sharedWriteBlocked": true,
+              "interfaces": ["lo"],
+              "platformSecretVisible": false,
+              "dockerSocketVisible": false
+            },
+            "memory": { "currentBytes": 25174016, "peakBytes": 225697792 },
+            "elapsedMs": 8870
+          },
+          {
+            "id": "B",
+            "template": "vue-ts",
+            "kind": "build",
+            "status": "succeeded",
+            "queuedAt": 1793420797599,
+            "rounds": [
+              {
+                "round": 1,
+                "elapsedMs": 4371,
+                "memory": { "currentBytes": 26959872, "peakBytes": 242839552 }
+              }
+            ],
+            "waitMs": 8878,
+            "container": "paimeng-prototype-627d8c33-b",
+            "idleMemory": { "currentBytes": 22446080, "peakBytes": 22446080 },
+            "probe": {
+              "sharedWriteBlocked": true,
+              "interfaces": ["lo"],
+              "platformSecretVisible": false,
+              "dockerSocketVisible": false
+            },
+            "memory": { "currentBytes": 26595328, "peakBytes": 242839552 },
+            "elapsedMs": 4877
+          },
+          {
+            "id": "C",
+            "template": "react-ts",
+            "kind": "build",
+            "status": "cancelled-before-start",
+            "queuedAt": 1793420797599,
+            "rounds": []
+          },
+          {
+            "id": "D",
+            "template": "react-ts",
+            "kind": "timeout",
+            "status": "timed-out",
+            "queuedAt": 1793420797599,
+            "rounds": [],
+            "waitMs": 13758,
+            "container": "paimeng-prototype-627d8c33-d",
+            "idleMemory": { "currentBytes": 21610496, "peakBytes": 21794816 },
+            "probe": {
+              "sharedWriteBlocked": true,
+              "interfaces": ["lo"],
+              "platformSecretVisible": false,
+              "dockerSocketVisible": false
+            },
+            "stopReason": "timeout",
+            "memory": { "currentBytes": 43180032, "peakBytes": 44683264 },
+            "stopAfterMs": 862,
+            "elapsedMs": 1231
+          },
+          {
+            "id": "E",
+            "template": "react-ts",
+            "kind": "cancel",
+            "status": "cancelled-running",
+            "queuedAt": 1793420797599,
+            "rounds": [],
+            "waitMs": 14993,
+            "container": "paimeng-prototype-627d8c33-e",
+            "idleMemory": { "currentBytes": 21815296, "peakBytes": 24023040 },
+            "probe": {
+              "sharedWriteBlocked": true,
+              "interfaces": ["lo"],
+              "platformSecretVisible": false,
+              "dockerSocketVisible": false
+            },
+            "stopReason": "cancel",
+            "memory": { "currentBytes": 43589632, "peakBytes": 43589632 },
+            "stopAfterMs": 872,
+            "elapsedMs": 1219
+          },
+          {
+            "id": "F",
+            "template": "react-ts",
+            "kind": "build",
+            "status": "succeeded",
+            "queuedAt": 1793420797599,
+            "rounds": [
+              {
+                "round": 1,
+                "elapsedMs": 4362,
+                "memory": { "currentBytes": 25501696, "peakBytes": 219471872 }
+              }
+            ],
+            "waitMs": 16215,
+            "container": "paimeng-prototype-627d8c33-f",
+            "idleMemory": { "currentBytes": 21880832, "peakBytes": 25792512 },
+            "probe": {
+              "sharedWriteBlocked": true,
+              "interfaces": ["lo"],
+              "platformSecretVisible": false,
+              "dockerSocketVisible": false
+            },
+            "memory": { "currentBytes": 24850432, "peakBytes": 219471872 },
+            "elapsedMs": 4887
+          }
+        ],
+        "maxActive": 1,
+        "remainingContainers": [],
+        "descendantsStarted": true,
+        "descendantSurvived": false,
+        "passed": true,
+        "finishedAt": "2026-10-31T04:26:58.715Z"
+      }
+    </script>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const textMap = {
+        idle: '空闲',
+        running: '执行中',
+        stopping: '等待销毁确认',
+        blocked: '阻塞，等待对账',
+        queued: '排队',
+        succeeded: '已成功',
+        cancelled: '已取消',
+        'timed-out': '已超时',
+        failed: '失败',
+        interrupted: '执行中断',
+      };
+      const scenarios = [
+        {
+          name: '串行与复用',
+          description:
+            '三个请求一起排队。A 的两次构建复用一个容器；收尾未确认时，B 不能进入。后续 React 请求共享依赖。',
+          steps: [
+            ['A 排队', { type: 'enqueue', id: 'A' }],
+            ['B 排队', { type: 'enqueue', id: 'B', template: 'vue-ts' }],
+            ['C 排队', { type: 'enqueue', id: 'C' }],
+            ['启动 A', { type: 'start' }],
+            ['A 第一次构建', { type: 'round' }],
+            ['A 第二次构建', { type: 'round' }],
+            ['A 请求成功收尾', { type: 'finish' }],
+            ['尝试提前启动 B', { type: 'start' }],
+            ['确认 A 容器销毁', { type: 'cleanup' }],
+            ['启动 B', { type: 'start' }],
+            ['B 构建', { type: 'round' }],
+            ['B 收尾', { type: 'finish' }],
+            ['确认 B 容器销毁', { type: 'cleanup' }],
+            ['启动 C，复用 React 依赖', { type: 'start' }],
+          ],
+        },
+        {
+          name: '取消排队',
+          description: '取消尚未开始的请求，不创建容器、不消耗执行槽位，后面的请求继续排队。',
+          steps: [
+            ['A 排队', { type: 'enqueue', id: 'A' }],
+            ['B 排队', { type: 'enqueue', id: 'B' }],
+            ['C 排队', { type: 'enqueue', id: 'C' }],
+            ['取消 B', { type: 'cancel', id: 'B' }],
+            ['启动 A', { type: 'start' }],
+            ['A 构建', { type: 'round' }],
+            ['A 收尾', { type: 'finish' }],
+            ['确认销毁 A', { type: 'cleanup' }],
+            ['下一位应当是 C', { type: 'start' }],
+          ],
+        },
+        {
+          name: '执行中取消与超时',
+          description:
+            '取消正在执行的请求必须停止整个容器。超时遵循同一收尾流程，清理完成前不能启动下一请求。',
+          steps: [
+            ['A 排队', { type: 'enqueue', id: 'A' }],
+            ['B 排队', { type: 'enqueue', id: 'B' }],
+            ['启动 A', { type: 'start' }],
+            ['取消 A', { type: 'cancel', id: 'A' }],
+            ['尝试提前启动 B', { type: 'start' }],
+            ['确认 A 容器销毁', { type: 'cleanup' }],
+            ['启动 B', { type: 'start' }],
+            ['B 超时', { type: 'timeout' }],
+            ['确认 B 容器销毁', { type: 'cleanup' }],
+          ],
+        },
+        {
+          name: '重启与迟到回调',
+          description:
+            '进程重启后不能假设容器已停止。先阻塞和对账，再启动 B；A 的迟到完成回调不能结束 B。此处只模拟持久记录的恢复。',
+          steps: [
+            ['A 排队', { type: 'enqueue', id: 'A' }],
+            ['B 排队', { type: 'enqueue', id: 'B' }],
+            ['启动 A', { type: 'start' }],
+            ['模拟 Harness 重启', { type: 'crash' }],
+            ['尝试启动 B', { type: 'start' }],
+            ['对账并确认旧容器销毁', { type: 'cleanup' }],
+            ['启动 B', { type: 'start' }],
+            ['送达 A 的迟到完成回调', { type: 'finish', id: 'A', epoch: 1 }],
+            ['B 构建', { type: 'round' }],
+            ['B 收尾', { type: 'finish' }],
+            ['确认销毁 B', { type: 'cleanup' }],
+          ],
+        },
+        {
+          name: '清理失败',
+          description:
+            '容器销毁失败时，宁可暂停队列。仅仅清空工作目录、杀死命令客户端，都不能作为槽位释放的依据。',
+          steps: [
+            ['A 排队', { type: 'enqueue', id: 'A' }],
+            ['B 排队', { type: 'enqueue', id: 'B' }],
+            ['启动 A', { type: 'start' }],
+            ['A 超时', { type: 'timeout' }],
+            ['模拟销毁失败', { type: 'cleanup-failed' }],
+            ['尝试启动 B', { type: 'start' }],
+            ['重试并确认销毁 A', { type: 'cleanup' }],
+            ['现在启动 B', { type: 'start' }],
+          ],
+        },
+      ];
+      let state = SandboxModel.initial(),
+        scenarioIndex = 0,
+        stepIndex = 0,
+        guided = true;
+      const escape = (value) =>
+        String(value ?? '—').replace(
+          /[&<>"']/g,
+          (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
+        );
+      const fields = (values) =>
+        values.map(([key, value]) => `<dt>${escape(key)}</dt><dd>${escape(value)}</dd>`).join('');
+      function render() {
+        $('message').textContent = state.message;
+        const job = state.jobs.find((j) => j.id === state.owner);
+        $('slot').innerHTML = fields([
+          ['槽位状态', textMap[state.slot]],
+          ['当前请求', state.owner],
+          ['容器', job?.container],
+          ['权限代数', state.epoch],
+          ['等待顺序', state.queue.join(' → ') || '无'],
+        ]);
+        $('resources').innerHTML = fields([
+          ['当前容器数', state.owner ? 1 : 0],
+          ['累计创建', state.created],
+          ['最多同时运行', state.maxLive],
+          ['已准备依赖', state.cache.join('、') || '无'],
+          ['浏览器预览', '静态 Delivery，不占槽位'],
+          ['内存与耗时', '本页不模拟数值，请运行真实实验'],
+        ]);
+        $('jobs').innerHTML =
+          state.jobs
+            .map(
+              (j) =>
+                `<tr><td>${escape(j.id)} / ${escape(j.template)}</td><td>${escape(textMap[j.status])}</td><td>${escape(j.container)} / ${escape(j.epoch)}</td><td>${j.rounds}</td><td>${escape(textMap[j.result] || j.result)}</td></tr>`,
+            )
+            .join('') || '<tr><td colspan="5" class="muted">尚无请求</td></tr>';
+        const selected = $('target').value;
+        $('target').innerHTML = state.jobs
+          .map(
+            (j) =>
+              `<option value="${escape(j.id)}">${escape(j.id)} · ${escape(textMap[j.status])}</option>`,
+          )
+          .join('');
+        if (state.jobs.some((j) => j.id === selected)) $('target').value = selected;
+        $('log').innerHTML = state.events
+          .slice()
+          .reverse()
+          .map((event) => `<li>${escape(event)}</li>`)
+          .join('');
+        $('steps').innerHTML = scenarios[scenarioIndex].steps
+          .map(
+            ([label], i) =>
+              `<button data-step="${i}" ${!guided || i !== stepIndex ? 'disabled' : ''} class="${i < stepIndex ? 'done' : ''}">${i < stepIndex ? '已操作 · ' : ''}${i + 1}. ${escape(label)}</button>`,
+          )
+          .join('');
+      }
+      function selectScenario(index) {
+        scenarioIndex = index;
+        stepIndex = 0;
+        guided = true;
+        state = SandboxModel.initial();
+        document.querySelectorAll('[role=tab]').forEach((tab, i) => {
+          tab.setAttribute('aria-selected', String(i === index));
+          tab.tabIndex = i === index ? 0 : -1;
+        });
+        $('scenario-description').textContent = scenarios[index].description;
+        render();
+      }
+      const tabs = document.querySelector('.tabs');
+      scenarios.forEach((scenario, i) => {
+        const b = document.createElement('button');
+        b.textContent = scenario.name;
+        b.setAttribute('role', 'tab');
+        b.onclick = () => selectScenario(i);
+        b.onkeydown = (e) => {
+          if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+            e.preventDefault();
+            const next =
+              (i + (e.key === 'ArrowRight' ? 1 : -1) + scenarios.length) % scenarios.length;
+            selectScenario(next);
+            tabs.children[next].focus();
+          }
+        };
+        tabs.append(b);
+      });
+      $('steps').onclick = (event) => {
+        const button = event.target.closest('[data-step]');
+        if (!button) return;
+        const index = Number(button.dataset.step);
+        if (!guided || index !== stepIndex) return;
+        state = SandboxModel.reduce(state, scenarios[scenarioIndex].steps[index][1]);
+        stepIndex++;
+        render();
+      };
+      document.querySelectorAll('[data-action]').forEach(
+        (button) =>
+          (button.onclick = () => {
+            guided = false;
+            const type = button.dataset.action;
+            if (type === 'reset') {
+              selectScenario(scenarioIndex);
+              return;
+            }
+            const action = type.startsWith('enqueue-')
+              ? { type: 'enqueue', template: type === 'enqueue-react' ? 'react-ts' : 'vue-ts' }
+              : type === 'late'
+                ? { type: 'finish', id: 'old-execution', epoch: 0 }
+                : { type, id: $('target').value };
+            state = SandboxModel.reduce(state, action);
+            render();
+          }),
+      );
+      function renderReport(r) {
+        if (!r.prototype || !Array.isArray(r.jobs)) throw new Error('请选择原型生成的 report.json');
+        $('real-report').innerHTML =
+          `<p class="summary">${r.passed ? '本次真实实验通过' : '本次真实实验未通过'}</p><p>时间：${escape(r.startedAt)}；镜像：${escape(r.image)}；最多同时运行 ${escape(r.maxActive)} 个任务容器；剩余容器 ${escape(r.remainingContainers?.length ?? '未知')} 个。</p><p class="fine muted">内存为 cgroup memory.peak，含文件缓存；不是应用堆内存，也不是 Docker stats 扣除缓存后的数值。只有执行完成后的实测报告才会显示这些数字。</p><div class="table-wrap"><table><thead><tr><th>请求</th><th>结果</th><th>占用槽位</th><th>cgroup 峰值</th><th>构建次数</th></tr></thead><tbody>${r.jobs.map((j) => `<tr><td>${escape(j.id)} / ${escape(j.template)}</td><td>${escape(j.status)}</td><td>${j.elapsedMs === undefined ? '—' : (j.elapsedMs / 1000).toFixed(2) + ' 秒'}</td><td>${j.memory ? Math.round(j.memory.peakBytes / 1024 ** 2) + ' MiB' : '—'}</td><td>${escape(j.rounds?.length ?? 0)}</td></tr>`).join('')}</tbody></table></div><p>子进程延迟写入：${r.descendantSurvived === false ? '未发生' : r.descendantSurvived === true ? '发现残留进程写入' : '未知'}。跨进程调度和崩溃恢复未由此实验验证。</p>`;
+      }
+      $('report-file').onchange = async (event) => {
+        try {
+          renderReport(JSON.parse(await event.target.files[0].text()));
+        } catch (error) {
+          $('real-report').textContent = error.message;
+        }
+      };
+      selectScenario(0);
+      const measuredReport = document.getElementById('measured-report');
+      if (measuredReport) renderReport(JSON.parse(measuredReport.textContent));
+    </script>
+  </body>
+</html>

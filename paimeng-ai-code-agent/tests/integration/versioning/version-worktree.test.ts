@@ -38,15 +38,17 @@ const links: string[] = [];
 /** 台账有 app 外键：隔离目录提交也必须有一个真实应用行，否则插行会失败。 */
 async function newApp(): Promise<WorkspaceApp> {
   const id = await nextSnowflakeId();
-  await db().insert(apps).values({
-    id,
-    appName: `隔离提交 ${counter}`,
-    initPrompt: '隔离目录版本测试',
-    codeGenType: 'html',
-    userId: owner,
-    createTime: now(),
-    updateTime: now(),
-  });
+  await db()
+    .insert(apps)
+    .values({
+      id,
+      appName: `隔离提交 ${counter}`,
+      initPrompt: '隔离目录版本测试',
+      codeGenType: 'html',
+      userId: owner,
+      createTime: now(),
+      updateTime: now(),
+    });
   const app: WorkspaceApp = { id: String(id), codeGenType: 'html' };
   counter += 1;
   await ensureWorkspace(app);
@@ -63,7 +65,16 @@ async function newWorkTree(): Promise<string> {
 
 async function newGeneration(app: WorkspaceApp) {
   const id = randomUUID();
-  await db().insert(generations).values({ id, appId: BigInt(app.id), userId: owner, status: 'ready', createTime: now(), updateTime: now() });
+  await db()
+    .insert(generations)
+    .values({
+      id,
+      appId: BigInt(app.id),
+      userId: owner,
+      status: 'ready',
+      createTime: now(),
+      updateTime: now(),
+    });
   return id;
 }
 
@@ -73,13 +84,22 @@ async function write(root: string, path: string, content: string) {
   await writeFile(file, content);
 }
 
-async function git(app: WorkspaceApp, args: string[], options: { workTree?: string; cwd?: string; allowFailure?: boolean } = {}) {
+async function git(
+  app: WorkspaceApp,
+  args: string[],
+  options: { workTree?: string; cwd?: string; allowFailure?: boolean } = {},
+) {
   try {
-    const { stdout } = await run('git', [
-      '--git-dir', versionRepo(app),
-      ...(options.workTree ? ['--work-tree', options.workTree] : []),
-      ...args,
-    ], { cwd: options.cwd, env: gitEnv });
+    const { stdout } = await run(
+      'git',
+      [
+        '--git-dir',
+        versionRepo(app),
+        ...(options.workTree ? ['--work-tree', options.workTree] : []),
+        ...args,
+      ],
+      { cwd: options.cwd, env: gitEnv },
+    );
     return stdout;
   } catch (error) {
     if (options.allowFailure) return '';
@@ -92,7 +112,10 @@ async function headOf(app: WorkspaceApp) {
 }
 
 async function treeFiles(app: WorkspaceApp, sha: string) {
-  return (await git(app, ['ls-tree', '-r', '-z', '--name-only', sha])).split('\0').filter(Boolean).sort();
+  return (await git(app, ['ls-tree', '-r', '-z', '--name-only', sha]))
+    .split('\0')
+    .filter(Boolean)
+    .sort();
 }
 
 /** 默认索引的字节内容：null 表示这个文件还没被创建过（= 从没被写过）。 */
@@ -104,25 +127,46 @@ async function defaultIndex(app: WorkspaceApp) {
 async function tempIndexFiles() {
   const directory = join(getConfig().runtimeRoot, 'tmp');
   const entries = await readdir(directory).catch(() => [] as string[]);
-  return entries.filter(name => name.includes('version-index'));
+  return entries.filter((name) => name.includes('version-index'));
 }
 
 beforeAll(async () => {
   owner = await nextSnowflakeId();
-  await db().insert(users).values({ id: owner, userAccount: `ts_version_worktree_${Date.now()}`, userPassword: 'unused', userRole: 'user', createTime: now(), updateTime: now() });
+  await db()
+    .insert(users)
+    .values({
+      id: owner,
+      userAccount: `ts_version_worktree_${Date.now()}`,
+      userPassword: 'unused',
+      userRole: 'user',
+      createTime: now(),
+      updateTime: now(),
+    });
 });
 
 afterAll(async () => {
   for (const app of created) {
     await purgeVersions(app).catch(() => undefined);
     await rm(workspace(app), { recursive: true, force: true }).catch(() => undefined);
-    await db().delete(generations).where(eq(generations.appId, BigInt(app.id))).catch(() => undefined);
-    await db().delete(apps).where(eq(apps.id, BigInt(app.id))).catch(() => undefined);
+    await db()
+      .delete(generations)
+      .where(eq(generations.appId, BigInt(app.id)))
+      .catch(() => undefined);
+    await db()
+      .delete(apps)
+      .where(eq(apps.id, BigInt(app.id)))
+      .catch(() => undefined);
   }
-  for (const directory of workTrees) await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+  for (const directory of workTrees)
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
   for (const link of links) await rm(link, { force: true }).catch(() => undefined);
-  await db().delete(users).where(eq(users.id, owner)).catch(() => undefined);
-  await getPool().end().catch(() => undefined);
+  await db()
+    .delete(users)
+    .where(eq(users.id, owner))
+    .catch(() => undefined);
+  await getPool()
+    .end()
+    .catch(() => undefined);
 });
 
 describe('从隔离执行目录提交', () => {
@@ -134,7 +178,12 @@ describe('从隔离执行目录提交', () => {
     const generationId = await newGeneration(app);
     expect(await defaultIndex(app)).toBe(null);
 
-    const version = await commitVersionFrom({ app, workTree, title: '隔离目录第一版', generationId });
+    const version = await commitVersionFrom({
+      app,
+      workTree,
+      title: '隔离目录第一版',
+      generationId,
+    });
 
     expect(version).not.toBe(null);
     expect(version!.title).toBe('隔离目录第一版');
@@ -149,11 +198,15 @@ describe('从隔离执行目录提交', () => {
       title: '隔离目录第一版',
     });
     // 提交内容真的来自执行目录，而不是应用工作区
-    expect(await git(app, ['show', `${version!.id}:index.html`])).toBe('<html><body>isolated-v1</body></html>');
+    expect(await git(app, ['show', `${version!.id}:index.html`])).toBe(
+      '<html><body>isolated-v1</body></html>',
+    );
     // 首次提交：HEAD 与 main 都指向它，钉子让它在 HEAD 离开后仍可达
     expect(await headOf(app)).toBe(version!.id);
     expect((await git(app, ['rev-parse', 'refs/heads/main'])).trim()).toBe(version!.id);
-    expect((await git(app, ['rev-parse', `refs/paimeng/versions/${version!.id}`])).trim()).toBe(version!.id);
+    expect((await git(app, ['rev-parse', `refs/paimeng/versions/${version!.id}`])).trim()).toBe(
+      version!.id,
+    );
     // 默认索引从未被创建，临时索引已清理
     expect(await defaultIndex(app)).toBe(null);
     expect(await tempIndexFiles()).toEqual([]);
@@ -177,7 +230,9 @@ describe('从隔离执行目录提交', () => {
     expect(second!.changedFiles).toEqual(['about.html', 'index.html']);
     const overview = await listVersions(app);
     expect(overview.current).toEqual({ versionId: second!.id });
-    expect(overview.versions.map(version => version.id).sort()).toEqual([first!.id, second!.id].sort());
+    expect(overview.versions.map((version) => version.id).sort()).toEqual(
+      [first!.id, second!.id].sort(),
+    );
   });
 
   it('只改了排除项（依赖、构建产物、环境文件、平台元数据）时返回 null，不推进 HEAD 也不写台账', async () => {
@@ -214,18 +269,30 @@ describe('从隔离执行目录提交', () => {
     // 另一轮执行目录基于第一版的源码改出来的内容
     const branchTree = await newWorkTree();
     await write(branchTree, 'index.html', '<html><body>v1-fix</body></html>');
-    const fromFirst = await commitVersionFrom({ app, workTree: branchTree, title: '基于第一版的修改', parentSha: first!.id });
+    const fromFirst = await commitVersionFrom({
+      app,
+      workTree: branchTree,
+      title: '基于第一版的修改',
+      parentSha: first!.id,
+    });
 
     expect(fromFirst).not.toBe(null);
     expect((await git(app, ['rev-parse', `${fromFirst!.id}^`])).trim()).toBe(first!.id);
     expect(await headOf(app)).toBe(second!.id);
     expect((await git(app, ['rev-parse', 'refs/heads/main'])).trim()).toBe(second!.id);
-    expect((await git(app, ['rev-parse', `refs/paimeng/versions/${fromFirst!.id}`])).trim()).toBe(fromFirst!.id);
+    expect((await git(app, ['rev-parse', `refs/paimeng/versions/${fromFirst!.id}`])).trim()).toBe(
+      fromFirst!.id,
+    );
     expect(await versionRowOf(app.id, fromFirst!.id)).toMatchObject({ title: '基于第一版的修改' });
 
     // updateHead: false 时即使父提交就是当前 HEAD 也不移动 HEAD
     await write(branchTree, 'index.html', '<html><body>v1-fix-2</body></html>');
-    const detached = await commitVersionFrom({ app, workTree: branchTree, title: '不推进 HEAD', updateHead: false });
+    const detached = await commitVersionFrom({
+      app,
+      workTree: branchTree,
+      title: '不推进 HEAD',
+      updateHead: false,
+    });
     expect(detached).not.toBe(null);
     expect((await git(app, ['rev-parse', `${detached!.id}^`])).trim()).toBe(second!.id);
     expect(await headOf(app)).toBe(second!.id);
@@ -237,7 +304,10 @@ describe('从隔离执行目录提交', () => {
     await write(workspace(app), 'workspace-only.html', '<html>工作区里的内容</html>');
     await ensureVersionRepo(app);
     // 先把工作区内容暂存进默认索引：隔离目录提交不应该顺手把它也提交了。
-    await git(app, ['add', '-A', '-f', '--', '.'], { workTree: workspace(app), cwd: workspace(app) });
+    await git(app, ['add', '-A', '-f', '--', '.'], {
+      workTree: workspace(app),
+      cwd: workspace(app),
+    });
     const before = await defaultIndex(app);
     expect(before).not.toBe(null);
 
@@ -266,9 +336,9 @@ describe('从隔离执行目录提交', () => {
     const stats = await pendingChangeStatsFrom(app, workTree);
 
     // 与 pendingChangeStats 同语义：只统计已跟踪文件的差异，未跟踪文件要等 `git add -A` 才进清单。
-    expect(stats.map(stat => stat.path)).toEqual(['index.html']);
+    expect(stats.map((stat) => stat.path)).toEqual(['index.html']);
     expect(stats[0]).toMatchObject({ added: 3, removed: 1 });
-    expect(stats.some(stat => stat.path === 'about.html')).toBe(false);
+    expect(stats.some((stat) => stat.path === 'about.html')).toBe(false);
     expect(await headOf(app)).toBe(first!.id);
     expect(await defaultIndex(app)).toBe(null);
     expect(await tempIndexFiles()).toEqual([]);
@@ -279,7 +349,9 @@ describe('从隔离执行目录提交', () => {
     const workTree = await newWorkTree();
     await write(workTree, 'index.html', '<html><body>v1</body></html>');
 
-    await expect(commitVersionFrom({ app, workTree, title: '坏父提交', parentSha: 'f'.repeat(40) })).rejects.toThrow();
+    await expect(
+      commitVersionFrom({ app, workTree, title: '坏父提交', parentSha: 'f'.repeat(40) }),
+    ).rejects.toThrow();
 
     expect(await tempIndexFiles()).toEqual([]);
     expect((await git(app, ['rev-parse', 'HEAD'], { allowFailure: true })).trim()).toBe('');
@@ -295,11 +367,20 @@ describe('从隔离执行目录提交', () => {
     await symlink(workTree, link);
     links.push(link);
 
-    await expect(commitVersionFrom({ app, workTree: link, title: '软链接目录' })).rejects.toThrow(/软链接|普通目录/);
+    await expect(commitVersionFrom({ app, workTree: link, title: '软链接目录' })).rejects.toThrow(
+      /软链接|普通目录/,
+    );
     await expect(pendingChangeStatsFrom(app, link)).rejects.toThrow(/软链接|普通目录/);
-    await expect(commitVersionFrom({ app, workTree: join(workTree, 'not-there'), title: '目录不存在' })).rejects.toThrow(/不存在/);
+    await expect(
+      commitVersionFrom({ app, workTree: join(workTree, 'not-there'), title: '目录不存在' }),
+    ).rejects.toThrow(/不存在/);
 
-    expect(await stat(versionRepo(app)).then(() => true, () => false)).toBe(true);
+    expect(
+      await stat(versionRepo(app)).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(true);
     expect((await listVersions(app)).versions).toEqual([]);
   });
 });

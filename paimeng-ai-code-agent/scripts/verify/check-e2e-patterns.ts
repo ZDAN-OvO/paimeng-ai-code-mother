@@ -27,15 +27,19 @@ const rules: readonly Rule[] = [
   },
   {
     pattern: /getByRole\(\s*['"]option['"]/,
-    advice: "antd 下拉项要用可见的下拉容器：page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('选项文本', { exact: true })",
+    advice:
+      "antd 下拉项要用可见的下拉容器：page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').getByText('选项文本', { exact: true })",
   },
   {
     pattern: /getByRole\(\s*['"]alert['"]/,
-    advice: "Next 的路由播报节点也是 role=alert：收窄到 .ant-alert-error[role=\"alert\"] 或页面内作用域",
+    advice:
+      'Next 的路由播报节点也是 role=alert：收窄到 .ant-alert-error[role="alert"] 或页面内作用域',
   },
   {
-    pattern: /(?:runtime\/evidence|\.agents\/skills\/verify-paimeng|verify-paimeng-agent\/evidences|['\"`]evidences\/)/,
-    advice: "E2E 证据位置由 tests/e2e/support/evidence.ts 决定（默认 runtime/evidence，验证技能用 E2E_EVIDENCE_ROOT 改写）；spec 里只能用 evidenceDir/evidencePath，不要自己拼目录",
+    pattern:
+      /(?:runtime\/evidence|\.agents\/skills\/verify-paimeng|verify-paimeng-agent\/evidences|['"`]evidences\/)/,
+    advice:
+      'E2E 证据位置由 tests/e2e/support/evidence.ts 决定（默认 runtime/evidence，验证技能用 E2E_EVIDENCE_ROOT 改写）；spec 里只能用 evidenceDir/evidencePath，不要自己拼目录',
   },
 ];
 
@@ -63,7 +67,8 @@ if (!existsSync(e2eDir)) {
     const lines = readFileSync(file, 'utf8').split('\n');
     lines.forEach((line, index) => {
       for (const rule of rules) {
-        if (rule.pattern.test(line)) violations.push(`${relative(root, file)}:${index + 1}: ${rule.advice}`);
+        if (rule.pattern.test(line))
+          violations.push(`${relative(root, file)}:${index + 1}: ${rule.advice}`);
       }
     });
   }

@@ -13,9 +13,16 @@ try {
     const existing = await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [name]);
     if (!existing.rowCount) await admin.query(`CREATE DATABASE ${name}`);
   }
-} finally { await admin.end(); }
-const result = execFileSync(process.execPath, ['--import', 'tsx', '--env-file=.env', 'scripts/db/migrate.ts'], {
-  stdio: 'inherit', env: { ...process.env, DATABASE_URL: url.href },
-});
+} finally {
+  await admin.end();
+}
+const result = execFileSync(
+  process.execPath,
+  ['--import', 'tsx', '--env-file=.env', 'scripts/db/migrate.ts'],
+  {
+    stdio: 'inherit',
+    env: { ...process.env, DATABASE_URL: url.href },
+  },
+);
 assert.equal(result, null);
 console.log('Dedicated test databases are ready; development and legacy databases are unchanged');

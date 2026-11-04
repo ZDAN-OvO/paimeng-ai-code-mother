@@ -38,13 +38,25 @@ export const modelConfigSchemaVersion = 1;
 const naiveTimestamp = z
   .string()
   .trim()
-  .regex(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/u, '生效时间必须形如 2026-10-01 00:00:00.000（UTC）')
-  .refine(value => !Number.isNaN(Date.parse(`${value.replace(' ', 'T')}Z`)), '生效时间不是合法时刻');
+  .regex(
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/u,
+    '生效时间必须形如 2026-10-01 00:00:00.000（UTC）',
+  )
+  .refine(
+    (value) => !Number.isNaN(Date.parse(`${value.replace(' ', 'T')}Z`)),
+    '生效时间不是合法时刻',
+  );
 
 const optionalUsd = z
-  .union([z.null(), z.string().trim().regex(/^\d+(?:\.\d{1,6})?$/u, '上游成本是 USD / 1M tokens，最多 6 位小数')])
+  .union([
+    z.null(),
+    z
+      .string()
+      .trim()
+      .regex(/^\d+(?:\.\d{1,6})?$/u, '上游成本是 USD / 1M tokens，最多 6 位小数'),
+  ])
   .optional()
-  .transform(value => value ?? null);
+  .transform((value) => value ?? null);
 
 const usdReferenceSchema = z.strictObject({
   inputMiss: optionalUsd,
@@ -54,7 +66,11 @@ const usdReferenceSchema = z.strictObject({
 
 export type UsdReference = z.infer<typeof usdReferenceSchema>;
 
-const cnyFen = z.number().int('单价必须是整数分').min(0, '单价不能是负数').max(Number.MAX_SAFE_INTEGER, '单价超出范围');
+const cnyFen = z
+  .number()
+  .int('单价必须是整数分')
+  .min(0, '单价不能是负数')
+  .max(Number.MAX_SAFE_INTEGER, '单价超出范围');
 
 export const modelPriceVersionSchema = z
   .strictObject({
@@ -65,12 +81,19 @@ export const modelPriceVersionSchema = z
     inputMissFen: cnyFen,
     inputHitFen: cnyFen,
     outputFen: cnyFen,
-    upstreamUsd: usdReferenceSchema.nullish().transform(value => value ?? null),
+    upstreamUsd: usdReferenceSchema.nullish().transform((value) => value ?? null),
     costBasis: z.enum(['peak', 'off-peak', 'unknown']).nullable().optional(),
     costSource: z.string().nullable().optional(),
-    note: z.string().max(2000).nullish().transform(value => value ?? null),
+    note: z
+      .string()
+      .max(2000)
+      .nullish()
+      .transform((value) => value ?? null),
   })
-  .refine(value => value.inputMissFen > 0 || value.inputHitFen > 0 || value.outputFen > 0, '三个单价不能同时为 0');
+  .refine(
+    (value) => value.inputMissFen > 0 || value.inputHitFen > 0 || value.outputFen > 0,
+    '三个单价不能同时为 0',
+  );
 
 export type ModelPriceVersion = z.infer<typeof modelPriceVersionSchema>;
 
@@ -84,12 +107,16 @@ export const modelUpstreamPriceSchema = z.strictObject({
 export type ModelUpstreamPrice = z.infer<typeof modelUpstreamPriceSchema>;
 
 export const providerModelSchema = z.strictObject({
-  id: z.string().min(1).max(64).regex(/^pm_[a-z0-9]+$/, '模型标识必须形如 pm_...'),
+  id: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^pm_[a-z0-9]+$/, '模型标识必须形如 pm_...'),
   upstream: z.string().trim().min(1, '上游模型名不能为空').max(256),
   displayName: z.string().trim().min(1, '模型名称不能为空').max(256),
   enabled: z.boolean(),
   capabilities: aliasCapabilitiesSchema,
-  upstreamPrice: modelUpstreamPriceSchema.nullish().transform(value => value ?? null),
+  upstreamPrice: modelUpstreamPriceSchema.nullish().transform((value) => value ?? null),
   prices: z.array(modelPriceVersionSchema).max(1000),
   createTime: z.string(),
   updateTime: z.string(),
@@ -107,7 +134,7 @@ export const modelConfigProviderSchema = z.strictObject({
     z.strictObject({ source: z.literal('inline'), ciphertext: modelApiKeyCiphertextSchema }),
   ]),
   options: providerOptionsSchema,
-  headers: providerHeadersSchema.optional().transform(value => value ?? {}),
+  headers: providerHeadersSchema.optional().transform((value) => value ?? {}),
   enabled: z.boolean(),
   models: z.array(providerModelSchema),
   createTime: z.string(),
@@ -132,14 +159,45 @@ export const legacyPriceSchema = z.strictObject({
   creditInputMiss: z.number().int(),
   creditInputHit: z.number().int(),
   creditOutput: z.number().int(),
-  usdInputMiss: z.string().nullable().optional().transform(value => value ?? null),
-  usdInputHit: z.string().nullable().optional().transform(value => value ?? null),
-  usdOutput: z.string().nullable().optional().transform(value => value ?? null),
-  costBasis: z.enum(['peak', 'off-peak', 'unknown']).nullable().optional().transform(value => value ?? null),
-  costSource: z.string().nullable().optional().transform(value => value ?? null),
-  note: z.string().nullable().optional().transform(value => value ?? null),
-  createdBy: z.string().nullable().optional().transform(value => value ?? null),
-  createTime: z.string().optional().transform(value => value ?? ''),
+  usdInputMiss: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
+  usdInputHit: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
+  usdOutput: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
+  costBasis: z
+    .enum(['peak', 'off-peak', 'unknown'])
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
+  costSource: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
+  note: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
+  createdBy: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
+  createTime: z
+    .string()
+    .optional()
+    .transform((value) => value ?? ''),
 });
 
 export type LegacyPrice = z.infer<typeof legacyPriceSchema>;
@@ -148,7 +206,10 @@ export const modelConfigDocumentSchema = z.strictObject({
   schemaVersion: z.literal(modelConfigSchemaVersion),
   providers: z.array(modelConfigProviderSchema),
   slots: z.array(modelSlotAssignmentSchema),
-  legacyPrices: z.array(legacyPriceSchema).optional().transform(value => value ?? []),
+  legacyPrices: z
+    .array(legacyPriceSchema)
+    .optional()
+    .transform((value) => value ?? []),
 });
 
 export type ModelConfigDocument = z.infer<typeof modelConfigDocumentSchema>;
@@ -167,7 +228,10 @@ function instantOf(timestamp: string): number {
 }
 
 /** 当前有效价：`effectiveAt` 不晚于 `at` 的最新版本；未来价不会提前生效。 */
-export function currentPriceOf(model: Pick<ProviderModel, 'prices'>, at: string = utcTimestamp()): ModelPriceVersion | null {
+export function currentPriceOf(
+  model: Pick<ProviderModel, 'prices'>,
+  at: string = utcTimestamp(),
+): ModelPriceVersion | null {
   const atMs = instantOf(at);
   if (Number.isNaN(atMs)) return null;
   let current: ModelPriceVersion | null = null;
@@ -187,7 +251,10 @@ export function currentPriceOf(model: Pick<ProviderModel, 'prices'>, at: string 
 export function modelEligibilityIssue(
   provider: Pick<ModelConfigProvider, 'enabled'>,
   model: Pick<ProviderModel, 'enabled' | 'capabilities' | 'prices' | 'upstream'>,
-  slot: { readonly requires: readonly ('streaming' | 'toolCalling' | 'structuredOutput')[]; readonly label: string } | null,
+  slot: {
+    readonly requires: readonly ('streaming' | 'toolCalling' | 'structuredOutput')[];
+    readonly label: string;
+  } | null,
   at: string = utcTimestamp(),
 ): string | null {
   if (!provider.enabled) return `提供商已停用，模型 ${model.upstream} 不能分配`;
@@ -196,7 +263,7 @@ export function modelEligibilityIssue(
   if (slot) {
     const missing = missingSlotCapabilities(slot, model.capabilities);
     if (missing.length) {
-      return `槽位${slot.label}需要${missing.map(item => modelCapabilityLabels[item]).join('、')}能力；模型 ${model.upstream} 未声明`;
+      return `槽位${slot.label}需要${missing.map((item) => modelCapabilityLabels[item]).join('、')}能力；模型 ${model.upstream} 未声明`;
     }
   }
   return null;
@@ -205,7 +272,7 @@ export function modelEligibilityIssue(
 /** 按文档顺序查找模型，返回提供商与模型的组合。 */
 export function findDocumentModel(document: ModelConfigDocument, modelId: string) {
   for (const provider of document.providers) {
-    const model = provider.models.find(candidate => candidate.id === modelId);
+    const model = provider.models.find((candidate) => candidate.id === modelId);
     if (model) return { provider, model };
   }
   return null;
@@ -215,7 +282,10 @@ export function findDocumentModel(document: ModelConfigDocument, modelId: string
  * 文档级校验：结构、唯一性、槽位引用与必需槽位。价格/能力是否满足某个槽位属于分配时的检查，
  * 允许现有分配在模型停用或能力调整后变成「不可用」，界面会标红要求重新配置。
  */
-export function modelConfigDocumentIssues(document: ModelConfigDocument, policy: ModelConfigPolicy): string[] {
+export function modelConfigDocumentIssues(
+  document: ModelConfigDocument,
+  policy: ModelConfigPolicy,
+): string[] {
   const issues: string[] = [];
   const providerIds = new Set<string>();
   const modelIds = new Set<string>();
@@ -225,27 +295,34 @@ export function modelConfigDocumentIssues(document: ModelConfigDocument, policy:
     providerIds.add(provider.id);
     const urlIssue = modelBaseUrlIssue(provider.baseUrl, policy);
     if (urlIssue) issues.push(`提供商 ${provider.id} 的地址不合法：${urlIssue}`);
-    if (provider.apiKey.source === 'env' && !isAllowedModelApiKeyEnv(provider.apiKey.env, policy.allowedApiKeyEnvs)) {
+    if (
+      provider.apiKey.source === 'env' &&
+      !isAllowedModelApiKeyEnv(provider.apiKey.env, policy.allowedApiKeyEnvs)
+    ) {
       issues.push(`提供商 ${provider.id} 引用了未允许的环境变量 ${provider.apiKey.env}`);
     }
     const optionsIssue = providerOptionsIssue(provider.apiFormat, provider.options);
     if (optionsIssue) issues.push(`提供商 ${provider.id}：${optionsIssue}`);
     const supportedOptions = new Set(providerOptionKeysByFormat[provider.apiFormat]);
     for (const key of Object.keys(provider.options)) {
-      if (!supportedOptions.has(key as never)) issues.push(`提供商 ${provider.id} 的选项 ${key} 不被 ${provider.apiFormat} 支持`);
+      if (!supportedOptions.has(key as never))
+        issues.push(`提供商 ${provider.id} 的选项 ${key} 不被 ${provider.apiFormat} 支持`);
     }
     for (const model of provider.models) {
       if (modelIds.has(model.id)) issues.push(`模型标识重复：${model.id}`);
       modelIds.add(model.id);
       const upstreamKey = `${provider.id}\u0000${model.upstream}`;
-      if (upstreamKeys.has(upstreamKey)) issues.push(`提供商 ${provider.id} 下上游模型名重复：${model.upstream}`);
+      if (upstreamKeys.has(upstreamKey))
+        issues.push(`提供商 ${provider.id} 下上游模型名重复：${model.upstream}`);
       upstreamKeys.add(upstreamKey);
       const versions = new Set<number>();
       const effectiveTimes = new Set<string>();
       for (const price of model.prices) {
-        if (versions.has(price.version)) issues.push(`模型 ${model.upstream} 的价格版本重复：${price.version}`);
+        if (versions.has(price.version))
+          issues.push(`模型 ${model.upstream} 的价格版本重复：${price.version}`);
         versions.add(price.version);
-        if (effectiveTimes.has(price.effectiveAt)) issues.push(`模型 ${model.upstream} 在 ${price.effectiveAt} 已有价格版本`);
+        if (effectiveTimes.has(price.effectiveAt))
+          issues.push(`模型 ${model.upstream} 在 ${price.effectiveAt} 已有价格版本`);
         effectiveTimes.add(price.effectiveAt);
       }
     }
@@ -259,7 +336,8 @@ export function modelConfigDocumentIssues(document: ModelConfigDocument, policy:
     if (slotNames.has(assignment.slot)) issues.push(`槽位重复：${assignment.slot}`);
     slotNames.add(assignment.slot);
     if (!modelSlotOf(assignment.slot)) issues.push(`未知槽位：${assignment.slot}`);
-    if (!modelOwners.has(assignment.modelId)) issues.push(`槽位 ${assignment.slot} 指向不存在的模型 ${assignment.modelId}`);
+    if (!modelOwners.has(assignment.modelId))
+      issues.push(`槽位 ${assignment.slot} 指向不存在的模型 ${assignment.modelId}`);
   }
   for (const slot of modelSlots) {
     if (!slot.optional && !slotNames.has(slot.slot)) {
@@ -276,16 +354,20 @@ export function modelConfigDocumentIssues(document: ModelConfigDocument, policy:
 }
 
 /** 把 JSON 文档映射到注册表沿用的快照形状：每个已分配槽位合成一个别名。 */
-export function snapshotFromDocument(document: ModelConfigDocument, revision: string, refreshEpoch: string): ModelConfigSnapshot {
-  const providers: ModelProvider[] = document.providers.map(provider => ({
+export function snapshotFromDocument(
+  document: ModelConfigDocument,
+  revision: string,
+  refreshEpoch: string,
+): ModelConfigSnapshot {
+  const providers: ModelProvider[] = document.providers.map((provider) => ({
     ...modelProviderInputSchema.parse({
-    id: provider.id,
-    displayName: provider.displayName,
-    apiFormat: provider.apiFormat,
-    baseUrl: provider.baseUrl,
-    options: provider.options,
-    headers: provider.headers,
-    enabled: provider.enabled,
+      id: provider.id,
+      displayName: provider.displayName,
+      apiFormat: provider.apiFormat,
+      baseUrl: provider.baseUrl,
+      options: provider.options,
+      headers: provider.headers,
+      enabled: provider.enabled,
       ...(provider.apiKey.source === 'env'
         ? { apiKeySource: 'env', apiKeyEnv: provider.apiKey.env }
         : { apiKeySource: 'inline', apiKeyCiphertext: provider.apiKey.ciphertext }),
@@ -327,8 +409,8 @@ export function providerInputFromDocument(provider: ModelConfigProvider): ModelP
 }
 
 export function requiredSlotAssignmentsPresent(document: ModelConfigDocument): boolean {
-  const assigned = new Set(document.slots.map(slot => slot.slot));
-  return requiredModelAliases.every(slot => assigned.has(slot));
+  const assigned = new Set(document.slots.map((slot) => slot.slot));
+  return requiredModelAliases.every((slot) => assigned.has(slot));
 }
 
 // ---- 管理端读模型与写操作契约 ----
@@ -365,8 +447,17 @@ const providerViewFields = {
 };
 
 export const modelAdminProviderViewSchema = z.discriminatedUnion('apiKeySource', [
-  z.strictObject({ ...providerViewFields, apiKeySource: z.literal('env'), apiKeyEnv: modelApiKeyEnvSchema, models: z.array(modelAdminModelViewSchema) }),
-  z.strictObject({ ...providerViewFields, apiKeySource: z.literal('inline'), models: z.array(modelAdminModelViewSchema) }),
+  z.strictObject({
+    ...providerViewFields,
+    apiKeySource: z.literal('env'),
+    apiKeyEnv: modelApiKeyEnvSchema,
+    models: z.array(modelAdminModelViewSchema),
+  }),
+  z.strictObject({
+    ...providerViewFields,
+    apiKeySource: z.literal('inline'),
+    models: z.array(modelAdminModelViewSchema),
+  }),
 ]);
 
 export type ModelAdminProviderView = z.infer<typeof modelAdminProviderViewSchema>;
@@ -386,19 +477,23 @@ export const modelAdminConfigViewSchema = z.strictObject({
   documentBytes: z.number().int(),
   providers: z.array(modelAdminProviderViewSchema),
   assignments: z.array(modelAssignmentViewSchema),
-  slotDefinitions: z.array(z.strictObject({
-    slot: z.string(),
-    label: z.string(),
-    purpose: z.string(),
-    requires: z.array(z.enum(['streaming', 'toolCalling', 'structuredOutput'])),
-    optional: z.boolean(),
-    missingImpact: z.string(),
-  })),
-  providerFormats: z.array(z.strictObject({
-    value: z.enum(providerApiFormats),
-    label: z.string(),
-    optionKeys: z.array(z.string()),
-  })),
+  slotDefinitions: z.array(
+    z.strictObject({
+      slot: z.string(),
+      label: z.string(),
+      purpose: z.string(),
+      requires: z.array(z.enum(['streaming', 'toolCalling', 'structuredOutput'])),
+      optional: z.boolean(),
+      missingImpact: z.string(),
+    }),
+  ),
+  providerFormats: z.array(
+    z.strictObject({
+      value: z.enum(providerApiFormats),
+      label: z.string(),
+      optionKeys: z.array(z.string()),
+    }),
+  ),
   allowedApiKeyEnvs: z.array(z.string()),
   instance: z.strictObject({
     revision: z.string().nullable(),
@@ -413,15 +508,24 @@ export const modelAdminConfigViewSchema = z.strictObject({
 
 export type ModelAdminConfigView = z.infer<typeof modelAdminConfigViewSchema>;
 
-export const modelPriceMutationSchema = z.strictObject({
-  kind: z.literal('model.price'),
-  modelId: z.string().min(1),
-  inputMissFen: cnyFen,
-  inputHitFen: cnyFen,
-  outputFen: cnyFen,
-  upstreamUsd: usdReferenceSchema.nullish().transform(value => value ?? null),
-  note: z.string().max(2000).nullish().transform(value => value ?? null),
-}).refine(value => value.inputMissFen > 0 || value.inputHitFen > 0 || value.outputFen > 0, '三个单价不能同时为 0');
+export const modelPriceMutationSchema = z
+  .strictObject({
+    kind: z.literal('model.price'),
+    modelId: z.string().min(1),
+    inputMissFen: cnyFen,
+    inputHitFen: cnyFen,
+    outputFen: cnyFen,
+    upstreamUsd: usdReferenceSchema.nullish().transform((value) => value ?? null),
+    note: z
+      .string()
+      .max(2000)
+      .nullish()
+      .transform((value) => value ?? null),
+  })
+  .refine(
+    (value) => value.inputMissFen > 0 || value.inputHitFen > 0 || value.outputFen > 0,
+    '三个单价不能同时为 0',
+  );
 
 export const modelConfigMutationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('provider.upsert'), provider: z.unknown() }),
@@ -434,10 +538,14 @@ export const modelConfigMutationSchema = z.discriminatedUnion('kind', [
     displayName: z.string().trim().min(1).max(256),
     capabilities: aliasCapabilitiesSchema,
     enabled: z.boolean(),
-    upstreamPrice: modelUpstreamPriceSchema.nullish().transform(value => value ?? null),
+    upstreamPrice: modelUpstreamPriceSchema.nullish().transform((value) => value ?? null),
   }),
   modelPriceMutationSchema,
-  z.strictObject({ kind: z.literal('model.enabled'), modelId: z.string().min(1), enabled: z.boolean() }),
+  z.strictObject({
+    kind: z.literal('model.enabled'),
+    modelId: z.string().min(1),
+    enabled: z.boolean(),
+  }),
   z.strictObject({
     kind: z.literal('slot.assign'),
     slot: z.string().min(1).max(64),

@@ -1,11 +1,29 @@
 import 'server-only';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import {
+  cp,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { z } from 'zod';
-import { fallbackVersionTitle, versionIdSchema, type AppVersion, type AppVersionOverview, type VersionDiff } from '@/shared/versioning';
+
+import {
+  fallbackVersionTitle,
+  versionIdSchema,
+  type AppVersion,
+  type AppVersionOverview,
+  type VersionDiff,
+} from '@/shared/versioning';
 import { getConfig } from '../infra/config';
 import { installGitGuard } from './git-guard';
 import { insertVersionRow, listVersionRows, versionRowOf, type VersionRow } from './version-ledger';
@@ -14,11 +32,28 @@ import { workspace, type WorkspaceApp } from '../workspace/workspace';
 const run = promisify(execFile);
 
 /** 工作区里不参与版本化的目录：与 workspace.ts 的 blocked 集合同源，另加平台临时文件。 */
-const versionExcluded = ['node_modules', 'dist', '.git', '.next', '.nuxt', '.cache', '.npmrc', '.yarnrc', '.yarnrc.yml', '.ssh'];
+const versionExcluded = [
+  'node_modules',
+  'dist',
+  '.git',
+  '.next',
+  '.nuxt',
+  '.cache',
+  '.npmrc',
+  '.yarnrc',
+  '.yarnrc.yml',
+  '.ssh',
+];
 
 /** `git add` 的排除项：`-f` 会无视工程自带 .gitignore，所以这里必须显式挡掉依赖与构建产物。 */
-const addExcludes = versionExcluded.flatMap(name => [`:(exclude,glob)${name}/**`, `:(exclude,glob)**/${name}/**`])
-  .concat([':(exclude,glob).env*', ':(exclude,glob)**/.env*', ':(exclude,glob).paimeng-*', ':(exclude,glob)**/.paimeng-*']);
+const addExcludes = versionExcluded
+  .flatMap((name) => [`:(exclude,glob)${name}/**`, `:(exclude,glob)**/${name}/**`])
+  .concat([
+    ':(exclude,glob).env*',
+    ':(exclude,glob)**/.env*',
+    ':(exclude,glob).paimeng-*',
+    ':(exclude,glob)**/.paimeng-*',
+  ]);
 
 const emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const maxPatchBytes = 96 * 1024;
@@ -27,11 +62,19 @@ const lockTimeoutMs = 30_000;
 const lockStaleMs = 60_000;
 
 export class GitCommandError extends Error {
-  constructor(readonly args: string[], readonly stderr: string, readonly code: number | string | null) {
+  constructor(
+    readonly args: string[],
+    readonly stderr: string,
+    readonly code: number | string | null,
+  ) {
     // 把整串 argv 塞进错误只会淹没有用信息（工具调用面板里会变成几屏路径）。
     // 只留子命令与 git 自己的第一行说明，够定位就行。
-    const subcommand = args.find(arg => /^[a-z][a-z-]*$/.test(arg)) ?? '命令';
-    const detail = stderr.trim().split('\n').find(line => line.trim()) ?? `退出码 ${code}`;
+    const subcommand = args.find((arg) => /^[a-z][a-z-]*$/.test(arg)) ?? '命令';
+    const detail =
+      stderr
+        .trim()
+        .split('\n')
+        .find((line) => line.trim()) ?? `退出码 ${code}`;
     super(`git ${subcommand} 失败：${detail}`);
   }
 }
@@ -74,7 +117,12 @@ type GitResult = { args: string[]; code: number; stdout: string; stderr: string 
 type GitOptions = { env?: Record<string, string>; cwd?: string };
 
 /** 退出码是信息而不是异常时需要它：`git diff --quiet` 用 1 表示有差异，merge-tree 用 1 表示冲突。 */
-async function gitRaw(repo: string, workTree: string | null, args: string[], options: GitOptions = {}): Promise<GitResult> {
+async function gitRaw(
+  repo: string,
+  workTree: string | null,
+  args: string[],
+  options: GitOptions = {},
+): Promise<GitResult> {
   const full = ['--git-dir', repo, ...(workTree ? ['--work-tree', workTree] : []), ...args];
   try {
     const { stdout } = await run('git', full, {
@@ -94,33 +142,36 @@ async function gitRaw(repo: string, workTree: string | null, args: string[], opt
   }
 }
 
-async function git(repo: string, workTree: string | null, args: string[], options: GitOptions = {}) {
+async function git(
+  repo: string,
+  workTree: string | null,
+  args: string[],
+  options: GitOptions = {},
+) {
   const result = await gitRaw(repo, workTree, args, options);
   if (result.code !== 0) throw new GitCommandError(result.args, result.stderr, result.code);
   return result.stdout;
 }
 
-/** `git diff-tree --stdin` 要从标准输入读提交列表，execFile 不支持喂 stdin。 */
-async function gitStdin(repo: string, args: string[], input: string): Promise<GitResult> {
-  const full = ['--git-dir', repo, ...args];
-  return new Promise(resolve => {
-    const child = spawn('git', full, { env: gitEnv });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
-    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
-    child.on('error', error => resolve({ args: full, code: -1, stdout, stderr: String(error) }));
-    child.on('close', code => resolve({ args: full, code: code ?? -1, stdout, stderr }));
-    child.stdin.on('error', () => undefined);
-    child.stdin.end(input);
-  });
+async function gitCommit(
+  repo: string,
+  workTree: string | null,
+  args: string[],
+  options: GitOptions = {},
+) {
+  return git(
+    repo,
+    workTree,
+    ['-c', 'user.name=paimeng', '-c', 'user.email=version@paimeng.local', ...args],
+    options,
+  );
 }
 
-async function gitCommit(repo: string, workTree: string | null, args: string[], options: GitOptions = {}) {
-  return git(repo, workTree, ['-c', 'user.name=paimeng', '-c', 'user.email=version@paimeng.local', ...args], options);
-}
-
-const exists = (path: string) => stat(path).then(() => true, () => false);
+const exists = (path: string) =>
+  stat(path).then(
+    () => true,
+    () => false,
+  );
 
 /**
  * 目标路径在磁盘上是否已经「占着位置」——自己存在，或某一级父目录被普通文件占住。
@@ -133,7 +184,10 @@ async function pathOccupation(workTree: string, path: string): Promise<string | 
   let current = workTree;
   for (const [index, part] of parts.entries()) {
     current = join(current, part);
-    const info = await lstat(current).then(stats => stats, (error: unknown) => error as NodeJS.ErrnoException);
+    const info = await lstat(current).then(
+      (stats) => stats,
+      (error: unknown) => error as NodeJS.ErrnoException,
+    );
     if (info instanceof Error) {
       if (info.code === 'ENOENT') return null;
       if (info.code === 'ENOTDIR') return parts.slice(0, index).join('/') || null;
@@ -193,9 +247,12 @@ async function withLock<T>(app: WorkspaceApp, work: () => Promise<T>): Promise<T
       handle = await open(file, 'wx');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      if (await lockIsAbandoned(file)) { await unlink(file).catch(() => undefined); continue; }
+      if (await lockIsAbandoned(file)) {
+        await unlink(file).catch(() => undefined);
+        continue;
+      }
       if (Date.now() > deadline) throw new Error('版本库正被其它进程使用，请稍后重试');
-      await new Promise(done => setTimeout(done, 120));
+      await new Promise((done) => setTimeout(done, 120));
     }
   }
   const token = `${process.pid} ${randomUUID()} ${new Date().toISOString()}`;
@@ -217,14 +274,16 @@ async function withLock<T>(app: WorkspaceApp, work: () => Promise<T>): Promise<T
 export async function ensureVersionRepo(app: WorkspaceApp) {
   const repo = versionRepo(app);
   const tree = workspace(app);
-  if (!await exists(join(repo, 'HEAD'))) {
+  if (!(await exists(join(repo, 'HEAD')))) {
     await mkdir(versionRoot(), { recursive: true });
     const legacy = legacyBareRepo(app);
     if (await exists(join(legacy, 'HEAD'))) {
       await cp(legacy, repo, { recursive: true, force: true });
       await git(repo, null, ['config', 'core.bare', 'false']);
       // 裸库没有索引：按 HEAD 建一份，让「工作区脏不脏」先有可比对的基线，且不覆盖任何工作区文件。
-      const head = (await gitRaw(repo, null, ['rev-parse', '--verify', '--quiet', 'HEAD'])).stdout.trim();
+      const head = (
+        await gitRaw(repo, null, ['rev-parse', '--verify', '--quiet', 'HEAD'])
+      ).stdout.trim();
       if (head) await git(repo, null, ['read-tree', head]);
     } else {
       await run('git', ['init', '--quiet', '-b', 'main', tree], { env: gitEnv });
@@ -250,8 +309,17 @@ async function configureRepo(repo: string, tree: string) {
   // 忽略规则由平台补进 info/exclude：模板不一定自带 .gitignore，
   // 有它之后模型直接 git add -A 也不会把依赖、构建产物和密钥提交进历史。
   const exclude = [
-    'node_modules/', 'dist/', '.next/', '.nuxt/', '.cache/', '.ssh/',
-    '.npmrc', '.yarnrc', '.yarnrc.yml', '.env*', '.paimeng-*',
+    'node_modules/',
+    'dist/',
+    '.next/',
+    '.nuxt/',
+    '.cache/',
+    '.ssh/',
+    '.npmrc',
+    '.yarnrc',
+    '.yarnrc.yml',
+    '.env*',
+    '.paimeng-*',
   ];
   const excludeFile = join(repo, 'info', 'exclude');
   await mkdir(dirname(excludeFile), { recursive: true });
@@ -262,27 +330,21 @@ async function configureRepo(repo: string, tree: string) {
 
 /** 当前 HEAD 所在分支；游离 HEAD 或空仓库返回 null。 */
 async function headSha(repo: string) {
-  return (await gitRaw(repo, null, ['rev-parse', '--verify', '--quiet', 'HEAD'])).stdout.trim() || null;
-}
-
-async function readPreservedRefs(repo: string) {
-  const out = await git(repo, null, ['for-each-ref', '--format=%(refname) %(objectname)', 'refs/paimeng/versions/']);
-  const refs: string[] = [];
-  for (const line of out.split('\n').filter(Boolean)) {
-    const [ref, sha] = line.split(' ');
-    if (ref && sha) refs.push(sha);
-  }
-  return refs;
+  return (
+    (await gitRaw(repo, null, ['rev-parse', '--verify', '--quiet', 'HEAD'])).stdout.trim() || null
+  );
 }
 
 /** 回填与迁移要分辨「仓库还没建」和「仓库在但没有这个提交」：前者不是数据问题。 */
 export async function emptyVersionRepo(app: WorkspaceApp) {
-  return !await exists(join(versionRepo(app), 'HEAD'));
+  return !(await exists(join(versionRepo(app), 'HEAD')));
 }
 
 /** 提交对象是否真的在仓库里：台账列出的每一版都必须能回退。 */
 export async function versionObjectExists(app: WorkspaceApp, commitSha: string) {
-  return (await gitRaw(versionRepo(app), null, ['cat-file', '-e', `${commitSha}^{commit}`])).code === 0;
+  return (
+    (await gitRaw(versionRepo(app), null, ['cat-file', '-e', `${commitSha}^{commit}`])).code === 0
+  );
 }
 
 export type VersionPin = { sha: string; subject: string; createTime: string };
@@ -295,13 +357,24 @@ export type VersionPin = { sha: string; subject: string; createTime: string };
  */
 export async function listVersionPins(app: WorkspaceApp): Promise<VersionPin[]> {
   const repo = versionRepo(app);
-  if (!await exists(join(repo, 'HEAD'))) return [];
-  const out = await git(repo, null, ['for-each-ref', '--format=%(objectname)', 'refs/paimeng/versions/']).catch(() => '');
-  const shas = [...new Set(out.split('\n').map(line => line.trim()).filter(Boolean))];
+  if (!(await exists(join(repo, 'HEAD')))) return [];
+  const out = await git(repo, null, [
+    'for-each-ref',
+    '--format=%(objectname)',
+    'refs/paimeng/versions/',
+  ]).catch(() => '');
+  const shas = [
+    ...new Set(
+      out
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean),
+    ),
+  ];
   if (shas.length === 0) return [];
   const commits = await readCommits(repo, shas).catch(() => []);
-  const known = new Map(commits.map(commit => [commit.sha, commit]));
-  return shas.flatMap(sha => {
+  const known = new Map(commits.map((commit) => [commit.sha, commit]));
+  return shas.flatMap((sha) => {
     const commit = known.get(sha);
     return commit ? [{ sha, subject: commit.subject, createTime: storedTime(commit.time) }] : [];
   });
@@ -324,15 +397,30 @@ function toCommit(line: string): Commit | null {
 async function readCommits(repo: string, revisions: string[]) {
   if (revisions.length === 0) return [];
   const out = await git(repo, null, [
-    'log', '--no-color', '--topo-order', '--format=%H%x00%P%x00%ct%x00%T%x00%s', ...revisions, '--',
+    'log',
+    '--no-color',
+    '--topo-order',
+    '--format=%H%x00%P%x00%ct%x00%T%x00%s',
+    ...revisions,
+    '--',
   ]);
-  return out.split('\n').map(toCommit).filter((commit): commit is Commit => commit !== null);
+  return out
+    .split('\n')
+    .map(toCommit)
+    .filter((commit): commit is Commit => commit !== null);
 }
 
 async function resolveCommit(repo: string, sha: string): Promise<Commit> {
   const check = await gitRaw(repo, null, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]);
   if (check.code !== 0) throw new Error('版本不存在');
-  const line = await git(repo, null, ['log', '-1', '--no-color', '--format=%H%x00%P%x00%ct%x00%T%x00%s', sha, '--']);
+  const line = await git(repo, null, [
+    'log',
+    '-1',
+    '--no-color',
+    '--format=%H%x00%P%x00%ct%x00%T%x00%s',
+    sha,
+    '--',
+  ]);
   const commit = toCommit(line.replace(/\n$/, ''));
   if (!commit) throw new Error('版本不存在');
   return commit;
@@ -341,48 +429,29 @@ async function resolveCommit(repo: string, sha: string): Promise<Commit> {
 /** 合并提交对第一父提交的差异才是「这次合并带进了什么」；diff-tree 默认不输出合并提交。 */
 async function changedFilesOf(repo: string, commit: Commit) {
   if (commit.parents.length > 1) {
-    const out = await git(repo, null, ['diff', '--name-only', '-z', commit.parents[0]!, commit.sha]);
+    const out = await git(repo, null, ['diff', '--name-only', '-z', commit.parents[0], commit.sha]);
     return out.split('\0').filter(Boolean).sort();
   }
-  const out = await git(repo, null, ['diff-tree', '--root', '-r', '--no-commit-id', '--name-only', '-z', commit.sha]);
+  const out = await git(repo, null, [
+    'diff-tree',
+    '--root',
+    '-r',
+    '--no-commit-id',
+    '--name-only',
+    '-z',
+    commit.sha,
+  ]);
   return out.split('\0').filter(Boolean).sort();
-}
-
-async function readChangedFiles(repo: string, commits: Commit[]) {
-  const changed = new Map<string, string[]>();
-  if (commits.length === 0) return changed;
-  const known = new Set(commits.map(commit => commit.sha));
-  const batch = await gitStdin(repo, ['diff-tree', '--stdin', '--root', '-r', '--name-only', '-z'], `${commits.map(commit => commit.sha).join('\n')}\n`);
-  if (batch.code !== 0) {
-    // 坏对象（tree 丢了）不该让整个面板打不开：逐提交降级，读不到的按「没有改动信息」处理。
-    return new Map(await Promise.all(commits.map(async commit => [
-      commit.sha,
-      await changedFilesOf(repo, commit).catch(() => [] as string[]),
-    ] as const)));
-  }
-  let current: string | null = null;
-  for (const token of batch.stdout.split('\0')) {
-    if (known.has(token)) {
-      current = token;
-      changed.set(token, []);
-      continue;
-    }
-    if (!token || !current) continue;
-    changed.get(current)!.push(token);
-  }
-  for (const commit of commits) {
-    if (commit.parents.length < 2) continue;
-    // 与批量失败同样的降级策略：单个合并提交读不出来，只让这一条缺少改动信息。
-    changed.set(commit.sha, await changedFilesOf(repo, commit).catch(() => [] as string[]));
-  }
-  for (const files of changed.values()) files.sort();
-  return changed;
 }
 
 async function readThumbnails(app: WorkspaceApp) {
   const directory = join(versionRoot(), 'versions', `${app.codeGenType}_${app.id}`);
   const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
-  return new Set(entries.filter(entry => entry.isFile() && entry.name.endsWith('.png')).map(entry => entry.name.slice(0, -4)));
+  return new Set(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.png'))
+      .map((entry) => entry.name.slice(0, -4)),
+  );
 }
 
 /** 一版的文件数与体积：目录列表一次读完，读不出来报「不可用」而不是 0 个文件。 */
@@ -404,11 +473,17 @@ async function treeSize(repo: string, tree: string) {
  * Git 对象丢了（仓库被删、对象被回收）也要能列出来：清单是台账的事实，
  * 那一行显示「统计不可用」，点回退时才报错，而不是让整个面板打不开。
  */
-async function viewOf(app: WorkspaceApp, row: VersionRow, thumbnails: Set<string>): Promise<AppVersion> {
+async function viewOf(
+  app: WorkspaceApp,
+  row: VersionRow,
+  thumbnails: Set<string>,
+): Promise<AppVersion> {
   const repo = versionRepo(app);
   const commit = await resolveCommit(repo, row.commitSha).catch(() => null);
   const changed = commit ? await changedFilesOf(repo, commit).catch(() => []) : [];
-  const size = commit ? await treeSize(repo, commit.tree) : { fileCount: 0, bytes: 0, known: false };
+  const size = commit
+    ? await treeSize(repo, commit.tree)
+    : { fileCount: 0, bytes: 0, known: false };
   return {
     id: row.commitSha,
     title: row.title || fallbackVersionTitle({ changedFiles: changed }),
@@ -435,7 +510,10 @@ async function materialize(app: WorkspaceApp, repo: string, tree: string, sha: s
 
 /** git 不跟踪空目录，模板依赖的上传目录要在物化后补回来。 */
 async function restoreEmptyDirectories(app: WorkspaceApp) {
-  const uploads = app.codeGenType === 'html' || app.codeGenType === 'multi_file' ? 'assets/uploads' : 'public/uploads';
+  const uploads =
+    app.codeGenType === 'html' || app.codeGenType === 'multi_file'
+      ? 'assets/uploads'
+      : 'public/uploads';
   await mkdir(join(workspace(app), uploads), { recursive: true });
 }
 
@@ -458,26 +536,34 @@ async function assertCleanSource(repo: string, tree: string, commit: string) {
   for (const entry of status.split('\0').filter(Boolean)) {
     const code = entry.slice(0, 2);
     const path = entry.slice(3);
-    if (code === '??') { untracked.push(path); continue; }
+    if (code === '??') {
+      untracked.push(path);
+      continue;
+    }
     blocking.add(path);
   }
   const targetPaths = (await git(repo, null, ['ls-tree', '-r', '-z', '--name-only', commit]))
-    .split('\0').filter(Boolean);
+    .split('\0')
+    .filter(Boolean);
   const target = new Set(targetPaths);
   // 未跟踪文件只在目标树里也有同名路径时才危险（会被覆盖）。
   for (const path of untracked) if (target.has(path)) blocking.add(path);
   // 目标树里、当前索引里没有的路径：只要磁盘上已经有东西（ignored 文件、目录占位），
   // 物化就会覆盖它，而 status 看不见它。
   if (targetPaths.length > 0) {
-    const indexPaths = new Set((await git(repo, null, ['ls-files', '-z'])).split('\0').filter(Boolean));
-    const risky = targetPaths.filter(path => !indexPaths.has(path));
+    const indexPaths = new Set(
+      (await git(repo, null, ['ls-files', '-z'])).split('\0').filter(Boolean),
+    );
+    const risky = targetPaths.filter((path) => !indexPaths.has(path));
     if (risky.length > 0) {
-      const hits = await Promise.all(risky.map(path => pathOccupation(tree, path)));
+      const hits = await Promise.all(risky.map((path) => pathOccupation(tree, path)));
       for (const path of hits) if (path) blocking.add(path);
     }
   }
   if (blocking.size === 0) return;
-  throw new Error(`工作区有未提交的源码改动（${[...blocking].slice(0, 3).join('、')}），请先提交或暂存后再切换版本`);
+  throw new Error(
+    `工作区有未提交的源码改动（${[...blocking].slice(0, 3).join('、')}），请先提交或暂存后再切换版本`,
+  );
 }
 
 /**
@@ -508,7 +594,7 @@ async function isolatedWorkTree(path: string) {
     throw error;
   });
   if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('提交目录不是安全的普通目录');
-  if (await realpath(resolved) !== resolved) throw new Error('提交目录路径不允许软链接');
+  if ((await realpath(resolved)) !== resolved) throw new Error('提交目录路径不允许软链接');
   return resolved;
 }
 
@@ -524,21 +610,41 @@ async function seedIndex(repo: string, baseline: string | null, env: Record<stri
  */
 async function moveHead(repo: string, sha: string) {
   const symbolic = (await gitRaw(repo, null, ['symbolic-ref', '--quiet', 'HEAD'])).code === 0;
-  await git(repo, null, symbolic ? ['update-ref', 'HEAD', sha] : ['update-ref', '--no-deref', 'HEAD', sha]);
+  await git(
+    repo,
+    null,
+    symbolic ? ['update-ref', 'HEAD', sha] : ['update-ref', '--no-deref', 'HEAD', sha],
+  );
 }
 
 function parseNumstat(out: string) {
-  return out.split('\n').filter(Boolean).map(line => {
-    const [added, removed, ...rest] = line.split('\t');
-    return { path: rest[rest.length - 1] ?? '', added: Number(added) || 0, removed: Number(removed) || 0 };
-  }).filter(stat => stat.path);
+  return out
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [added, removed, ...rest] = line.split('\t');
+      return {
+        path: rest[rest.length - 1] ?? '',
+        added: Number(added) || 0,
+        removed: Number(removed) || 0,
+      };
+    })
+    .filter((stat) => stat.path);
 }
 
 /** 这一轮将被提交的改动清单与行数：写标题时用来判断是动结构还是动样式，不进任何展示。 */
 export async function pendingChangeStats(app: WorkspaceApp) {
   const repo = await ensureVersionRepo(app);
   const tree = workspace(app);
-  const out = await git(repo, tree, ['diff', '--numstat', '-M', 'HEAD', '--', '.', ...addExcludes]).catch(() => '');
+  const out = await git(repo, tree, [
+    'diff',
+    '--numstat',
+    '-M',
+    'HEAD',
+    '--',
+    '.',
+    ...addExcludes,
+  ]).catch(() => '');
   return parseNumstat(out);
 }
 
@@ -550,11 +656,13 @@ export async function pendingChangeStatsFrom(app: WorkspaceApp, workTree: string
   const repo = await ensureVersionRepo(app);
   const tree = await isolatedWorkTree(workTree);
   const baseline = await headSha(repo);
-  return withTempIndex(async index => {
+  return withTempIndex(async (index) => {
     const env = { GIT_INDEX_FILE: index };
     await seedIndex(repo, baseline, env);
-    const out = await git(repo, tree, ['diff', '--numstat', '-M', '--', '.', ...addExcludes], { env, cwd: tree })
-      .catch(() => '');
+    const out = await git(repo, tree, ['diff', '--numstat', '-M', '--', '.', ...addExcludes], {
+      env,
+      cwd: tree,
+    }).catch(() => '');
     return parseNumstat(out);
   });
 }
@@ -574,11 +682,17 @@ export type CommitFromInput = {
 };
 
 /** 一次「只构造提交」的结果：不写台账、不移动 HEAD，供发布事务先拿 SHA 再原子落账。 */
-export type PreparedVersion = { sha: string; title: string; changedFiles: string[]; tree: string; parent: string | null };
+export type PreparedVersion = {
+  sha: string;
+  title: string;
+  changedFiles: string[];
+  tree: string;
+  parent: string | null;
+};
 
 /** 平台清单这类文件不是源码：不排除的话每版都会多一个与自己摘要有关的文件。 */
 function excludeSpecs(extra: readonly string[] | undefined) {
-  return [...addExcludes, ...(extra ?? []).map(path => `:(exclude,literal)${path}`)];
+  return [...addExcludes, ...(extra ?? []).map((path) => `:(exclude,literal)${path}`)];
 }
 
 /**
@@ -586,17 +700,24 @@ function excludeSpecs(extra: readonly string[] | undefined) {
  * 只用临时索引；提交对象与钉子在这里落地，台账与 HEAD 由调用方决定。
  */
 async function prepareCommitLocked(input: {
-  repo: string; workTree: string; title: string; parentSha: string | null;
-  excludePaths?: readonly string[]; headFallback?: boolean;
+  repo: string;
+  workTree: string;
+  title: string;
+  parentSha: string | null;
+  excludePaths?: readonly string[];
+  headFallback?: boolean;
 }): Promise<PreparedVersion | null> {
   const { repo, workTree } = input;
   // parentSha 为 null 时默认用仓库 HEAD（工作区提交的老语义）；发布链路要的是「父版本就是记录下来的那个」，
   // 这时显式关掉回退，null 就是无父提交。
   const baseline = input.parentSha ?? (input.headFallback === false ? null : await headSha(repo));
-  return withTempIndex(async index => {
+  return withTempIndex(async (index) => {
     const env = { GIT_INDEX_FILE: index };
     await seedIndex(repo, baseline, env);
-    await git(repo, workTree, ['add', '-A', '-f', '--', '.', ...excludeSpecs(input.excludePaths)], { env, cwd: workTree });
+    await git(repo, workTree, ['add', '-A', '-f', '--', '.', ...excludeSpecs(input.excludePaths)], {
+      env,
+      cwd: workTree,
+    });
     const tree = (await git(repo, null, ['write-tree'], { env })).trim();
     const baseTree = baseline
       ? (await git(repo, null, ['rev-parse', '--verify', `${baseline}^{tree}`])).trim()
@@ -604,15 +725,30 @@ async function prepareCommitLocked(input: {
     // 与父提交同一棵树就说明没有需要版本化的改动（依赖、构建产物、平台元数据已被排除）。
     if (tree === baseTree) return null;
     // 标题要在提交之前定：提交信息与台账标题必须同一句话，否则面板与 git log 会各说一套。
-    const changedFiles = (baseline
-      ? await git(repo, null, ['diff-tree', '-r', '--no-commit-id', '--name-only', '-z', baseTree, tree], { env })
-      : await git(repo, null, ['ls-tree', '-r', '--name-only', '-z', tree], { env })
-    ).split('\0').filter(Boolean).sort();
-    const title = input.title.trim().slice(0, maxTitleLength) || fallbackVersionTitle({ changedFiles });
+    const changedFiles = (
+      baseline
+        ? await git(
+            repo,
+            null,
+            ['diff-tree', '-r', '--no-commit-id', '--name-only', '-z', baseTree, tree],
+            { env },
+          )
+        : await git(repo, null, ['ls-tree', '-r', '--name-only', '-z', tree], { env })
+    )
+      .split('\0')
+      .filter(Boolean)
+      .sort();
+    const title =
+      input.title.trim().slice(0, maxTitleLength) || fallbackVersionTitle({ changedFiles });
     // 不用 `git commit`：它把默认索引与工作区当成提交源，而这里的内容来自任意执行目录。
-    const sha = (await gitCommit(repo, null, [
-      'commit-tree', tree, ...(baseline ? ['-p', baseline] : []), '-m', title,
-    ], { env })).trim();
+    const sha = (
+      await gitCommit(
+        repo,
+        null,
+        ['commit-tree', tree, ...(baseline ? ['-p', baseline] : []), '-m', title],
+        { env },
+      )
+    ).trim();
     // 钉子让这一版在 HEAD 离开之后依然可达：回退到旧版再提交时主线会往回走，
     // 没有钉子的提交会在一段时间后被 Git 回收，清单里就会出现读不出来的行。
     await git(repo, null, ['update-ref', `refs/paimeng/versions/${sha}`, sha]);
@@ -621,22 +757,36 @@ async function prepareCommitLocked(input: {
 }
 
 /** commitVersion 与 commitVersionFrom 共用：唯一差别是提交后要不要把默认索引同步到新 HEAD。 */
-async function writeVersion(input: CommitFromInput & { syncIndex: boolean }): Promise<AppVersion | null> {
+async function writeVersion(
+  input: CommitFromInput & { syncIndex: boolean },
+): Promise<AppVersion | null> {
   const { app } = input;
   return withLock(app, async () => {
     const repo = await ensureVersionRepo(app);
     const workTree = await isolatedWorkTree(input.workTree);
     const prepared = await prepareCommitLocked({
-      repo, workTree, title: input.title, parentSha: input.parentSha ?? null, excludePaths: input.excludePaths,
+      repo,
+      workTree,
+      title: input.title,
+      parentSha: input.parentSha ?? null,
+      excludePaths: input.excludePaths,
     });
     if (!prepared) return null;
-    if (input.updateHead !== false && (prepared.parent === null || prepared.parent === await headSha(repo))) {
+    if (
+      input.updateHead !== false &&
+      (prepared.parent === null || prepared.parent === (await headSha(repo)))
+    ) {
       await moveHead(repo, prepared.sha);
     }
     // 应用工作区这条路沿用「提交后默认索引等于 HEAD」的老语义（git commit 本来就会写索引），
     // 否则 restoreVersion 的脏检查会把已提交的文件当成本地改动。执行目录提交则完全不碰默认索引。
     if (input.syncIndex) await git(repo, null, ['read-tree', prepared.sha]);
-    await insertVersionRow({ appId: app.id, commitSha: prepared.sha, generationId: input.generationId ?? null, title: prepared.title });
+    await insertVersionRow({
+      appId: app.id,
+      commitSha: prepared.sha,
+      generationId: input.generationId ?? null,
+      title: prepared.title,
+    });
     return readVersion(app, prepared.sha);
   });
 }
@@ -662,8 +812,12 @@ export async function prepareVersionCommit(input: {
     const repo = await ensureVersionRepo(app);
     const workTree = await isolatedWorkTree(input.workTree);
     return prepareCommitLocked({
-      repo, workTree, title: input.title, parentSha: input.parentSha ?? null,
-      excludePaths: input.excludePaths, headFallback: input.headFallback,
+      repo,
+      workTree,
+      title: input.title,
+      parentSha: input.parentSha ?? null,
+      excludePaths: input.excludePaths,
+      headFallback: input.headFallback,
     });
   });
 }
@@ -672,7 +826,10 @@ export async function prepareVersionCommit(input: {
  * 发布事务提交后把应用工作区镜像到新版本：HEAD、默认索引和文件一起前进。
  * 这样旧的 git 工具、下载、部署与恢复仍能读到「当前版本」；失败只影响镜像，不影响已提交的版本。
  */
-export async function syncVersionWorkspace(input: { app: WorkspaceApp; versionId: string }): Promise<void> {
+export async function syncVersionWorkspace(input: {
+  app: WorkspaceApp;
+  versionId: string;
+}): Promise<void> {
   const sha = parseVersionId(input.versionId);
   return withLock(input.app, async () => {
     const repo = await ensureVersionRepo(input.app);
@@ -686,7 +843,7 @@ export async function syncVersionWorkspace(input: { app: WorkspaceApp; versionId
 /** 应用仓库当前 HEAD；仓库还不存在、或还没有任何提交时返回 null（调用方据此回落到模板/空基线）。 */
 export async function headVersionSha(app: WorkspaceApp): Promise<string | null> {
   const repo = versionRepo(app);
-  if (!await exists(join(repo, 'HEAD'))) return null;
+  if (!(await exists(join(repo, 'HEAD')))) return null;
   return headSha(repo);
 }
 
@@ -695,15 +852,23 @@ export async function headVersionSha(app: WorkspaceApp): Promise<string | null> 
  * `read-tree --reset -u <sha>` 只写目标树；这里额外用临时索引，应用仓库的默认索引一个字节都不动。
  * 仓库不存在、版本不存在、目标目录被换成软链接都抛错，绝不静默退化成空目录。
  */
-export async function materializeVersionTo(input: { app: WorkspaceApp; versionId: string; target: string }): Promise<string> {
+export async function materializeVersionTo(input: {
+  app: WorkspaceApp;
+  versionId: string;
+  target: string;
+}): Promise<string> {
   const { app } = input;
   const sha = parseVersionId(input.versionId);
-  if (!await exists(join(versionRepo(app), 'HEAD'))) throw new Error('版本仓库不存在，不能用作执行基线');
+  if (!(await exists(join(versionRepo(app), 'HEAD'))))
+    throw new Error('版本仓库不存在，不能用作执行基线');
   const repo = await ensureVersionRepo(app);
   const target = await isolatedWorkTree(input.target);
-  if ((await gitRaw(repo, null, ['cat-file', '-e', `${sha}^{commit}`])).code !== 0) throw new Error('版本不存在，不能用作执行基线');
-  await withTempIndex(async index => {
-    await git(repo, target, ['read-tree', '--reset', '-u', sha], { env: { GIT_INDEX_FILE: index } });
+  if ((await gitRaw(repo, null, ['cat-file', '-e', `${sha}^{commit}`])).code !== 0)
+    throw new Error('版本不存在，不能用作执行基线');
+  await withTempIndex(async (index) => {
+    await git(repo, target, ['read-tree', '--reset', '-u', sha], {
+      env: { GIT_INDEX_FILE: index },
+    });
   });
   return target;
 }
@@ -727,8 +892,19 @@ export async function commitVersionFrom(input: CommitFromInput): Promise<AppVers
  *
  * 标题为空表示这一轮没有可用的总结：按改动文件兜底，绝不留空标题。
  */
-export async function commitVersion(input: { app: WorkspaceApp; title: string; generationId?: string | null }): Promise<AppVersion | null> {
-  return writeVersion({ app: input.app, workTree: workspace(input.app), title: input.title, generationId: input.generationId, updateHead: true, syncIndex: true });
+export async function commitVersion(input: {
+  app: WorkspaceApp;
+  title: string;
+  generationId?: string | null;
+}): Promise<AppVersion | null> {
+  return writeVersion({
+    app: input.app,
+    workTree: workspace(input.app),
+    title: input.title,
+    generationId: input.generationId,
+    updateHead: true,
+    syncIndex: true,
+  });
 }
 
 export type RestoreOutcome = { status: 'restored' | 'unchanged'; version: AppVersion };
@@ -737,7 +913,11 @@ export type RestoreOutcome = { status: 'restored' | 'unchanged'; version: AppVer
 export type WriteGuard = () => Promise<void>;
 
 /** 回退 = 只切到目标提交（detached HEAD），不新增提交、不动任何分支。 */
-export async function restoreVersion(input: { app: WorkspaceApp; versionId: string; guard?: WriteGuard }): Promise<RestoreOutcome> {
+export async function restoreVersion(input: {
+  app: WorkspaceApp;
+  versionId: string;
+  guard?: WriteGuard;
+}): Promise<RestoreOutcome> {
   const { app } = input;
   const target = parseVersionId(input.versionId);
   return withLock(app, async () => {
@@ -746,7 +926,7 @@ export async function restoreVersion(input: { app: WorkspaceApp; versionId: stri
     const tree = workspace(app);
     const commit = await resolveCommit(repo, target);
     await assertCleanSource(repo, tree, commit.sha);
-    if (await headSha(repo) === commit.sha) {
+    if ((await headSha(repo)) === commit.sha) {
       return { status: 'unchanged' as const, version: await readVersion(app, commit.sha) };
     }
     await materialize(app, repo, tree, commit.sha);
@@ -760,13 +940,19 @@ export async function restoreVersion(input: { app: WorkspaceApp; versionId: stri
  * 线性清单：台账决定「有哪些版本、什么顺序」，Git 只补每版的文件事实。
  * current 就是工作区 HEAD——回退到旧版后它与清单第一条不同，这是正常的。
  */
-export async function listVersions(app: WorkspaceApp, options: { query?: string; limit?: number } = {}): Promise<AppVersionOverview> {
+export async function listVersions(
+  app: WorkspaceApp,
+  options: { query?: string; limit?: number } = {},
+): Promise<AppVersionOverview> {
   const repo = versionRepo(app);
-  const head = await exists(join(repo, 'HEAD')) ? await headSha(repo) : null;
-  const [rows, thumbnails] = await Promise.all([listVersionRows(app.id, options), readThumbnails(app)]);
+  const head = (await exists(join(repo, 'HEAD'))) ? await headSha(repo) : null;
+  const [rows, thumbnails] = await Promise.all([
+    listVersionRows(app.id, options),
+    readThumbnails(app),
+  ]);
   return {
     current: head ? { versionId: head } : null,
-    versions: await Promise.all(rows.map(row => viewOf(app, row, thumbnails))),
+    versions: await Promise.all(rows.map((row) => viewOf(app, row, thumbnails))),
     // 租约阻断由 HTTP 入口按鉴权与租约补充，存储层不读数据库。
     blocked: null,
   };
@@ -776,25 +962,45 @@ export async function getVersion(app: WorkspaceApp, versionId: string) {
   return readVersion(app, parseVersionId(versionId));
 }
 
-
-export async function diffVersions(app: WorkspaceApp, baseId: string, targetId: string): Promise<VersionDiff> {
+export async function diffVersions(
+  app: WorkspaceApp,
+  baseId: string,
+  targetId: string,
+): Promise<VersionDiff> {
   const base = await getVersion(app, baseId);
   const target = await getVersion(app, targetId);
   const repo = versionRepo(app);
   const numstat = new Map<string, { added: number; removed: number }>();
-  for (const line of (await git(repo, null, ['diff', '--numstat', '-M', base.id, target.id])).split('\n').filter(Boolean)) {
+  for (const line of (await git(repo, null, ['diff', '--numstat', '-M', base.id, target.id]))
+    .split('\n')
+    .filter(Boolean)) {
     const [added, removed, ...rest] = line.split('\t');
     const path = rest[rest.length - 1] ?? '';
     numstat.set(path, { added: Number(added) || 0, removed: Number(removed) || 0 });
   }
-  const nameStatus = (await git(repo, null, ['diff', '--name-status', '-M', base.id, target.id])).split('\n').filter(Boolean);
-  const files = nameStatus.map(line => {
+  const nameStatus = (await git(repo, null, ['diff', '--name-status', '-M', base.id, target.id]))
+    .split('\n')
+    .filter(Boolean);
+  const files = nameStatus.map((line) => {
     const [code, ...rest] = line.split('\t');
     const path = rest[rest.length - 1] ?? '';
-    const status = code.startsWith('A') ? 'added' as const : code.startsWith('D') ? 'deleted' as const : code.startsWith('R') ? 'renamed' as const : 'modified' as const;
+    const status = code.startsWith('A')
+      ? ('added' as const)
+      : code.startsWith('D')
+        ? ('deleted' as const)
+        : code.startsWith('R')
+          ? ('renamed' as const)
+          : ('modified' as const);
     return { path, status, ...(numstat.get(path) ?? { added: 0, removed: 0 }) };
   });
-  const fullPatch = await git(repo, null, ['diff', '--no-color', '--unified=3', '-M', base.id, target.id]);
+  const fullPatch = await git(repo, null, [
+    'diff',
+    '--no-color',
+    '--unified=3',
+    '-M',
+    base.id,
+    target.id,
+  ]);
   const truncated = fullPatch.length > maxPatchBytes;
   return {
     base,
@@ -806,13 +1012,34 @@ export async function diffVersions(app: WorkspaceApp, baseId: string, targetId: 
 }
 
 /** 已有概述缓存（版本 SHA → 展示标题）。概述与提交信息是两回事，需要它判断要不要重算。 */
-export async function changeStats(app: WorkspaceApp, versionId: string): Promise<Array<{ path: string; added: number; removed: number }>> {
+export async function changeStats(
+  app: WorkspaceApp,
+  versionId: string,
+): Promise<Array<{ path: string; added: number; removed: number }>> {
   const sha = parseVersionId(versionId);
-  const out = await git(versionRepo(app), null, ['diff-tree', '--root', '-r', '--no-commit-id', '-m', '--first-parent', '--numstat', '-M', sha]);
-  return out.split('\n').filter(Boolean).map(line => {
-    const [added, removed, ...rest] = line.split('\t');
-    return { path: rest[rest.length - 1] ?? '', added: Number(added) || 0, removed: Number(removed) || 0 };
-  }).filter(stat => stat.path);
+  const out = await git(versionRepo(app), null, [
+    'diff-tree',
+    '--root',
+    '-r',
+    '--no-commit-id',
+    '-m',
+    '--first-parent',
+    '--numstat',
+    '-M',
+    sha,
+  ]);
+  return out
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [added, removed, ...rest] = line.split('\t');
+      return {
+        path: rest[rest.length - 1] ?? '',
+        added: Number(added) || 0,
+        removed: Number(removed) || 0,
+      };
+    })
+    .filter((stat) => stat.path);
 }
 
 /** 概述缓存：只影响展示标题，不动 Git 历史。临时文件 + rename 保证并发读到的是完整 JSON。 */
@@ -830,5 +1057,8 @@ export async function saveVersionThumbnail(app: WorkspaceApp, versionId: string,
  */
 export async function purgeVersions(app: WorkspaceApp) {
   await rm(versionRepo(app), { recursive: true, force: true });
-  await rm(join(versionRoot(), 'versions', `${app.codeGenType}_${app.id}`), { recursive: true, force: true });
+  await rm(join(versionRoot(), 'versions', `${app.codeGenType}_${app.id}`), {
+    recursive: true,
+    force: true,
+  });
 }

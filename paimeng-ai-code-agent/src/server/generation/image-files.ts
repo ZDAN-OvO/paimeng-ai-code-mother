@@ -44,10 +44,14 @@ const objectKeyPattern = /^attachments\/\d+\/[a-f0-9-]{36}(?:-preview)?\.(?:jpg|
  * 校验并规范化上传字节：确认是静态 JPEG/PNG/WebP、像素不超过上限，再纠正 EXIF 方向、去掉私有元数据
  * 并生成送模型的派生图。任何不合规输入都抛出可直接展示给用户的 400/413。
  */
-export async function validateImageBytes(data: Uint8Array, options: { signal?: AbortSignal } = {}): Promise<ValidatedImage> {
+export async function validateImageBytes(
+  data: Uint8Array,
+  options: { signal?: AbortSignal } = {},
+): Promise<ValidatedImage> {
   if (!data.byteLength) throw imageError(400, '图片内容为空');
   const maxBytes = imageLimits.maxBytes;
-  if (data.byteLength > maxBytes) throw imageError(413, `单张图片不能超过 ${maxBytes / (1024 * 1024)} MiB`);
+  if (data.byteLength > maxBytes)
+    throw imageError(413, `单张图片不能超过 ${maxBytes / (1024 * 1024)} MiB`);
   options.signal?.throwIfAborted();
   const original = Buffer.from(data);
   // metadata 只读头部、不解码像素，所以像素上限在这里显式判断，给出比 sharp 原始报错更可操作的提示。
@@ -57,16 +61,37 @@ export async function validateImageBytes(data: Uint8Array, options: { signal?: A
   } catch {
     throw imageError(400, '无法识别的图片文件，请上传有效的 JPEG、PNG 或 WebP 图片');
   }
-  if (!metadata.format || !metadata.width || !metadata.height || !(metadata.format in formats)) throw imageError(400, '只支持 JPEG、PNG、WebP 图片');
-  if ((metadata.pages ?? 1) !== 1) throw imageError(400, '只支持静态图片，不支持动图；请上传静态 JPEG、PNG 或 WebP');
-  if (metadata.width * metadata.height > imageLimits.maxPixels) throw imageError(400, `图片像素不能超过 ${imageLimits.maxPixels / 1000000} 百万，请先压缩尺寸`);
+  if (!metadata.format || !metadata.width || !metadata.height || !(metadata.format in formats))
+    throw imageError(400, '只支持 JPEG、PNG、WebP 图片');
+  if ((metadata.pages ?? 1) !== 1)
+    throw imageError(400, '只支持静态图片，不支持动图；请上传静态 JPEG、PNG 或 WebP');
+  if (metadata.width * metadata.height > imageLimits.maxPixels)
+    throw imageError(400, `图片像素不能超过 ${imageLimits.maxPixels / 1000000} 百万，请先压缩尺寸`);
   const format = formats[z.enum(['jpeg', 'png', 'webp']).parse(metadata.format)];
   let normalized: { data: Buffer; info: { width: number; height: number } };
   let previewBytes: Buffer;
   try {
     // 重新编码强制完整解码：应用 EXIF 方向并丢弃私有元数据。limitInputPixels 兜住像素上限。
-    normalized = await sharp(original, { limitInputPixels: imageLimits.maxPixels, failOn: 'warning', animated: false }).timeout(decodeTimeout).rotate().toBuffer({ resolveWithObject: true });
-    previewBytes = await sharp(normalized.data, { limitInputPixels: imageLimits.maxPixels, failOn: 'warning' }).timeout(decodeTimeout).resize({ width: imageLimits.maxEdge, height: imageLimits.maxEdge, fit: 'inside', withoutEnlargement: true }).toBuffer();
+    normalized = await sharp(original, {
+      limitInputPixels: imageLimits.maxPixels,
+      failOn: 'warning',
+      animated: false,
+    })
+      .timeout(decodeTimeout)
+      .rotate()
+      .toBuffer({ resolveWithObject: true });
+    previewBytes = await sharp(normalized.data, {
+      limitInputPixels: imageLimits.maxPixels,
+      failOn: 'warning',
+    })
+      .timeout(decodeTimeout)
+      .resize({
+        width: imageLimits.maxEdge,
+        height: imageLimits.maxEdge,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .toBuffer();
   } catch {
     throw imageError(400, '图片解码失败，请上传有效的 JPEG、PNG 或 WebP 图片');
   }
@@ -91,7 +116,11 @@ export function attachmentDirectory(ownerUserId: string, attachmentId: string): 
 
 async function writeFileAtomic(directory: string, name: string, data: Buffer): Promise<void> {
   const temporary = join(directory, `.pending-${randomUUID()}`);
-  const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  const handle = await open(
+    temporary,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
   try {
     await handle.writeFile(data);
     await handle.sync();
@@ -107,7 +136,12 @@ async function writeFileAtomic(directory: string, name: string, data: Buffer): P
 }
 
 /** 原子写入规范化原图与派生图；任何一步失败（含取消）都回收已写文件。 */
-export async function storeImageObjects(input: { ownerUserId: string; attachmentId: string; image: ValidatedImage; signal?: AbortSignal }): Promise<StoredImageObjects> {
+export async function storeImageObjects(input: {
+  ownerUserId: string;
+  attachmentId: string;
+  image: ValidatedImage;
+  signal?: AbortSignal;
+}): Promise<StoredImageObjects> {
   const directory = attachmentDirectory(input.ownerUserId, input.attachmentId);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const objectName = `${input.attachmentId}.${input.image.extension}`;
@@ -122,7 +156,10 @@ export async function storeImageObjects(input: { ownerUserId: string; attachment
     await rm(join(directory, previewName), { force: true }).catch(() => {});
     throw error;
   }
-  return { objectKey: `attachments/${input.ownerUserId}/${objectName}`, previewKey: `attachments/${input.ownerUserId}/${previewName}` };
+  return {
+    objectKey: `attachments/${input.ownerUserId}/${objectName}`,
+    previewKey: `attachments/${input.ownerUserId}/${previewName}`,
+  };
 }
 
 /** 对象键只来自数据库列，仍在文件边界验证形状后才拼路径。 */

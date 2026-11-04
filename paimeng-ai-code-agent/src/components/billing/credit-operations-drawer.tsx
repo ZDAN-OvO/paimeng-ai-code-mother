@@ -4,8 +4,10 @@ import { App, Drawer, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from '@/client/api';
 import {
-  creditOperationKindLabels, creditOperationStatusLabels,
-  type CreditOperationList, type CreditOperationView,
+  creditOperationKindLabels,
+  creditOperationStatusLabels,
+  type CreditOperationList,
+  type CreditOperationView,
 } from '@/shared/billing';
 import { formatStoredTime } from '@/shared/display';
 import styles from './credit-page.module.css';
@@ -38,38 +40,77 @@ export function CreditOperationsDrawer({ open, onClose }: { open: boolean; onClo
     }
   }, [message]);
 
-  useEffect(() => { if (open) void load(); }, [open, load]);
+  useEffect(() => {
+    if (open) void load();
+  }, [open, load]);
 
   const columns: ColumnsType<CreditOperationView> = [
-    { title: '时间', dataIndex: 'createTime', width: 168, render: value => formatStoredTime(value) },
-    { title: '操作', dataIndex: 'kind', width: 110, render: (value: CreditOperationView['kind']) => creditOperationKindLabels[value] },
-    { title: '操作人', dataIndex: 'operatorName', width: 130, render: value => value ?? 'system' },
+    {
+      title: '时间',
+      dataIndex: 'createTime',
+      width: 168,
+      render: (value) => formatStoredTime(value),
+    },
+    {
+      title: '操作',
+      dataIndex: 'kind',
+      width: 110,
+      render: (value: CreditOperationView['kind']) => creditOperationKindLabels[value],
+    },
+    {
+      title: '操作人',
+      dataIndex: 'operatorName',
+      width: 130,
+      render: (value) => value ?? 'system',
+    },
     {
       title: '范围',
       key: 'scope',
       width: 150,
-      render: (_, row) => <span>{row.period ?? '—'} · {row.targetCount} 人</span>,
+      render: (_, row) => (
+        <span>
+          {row.period ?? '—'} · {row.targetCount} 人
+        </span>
+      ),
     },
     {
       title: '结果',
       key: 'result',
       width: 190,
-      render: (_, row) => <span>
-        <Tag color={statusColors[row.status]}>{creditOperationStatusLabels[row.status]}</Tag>
-        {row.issuedCount} 成功 / {row.failedCount} 失败
-        {row.credits ? <span className={styles.statusHint}> · +{row.credits}</span> : null}
-      </span>,
+      render: (_, row) => (
+        <span>
+          <Tag color={statusColors[row.status]}>{creditOperationStatusLabels[row.status]}</Tag>
+          {row.issuedCount} 成功 / {row.failedCount} 失败
+          {row.credits ? <span className={styles.statusHint}> · +{row.credits}</span> : null}
+        </span>
+      ),
     },
     {
       title: '失败原因',
       dataIndex: 'detail',
-      render: (detail: CreditOperationView['detail']) => detail.length === 0
-        ? <span className={styles.statusHint}>—</span>
-        : detail.slice(0, 3).map(item => <div key={item.userId} className={styles.reasonCell}>{item.userId}：{item.reason}</div>),
+      render: (detail: CreditOperationView['detail']) =>
+        detail.length === 0 ? (
+          <span className={styles.statusHint}>—</span>
+        ) : (
+          detail.slice(0, 3).map((item) => (
+            <div key={item.userId} className={styles.reasonCell}>
+              {item.userId}：{item.reason}
+            </div>
+          ))
+        ),
     },
   ];
 
-  return <Drawer title="最近操作" open={open} onClose={onClose} size={860} destroyOnHidden>
-    <Table rowKey="id" size="small" loading={loading} columns={columns} dataSource={items} pagination={false} />
-  </Drawer>;
+  return (
+    <Drawer title="最近操作" open={open} onClose={onClose} size={860} destroyOnHidden>
+      <Table
+        rowKey="id"
+        size="small"
+        loading={loading}
+        columns={columns}
+        dataSource={items}
+        pagination={false}
+      />
+    </Drawer>
+  );
 }

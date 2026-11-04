@@ -1,0 +1,24 @@
+# Build outputs and local runtime data
+node_modules/
+.next*/
+out/
+build/
+runtime/
+coverage/
+playwright-report/
+test-results/
+next-env.d.ts
+*.tsbuildinfo
+package-lock.json
+
+# Historical documents, versioned generation inputs and binary/static assets
+**/*.md
+docs/
+templates/
+public/
+migrations/
+
+# Local agent artifacts and the unrelated nested working directory
+.pi/
+.audit/
+paimeng-ai-code-agent/

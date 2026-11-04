@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { ratesFromDocument, rateViewOfPrice, resolveRate, SELL_UNIT } from '@/server/billing/rate-card';
+import {
+  ratesFromDocument,
+  rateViewOfPrice,
+  resolveRate,
+  SELL_UNIT,
+} from '@/server/billing/rate-card';
 import { creditDenominationLabel, rateCardUnitLabel, type RateCardView } from '@/shared/billing';
 import type { ModelConfigDocument } from '@/shared/model-document';
 
 /** 只填费率解析关心的字段，其余按「成本未知」构造。 */
-function rate(providerId: string, modelName: string, effectiveFrom: string, creditInputMiss = 600): RateCardView {
+function rate(
+  providerId: string,
+  modelName: string,
+  effectiveFrom: string,
+  creditInputMiss = 600,
+): RateCardView {
   return {
     providerId,
     modelName,
@@ -32,26 +42,47 @@ const rates: RateCardView[] = [
 
 describe('按步骤时刻解析费率', () => {
   it('取步骤时刻之前最新的版本', () => {
-    expect(resolveRate(rates, 'env-default', 'deepseek-flash', '2026-10-15 08:00:00.000')?.creditInputMiss).toBe(600);
-    expect(resolveRate(rates, 'env-default', 'deepseek-flash', '2026-11-15 08:00:00.000')?.creditInputMiss).toBe(900);
+    expect(
+      resolveRate(rates, 'env-default', 'deepseek-flash', '2026-10-15 08:00:00.000')
+        ?.creditInputMiss,
+    ).toBe(600);
+    expect(
+      resolveRate(rates, 'env-default', 'deepseek-flash', '2026-11-15 08:00:00.000')
+        ?.creditInputMiss,
+    ).toBe(900);
   });
 
   it('未来版本不得提前生效', () => {
-    expect(resolveRate(rates, 'env-default', 'deepseek-flash', '2026-10-31 23:59:59.999')?.creditInputMiss).toBe(600);
+    expect(
+      resolveRate(rates, 'env-default', 'deepseek-flash', '2026-10-31 23:59:59.999')
+        ?.creditInputMiss,
+    ).toBe(600);
   });
 
   it('生效时刻本身算生效，毫秒缺省不影响边界', () => {
-    expect(resolveRate(rates, 'env-default', 'deepseek-flash', '2026-11-01 00:00:00.000')?.creditInputMiss).toBe(900);
-    expect(resolveRate(rates, 'env-default', 'deepseek-flash', '2026-10-01 00:00:00')?.creditInputMiss).toBe(600);
+    expect(
+      resolveRate(rates, 'env-default', 'deepseek-flash', '2026-11-01 00:00:00.000')
+        ?.creditInputMiss,
+    ).toBe(900);
+    expect(
+      resolveRate(rates, 'env-default', 'deepseek-flash', '2026-10-01 00:00:00')?.creditInputMiss,
+    ).toBe(600);
   });
 
   it('早于最早版本时返回未定价', () => {
-    expect(resolveRate(rates, 'env-default', 'deepseek-flash', '2026-09-30 23:59:59.999')).toBeNull();
+    expect(
+      resolveRate(rates, 'env-default', 'deepseek-flash', '2026-09-30 23:59:59.999'),
+    ).toBeNull();
   });
 
   it('提供商与模型名一起参与匹配，不串号', () => {
-    expect(resolveRate(rates, 'env-default', 'deepseek-v4-pro', '2026-10-15 00:00:00.000')?.creditInputMiss).toBe(2600);
-    expect(resolveRate(rates, 'durable', 'deepseek-flash', '2026-10-15 00:00:00.000')?.creditInputMiss).toBe(700);
+    expect(
+      resolveRate(rates, 'env-default', 'deepseek-v4-pro', '2026-10-15 00:00:00.000')
+        ?.creditInputMiss,
+    ).toBe(2600);
+    expect(
+      resolveRate(rates, 'durable', 'deepseek-flash', '2026-10-15 00:00:00.000')?.creditInputMiss,
+    ).toBe(700);
     expect(resolveRate(rates, 'env-default', 'gpt-4o', '2026-10-15 00:00:00.000')).toBeNull();
   });
 });
@@ -85,45 +116,56 @@ describe('JSON 价格版本转费率视图', () => {
   it('同一提供商同名模型只保留自己的价格，孤儿历史价单独保留', () => {
     const document: ModelConfigDocument = {
       schemaVersion: 1,
-      providers: [{
-        id: 'env-default',
-        displayName: '默认',
-        apiFormat: 'openai-chat',
-        baseUrl: 'https://api.example.test/v1',
-        apiKey: { source: 'env', env: 'AI_API_KEY' },
-        options: {},
-        headers: {},
-        enabled: true,
-        createTime: '2026-01-01 00:00:00.000',
-        updateTime: '2026-01-01 00:00:00.000',
-        models: [{
-          id: 'pm_1',
-          upstream: 'deepseek-flash',
-          displayName: 'Flash',
+      providers: [
+        {
+          id: 'env-default',
+          displayName: '默认',
+          apiFormat: 'openai-chat',
+          baseUrl: 'https://api.example.test/v1',
+          apiKey: { source: 'env', env: 'AI_API_KEY' },
+          options: {},
+          headers: {},
           enabled: true,
-          capabilities: { streaming: true, toolCalling: true, structuredOutput: true, imageInput: false },
-          upstreamPrice: null,
-          prices: [{
-            version: 1,
-            effectiveAt: '2026-10-01 00:00:00.000',
-            currency: 'CNY',
-            inputMissFen: 600,
-            inputHitFen: 12,
-            outputFen: 2500,
-            upstreamUsd: null,
-            note: null,
-          }],
           createTime: '2026-01-01 00:00:00.000',
           updateTime: '2026-01-01 00:00:00.000',
-        }],
-      }],
+          models: [
+            {
+              id: 'pm_1',
+              upstream: 'deepseek-flash',
+              displayName: 'Flash',
+              enabled: true,
+              capabilities: {
+                streaming: true,
+                toolCalling: true,
+                structuredOutput: true,
+                imageInput: false,
+              },
+              upstreamPrice: null,
+              prices: [
+                {
+                  version: 1,
+                  effectiveAt: '2026-10-01 00:00:00.000',
+                  currency: 'CNY',
+                  inputMissFen: 600,
+                  inputHitFen: 12,
+                  outputFen: 2500,
+                  upstreamUsd: null,
+                  note: null,
+                },
+              ],
+              createTime: '2026-01-01 00:00:00.000',
+              updateTime: '2026-01-01 00:00:00.000',
+            },
+          ],
+        },
+      ],
       slots: [],
       legacyPrices: [rate('legacy-provider', 'old-model', '2020-01-01 00:00:00.000', 42)],
     };
     const views = ratesFromDocument(document);
     expect(views).toHaveLength(2);
-    expect(views.find(view => view.providerId === 'env-default')?.creditInputMiss).toBe(600);
-    expect(views.find(view => view.providerId === 'legacy-provider')?.creditInputMiss).toBe(42);
+    expect(views.find((view) => view.providerId === 'env-default')?.creditInputMiss).toBe(600);
+    expect(views.find((view) => view.providerId === 'legacy-provider')?.creditInputMiss).toBe(42);
   });
 });
 

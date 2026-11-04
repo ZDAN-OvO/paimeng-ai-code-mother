@@ -37,29 +37,40 @@ export function isAllowedLicense(license: string | null) {
 
 export function licenseUrlFor(license: string | null, version: string | null) {
   switch (license?.trim().toLowerCase()) {
-    case 'cc0': return 'https://creativecommons.org/publicdomain/zero/1.0/';
-    case 'pdm': return 'https://creativecommons.org/publicdomain/mark/1.0/';
-    case 'by': return `https://creativecommons.org/licenses/by/${version?.trim() || '4.0'}/`;
-    default: return null;
+    case 'cc0':
+      return 'https://creativecommons.org/publicdomain/zero/1.0/';
+    case 'pdm':
+      return 'https://creativecommons.org/publicdomain/mark/1.0/';
+    case 'by':
+      return `https://creativecommons.org/licenses/by/${version?.trim() || '4.0'}/`;
+    default:
+      return null;
   }
 }
 
 const openverseSchema = z.object({
-  results: z.array(z.object({
-    title: z.string().nullish(),
-    url: z.string().nullish(),
-    foreign_landing_url: z.string().nullish(),
-    creator: z.string().nullish(),
-    license: z.string().nullish(),
-    license_version: z.string().nullish(),
-    attribution: z.string().nullish(),
-    width: z.number().nullish(),
-    height: z.number().nullish(),
-  })).default([]),
+  results: z
+    .array(
+      z.object({
+        title: z.string().nullish(),
+        url: z.string().nullish(),
+        foreign_landing_url: z.string().nullish(),
+        creator: z.string().nullish(),
+        license: z.string().nullish(),
+        license_version: z.string().nullish(),
+        attribution: z.string().nullish(),
+        width: z.number().nullish(),
+        height: z.number().nullish(),
+      }),
+    )
+    .default([]),
 });
 
 /** 许可可核验档：只返回白名单许可内的素材，动漫角色一类的素材在这里基本没有。 */
-export async function openverseImages(query: string, options: { signal?: AbortSignal; deps?: HttpDeps }): Promise<ImageCandidate[]> {
+export async function openverseImages(
+  query: string,
+  options: { signal?: AbortSignal; deps?: HttpDeps },
+): Promise<ImageCandidate[]> {
   const url = `${webAccessEndpoints.openverse}?${new URLSearchParams({ q: query, license: 'cc0,pdm,by', mature: 'false', page_size: String(webAccessLimits.images.results) })}`;
   const payload = await httpGet(url, {
     signal: options.signal,
@@ -72,34 +83,41 @@ export async function openverseImages(query: string, options: { signal?: AbortSi
   });
   const parsed = openverseSchema.safeParse(readJson(payload.body, '图片服务'));
   if (!parsed.success) throw new WebAccessError('invalid-response', '图片服务返回了无法解析的结果');
-  return parsed.data.results.flatMap(entry => {
+  return parsed.data.results.flatMap((entry) => {
     const imageUrl = entry.url ?? '';
     const license = entry.license ?? null;
     if (!/^https?:\/\//i.test(imageUrl) || !isAllowedLicense(license)) return [];
-    return [{
-      id: candidateIdFor(imageUrl),
-      imageUrl,
-      sourcePage: entry.foreign_landing_url ?? imageUrl,
-      title: entry.title?.trim() || imageUrl.split('/').pop() || '未命名素材',
-      description: null,
-      creator: entry.creator?.trim() || null,
-      license: license?.trim().toLowerCase() ?? null,
-      licenseUrl: licenseUrlFor(license, entry.license_version ?? null),
-      licenseKnown: true,
-      width: entry.width ?? null,
-      height: entry.height ?? null,
-      attribution: entry.attribution?.trim() || null,
-    } satisfies ImageCandidate];
+    return [
+      {
+        id: candidateIdFor(imageUrl),
+        imageUrl,
+        sourcePage: entry.foreign_landing_url ?? imageUrl,
+        title: entry.title?.trim() || imageUrl.split('/').pop() || '未命名素材',
+        description: null,
+        creator: entry.creator?.trim() || null,
+        license: license?.trim().toLowerCase() ?? null,
+        licenseUrl: licenseUrlFor(license, entry.license_version ?? null),
+        licenseKnown: true,
+        width: entry.width ?? null,
+        height: entry.height ?? null,
+        attribution: entry.attribution?.trim() || null,
+      } satisfies ImageCandidate,
+    ];
   });
 }
 
 /** 消费 tavily.ts 已归一化的结果：类型直接传入，不再拿 schema 把同一份数据重解析一遍。 */
 function toTavilyCandidates(results: TavilyResult[], images: TavilyImage[]): ImageCandidate[] {
   const found: ImageCandidate[] = [];
-  const push = (rawUrl: string, sourcePage: string, pageTitle: string, description: string | null) => {
+  const push = (
+    rawUrl: string,
+    sourcePage: string,
+    pageTitle: string,
+    description: string | null,
+  ) => {
     if (!/^https?:\/\//i.test(rawUrl)) return;
     const id = candidateIdFor(rawUrl);
-    if (found.some(entry => entry.id === id)) return;
+    if (found.some((entry) => entry.id === id)) return;
     found.push({
       id,
       imageUrl: rawUrl,
@@ -118,7 +136,8 @@ function toTavilyCandidates(results: TavilyResult[], images: TavilyImage[]): Ima
   };
   for (const entry of images) push(entry.url, '', entry.title ?? '', entry.description);
   for (const result of results) {
-    for (const entry of result.images) push(entry.url, result.url, entry.title || result.title, entry.description);
+    for (const entry of result.images)
+      push(entry.url, result.url, entry.title || result.title, entry.description);
   }
   return found.slice(0, webAccessLimits.images.results);
 }
@@ -127,14 +146,27 @@ function toTavilyCandidates(results: TavilyResult[], images: TavilyImage[]): Ima
  * 通用网络档：覆盖动漫角色等真实需求，但没有许可元数据，导入时必须标注授权状态未知。
  * 搜索服务没有给出图片时退回许可可核验档，避免直接返回空结果。
  */
-export async function webImages(query: string, options: { signal?: AbortSignal; deps?: HttpDeps }): Promise<{ provider: string; candidates: ImageCandidate[] }> {
-  const response = await tavilySearch({ query, maxResults: 3, includeImages: true, signal: options.signal, deps: options.deps });
+export async function webImages(
+  query: string,
+  options: { signal?: AbortSignal; deps?: HttpDeps },
+): Promise<{ provider: string; candidates: ImageCandidate[] }> {
+  const response = await tavilySearch({
+    query,
+    maxResults: 3,
+    includeImages: true,
+    signal: options.signal,
+    deps: options.deps,
+  });
   const candidates = toTavilyCandidates(response.results, response.images);
   if (candidates.length) return { provider: 'tavily', candidates };
   return { provider: 'openverse', candidates: await openverseImages(query, options) };
 }
 
-export async function searchImageCandidates(query: string, options: { strictLicense: boolean; signal?: AbortSignal; deps?: HttpDeps }) {
-  if (options.strictLicense) return { provider: 'openverse', candidates: await openverseImages(query, options) };
+export async function searchImageCandidates(
+  query: string,
+  options: { strictLicense: boolean; signal?: AbortSignal; deps?: HttpDeps },
+) {
+  if (options.strictLicense)
+    return { provider: 'openverse', candidates: await openverseImages(query, options) };
   return webImages(query, options);
 }

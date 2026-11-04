@@ -34,25 +34,35 @@ export function CreditBalance({ refreshToken }: { refreshToken?: string }) {
   }, [user, load, refreshToken]);
 
   if (!user || !summary) return null;
-  return <section className={styles.creditBalance} aria-label="我的积分概览">
-    <p className={styles.pools}>
-      <span>可用<strong>{summary.available}</strong></span>
-      <span aria-hidden="true">·</span>
-      <span>限时<strong>{summary.limited}</strong></span>
-      <span aria-hidden="true">·</span>
-      <span>长期<strong>{summary.lasting}</strong></span>
-    </p>
-    <p className={styles.detail}>
-      <span>{summary.limitedExpiresAt
-        ? `限时积分在北京时间 ${formatBeijingTime(summary.limitedExpiresAt)} 到期，不累积、不折现`
-        : '当前没有会过期的限时积分'}</span>
-      <span aria-hidden="true">·</span>
-      <span>长期积分不过期</span>
-    </p>
-    <p className={styles.detail}>
-      <span>透支线 {summary.overdraft} 积分</span>
-      <span aria-hidden="true">·</span>
-      <span>近 60 天充值 {summary.purchasedCredits60d} 积分</span>
-    </p>
-  </section>;
+  return (
+    <section className={styles.creditBalance} aria-label="我的积分概览">
+      <p className={styles.pools}>
+        <span>
+          可用<strong>{summary.available}</strong>
+        </span>
+        <span aria-hidden="true">·</span>
+        <span>
+          限时<strong>{summary.limited}</strong>
+        </span>
+        <span aria-hidden="true">·</span>
+        <span>
+          长期<strong>{summary.lasting}</strong>
+        </span>
+      </p>
+      <p className={styles.detail}>
+        <span>
+          {summary.limitedExpiresAt
+            ? `限时积分在北京时间 ${formatBeijingTime(summary.limitedExpiresAt)} 到期，不累积、不折现`
+            : '当前没有会过期的限时积分'}
+        </span>
+        <span aria-hidden="true">·</span>
+        <span>长期积分不过期</span>
+      </p>
+      <p className={styles.detail}>
+        <span>透支线 {summary.overdraft} 积分</span>
+        <span aria-hidden="true">·</span>
+        <span>近 60 天充值 {summary.purchasedCredits60d} 积分</span>
+      </p>
+    </section>
+  );
 }

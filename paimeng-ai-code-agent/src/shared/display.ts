@@ -7,7 +7,10 @@ export const codeGenTypeLabels: Record<CodeGenType, string> = {
   react_project: 'React项目模式',
 };
 
-export const codeGenTypeOptions = codeGenTypes.map(value => ({ value, label: codeGenTypeLabels[value] }));
+export const codeGenTypeOptions = codeGenTypes.map((value) => ({
+  value,
+  label: codeGenTypeLabels[value],
+}));
 
 export function formatCodeGenType(value: string | null | undefined): string {
   if (!value) return '未知类型';
@@ -28,10 +31,16 @@ export function parseStoredTime(value: string | null | undefined): Date | null {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? null : date;
   }
-  return new Date(Date.UTC(
-    Number(match[1]), Number(match[2]) - 1, Number(match[3]),
-    Number(match[4]), Number(match[5]), Number(match[6] ?? 0),
-  ));
+  return new Date(
+    Date.UTC(
+      Number(match[1]),
+      Number(match[2]) - 1,
+      Number(match[3]),
+      Number(match[4]),
+      Number(match[5]),
+      Number(match[6] ?? 0),
+    ),
+  );
 }
 
 /** 按本地时区显示存储时间（YYYY-MM-DD HH:mm:ss）。空值返回 fallback。 */

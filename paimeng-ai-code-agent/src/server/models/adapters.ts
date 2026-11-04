@@ -3,7 +3,13 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModelV4, LanguageModelV4Middleware } from '@ai-sdk/provider';
-import { customProvider, defaultSettingsMiddleware, wrapLanguageModel, type LanguageModel, type LanguageModelMiddleware } from 'ai';
+import {
+  customProvider,
+  defaultSettingsMiddleware,
+  wrapLanguageModel,
+  type LanguageModel,
+  type LanguageModelMiddleware,
+} from 'ai';
 import { getConfig } from '../infra/config';
 import {
   isAllowedModelApiKeyEnv,
@@ -43,18 +49,26 @@ export type AliasModels = {
 function resolveModelApiKey(provider: ModelProvider): string {
   if (provider.apiKeySource === 'inline') {
     const apiKey = decryptModelSecret(provider.apiKeyCiphertext);
-    if (!apiKey) throw new ModelConfigInvalidError(`提供商 ${provider.id} 的直接密钥为空，请重新保存密钥`);
+    if (!apiKey)
+      throw new ModelConfigInvalidError(`提供商 ${provider.id} 的直接密钥为空，请重新保存密钥`);
     return apiKey;
   }
   if (!isAllowedModelApiKeyEnv(provider.apiKeyEnv, getConfig().modelApiKeyEnvAllowlist)) {
-    throw new ModelConfigInvalidError(`提供商 ${provider.id} 引用了未允许的密钥环境变量 ${provider.apiKeyEnv}`);
+    throw new ModelConfigInvalidError(
+      `提供商 ${provider.id} 引用了未允许的密钥环境变量 ${provider.apiKeyEnv}`,
+    );
   }
   const apiKey = process.env[provider.apiKeyEnv];
-  if (!apiKey) throw new ModelConfigInvalidError(`提供商 ${provider.id} 的密钥环境变量 ${provider.apiKeyEnv} 未配置`);
+  if (!apiKey)
+    throw new ModelConfigInvalidError(
+      `提供商 ${provider.id} 的密钥环境变量 ${provider.apiKeyEnv} 未配置`,
+    );
   return apiKey;
 }
 
-function aliasDefaultSettings(settings: ModelAliasSettings): Parameters<typeof defaultSettingsMiddleware>[0]['settings'] {
+function aliasDefaultSettings(
+  settings: ModelAliasSettings,
+): Parameters<typeof defaultSettingsMiddleware>[0]['settings'] {
   const defaults: Parameters<typeof defaultSettingsMiddleware>[0]['settings'] = {};
   if (settings.temperature !== undefined) defaults.temperature = settings.temperature;
   if (settings.topP !== undefined) defaults.topP = settings.topP;
@@ -81,14 +95,23 @@ function reasoningMiddleware(level: ReasoningLevel): LanguageModelV4Middleware {
  * `combineHeaders` 里后到的调用头覆盖，导致用户配的 User-Agent 静默失效；
  * 这里让自定义头最后合并，保证用户配置优先于 SDK 默认值。
  */
-function providerHeadersMiddleware(headers: Readonly<Record<string, string>>): LanguageModelV4Middleware {
+function providerHeadersMiddleware(
+  headers: Readonly<Record<string, string>>,
+): LanguageModelV4Middleware {
   return {
     specificationVersion: 'v4',
-    transformParams: async ({ params }) => ({ ...params, headers: { ...params.headers, ...headers } }),
+    transformParams: async ({ params }) => ({
+      ...params,
+      headers: { ...params.headers, ...headers },
+    }),
   };
 }
 
-function buildProviderModel(provider: ModelProvider, modelName: string, apiKey: string): LanguageModelV4 {
+function buildProviderModel(
+  provider: ModelProvider,
+  modelName: string,
+  apiKey: string,
+): LanguageModelV4 {
   switch (provider.apiFormat) {
     case 'openai-chat': {
       const thinkingSwitch = provider.options.thinkingSwitch;
@@ -101,18 +124,34 @@ function buildProviderModel(provider: ModelProvider, modelName: string, apiKey: 
         supportsStructuredOutputs: provider.options.supportsStructuredOutputs,
         supportsMultiPartToolContent: provider.options.supportsMultiPartToolContent,
         ...(thinkingSwitch
-          ? { transformRequestBody: (requestBody: Record<string, unknown>) => ({ ...requestBody, thinking: { type: thinkingSwitch } }) }
+          ? {
+              transformRequestBody: (requestBody: Record<string, unknown>) => ({
+                ...requestBody,
+                thinking: { type: thinkingSwitch },
+              }),
+            }
           : {}),
       });
       return compatible.chatModel(modelName);
     }
     case 'openai-responses':
       // 带上 fetch 改写：DeepSeek 的 Responses 接口用 response.reasoning_text.* 发思考内容，SDK 只认 summary 事件。
-      return createOpenAI({ baseURL: provider.baseUrl, apiKey, headers: provider.headers, fetch: responsesReasoningFetch }).responses(modelName);
+      return createOpenAI({
+        baseURL: provider.baseUrl,
+        apiKey,
+        headers: provider.headers,
+        fetch: responsesReasoningFetch,
+      }).responses(modelName);
     case 'anthropic-messages':
-      return createAnthropic({ baseURL: provider.baseUrl, apiKey, headers: provider.headers }).messages(modelName);
+      return createAnthropic({
+        baseURL: provider.baseUrl,
+        apiKey,
+        headers: provider.headers,
+      }).messages(modelName);
     default:
-      throw new ModelConfigInvalidError(`提供商 ${provider.id} 的 API 格式 ${provider.apiFormat} 尚未支持`);
+      throw new ModelConfigInvalidError(
+        `提供商 ${provider.id} 的 API 格式 ${provider.apiFormat} 尚未支持`,
+      );
   }
 }
 
@@ -125,7 +164,12 @@ function buildLanguageModel(provider: ModelProvider, alias: ModelAlias): Languag
     // reasoningSummary: null 表示不要上游生成思考摘要，只发最小的 { effort }。
     middleware.push(
       defaultSettingsMiddleware({
-        settings: { ...settings, providerOptions: { openai: { reasoningEffort: reasoning, forceReasoning: true, reasoningSummary: null } } },
+        settings: {
+          ...settings,
+          providerOptions: {
+            openai: { reasoningEffort: reasoning, forceReasoning: true, reasoningSummary: null },
+          },
+        },
       }),
     );
   } else {
@@ -133,7 +177,8 @@ function buildLanguageModel(provider: ModelProvider, alias: ModelAlias): Languag
     if (reasoning) middleware.push(reasoningMiddleware(reasoning));
   }
   const customHeaders = Object.freeze({ ...provider.headers });
-  if (Object.keys(customHeaders).length > 0) middleware.push(providerHeadersMiddleware(customHeaders));
+  if (Object.keys(customHeaders).length > 0)
+    middleware.push(providerHeadersMiddleware(customHeaders));
   const wrapped = wrapLanguageModel({
     model: buildProviderModel(provider, alias.modelName, resolveModelApiKey(provider)),
     middleware,
@@ -146,14 +191,17 @@ export function buildAliasModels(
   aliases: readonly ModelAlias[],
   requiredAliases: readonly string[] = requiredModelAliases,
 ): AliasModels {
-  const providersById = new Map(providers.map(provider => [provider.id, provider]));
+  const providersById = new Map(providers.map((provider) => [provider.id, provider]));
   const bindings: Record<string, AliasModel> = Object.create(null);
   const failures: Record<string, string> = Object.create(null);
   const languageModels: Record<string, LanguageModel> = Object.create(null);
   for (const alias of aliases) {
     try {
       const provider = providersById.get(alias.providerId);
-      if (!provider) throw new ModelConfigInvalidError(`别名 ${alias.alias} 指向不存在的提供商 ${alias.providerId}`);
+      if (!provider)
+        throw new ModelConfigInvalidError(
+          `别名 ${alias.alias} 指向不存在的提供商 ${alias.providerId}`,
+        );
       if (!provider.enabled || !alias.enabled) continue;
       const model = buildLanguageModel(provider, alias);
       bindings[alias.alias] = Object.freeze({

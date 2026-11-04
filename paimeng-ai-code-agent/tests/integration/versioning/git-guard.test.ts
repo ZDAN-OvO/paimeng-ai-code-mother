@@ -12,10 +12,13 @@ const tree = workspace(app);
 
 async function git(args: string[], options: { allowFailure?: boolean } = {}) {
   try {
-    const { stdout, stderr } = await run('git', ['-C', tree, ...args], { env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } });
+    const { stdout, stderr } = await run('git', ['-C', tree, ...args], {
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' },
+    });
     return { ok: true, stdout, stderr };
   } catch (error) {
-    if (options.allowFailure) return { ok: false, stdout: '', stderr: String((error as { stderr?: string }).stderr ?? '') };
+    if (options.allowFailure)
+      return { ok: false, stdout: '', stderr: String((error as { stderr?: string }).stderr ?? '') };
     throw error;
   }
 }
@@ -63,13 +66,19 @@ describe('git 安全闸（reference-transaction hook）', () => {
 
   it('切换 detached HEAD 合法，分支引用不动', async () => {
     const target = (await git(['rev-parse', 'HEAD~1'])).stdout.trim();
-    const refsBefore = (await git(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads/'])).stdout;
+    const refsBefore = (
+      await git(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads/'])
+    ).stdout;
 
     await git(['switch', '-q', '--detach', target]);
 
     expect((await git(['rev-parse', 'HEAD'])).stdout.trim()).toBe(target);
-    expect((await git(['symbolic-ref', '--quiet', '--short', 'HEAD'], { allowFailure: true })).ok).toBe(false);
-    expect((await git(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads/'])).stdout).toBe(refsBefore);
+    expect(
+      (await git(['symbolic-ref', '--quiet', '--short', 'HEAD'], { allowFailure: true })).ok,
+    ).toBe(false);
+    expect(
+      (await git(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads/'])).stdout,
+    ).toBe(refsBefore);
   });
 
   it('detached HEAD 上提交与开分支都放行，主线不动', async () => {
@@ -89,7 +98,9 @@ describe('git 安全闸（reference-transaction hook）', () => {
     const outcome = await git(['branch', '-D', 'side'], { allowFailure: true });
     expect(outcome.ok).toBe(false);
     expect(outcome.stderr).toContain('禁止删除分支');
-    expect((await git(['rev-parse', '--verify', 'refs/heads/side'])).stdout.trim()).toHaveLength(40);
+    expect((await git(['rev-parse', '--verify', 'refs/heads/side'])).stdout.trim()).toHaveLength(
+      40,
+    );
   });
 
   it('非快进更新被拒绝（移到非祖先提交）', async () => {
@@ -123,6 +134,8 @@ describe('git 安全闸（reference-transaction hook）', () => {
     expect(outcome.ok).toBe(true);
     expect((await git(['rev-parse', ref])).stdout.trim()).toBe(older);
     // 保留引用不进用户分支列表
-    expect((await git(['for-each-ref', '--format=%(refname)', 'refs/heads/'])).stdout).not.toContain('refs/paimeng/versions');
+    expect(
+      (await git(['for-each-ref', '--format=%(refname)', 'refs/heads/'])).stdout,
+    ).not.toContain('refs/paimeng/versions');
   });
 });

@@ -7,9 +7,17 @@ import { persistImport, prepareImport } from './import';
 import { readPage } from './read';
 import { searchWithFallback } from './providers';
 import {
-  WebAccessError, toolEmpty, toolFailure, toolOk,
-  type ImageCandidateView, type ImageSearchData, type ImportedImageData,
-  type ToolStatus, type WebPageData, type WebSearchData, type WebSearchResult,
+  WebAccessError,
+  toolEmpty,
+  toolFailure,
+  toolOk,
+  type ImageCandidateView,
+  type ImageSearchData,
+  type ImportedImageData,
+  type ToolStatus,
+  type WebPageData,
+  type WebSearchData,
+  type WebSearchResult,
 } from './types';
 import type { HttpDeps } from './http';
 import type { WorkspaceApp } from '@/server/workspace/workspace';
@@ -22,10 +30,13 @@ export const webAccessToolSchemas = {
 };
 
 export const webAccessToolDescriptions = {
-  webSearch: '联网搜索最新资料，返回标题、链接与摘要。需要最新信息或具体事实时使用，并在回答里引用来源链接。',
+  webSearch:
+    '联网搜索最新资料，返回标题、链接与摘要。需要最新信息或具体事实时使用，并在回答里引用来源链接。',
   readWebPage: '读取指定网页的正文。先用 webSearch 找到链接，再按需读取；返回内容可能被截断。',
-  searchImages: '检索图片素材候选，返回候选 ID、来源页与许可状态。需要真实图片时先检索，再用 importImage 把选中的候选存进工程。',
-  importImage: '把 searchImages 返回的候选图片保存到当前工程，返回可直接使用的本地 src 路径。只接受本轮检索到的候选 ID。',
+  searchImages:
+    '检索图片素材候选，返回候选 ID、来源页与许可状态。需要真实图片时先检索，再用 importImage 把选中的候选存进工程。',
+  importImage:
+    '把 searchImages 返回的候选图片保存到当前工程，返回可直接使用的本地 src 路径。只接受本轮检索到的候选 ID。',
 };
 
 export type WebAccessSession = {
@@ -47,27 +58,49 @@ export type WebAccessToolOptions = {
   deps?: HttpDeps;
 };
 
-export type WebAccessRuntime = Pick<WebAccessToolOptions, 'signal' | 'check' | 'ensureWritable' | 'write'>;
+export type WebAccessRuntime = Pick<
+  WebAccessToolOptions,
+  'signal' | 'check' | 'ensureWritable' | 'write'
+>;
 
 export type WebAccessOperations = {
-  webSearch: (args: { query: string }, runtime: WebAccessRuntime) => Promise<ToolStatus<WebSearchData>>;
-  readWebPage: (args: { url: string }, runtime: WebAccessRuntime) => Promise<ToolStatus<WebPageData>>;
-  searchImages: (args: { query: string }, runtime: WebAccessRuntime) => Promise<ToolStatus<ImageSearchData>>;
-  importImage: (args: { candidateId: string }, runtime: WebAccessRuntime) => Promise<ToolStatus<ImportedImageData>>;
+  webSearch: (
+    args: { query: string },
+    runtime: WebAccessRuntime,
+  ) => Promise<ToolStatus<WebSearchData>>;
+  readWebPage: (
+    args: { url: string },
+    runtime: WebAccessRuntime,
+  ) => Promise<ToolStatus<WebPageData>>;
+  searchImages: (
+    args: { query: string },
+    runtime: WebAccessRuntime,
+  ) => Promise<ToolStatus<ImageSearchData>>;
+  importImage: (
+    args: { candidateId: string },
+    runtime: WebAccessRuntime,
+  ) => Promise<ToolStatus<ImportedImageData>>;
 };
-
 
 export type WebAccessToolSet = ReturnType<typeof createWebAccessTools>;
 export type WebToolName = keyof WebAccessToolSet;
 
 /** 按开关注册：模型只会看到这里返回的工具名；校验与会话转换始终用四个工具的超集。 */
-export function enabledWebToolNames(settings: { enabled: boolean; images: boolean }): WebToolName[] {
+export function enabledWebToolNames(settings: {
+  enabled: boolean;
+  images: boolean;
+}): WebToolName[] {
   if (!settings.enabled) return [];
-  return settings.images ? ['webSearch', 'readWebPage', 'searchImages', 'importImage'] : ['webSearch', 'readWebPage'];
+  return settings.images
+    ? ['webSearch', 'readWebPage', 'searchImages', 'importImage']
+    : ['webSearch', 'readWebPage'];
 }
 
-export function pickEnabledWebTools(tools: WebAccessToolSet, settings: { enabled: boolean; images: boolean }) {
-  return Object.fromEntries(enabledWebToolNames(settings).map(name => [name, tools[name]]));
+export function pickEnabledWebTools(
+  tools: WebAccessToolSet,
+  settings: { enabled: boolean; images: boolean },
+) {
+  return Object.fromEntries(enabledWebToolNames(settings).map((name) => [name, tools[name]]));
 }
 
 function candidateView(candidate: ImageCandidate): ImageCandidateView {
@@ -88,7 +121,11 @@ function candidateView(candidate: ImageCandidate): ImageCandidateView {
   };
 }
 
-export function createWebAccessOperations(options: { app: WorkspaceApp; session: WebAccessSession; deps?: HttpDeps }): WebAccessOperations {
+export function createWebAccessOperations(options: {
+  app: WorkspaceApp;
+  session: WebAccessSession;
+  deps?: HttpDeps;
+}): WebAccessOperations {
   const { app, session, deps } = options;
   const searchCache = new Map<string, Promise<ToolStatus<WebSearchData>>>();
   const readCache = new Map<string, Promise<ToolStatus<WebPageData>>>();
@@ -102,7 +139,11 @@ export function createWebAccessOperations(options: { app: WorkspaceApp; session:
         runtime.check();
         const budget = webAccessLimits.search.totalChars;
         // 搜索源降级链（searxng -> brave -> tavily，按配置可用性）：配额耗尽自动换下一个源。
-        const { provider, results } = await searchWithFallback(query, { maxResults: webAccessLimits.search.results, signal: runtime.signal, deps });
+        const { provider, results } = await searchWithFallback(query, {
+          maxResults: webAccessLimits.search.results,
+          signal: runtime.signal,
+          deps,
+        });
         if (!results.length) return toolEmpty<WebSearchData>('没有搜索到结果，请调整关键词后重试');
         const trimmed: WebSearchResult[] = [];
         let used = 0;
@@ -113,7 +154,12 @@ export function createWebAccessOperations(options: { app: WorkspaceApp; session:
           used += size;
           trimmed.push({ title: result.title, url: result.url, snippet });
         }
-        const data: WebSearchData = { provider, query, retrievedAt: new Date().toISOString(), results: trimmed };
+        const data: WebSearchData = {
+          provider,
+          query,
+          retrievedAt: new Date().toISOString(),
+          results: trimmed,
+        };
         return toolOk(data);
       } catch (error) {
         return toolFailure<WebSearchData>(error);
@@ -131,8 +177,13 @@ export function createWebAccessOperations(options: { app: WorkspaceApp; session:
         runtime.check();
         const budget = webAccessLimits.page.chars;
         const page = await readPage(url, { signal: runtime.signal, deps });
-        if (!page) return toolEmpty<WebPageData>('无法读取该网页正文，可以换一个来源或改用搜索结果里的摘要');
-        const data: WebPageData = { ...page, content: page.content.slice(0, budget), truncated: page.truncated || page.content.length > budget };
+        if (!page)
+          return toolEmpty<WebPageData>('无法读取该网页正文，可以换一个来源或改用搜索结果里的摘要');
+        const data: WebPageData = {
+          ...page,
+          content: page.content.slice(0, budget),
+          truncated: page.truncated || page.content.length > budget,
+        };
         return toolOk(data);
       } catch (error) {
         return toolFailure<WebPageData>(error);
@@ -149,11 +200,17 @@ export function createWebAccessOperations(options: { app: WorkspaceApp; session:
       try {
         runtime.check();
         const strictLicense = webAccessSettings().strictLicense;
-        const { provider, candidates } = await searchImageCandidates(query, { strictLicense, signal: runtime.signal, deps });
+        const { provider, candidates } = await searchImageCandidates(query, {
+          strictLicense,
+          signal: runtime.signal,
+          deps,
+        });
         if (!candidates.length) {
-          return toolEmpty<ImageSearchData>(strictLicense
-            ? '严格许可模式下没有找到合规素材，可以换关键词，或改用 CSS 与已有本地素材'
-            : '没有找到合适的图片素材，可以换关键词，或改用 CSS 与已有本地素材');
+          return toolEmpty<ImageSearchData>(
+            strictLicense
+              ? '严格许可模式下没有找到合规素材，可以换关键词，或改用 CSS 与已有本地素材'
+              : '没有找到合适的图片素材，可以换关键词，或改用 CSS 与已有本地素材',
+          );
         }
         for (const candidate of candidates) session.candidates.set(candidate.id, candidate);
         const data: ImageSearchData = {
@@ -178,7 +235,10 @@ export function createWebAccessOperations(options: { app: WorkspaceApp; session:
   const importImage: WebAccessOperations['importImage'] = async ({ candidateId }, runtime) => {
     runtime.check();
     const candidate = session.candidates.get(candidateId);
-    if (!candidate) return toolFailure<ImportedImageData>(new WebAccessError('unsupported', '候选不存在或不属于本轮生成，请重新调用 searchImages'));
+    if (!candidate)
+      return toolFailure<ImportedImageData>(
+        new WebAccessError('unsupported', '候选不存在或不属于本轮生成，请重新调用 searchImages'),
+      );
     try {
       const prepared = await prepareImport(app, candidate, { signal: runtime.signal, deps });
       if (prepared.kind === 'existing') return toolOk(prepared.data);
@@ -201,9 +261,25 @@ export function createWebAccessTools(options: WebAccessToolOptions) {
   const runtime: WebAccessRuntime = { signal, check, ensureWritable, write };
 
   return {
-    webSearch: tool({ description: webAccessToolDescriptions.webSearch, inputSchema: webAccessToolSchemas.webSearch, execute: async (args) => operations.webSearch(args, runtime) }),
-    readWebPage: tool({ description: webAccessToolDescriptions.readWebPage, inputSchema: webAccessToolSchemas.readWebPage, execute: async (args) => operations.readWebPage(args, runtime) }),
-    searchImages: tool({ description: webAccessToolDescriptions.searchImages, inputSchema: webAccessToolSchemas.searchImages, execute: async (args) => operations.searchImages(args, runtime) }),
-    importImage: tool({ description: webAccessToolDescriptions.importImage, inputSchema: webAccessToolSchemas.importImage, execute: async (args) => operations.importImage(args, runtime) }),
+    webSearch: tool({
+      description: webAccessToolDescriptions.webSearch,
+      inputSchema: webAccessToolSchemas.webSearch,
+      execute: async (args) => operations.webSearch(args, runtime),
+    }),
+    readWebPage: tool({
+      description: webAccessToolDescriptions.readWebPage,
+      inputSchema: webAccessToolSchemas.readWebPage,
+      execute: async (args) => operations.readWebPage(args, runtime),
+    }),
+    searchImages: tool({
+      description: webAccessToolDescriptions.searchImages,
+      inputSchema: webAccessToolSchemas.searchImages,
+      execute: async (args) => operations.searchImages(args, runtime),
+    }),
+    importImage: tool({
+      description: webAccessToolDescriptions.importImage,
+      inputSchema: webAccessToolSchemas.importImage,
+      execute: async (args) => operations.importImage(args, runtime),
+    }),
   };
 }

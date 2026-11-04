@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 /** 槽位的必需能力：只声明会改变调用方式的三种，图片输入随模型差异由管理员按提供商勾选。 */
 export const modelSlotRequirements = ['streaming', 'toolCalling', 'structuredOutput'] as const;
-export type ModelSlotRequirement = typeof modelSlotRequirements[number];
+export type ModelSlotRequirement = (typeof modelSlotRequirements)[number];
 
 type ModelSlotShape = {
   readonly slot: string;
@@ -53,7 +53,7 @@ const modelSlotList = [
 ] as const satisfies readonly ModelSlotShape[];
 
 export const modelSlots = modelSlotList;
-export type ModelSlot = typeof modelSlotList[number];
+export type ModelSlot = (typeof modelSlotList)[number];
 export type ModelSlotName = ModelSlot['slot'];
 type RequiredSlot = Extract<ModelSlot, { readonly optional: false }>;
 type OptionalSlot = Extract<ModelSlot, { readonly optional: true }>;
@@ -64,15 +64,17 @@ export type OptionalModelAlias = OptionalSlot['slot'];
 /** 业务必需槽位：缺失或禁用的完整配置会被写入事务拒绝。 */
 export const requiredModelAliases: readonly RequiredModelAlias[] = modelSlots
   .filter((slot): slot is RequiredSlot => !slot.optional)
-  .map(slot => slot.slot);
+  .map((slot) => slot.slot);
 
 /** 槽位编号到定义的查找；未知编号返回 null。 */
 export function modelSlotOf(slot: string): ModelSlot | null {
-  return modelSlots.find(candidate => candidate.slot === slot) ?? null;
+  return modelSlots.find((candidate) => candidate.slot === slot) ?? null;
 }
 
 /** 按槽位要求生成能力声明：要求的三项为真，其余（含图片输入）为假。 */
-export function capabilitiesForSlot(slot: { readonly requires: readonly ModelSlotRequirement[] }): ModelAliasCapabilities {
+export function capabilitiesForSlot(slot: {
+  readonly requires: readonly ModelSlotRequirement[];
+}): ModelAliasCapabilities {
   return {
     streaming: slot.requires.includes('streaming'),
     toolCalling: slot.requires.includes('toolCalling'),
@@ -86,7 +88,7 @@ export function missingSlotCapabilities(
   slot: { readonly requires: readonly ModelSlotRequirement[] },
   capabilities: ModelAliasCapabilities,
 ): ModelSlotRequirement[] {
-  return slot.requires.filter(requirement => !capabilities[requirement]);
+  return slot.requires.filter((requirement) => !capabilities[requirement]);
 }
 
 /** 能力中文名：校验报错与管理端能力标签共用。 */
@@ -98,8 +100,12 @@ export const modelCapabilityLabels: Record<ModelSlotRequirement | 'imageInput', 
 };
 
 /** 第一版支持的 API 格式；值写入 model_provider.api_format。 */
-export const providerApiFormats = ['openai-chat', 'openai-responses', 'anthropic-messages'] as const;
-export type ProviderApiFormat = typeof providerApiFormats[number];
+export const providerApiFormats = [
+  'openai-chat',
+  'openai-responses',
+  'anthropic-messages',
+] as const;
+export type ProviderApiFormat = (typeof providerApiFormats)[number];
 
 /** 管理端展示名：中文用途 + 协议入口。 */
 export const providerApiFormatLabels: Record<ProviderApiFormat, string> = {
@@ -110,7 +116,7 @@ export const providerApiFormatLabels: Record<ProviderApiFormat, string> = {
 
 /** 密钥来源：引用环境变量，或直接输入（服务端加密后入库）。 */
 export const providerKeySources = ['env', 'inline'] as const;
-export type ProviderKeySource = typeof providerKeySources[number];
+export type ProviderKeySource = (typeof providerKeySources)[number];
 
 /** 显式初始化命令创建的默认提供商标识，创建后不可改名。 */
 export const defaultModelProviderId = 'env-default';
@@ -129,18 +135,39 @@ export function isAllowedModelApiKeyEnv(name: string, configured: readonly strin
 /** 单行状态表主键，`revision` 与 `refreshEpoch` 都写在这一行上。 */
 export const modelConfigStateId = 'models';
 
-export const decimalVersionSchema = z.string().regex(/^(?:0|[1-9][0-9]*)$/, '版本号必须是十进制字符串').refine(value => /^(?:0|[1-9][0-9]*)$/.test(value) && BigInt(value) <= 18446744073709551615n, '版本号超出范围');
+export const decimalVersionSchema = z
+  .string()
+  .regex(/^(?:0|[1-9][0-9]*)$/, '版本号必须是十进制字符串')
+  .refine(
+    (value) => /^(?:0|[1-9][0-9]*)$/.test(value) && BigInt(value) <= 18446744073709551615n,
+    '版本号超出范围',
+  );
 export type ModelConfigVersion = { revision: string; refreshEpoch: string };
 
-export const modelIdentifierSchema = z.string().min(1).max(64).regex(/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/, '标识只能包含小写字母、数字、点、下划线和短横线');
+export const modelIdentifierSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/, '标识只能包含小写字母、数字、点、下划线和短横线');
 export const modelAliasNameSchema = modelIdentifierSchema;
 export const modelProviderIdSchema = modelIdentifierSchema;
-export const modelApiKeyEnvSchema = z.string().max(128, '环境变量名最长 128 个字符').regex(/^[A-Z][A-Z0-9_]*$/, '环境变量名只能包含大写字母、数字和下划线');
+export const modelApiKeyEnvSchema = z
+  .string()
+  .max(128, '环境变量名最长 128 个字符')
+  .regex(/^[A-Z][A-Z0-9_]*$/, '环境变量名只能包含大写字母、数字和下划线');
 export const modelBaseUrlSchema = z.string().min(1).max(2048);
 
 /** 思考强度等级：AI SDK 的统一参数 `reasoning`，各 API 格式由提供方自行映射。 */
-export const reasoningLevels = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
-export type ReasoningLevel = typeof reasoningLevels[number];
+export const reasoningLevels = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const;
+export type ReasoningLevel = (typeof reasoningLevels)[number];
 
 /** 思考强度中文标签；不指定时完全不发送该参数。 */
 export const reasoningLevelLabels: Record<ReasoningLevel, string> = {
@@ -155,7 +182,7 @@ export const reasoningLevelLabels: Record<ReasoningLevel, string> = {
 
 /** DeepSeek Chat 格式的思考开关（请求体 `thinking: {type}`）；不指定时不发送该字段。 */
 export const thinkingSwitchValues = ['enabled', 'disabled'] as const;
-export type ThinkingSwitch = typeof thinkingSwitchValues[number];
+export type ThinkingSwitch = (typeof thinkingSwitchValues)[number];
 
 export const thinkingSwitchLabels: Record<ThinkingSwitch, string> = {
   enabled: '强制开启思考',
@@ -170,8 +197,10 @@ const providerOptionFlags = {
 };
 
 /** 管理端可编辑的兼容选项键，由 schema 派生，避免两处名单漂移。 */
-export const modelProviderOptionKeys = Object.keys(providerOptionFlags) as (keyof typeof providerOptionFlags)[];
-export type ModelProviderOptionKey = typeof modelProviderOptionKeys[number];
+export const modelProviderOptionKeys = Object.keys(
+  providerOptionFlags,
+) as (keyof typeof providerOptionFlags)[];
+export type ModelProviderOptionKey = (typeof modelProviderOptionKeys)[number];
 
 export const modelProviderOptionLabels: Record<ModelProviderOptionKey, string> = {
   includeUsage: '统计用量',
@@ -184,24 +213,43 @@ export const modelProviderOptionLabels: Record<ModelProviderOptionKey, string> =
 export const modelProviderChoiceOptionKeys: readonly ModelProviderOptionKey[] = ['thinkingSwitch'];
 
 /** 非布尔选项的下拉取值（空值表示不发送该字段）。 */
-export const modelProviderOptionChoices: Record<'thinkingSwitch', readonly { value: ThinkingSwitch; label: string }[]> = {
-  thinkingSwitch: thinkingSwitchValues.map(value => ({ value, label: thinkingSwitchLabels[value] })),
+export const modelProviderOptionChoices: Record<
+  'thinkingSwitch',
+  readonly { value: ThinkingSwitch; label: string }[]
+> = {
+  thinkingSwitch: thinkingSwitchValues.map((value) => ({
+    value,
+    label: thinkingSwitchLabels[value],
+  })),
 };
 
 export const providerOptionsSchema = z.strictObject(providerOptionFlags).default({});
 export type ModelProviderOptions = z.infer<typeof providerOptionsSchema>;
 
 /** 每种 API 格式允许的选项键；没有对应语义的格式留空，界面据此隐藏开关。 */
-export const providerOptionKeysByFormat: Record<ProviderApiFormat, readonly ModelProviderOptionKey[]> = {
-  'openai-chat': ['includeUsage', 'supportsStructuredOutputs', 'supportsMultiPartToolContent', 'thinkingSwitch'],
+export const providerOptionKeysByFormat: Record<
+  ProviderApiFormat,
+  readonly ModelProviderOptionKey[]
+> = {
+  'openai-chat': [
+    'includeUsage',
+    'supportsStructuredOutputs',
+    'supportsMultiPartToolContent',
+    'thinkingSwitch',
+  ],
   'openai-responses': [],
   'anthropic-messages': [],
 };
 
 /** 校验选项名是否被该格式支持；合规时返回 null。 */
-export function providerOptionsIssue(apiFormat: ProviderApiFormat, options: ModelProviderOptions): string | null {
+export function providerOptionsIssue(
+  apiFormat: ProviderApiFormat,
+  options: ModelProviderOptions,
+): string | null {
   const allowed = providerOptionKeysByFormat[apiFormat];
-  const unsupported = Object.keys(options).filter(key => !allowed.includes(key as ModelProviderOptionKey));
+  const unsupported = Object.keys(options).filter(
+    (key) => !allowed.includes(key as ModelProviderOptionKey),
+  );
   if (!unsupported.length) return null;
   return `${providerApiFormatLabels[apiFormat]} 不支持选项 ${unsupported.join('、')}，请清空该格式不支持的选项`;
 }
@@ -243,7 +291,7 @@ export const providerHeaderNameSchema = z
   .min(1, '请求头名称不能为空')
   .max(providerHeaderNameLimit, `请求头名称最长 ${providerHeaderNameLimit} 个字符`)
   .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, '请求头名称只能包含 token 允许的字符')
-  .refine(name => !isProtectedProviderHeader(name), '该请求头由系统生成，不能自定义');
+  .refine((name) => !isProtectedProviderHeader(name), '该请求头由系统生成，不能自定义');
 
 /** 请求头值：限定为 Node fetch 能编码为 ByteString 的字符，拒绝控制字符、CRLF 与首尾空白，避免保存成功但发送失败。 */
 export const providerHeaderValueSchema = z
@@ -251,7 +299,7 @@ export const providerHeaderValueSchema = z
   .min(1, '请求头值不能为空')
   .max(providerHeaderValueLimit, `请求头值最长 ${providerHeaderValueLimit} 个字符`)
   .regex(/^[\x20-\x7e\x80-\xff]+$/, '请求头值包含非法字符')
-  .refine(value => value.trim() === value, '请求头值首尾不能有空白字符');
+  .refine((value) => value.trim() === value, '请求头值首尾不能有空白字符');
 
 /** 自定义请求头集合：名称大小写不敏感去重，数量不超过 providerHeaderLimit。 */
 export const providerHeadersSchema = z
@@ -265,11 +313,15 @@ export const providerHeadersSchema = z
     for (const name of names) {
       const parsed = providerHeaderNameSchema.safeParse(name);
       if (!parsed.success) {
-        ctx.addIssue({ code: 'custom', message: parsed.error.issues[0]?.message ?? '请求头名称不合法' });
+        ctx.addIssue({
+          code: 'custom',
+          message: parsed.error.issues[0]?.message ?? '请求头名称不合法',
+        });
         continue;
       }
       const lower = name.toLowerCase();
-      if (seen.has(lower)) ctx.addIssue({ code: 'custom', message: `请求头 ${name} 与已有名称大小写重复` });
+      if (seen.has(lower))
+        ctx.addIssue({ code: 'custom', message: `请求头 ${name} 与已有名称大小写重复` });
       seen.add(lower);
     }
   });
@@ -292,15 +344,31 @@ export const modelApiKeyCiphertextSchema = z.string().min(1).max(2048);
 
 /** 写入口径：引用环境变量，或提交明文密钥（空串表示保持已保存的密钥）。 */
 export const modelProviderWriteSchema = z.discriminatedUnion('apiKeySource', [
-  z.strictObject({ ...providerFields, apiKeySource: z.literal('env'), apiKeyEnv: modelApiKeyEnvSchema }),
-  z.strictObject({ ...providerFields, apiKeySource: z.literal('inline'), apiKey: modelApiKeySecretSchema }),
+  z.strictObject({
+    ...providerFields,
+    apiKeySource: z.literal('env'),
+    apiKeyEnv: modelApiKeyEnvSchema,
+  }),
+  z.strictObject({
+    ...providerFields,
+    apiKeySource: z.literal('inline'),
+    apiKey: modelApiKeySecretSchema,
+  }),
 ]);
 export type ModelProviderWriteInput = z.infer<typeof modelProviderWriteSchema>;
 
 /** 存储口径：直接输入的密钥只保留密文，明文不进入任何持久层类型。 */
 export const modelProviderInputSchema = z.discriminatedUnion('apiKeySource', [
-  z.strictObject({ ...providerFields, apiKeySource: z.literal('env'), apiKeyEnv: modelApiKeyEnvSchema }),
-  z.strictObject({ ...providerFields, apiKeySource: z.literal('inline'), apiKeyCiphertext: modelApiKeyCiphertextSchema }),
+  z.strictObject({
+    ...providerFields,
+    apiKeySource: z.literal('env'),
+    apiKeyEnv: modelApiKeyEnvSchema,
+  }),
+  z.strictObject({
+    ...providerFields,
+    apiKeySource: z.literal('inline'),
+    apiKeyCiphertext: modelApiKeyCiphertextSchema,
+  }),
 ]);
 export type ModelProviderInput = z.infer<typeof modelProviderInputSchema>;
 export type ModelProvider = ModelProviderInput & { createTime: string; updateTime: string };
@@ -314,18 +382,20 @@ export const aliasCapabilitiesSchema = z.strictObject({
 });
 export type ModelAliasCapabilities = z.infer<typeof aliasCapabilitiesSchema>;
 
-export const aliasSettingsSchema = z.strictObject({
-  temperature: z.number().min(0).max(2).optional(),
-  topP: z.number().min(0).max(1).optional(),
-  maxOutputTokens: z.number().int().min(1).max(1000000).optional(),
-  reasoning: z.enum(reasoningLevels).optional(),
-  /**
-   * 这个别名指向的模型是不是 DeepSeek 类混合推理模型：是时多轮回放会给 assistant 消息回写
-   * `reasoning_content`（哪怕空串），否则上游 thinking 模式报 400。按别名而非提供商配置——
-   * 网关下并非每个模型都是 DeepSeek 类。
-   */
-  reasoningContentPassthrough: z.boolean().optional(),
-}).default({});
+export const aliasSettingsSchema = z
+  .strictObject({
+    temperature: z.number().min(0).max(2).optional(),
+    topP: z.number().min(0).max(1).optional(),
+    maxOutputTokens: z.number().int().min(1).max(1000000).optional(),
+    reasoning: z.enum(reasoningLevels).optional(),
+    /**
+     * 这个别名指向的模型是不是 DeepSeek 类混合推理模型：是时多轮回放会给 assistant 消息回写
+     * `reasoning_content`（哪怕空串），否则上游 thinking 模式报 400。按别名而非提供商配置——
+     * 网关下并非每个模型都是 DeepSeek 类。
+     */
+    reasoningContentPassthrough: z.boolean().optional(),
+  })
+  .default({});
 export type ModelAliasSettings = z.infer<typeof aliasSettingsSchema>;
 
 export const modelAliasInputSchema = z.strictObject({
@@ -374,10 +444,14 @@ export function modelInternalOriginIssue(value: string): string | null {
 }
 
 /** 校验部署配置的允许名单；只报告条目序号，不回显条目内容。 */
-export function modelConfigListIssues(apiKeyEnvs: readonly string[], internalOrigins: readonly string[]): string[] {
+export function modelConfigListIssues(
+  apiKeyEnvs: readonly string[],
+  internalOrigins: readonly string[],
+): string[] {
   const issues: string[] = [];
   apiKeyEnvs.forEach((name, index) => {
-    if (!modelApiKeyEnvSchema.safeParse(name).success) issues.push(`MODEL_API_KEY_ENV_ALLOWLIST 第 ${index + 1} 项不是合法的环境变量名`);
+    if (!modelApiKeyEnvSchema.safeParse(name).success)
+      issues.push(`MODEL_API_KEY_ENV_ALLOWLIST 第 ${index + 1} 项不是合法的环境变量名`);
   });
   internalOrigins.forEach((origin, index) => {
     const issue = modelInternalOriginIssue(origin);
@@ -387,7 +461,10 @@ export function modelConfigListIssues(apiKeyEnvs: readonly string[], internalOri
 }
 
 /** 返回地址不合规的原因；合规时返回 null。HTTPS 默认放行，HTTP 仅放行部署显式允许的来源。 */
-export function modelBaseUrlIssue(value: string, policy: { internalOrigins: readonly string[] }): string | null {
+export function modelBaseUrlIssue(
+  value: string,
+  policy: { internalOrigins: readonly string[] },
+): string | null {
   let url: URL;
   try {
     url = new URL(value);
@@ -400,8 +477,10 @@ export function modelBaseUrlIssue(value: string, policy: { internalOrigins: read
   if (url.hash) return '模型地址不能包含片段';
   if (url.protocol === 'https:') return null;
   if (isLocalModelHost(url.hostname)) return null;
-  const allowed = policy.internalOrigins.some(origin => originOf(origin) === url.origin);
-  return allowed ? null : '非 HTTPS 模型地址只允许本机或局域网地址（localhost、127.0.0.0/8、10/8、172.16/12、192.168/16、::1），其它来源需在 MODEL_INTERNAL_BASE_URL_ORIGINS 显式允许';
+  const allowed = policy.internalOrigins.some((origin) => originOf(origin) === url.origin);
+  return allowed
+    ? null
+    : '非 HTTPS 模型地址只允许本机或局域网地址（localhost、127.0.0.0/8、10/8、172.16/12、192.168/16、::1），其它来源需在 MODEL_INTERNAL_BASE_URL_ORIGINS 显式允许';
 }
 
 /**
@@ -410,7 +489,10 @@ export function modelBaseUrlIssue(value: string, policy: { internalOrigins: read
  * 169.254/16 也不算，避免把云元数据地址当成本机放行。
  */
 export function isLocalModelHost(hostname: string): boolean {
-  const name = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  const name = hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '');
   if (name === 'localhost' || name.endsWith('.localhost')) return true;
   if (name === '::1' || name.startsWith('fe80:') || /^f[cd][0-9a-f]{2}:/.test(name)) return true;
   const octets = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(name);
@@ -436,13 +518,16 @@ export function modelConfigIssues(
     providerIds.add(provider.id);
     const urlIssue = modelBaseUrlIssue(provider.baseUrl, policy);
     if (urlIssue) issues.push(`提供商 ${provider.id} 的地址不合法：${urlIssue}`);
-    if (provider.apiKeySource === 'env' && !isAllowedModelApiKeyEnv(provider.apiKeyEnv, policy.allowedApiKeyEnvs)) {
+    if (
+      provider.apiKeySource === 'env' &&
+      !isAllowedModelApiKeyEnv(provider.apiKeyEnv, policy.allowedApiKeyEnvs)
+    ) {
       issues.push(`提供商 ${provider.id} 引用了未允许的环境变量 ${provider.apiKeyEnv}`);
     }
     const optionsIssue = providerOptionsIssue(provider.apiFormat, provider.options);
     if (optionsIssue) issues.push(`提供商 ${provider.id}：${optionsIssue}`);
   }
-  const providersById = new Map(providers.map(provider => [provider.id, provider]));
+  const providersById = new Map(providers.map((provider) => [provider.id, provider]));
   const aliasNames = new Set<string>();
   for (const alias of aliases) {
     if (aliasNames.has(alias.alias)) issues.push(`别名重复：${alias.alias}`);
@@ -453,7 +538,7 @@ export function modelConfigIssues(
   }
   for (const slot of modelSlots) {
     if (slot.optional) continue;
-    const alias = aliases.find(candidate => candidate.alias === slot.slot);
+    const alias = aliases.find((candidate) => candidate.alias === slot.slot);
     if (!alias) issues.push(`缺少必需槽位${slot.label}（${slot.slot}）：${slot.missingImpact}`);
     // 已分配的槽位可以因为模型/提供商停用或能力调整而暂时不可用；界面会标红要求重新配置。
     // 运行期由注册表按启用状态过滤，缺失绑定会让生成请求明确失败，而不是回退到别的模型。
@@ -470,14 +555,21 @@ const providerViewFields = {
 
 /** 管理端响应校验：只暴露密钥来源与是否已配置，不含明文、密文或密文长度。 */
 export const modelProviderViewSchema = z.discriminatedUnion('apiKeySource', [
-  z.strictObject({ ...providerViewFields, apiKeySource: z.literal('env'), apiKeyEnv: modelApiKeyEnvSchema }),
+  z.strictObject({
+    ...providerViewFields,
+    apiKeySource: z.literal('env'),
+    apiKeyEnv: modelApiKeyEnvSchema,
+  }),
   z.strictObject({ ...providerViewFields, apiKeySource: z.literal('inline') }),
 ]);
 
 export type ModelProviderView = z.infer<typeof modelProviderViewSchema>;
 
 /** 由存储口径构造视图；直接输入的密钥只保留来源与「已配置」布尔值。 */
-export function toModelProviderView(provider: ModelProvider, apiKeyConfigured: boolean): ModelProviderView {
+export function toModelProviderView(
+  provider: ModelProvider,
+  apiKeyConfigured: boolean,
+): ModelProviderView {
   const common = {
     id: provider.id,
     displayName: provider.displayName,
@@ -508,11 +600,13 @@ export const modelProviderFormatViewSchema = z.strictObject({
 });
 export type ModelProviderFormatView = z.infer<typeof modelProviderFormatViewSchema>;
 
-export const modelProviderFormatViews: readonly ModelProviderFormatView[] = providerApiFormats.map(value => ({
-  value,
-  label: providerApiFormatLabels[value],
-  optionKeys: [...providerOptionKeysByFormat[value]],
-}));
+export const modelProviderFormatViews: readonly ModelProviderFormatView[] = providerApiFormats.map(
+  (value) => ({
+    value,
+    label: providerApiFormatLabels[value],
+    optionKeys: [...providerOptionKeysByFormat[value]],
+  }),
+);
 
 /** 处理本次请求的实例自己的模型缓存状态，不代表其他实例。 */
 export type ModelInstanceStatus = {
@@ -621,6 +715,9 @@ export type ModelProviderProbePayload = z.infer<typeof modelProviderProbeSchema>
 export const providerModelListLimit = 1000;
 
 /** 上游可用模型的下拉选项：id 用于提交，label 用于展示。 */
-export const providerModelSchema = z.strictObject({ id: z.string().min(1), label: z.string().min(1) });
+export const providerModelSchema = z.strictObject({
+  id: z.string().min(1),
+  label: z.string().min(1),
+});
 export const providerModelsViewSchema = z.strictObject({ models: z.array(providerModelSchema) });
 export type ProviderModelsView = z.infer<typeof providerModelsViewSchema>;

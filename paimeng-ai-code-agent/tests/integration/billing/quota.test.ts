@@ -2,13 +2,22 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import {
-  applyBillingMigrations, billingRequest, createBillingUser, envelopeOf, loadBillingDatabase,
+  applyBillingMigrations,
+  billingRequest,
+  createBillingUser,
+  envelopeOf,
+  loadBillingDatabase,
   type BillingTestUser,
 } from '../../support/billing';
 import { db, getPool } from '@/server/infra/db';
 import { creditBalance, creditLedger, sessions, users } from '@/server/infra/schema';
 import { naiveTime, nextPeriodStart, periodOf, periodRange } from '@/server/billing/period';
-import { ensureCurrentPeriod, ensurePeriodQuota, issuePendingQuota, ruleEntryOf } from '@/server/billing/quota';
+import {
+  ensureCurrentPeriod,
+  ensurePeriodQuota,
+  issuePendingQuota,
+  ruleEntryOf,
+} from '@/server/billing/quota';
 import { balanceFactsOf, ensureExpiry } from '@/server/billing/expiry';
 import { rebuildBalance } from '@/server/billing/ledger';
 import { monthlyQuotaCredits, type AccountSummary } from '@/shared/billing';
@@ -29,49 +38,67 @@ const createUser = async () => {
 const idOf = (user: BillingTestUser) => BigInt(user.id);
 
 async function ruleRowsOf(user: BillingTestUser) {
-  return db().select().from(creditLedger)
-    .where(and(
-      eq(creditLedger.userId, idOf(user)),
-      eq(creditLedger.kind, 'quota'),
-      eq(creditLedger.origin, 'rule'),
-    ))
+  return db()
+    .select()
+    .from(creditLedger)
+    .where(
+      and(
+        eq(creditLedger.userId, idOf(user)),
+        eq(creditLedger.kind, 'quota'),
+        eq(creditLedger.origin, 'rule'),
+      ),
+    )
     .orderBy(asc(creditLedger.period));
 }
 
 async function summaryOf(user: BillingTestUser): Promise<AccountSummary> {
-  const response = await envelopeOf<AccountSummary>(await billingRequest('billing/summary', undefined, user.cookie));
+  const response = await envelopeOf<AccountSummary>(
+    await billingRequest('billing/summary', undefined, user.cookie),
+  );
   expect(response.code).toBe(0);
   return response.data;
 }
 
 async function removeCurrentRule(user: BillingTestUser, period: string) {
-  await db().delete(creditLedger).where(and(
-    eq(creditLedger.userId, idOf(user)),
-    eq(creditLedger.kind, 'quota'),
-    eq(creditLedger.origin, 'rule'),
-    eq(creditLedger.period, period),
-  ));
+  await db()
+    .delete(creditLedger)
+    .where(
+      and(
+        eq(creditLedger.userId, idOf(user)),
+        eq(creditLedger.kind, 'quota'),
+        eq(creditLedger.origin, 'rule'),
+        eq(creditLedger.period, period),
+      ),
+    );
   await rebuildBalance(user.id);
 }
 
 /** 造一条真实 Charge 与它的消费/退回行（consume/refund 必须有 charge_id）。 */
-async function seedChargeRows(user: BillingTestUser, input: {
-  credits: number; period: string; at: string; kind?: 'consume' | 'refund';
-}): Promise<string> {
+async function seedChargeRows(
+  user: BillingTestUser,
+  input: {
+    credits: number;
+    period: string;
+    at: string;
+    kind?: 'consume' | 'refund';
+  },
+): Promise<string> {
   const id = randomUUID();
   await db().execute(sql`insert into credit_charge
     (generation_id, app_id, user_id, credits, rate_card_snapshot, usage_snapshot, status, estimated_steps, create_time)
     values (${id}, 0, ${idOf(user)}, 0, '[]'::jsonb, '[]'::jsonb, 'reversed', 0, ${input.at})`);
-  await db().insert(creditLedger).values({
-    userId: idOf(user),
-    kind: input.kind ?? 'consume',
-    origin: 'charge',
-    credits: input.kind === 'refund' ? -input.credits : input.credits,
-    period: input.period,
-    expiresAt: naiveTime(periodRange(input.period).end),
-    chargeId: id,
-    createTime: input.at,
-  });
+  await db()
+    .insert(creditLedger)
+    .values({
+      userId: idOf(user),
+      kind: input.kind ?? 'consume',
+      origin: 'charge',
+      credits: input.kind === 'refund' ? -input.credits : input.credits,
+      period: input.period,
+      expiresAt: naiveTime(periodRange(input.period).end),
+      chargeId: id,
+      createTime: input.at,
+    });
   return id;
 }
 
@@ -83,8 +110,13 @@ beforeAll(async () => {
 afterAll(async () => {
   const ids = created.map(idOf);
   if (ids.length > 0) {
-    const scope = sql.join(ids.map(id => sql`${id}`), sql`, `);
-    await db().execute(sql`delete from credit_ledger where charge_id in (select generation_id from credit_charge where user_id in (${scope}))`);
+    const scope = sql.join(
+      ids.map((id) => sql`${id}`),
+      sql`, `,
+    );
+    await db().execute(
+      sql`delete from credit_ledger where charge_id in (select generation_id from credit_charge where user_id in (${scope}))`,
+    );
     await db().execute(sql`delete from credit_charge where user_id in (${scope})`);
     await db().delete(creditLedger).where(inArray(creditLedger.userId, ids));
     await db().delete(creditBalance).where(inArray(creditBalance.userId, ids));
@@ -99,8 +131,15 @@ describe('每月限时积分', () => {
     const user = await createUser();
     const period = periodOf(new Date());
     const summary = await summaryOf(user);
-    expect(summary).toMatchObject({ limited: monthlyQuotaCredits, lasting: 0, available: monthlyQuotaCredits, period });
-    expect(summary.limitedExpiresAt?.slice(0, 19)).toBe(naiveTime(periodRange(period).end).slice(0, 19));
+    expect(summary).toMatchObject({
+      limited: monthlyQuotaCredits,
+      lasting: 0,
+      available: monthlyQuotaCredits,
+      period,
+    });
+    expect(summary.limitedExpiresAt?.slice(0, 19)).toBe(
+      naiveTime(periodRange(period).end).slice(0, 19),
+    );
 
     const rows = await ruleRowsOf(user);
     expect(rows).toHaveLength(1);
@@ -110,7 +149,10 @@ describe('每月限时积分', () => {
   it('重复 ensure 同一账期只有一行，余额不翻倍', async () => {
     const user = await createUser();
     const at = new Date();
-    expect(await ensurePeriodQuota(user.id, at)).toMatchObject({ granted: false, period: periodOf(at) });
+    expect(await ensurePeriodQuota(user.id, at)).toMatchObject({
+      granted: false,
+      period: periodOf(at),
+    });
     expect(await ruleRowsOf(user)).toHaveLength(1);
     expect((await balanceFactsOf(user.id)).available).toBe(monthlyQuotaCredits);
   });
@@ -118,9 +160,12 @@ describe('每月限时积分', () => {
   it('并发 ensure 下一账期也只落一行', async () => {
     const user = await createUser();
     const at = nextPeriodStart(new Date());
-    const results = await Promise.all([ensurePeriodQuota(user.id, at), ensurePeriodQuota(user.id, at)]);
-    expect(results.filter(result => result.granted)).toHaveLength(1);
-    expect((await ruleRowsOf(user)).filter(row => row.period === periodOf(at))).toHaveLength(1);
+    const results = await Promise.all([
+      ensurePeriodQuota(user.id, at),
+      ensurePeriodQuota(user.id, at),
+    ]);
+    expect(results.filter((result) => result.granted)).toHaveLength(1);
+    expect((await ruleRowsOf(user)).filter((row) => row.period === periodOf(at))).toHaveLength(1);
     expect((await balanceFactsOf(user.id, at)).limited).toBe(monthlyQuotaCredits);
   });
 
@@ -128,7 +173,6 @@ describe('每月限时积分', () => {
     const user = await createUser();
     // 当期消费 200，只剩 300。
     const period = periodOf(new Date());
-    const end = naiveTime(periodRange(period).end);
     await seedChargeRows(user, { credits: -200, period, at: naiveTime(new Date()) });
     await rebuildBalance(user.id);
 
@@ -137,25 +181,38 @@ describe('每月限时积分', () => {
     expect(summary.period).toBe(periodOf(nextAt));
     expect(summary.limited).toBe(monthlyQuotaCredits);
 
-    const expired = await db().select().from(creditLedger).where(and(
-      eq(creditLedger.userId, idOf(user)), eq(creditLedger.kind, 'expire'), eq(creditLedger.period, period),
-    ));
+    const expired = await db()
+      .select()
+      .from(creditLedger)
+      .where(
+        and(
+          eq(creditLedger.userId, idOf(user)),
+          eq(creditLedger.kind, 'expire'),
+          eq(creditLedger.period, period),
+        ),
+      );
     expect(expired).toHaveLength(1);
     expect(expired[0]).toMatchObject({ origin: 'expiry', credits: -300 });
-    expect((await ruleRowsOf(user)).map(row => row.period)).toEqual([period, periodOf(nextAt)]);
+    expect((await ruleRowsOf(user)).map((row) => row.period)).toEqual([period, periodOf(nextAt)]);
   });
 
   it('扫过期是幂等的：再调一次不写第二条', async () => {
     const user = await createUser();
     const nextAt = nextPeriodStart(new Date());
     await ensureExpiry(user.id, nextAt);
-    const first = (await db().select().from(creditLedger).where(and(
-      eq(creditLedger.userId, idOf(user)), eq(creditLedger.kind, 'expire'),
-    ))).length;
+    const first = (
+      await db()
+        .select()
+        .from(creditLedger)
+        .where(and(eq(creditLedger.userId, idOf(user)), eq(creditLedger.kind, 'expire')))
+    ).length;
     await ensureExpiry(user.id, nextAt);
-    const second = (await db().select().from(creditLedger).where(and(
-      eq(creditLedger.userId, idOf(user)), eq(creditLedger.kind, 'expire'),
-    ))).length;
+    const second = (
+      await db()
+        .select()
+        .from(creditLedger)
+        .where(and(eq(creditLedger.userId, idOf(user)), eq(creditLedger.kind, 'expire')))
+    ).length;
     expect(first).toBeGreaterThan(0);
     expect(second).toBe(first);
   });
@@ -177,10 +234,18 @@ describe('每月限时积分', () => {
     const period = periodOf(new Date());
     await removeCurrentRule(zero, period);
     // 规则为 0：写一条 credits=0 的规则行，之后不会每次都被扫到。
-    await db().insert(creditLedger).values({
-      userId: idOf(zero), kind: 'quota', origin: 'rule', credits: 0, period,
-      expiresAt: naiveTime(periodRange(period).end), reason: '暂停发放', createTime: naiveTime(new Date()),
-    });
+    await db()
+      .insert(creditLedger)
+      .values({
+        userId: idOf(zero),
+        kind: 'quota',
+        origin: 'rule',
+        credits: 0,
+        period,
+        expiresAt: naiveTime(periodRange(period).end),
+        reason: '暂停发放',
+        createTime: naiveTime(new Date()),
+      });
     await rebuildBalance(zero.id);
 
     const normal = await createUser();
@@ -191,7 +256,14 @@ describe('每月限时积分', () => {
     expect(await ruleRowsOf(normal)).toHaveLength(0);
 
     const applied = await issuePendingQuota({ userIds: [normal.id] });
-    expect(applied).toMatchObject({ period, scanned: 1, issued: 1, granted: 1, zero: 0, credits: monthlyQuotaCredits });
+    expect(applied).toMatchObject({
+      period,
+      scanned: 1,
+      issued: 1,
+      granted: 1,
+      zero: 0,
+      credits: monthlyQuotaCredits,
+    });
     expect(applied.operationId).toMatch(/^[0-9a-f-]{36}$/);
     expect((await ruleRowsOf(normal))[0]?.period).toBe(period);
 
@@ -206,24 +278,61 @@ describe('账期归属', () => {
     const user = await createUser();
     const oldPeriod = '2020-03';
     const end = naiveTime(periodRange(oldPeriod).end);
-    await db().insert(creditLedger).values({
-      userId: idOf(user), kind: 'quota', origin: 'manual', credits: 100, period: oldPeriod,
-      expiresAt: end, createTime: '2020-03-01 00:00:00.000',
+    await db()
+      .insert(creditLedger)
+      .values({
+        userId: idOf(user),
+        kind: 'quota',
+        origin: 'manual',
+        credits: 100,
+        period: oldPeriod,
+        expiresAt: end,
+        createTime: '2020-03-01 00:00:00.000',
+      });
+    const chargeId = await seedChargeRows(user, {
+      credits: -100,
+      period: oldPeriod,
+      at: '2020-03-15 04:00:00.000',
     });
-    const chargeId = await seedChargeRows(user, { credits: -100, period: oldPeriod, at: '2020-03-15 04:00:00.000' });
-    await db().insert(creditLedger).values([
-      { userId: idOf(user), kind: 'refund', origin: 'reversal', credits: 100, period: oldPeriod, expiresAt: end, chargeId, createTime: '2020-04-01 04:00:00.000' },
-      { userId: idOf(user), kind: 'expire', origin: 'reversal', credits: -100, period: oldPeriod, expiresAt: end, createTime: '2020-04-01 04:00:00.000' },
-    ]);
+    await db()
+      .insert(creditLedger)
+      .values([
+        {
+          userId: idOf(user),
+          kind: 'refund',
+          origin: 'reversal',
+          credits: 100,
+          period: oldPeriod,
+          expiresAt: end,
+          chargeId,
+          createTime: '2020-04-01 04:00:00.000',
+        },
+        {
+          userId: idOf(user),
+          kind: 'expire',
+          origin: 'reversal',
+          credits: -100,
+          period: oldPeriod,
+          expiresAt: end,
+          createTime: '2020-04-01 04:00:00.000',
+        },
+      ]);
     await rebuildBalance(user.id);
 
     const summary = await ensureCurrentPeriod(user.id, nextPeriodStart(new Date()));
     expect(summary.limited).toBe(monthlyQuotaCredits);
     // 旧账期净额为 0，不产生额外的过期行。
-    const oldExpire = await db().select().from(creditLedger).where(and(
-      eq(creditLedger.userId, idOf(user)), eq(creditLedger.kind, 'expire'), eq(creditLedger.period, oldPeriod),
-      eq(creditLedger.origin, 'expiry'),
-    ));
+    const oldExpire = await db()
+      .select()
+      .from(creditLedger)
+      .where(
+        and(
+          eq(creditLedger.userId, idOf(user)),
+          eq(creditLedger.kind, 'expire'),
+          eq(creditLedger.period, oldPeriod),
+          eq(creditLedger.origin, 'expiry'),
+        ),
+      );
     expect(oldExpire).toHaveLength(0);
   });
 

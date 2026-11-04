@@ -7,10 +7,11 @@
  * 这是启发式取证，不是 WCAG 认证：颜色对比度只覆盖纯色背景上的直接文本，
  * 图片/渐变/伪元素背景会被跳过或误报，最终结论必须回看截图。
  */
+
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser } from 'playwright';
 
 type ContrastIssue = {
   tag: string;
@@ -83,8 +84,20 @@ export async function probePreview(url: string, outDir: string): Promise<ProbeRe
   await mkdir(outDir, { recursive: true });
   const browser = await chromium.launch();
   try {
-    const desktop = await observe(browser, url, DESKTOP, join(outDir, 'desktop-full.png'), join(outDir, 'desktop-fold.png'));
-    const mobile = await observe(browser, url, MOBILE, join(outDir, 'mobile-full.png'), join(outDir, 'mobile-fold.png'));
+    const desktop = await observe(
+      browser,
+      url,
+      DESKTOP,
+      join(outDir, 'desktop-full.png'),
+      join(outDir, 'desktop-fold.png'),
+    );
+    const mobile = await observe(
+      browser,
+      url,
+      MOBILE,
+      join(outDir, 'mobile-full.png'),
+      join(outDir, 'mobile-fold.png'),
+    );
     await writeFile(join(outDir, 'dom.html'), desktop.dom, 'utf8');
     const result: ProbeResult = {
       desktop: desktop.findings,
@@ -100,7 +113,13 @@ export async function probePreview(url: string, outDir: string): Promise<ProbeRe
   }
 }
 
-async function observe(browser: Browser, url: string, viewport: { width: number; height: number }, fullPath: string, foldPath: string) {
+async function observe(
+  browser: Browser,
+  url: string,
+  viewport: { width: number; height: number },
+  fullPath: string,
+  foldPath: string,
+) {
   const context = await browser.newContext({
     viewport,
     reducedMotion: 'reduce',
@@ -114,22 +133,32 @@ async function observe(browser: Browser, url: string, viewport: { width: number;
   const hosts = new Map<string, number>();
   const origin = new URL(url).origin;
 
-  page.on('console', message => {
+  page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(clean(message.text()).slice(0, 500));
   });
-  page.on('pageerror', error => pageErrors.push(clean(error.message).slice(0, 500)));
-  page.on('requestfailed', request => {
+  page.on('pageerror', (error) => pageErrors.push(clean(error.message).slice(0, 500)));
+  page.on('requestfailed', (request) => {
     const failure = request.failure();
-    failures.push({ url: clean(request.url()).slice(0, 500), status: null, reason: failure?.errorText ?? 'request failed' });
+    failures.push({
+      url: clean(request.url()).slice(0, 500),
+      status: null,
+      reason: failure?.errorText ?? 'request failed',
+    });
   });
-  page.on('response', response => {
+  page.on('response', (response) => {
     try {
       const target = new URL(response.url());
-      if (target.protocol.startsWith('http') && target.origin !== origin) hosts.set(target.host, (hosts.get(target.host) ?? 0) + 1);
+      if (target.protocol.startsWith('http') && target.origin !== origin)
+        hosts.set(target.host, (hosts.get(target.host) ?? 0) + 1);
     } catch {
       // data: / blob: 等没有可解析的 origin
     }
-    if (response.status() >= 400) failures.push({ url: clean(response.url()).slice(0, 500), status: response.status(), reason: response.statusText() });
+    if (response.status() >= 400)
+      failures.push({
+        url: clean(response.url()).slice(0, 500),
+        status: response.status(),
+        reason: response.statusText(),
+      });
   });
 
   let status: number | null = null;
@@ -137,16 +166,27 @@ async function observe(browser: Browser, url: string, viewport: { width: number;
     const response = await page.goto(url, { waitUntil: 'load', timeout: 30_000 });
     status = response?.status() ?? null;
   } catch (error) {
-    failures.push({ url, status: null, reason: `goto failed: ${clean((error as Error).message).slice(0, 300)}` });
+    failures.push({
+      url,
+      status: null,
+      reason: `goto failed: ${clean((error as Error).message).slice(0, 300)}`,
+    });
   }
   await page.waitForTimeout(700);
-  await page.screenshot({ path: fullPath, fullPage: true, animations: 'disabled' }).catch(() => undefined);
-  await page.screenshot({ path: foldPath, fullPage: false, animations: 'disabled' }).catch(() => undefined);
+  await page
+    .screenshot({ path: fullPath, fullPage: true, animations: 'disabled' })
+    .catch(() => undefined);
+  await page
+    .screenshot({ path: foldPath, fullPage: false, animations: 'disabled' })
+    .catch(() => undefined);
 
   const dom = (await page.content().catch(() => '')).slice(0, 300_000);
   // tsx/esbuild 会给具名函数注入 __name 助手；直接序列化函数会在浏览器里抛 ReferenceError。
   const collector = `(() => { const __name = (target) => target; return (${collectFindings.toString()})(); })()`;
-  const findings = await page.evaluate(collector).catch((): null => null) as Omit<ProbeFindings, 'url' | 'finalUrl' | 'status' | 'errors' | 'network'> | null;
+  const findings = (await page.evaluate(collector).catch((): null => null)) as Omit<
+    ProbeFindings,
+    'url' | 'finalUrl' | 'status' | 'errors' | 'network'
+  > | null;
   await context.close();
 
   const fallback: ProbeFindings = {
@@ -157,10 +197,26 @@ async function observe(browser: Browser, url: string, viewport: { width: number;
     lang: null,
     viewportMeta: null,
     headings: [],
-    counts: { links: 0, buttons: 0, forms: 0, inputs: 0, images: 0, emptyLinks: 0, hashLinks: 0, ariaLive: 0, alerts: 0 },
+    counts: {
+      links: 0,
+      buttons: 0,
+      forms: 0,
+      inputs: 0,
+      images: 0,
+      emptyLinks: 0,
+      hashLinks: 0,
+      ariaLive: 0,
+      alerts: 0,
+    },
     issues: {
-      imagesWithoutAlt: [], brokenImages: [], inputsWithoutName: [], interactiveWithoutName: [],
-      duplicateIds: [], horizontalOverflow: 0, smallTapTargets: [], contrast: [],
+      imagesWithoutAlt: [],
+      brokenImages: [],
+      inputsWithoutName: [],
+      interactiveWithoutName: [],
+      duplicateIds: [],
+      horizontalOverflow: 0,
+      smallTapTargets: [],
+      contrast: [],
     },
     styles: { bodyBackground: '', bodyColor: '', bodyFont: '', h1: null, firstButton: null },
     errors: { console: consoleErrors, page: pageErrors },
@@ -184,12 +240,14 @@ async function observe(browser: Browser, url: string, viewport: { width: number;
 
 function dedupeFailures(items: { url: string; status: number | null; reason: string }[]) {
   const seen = new Set<string>();
-  return items.filter(item => {
-    const key = `${item.url}::${item.status}::${item.reason}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).slice(0, 50);
+  return items
+    .filter((item) => {
+      const key = `${item.url}::${item.status}::${item.reason}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 50);
 }
 
 function clean(value: string) {
@@ -201,31 +259,66 @@ function collectFindings() {
   const visible = (element: Element) => {
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
-    return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0 && rect.width > 0 && rect.height > 0;
+    return (
+      style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      Number(style.opacity) > 0 &&
+      rect.width > 0 &&
+      rect.height > 0
+    );
   };
-  const label = (element: Element) => (element.getAttribute('aria-label') ?? element.getAttribute('title') ?? element.textContent ?? '').replace(/\s+/g, ' ').trim();
+  const label = (element: Element) =>
+    (
+      element.getAttribute('aria-label') ??
+      element.getAttribute('title') ??
+      element.textContent ??
+      ''
+    )
+      .replace(/\s+/g, ' ')
+      .trim();
 
   const images = [...document.querySelectorAll('img')];
-  const imagesWithoutAlt = images.filter(image => !image.hasAttribute('alt') && visible(image)).map(image => (image.getAttribute('src') ?? '').slice(0, 200));
-  const brokenImages = images.filter(image => visible(image) && image.complete && image.naturalWidth === 0).map(image => (image.getAttribute('src') ?? '').slice(0, 200));
+  const imagesWithoutAlt = images
+    .filter((image) => !image.hasAttribute('alt') && visible(image))
+    .map((image) => (image.getAttribute('src') ?? '').slice(0, 200));
+  const brokenImages = images
+    .filter((image) => visible(image) && image.complete && image.naturalWidth === 0)
+    .map((image) => (image.getAttribute('src') ?? '').slice(0, 200));
 
-  const inputs = [...document.querySelectorAll('input, select, textarea')].filter(visible) as HTMLInputElement[];
-  const inputsWithoutName = inputs.filter(input => {
-    if (input.type === 'hidden') return false;
-    const labelled = input.labels && input.labels.length > 0;
-    return !labelled && !input.getAttribute('aria-label') && !input.getAttribute('aria-labelledby') && !input.getAttribute('title');
-  }).map(input => ({ tag: input.tagName.toLowerCase(), type: input.type, id: input.id }));
+  const inputs = [...document.querySelectorAll('input, select, textarea')].filter(
+    visible,
+  ) as HTMLInputElement[];
+  const inputsWithoutName = inputs
+    .filter((input) => {
+      if (input.type === 'hidden') return false;
+      const labelled = input.labels && input.labels.length > 0;
+      return (
+        !labelled &&
+        !input.getAttribute('aria-label') &&
+        !input.getAttribute('aria-labelledby') &&
+        !input.getAttribute('title')
+      );
+    })
+    .map((input) => ({ tag: input.tagName.toLowerCase(), type: input.type, id: input.id }));
 
-  const interactive = [...document.querySelectorAll('button, a[href], [role="button"]')].filter(visible);
-  const interactiveWithoutName = interactive.filter(element => {
-    if (element.getAttribute('aria-hidden') === 'true') return false;
-    return label(element).length === 0 && !element.querySelector('img[alt]:not([alt=""])');
-  }).map(element => element.tagName.toLowerCase()).slice(0, 20);
+  const interactive = [...document.querySelectorAll('button, a[href], [role="button"]')].filter(
+    visible,
+  );
+  const interactiveWithoutName = interactive
+    .filter((element) => {
+      if (element.getAttribute('aria-hidden') === 'true') return false;
+      return label(element).length === 0 && !element.querySelector('img[alt]:not([alt=""])');
+    })
+    .map((element) => element.tagName.toLowerCase())
+    .slice(0, 20);
 
-  const ids = [...document.querySelectorAll('[id]')].map(element => element.id).filter(Boolean);
+  const ids = [...document.querySelectorAll('[id]')].map((element) => element.id).filter(Boolean);
   const idCounts = new Map<string, number>();
   for (const id of ids) idCounts.set(id, (idCounts.get(id) ?? 0) + 1);
-  const duplicateIds = [...idCounts.entries()].filter(([, count]) => count > 1).map(([id]) => id).slice(0, 20);
+  const duplicateIds = [...idCounts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([id]) => id)
+    .slice(0, 20);
 
   const tapTargets: { tag: string; label: string; width: number; height: number }[] = [];
   for (const element of interactive) {
@@ -233,7 +326,12 @@ function collectFindings() {
     if (element.tagName === 'A' && style.display === 'inline') continue;
     const rect = element.getBoundingClientRect();
     if (rect.width < 24 || rect.height < 24) {
-      tapTargets.push({ tag: element.tagName.toLowerCase(), label: label(element).slice(0, 60), width: Math.round(rect.width), height: Math.round(rect.height) });
+      tapTargets.push({
+        tag: element.tagName.toLowerCase(),
+        label: label(element).slice(0, 60),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      });
       if (tapTargets.length >= 20) break;
     }
   }
@@ -241,11 +339,17 @@ function collectFindings() {
   const parseColor = (input: string) => {
     const match = input.match(/rgba?\(([^)]+)\)/);
     if (!match) return null;
-    const parts = match[1].split(/[,/]/).map(value => Number(value.trim())).filter(value => !Number.isNaN(value));
+    const parts = match[1]
+      .split(/[,/]/)
+      .map((value) => Number(value.trim()))
+      .filter((value) => !Number.isNaN(value));
     if (parts.length < 3) return null;
     return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 };
   };
-  const blend = (top: { r: number; g: number; b: number; a: number }, bottom: { r: number; g: number; b: number }) => ({
+  const blend = (
+    top: { r: number; g: number; b: number; a: number },
+    bottom: { r: number; g: number; b: number },
+  ) => ({
     r: top.r * top.a + bottom.r * (1 - top.a),
     g: top.g * top.a + bottom.g * (1 - top.a),
     b: top.b * top.a + bottom.b * (1 - top.a),
@@ -271,18 +375,31 @@ function collectFindings() {
     };
     return 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b);
   };
-  const ratio = (a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }) => {
+  const ratio = (
+    a: { r: number; g: number; b: number },
+    b: { r: number; g: number; b: number },
+  ) => {
     const l1 = luminance(a);
     const l2 = luminance(b);
     return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
   };
 
-  const contrast: { tag: string; text: string; color: string; background: string; ratio: number; fontSize: number; fontWeight: number }[] = [];
-  const textElements = [...document.querySelectorAll('body *')].filter(element => {
+  const contrast: {
+    tag: string;
+    text: string;
+    color: string;
+    background: string;
+    ratio: number;
+    fontSize: number;
+    fontWeight: number;
+  }[] = [];
+  const textElements = [...document.querySelectorAll('body *')].filter((element) => {
     if (!visible(element)) return false;
     if (element.closest('[aria-hidden="true"]')) return false;
     if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(element.tagName)) return false;
-    return [...element.childNodes].some(node => node.nodeType === Node.TEXT_NODE && (node.textContent ?? '').trim().length > 1);
+    return [...element.childNodes].some(
+      (node) => node.nodeType === Node.TEXT_NODE && (node.textContent ?? '').trim().length > 1,
+    );
   });
   for (const element of textElements) {
     if (contrast.length >= 15) break;
@@ -308,10 +425,13 @@ function collectFindings() {
     }
   }
 
-  const headings = [...document.querySelectorAll('h1, h2, h3, h4, h5, h6')].filter(visible).slice(0, 30).map(element => ({
-    level: Number(element.tagName.slice(1)),
-    text: (element.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
-  }));
+  const headings = [...document.querySelectorAll('h1, h2, h3, h4, h5, h6')]
+    .filter(visible)
+    .slice(0, 30)
+    .map((element) => ({
+      level: Number(element.tagName.slice(1)),
+      text: (element.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    }));
   const h1 = document.querySelector('h1');
   const firstButton = document.querySelector('button');
   const bodyStyle = getComputedStyle(document.body);
@@ -340,7 +460,10 @@ function collectFindings() {
       inputsWithoutName,
       interactiveWithoutName,
       duplicateIds,
-      horizontalOverflow: Math.max(0, Math.round(document.documentElement.scrollWidth - window.innerWidth)),
+      horizontalOverflow: Math.max(
+        0,
+        Math.round(document.documentElement.scrollWidth - window.innerWidth),
+      ),
       smallTapTargets: tapTargets,
       contrast,
     },
@@ -348,12 +471,21 @@ function collectFindings() {
       bodyBackground: bodyStyle.backgroundColor,
       bodyColor: bodyStyle.color,
       bodyFont: bodyStyle.fontFamily,
-      h1: h1Style ? { fontFamily: h1Style.fontFamily, fontSize: h1Style.fontSize, fontWeight: h1Style.fontWeight } : null,
-      firstButton: buttonStyle && firstButton ? {
-        background: buttonStyle.backgroundColor,
-        color: buttonStyle.color,
-        height: Math.round(firstButton.getBoundingClientRect().height),
-      } : null,
+      h1: h1Style
+        ? {
+            fontFamily: h1Style.fontFamily,
+            fontSize: h1Style.fontSize,
+            fontWeight: h1Style.fontWeight,
+          }
+        : null,
+      firstButton:
+        buttonStyle && firstButton
+          ? {
+              background: buttonStyle.backgroundColor,
+              color: buttonStyle.color,
+              height: Math.round(firstButton.getBoundingClientRect().height),
+            }
+          : null,
     },
   };
 }
@@ -372,6 +504,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   }
   const result = await probePreview(url, out);
   console.log(`已写入 ${out}`);
-  console.log(`  桌面：${result.desktop.title || '(无标题)'}｜横向溢出 ${result.desktop.issues.horizontalOverflow}px｜控制台 ${result.desktop.errors.console.length} 条`);
-  console.log(`  手机：横向溢出 ${result.mobile.issues.horizontalOverflow}px｜小触控目标 ${result.mobile.issues.smallTapTargets.length} 个`);
+  console.log(
+    `  桌面：${result.desktop.title || '(无标题)'}｜横向溢出 ${result.desktop.issues.horizontalOverflow}px｜控制台 ${result.desktop.errors.console.length} 条`,
+  );
+  console.log(
+    `  手机：横向溢出 ${result.mobile.issues.horizontalOverflow}px｜小触控目标 ${result.mobile.issues.smallTapTargets.length} 个`,
+  );
 }

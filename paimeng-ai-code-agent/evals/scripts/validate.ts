@@ -31,12 +31,19 @@ function checkCase(file: string, suite: string, value: EvalCase) {
   if (value.execution === 'manual') manualCount += 1;
 
   if (templateFor[value.codeGenType] !== value.templateId) {
-    fail(at, `codeGenType=${value.codeGenType} 必须配 templateId=${String(templateFor[value.codeGenType])}，实际是 ${String(value.templateId)}`);
+    fail(
+      at,
+      `codeGenType=${value.codeGenType} 必须配 templateId=${String(templateFor[value.codeGenType])}，实际是 ${String(value.templateId)}`,
+    );
   }
   if (value.execution === 'manual' && suite !== 'multiturn') {
     fail(at, 'manual 只用于 multi-turn（steer / 版本恢复），其他套件必须可自动跑');
   }
-  if (value.execution === 'manual' && !value.followUps.some(item => item.kind === 'steer') && !/手工|手动/.test(value.notes)) {
+  if (
+    value.execution === 'manual' &&
+    !value.followUps.some((item) => item.kind === 'steer') &&
+    !/手工|手动/.test(value.notes)
+  ) {
     fail(at, 'manual 用例必须在 notes 里写清手工步骤，或包含 steer');
   }
   for (const [index, item] of value.followUps.entries()) {
@@ -47,13 +54,18 @@ function checkCase(file: string, suite: string, value: EvalCase) {
       fail(at, `followUps[${index}] 是 answer，但 signals.ask 不是 required`);
     }
   }
-  if (value.signals.ask === 'required' && value.followUps.filter(item => item.kind === 'answer').length !== 1) {
+  if (
+    value.signals.ask === 'required' &&
+    value.followUps.filter((item) => item.kind === 'answer').length !== 1
+  ) {
     fail(at, 'ask=required 的用例必须正好有一个 answer follow-up，否则 runner 会停在等待回答');
   }
-  if (value.signals.citations && value.signals.web !== 'required') fail(at, 'citations=true 要求 signals.web=required');
-  if (suite === 'web' && value.signals.web === 'forbidden') fail(at, 'web 套件里的用例不能 web=forbidden');
+  if (value.signals.citations && value.signals.web !== 'required')
+    fail(at, 'citations=true 要求 signals.web=required');
+  if (suite === 'web' && value.signals.web === 'forbidden')
+    fail(at, 'web 套件里的用例不能 web=forbidden');
 
-  const ids = value.requirements.map(item => item.id);
+  const ids = value.requirements.map((item) => item.id);
   const expected = value.requirements.map((_, index) => `R${index + 1}`);
   if (ids.join(',') !== expected.join(',')) {
     fail(at, `要求 id 必须按顺序连续：期望 ${expected.join(',')}，实际 ${ids.join(',')}`);
@@ -98,8 +110,12 @@ if (errors.length > 0) {
 }
 
 console.log('测评集校验通过');
-console.log(`  套件 ${loaded.length} 个，用例 ${caseCount} 条，其中需要手工执行的 ${manualCount} 条`);
+console.log(
+  `  套件 ${loaded.length} 个，用例 ${caseCount} 条，其中需要手工执行的 ${manualCount} 条`,
+);
 for (const { suite, cases } of loaded) {
-  const manual = cases.filter(item => item.execution === 'manual').length;
-  console.log(`  - ${suite.suite.padEnd(12)} ${String(cases.length).padStart(2)} 条${manual ? `（手工 ${manual}）` : ''}`);
+  const manual = cases.filter((item) => item.execution === 'manual').length;
+  console.log(
+    `  - ${suite.suite.padEnd(12)} ${String(cases.length).padStart(2)} 条${manual ? `（手工 ${manual}）` : ''}`,
+  );
 }

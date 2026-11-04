@@ -8,17 +8,27 @@ import { Alert } from 'antd';
  * 支付通道尚未开通，所以只给「联系管理员补充积分」+ 看额度条这两条真实可用的路径，
  * 不放充值/购买按钮——那是兑现不了的入口。`onClose` 用于手动收起；不传就是不可关闭。
  */
-export function InsufficientCreditsAlert({ message, onClose }: { message: string; onClose?: () => void }) {
-  return <Alert
-    className="insufficient-credits"
-    type="warning"
-    showIcon
-    closable={onClose ? { onClose } : false}
-    title="积分不足，无法开始新的生成"
-    description={<span className="insufficient-credits-next">
-      {message}
-      获得积分后直接重新提交即可，这次的输入会保留。
-      <Link href="/billing">查看我的积分与账单</Link>
-    </span>}
-  />;
+export function InsufficientCreditsAlert({
+  message,
+  onClose,
+}: {
+  message: string;
+  onClose?: () => void;
+}) {
+  return (
+    <Alert
+      className="insufficient-credits"
+      type="warning"
+      showIcon
+      closable={onClose ? { onClose } : false}
+      title="积分不足，无法开始新的生成"
+      description={
+        <span className="insufficient-credits-next">
+          {message}
+          获得积分后直接重新提交即可，这次的输入会保留。
+          <Link href="/billing">查看我的积分与账单</Link>
+        </span>
+      }
+    />
+  );
 }

@@ -1,5 +1,15 @@
 /** 联网工具的错误码与结果状态。错误码面向模型和日志，不承载上游响应正文。 */
-export const webAccessErrorCodes = ['auth', 'quota', 'timeout', 'unavailable', 'blocked-url', 'invalid-response', 'too-large', 'unsupported', 'not-found'] as const;
+export const webAccessErrorCodes = [
+  'auth',
+  'quota',
+  'timeout',
+  'unavailable',
+  'blocked-url',
+  'invalid-response',
+  'too-large',
+  'unsupported',
+  'not-found',
+] as const;
 
 export type WebAccessErrorCode = (typeof webAccessErrorCodes)[number];
 
@@ -15,7 +25,10 @@ export class WebAccessError extends Error {
   }
 }
 
-export type ToolStatus<T> = { status: 'ok'; data: T } | { status: 'empty'; message: string } | { status: 'error'; code: WebAccessErrorCode; message: string };
+export type ToolStatus<T> =
+  | { status: 'ok'; data: T }
+  | { status: 'empty'; message: string }
+  | { status: 'error'; code: WebAccessErrorCode; message: string };
 
 export function toolOk<T>(data: T): ToolStatus<T> {
   return { status: 'ok', data };
@@ -27,8 +40,13 @@ export function toolEmpty<T>(message: string): ToolStatus<T> {
 
 /** 把任意异常收敛成模型可读的错误状态；未知异常不外泄原始信息。 */
 export function toolFailure<T>(error: unknown): ToolStatus<T> {
-  if (error instanceof WebAccessError) return { status: 'error', code: error.code, message: error.message };
-  return { status: 'error', code: 'unavailable', message: '联网工具调用失败，请稍后重试或改用其他方式' };
+  if (error instanceof WebAccessError)
+    return { status: 'error', code: error.code, message: error.message };
+  return {
+    status: 'error',
+    code: 'unavailable',
+    message: '联网工具调用失败，请稍后重试或改用其他方式',
+  };
 }
 
 export type WebSearchResult = { title: string; url: string; snippet: string };

@@ -31,21 +31,35 @@ export function normalizeVersionSummary(raw: string) {
   return [...cleaned].slice(0, versionSummaryLimit).join('').trim();
 }
 
-function promptOf(version: AppVersion, userPrompt: string | null, agentSummary: string | null, stats: FileStat[]) {
-  const files = (stats.length > 0 ? stats.map(stat => stat.path) : version.changedFiles).slice(0, 8);
+function promptOf(
+  version: AppVersion,
+  userPrompt: string | null,
+  agentSummary: string | null,
+  stats: FileStat[],
+) {
+  const files = (stats.length > 0 ? stats.map((stat) => stat.path) : version.changedFiles).slice(
+    0,
+    8,
+  );
   return [
     userPrompt ? `用户这一轮的要求（只用来理解意图，禁止照抄）：${userPrompt}` : '',
-    agentSummary ? `助手收尾时说（可能啰嗦或带代码标记，只当线索）：${agentSummary.slice(0, 300)}` : '',
+    agentSummary
+      ? `助手收尾时说（可能啰嗦或带代码标记，只当线索）：${agentSummary.slice(0, 300)}`
+      : '',
     // 文件名只用来判断这是动结构还是动样式，禁止出现在标题里。
     `改到的文件（仅判断改动范围用，不要写进标题）：${files.join('、') || '（没有文件差异）'}，共 ${version.fileCount} 个。`,
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 /** 概述和用户原话一样（或短到只是原话里的一截）就等于没概括，退回文件级兜底。 */
 function echoesUser(summary: string, userPrompt: string | null) {
   if (!userPrompt) return false;
   const prompt = normalizeVersionSummary(userPrompt);
-  return Boolean(prompt) && (summary === prompt || (summary.length <= 6 && prompt.includes(summary)));
+  return (
+    Boolean(prompt) && (summary === prompt || (summary.length <= 6 && prompt.includes(summary)))
+  );
 }
 
 /**
@@ -77,7 +91,12 @@ export async function summarizeVersion(input: {
     const result = await generateText({
       model,
       system: systemPrompt,
-      prompt: promptOf(input.version, input.userPrompt, input.agentSummary ?? null, input.stats ?? []),
+      prompt: promptOf(
+        input.version,
+        input.userPrompt,
+        input.agentSummary ?? null,
+        input.stats ?? [],
+      ),
       abortSignal: AbortSignal.timeout(6_000),
     });
     const summary = normalizeVersionSummary(result.text);
@@ -105,8 +124,8 @@ export function agentVersionTitle(raw: string | null | undefined): string | null
     .trim();
   const parts = text
     .split(/[。；;！!？?\n，,、:：]/)
-    .map(part => part.replace(/^(好的?|已完成|完成了|搞定|已经|我)[，,、:：\s]*/u, '').trim())
-    .filter(part => part.length > 0 && !fillerOnly.test(part));
+    .map((part) => part.replace(/^(好的?|已完成|完成了|搞定|已经|我)[，,、:：\s]*/u, '').trim())
+    .filter((part) => part.length > 0 && !fillerOnly.test(part));
   const body = parts[0];
   if (!body) return null;
   const chars = [...body];

@@ -3,7 +3,11 @@ import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ModelConfigInvalidError } from '@/server/models/errors';
-import { decryptModelSecret, encryptModelSecret, modelSecretKeyFile } from '@/server/models/secrets';
+import {
+  decryptModelSecret,
+  encryptModelSecret,
+  modelSecretKeyFile,
+} from '@/server/models/secrets';
 
 const savedKey = process.env.MODEL_SECRET_KEY;
 const keyFile = join(process.cwd(), 'runtime', modelSecretKeyFile);

@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import { idSchema } from './contracts';
 
-export const versionIdSchema = z.string().regex(/^[0-9a-f]{40}$/, '版本必须是完整的 Git commit SHA');
+export const versionIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{40}$/, '版本必须是完整的 Git commit SHA');
 
 /**
  * 一版对外的样子：标题与时间来自版本台账，文件事实来自 Git。
@@ -27,17 +29,27 @@ export type AppVersionOverview = {
 };
 
 export const versionTargetSchema = z.object({ appId: idSchema, versionId: versionIdSchema });
-export const versionDiffSchema = z.object({ appId: idSchema, base: versionIdSchema, target: versionIdSchema });
+export const versionDiffSchema = z.object({
+  appId: idSchema,
+  base: versionIdSchema,
+  target: versionIdSchema,
+});
 
 export type VersionDiff = {
   base: AppVersion;
   target: AppVersion;
-  files: { path: string; added: number; removed: number; status: 'added' | 'modified' | 'deleted' | 'renamed' }[];
+  files: {
+    path: string;
+    added: number;
+    removed: number;
+    status: 'added' | 'modified' | 'deleted' | 'renamed';
+  }[];
   patch: string;
   truncated: boolean;
 };
 
-export const WORKSPACE_CHANGED_NOTE = '工作区已切换到所选版本；继续编辑前请重新读取相关文件。下一轮生成成功后，新版本会接在这一版后面。';
+export const WORKSPACE_CHANGED_NOTE =
+  '工作区已切换到所选版本；继续编辑前请重新读取相关文件。下一轮生成成功后，新版本会接在这一版后面。';
 
 /** 版本标题的硬上限：界面一行显示，超过就换行，所以由服务端截断而不是靠 CSS。 */
 export const versionSummaryLimit = 20;
@@ -50,8 +62,10 @@ export function fallbackVersionTitle(version: Pick<AppVersion, 'changedFiles'>) 
   const files = version.changedFiles;
   if (files.length === 0) return '合并已有版本';
   // 路径太长会挤掉「等 N 个文件」，只留文件名。
-  const first = files[0]!.split('/').pop() || files[0]!;
+  const first = files[0].split('/').pop() || files[0];
   const title = files.length === 1 ? `改 ${first}` : `改 ${first} 等 ${files.length} 个文件`;
   const chars = [...title];
-  return chars.length <= versionSummaryLimit ? title : `${chars.slice(0, versionSummaryLimit - 1).join('')}…`;
+  return chars.length <= versionSummaryLimit
+    ? title
+    : `${chars.slice(0, versionSummaryLimit - 1).join('')}…`;
 }

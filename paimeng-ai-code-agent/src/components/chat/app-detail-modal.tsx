@@ -21,7 +21,14 @@ export function formatCreateTime(value?: string | null) {
   return formatStoredTime(value);
 }
 
-export function AppDetailModal({ open, app, showActions, onClose, onEdit, onDelete }: {
+export function AppDetailModal({
+  open,
+  app,
+  showActions,
+  onClose,
+  onEdit,
+  onDelete,
+}: {
   open: boolean;
   app: AppInfo | null;
   showActions: boolean;
@@ -30,32 +37,56 @@ export function AppDetailModal({ open, app, showActions, onClose, onEdit, onDele
   onDelete: () => void;
 }) {
   const creator = app?.user;
-  return <Modal open={open} title="应用详情" footer={null} width={500} onCancel={onClose}>
-    <div className="app-detail-content">
-      <div className="info-item">
-        <span className="info-label">创建者：</span>
-        <Space size={8}>
-          <Avatar size="small" src={creator?.userAvatar ?? undefined} icon={<UserOutlined />} />
-          <span>{creator?.userName || '未知用户'}</span>
-        </Space>
+  return (
+    <Modal open={open} title="应用详情" footer={null} width={500} onCancel={onClose}>
+      <div className="app-detail-content">
+        <div className="info-item">
+          <span className="info-label">创建者：</span>
+          <Space size={8}>
+            <Avatar size="small" src={creator?.userAvatar ?? undefined} icon={<UserOutlined />} />
+            <span>{creator?.userName || '未知用户'}</span>
+          </Space>
+        </div>
+        <div className="info-item">
+          <span className="info-label">创建时间：</span>
+          <span>{formatCreateTime(app?.createTime)}</span>
+        </div>
+        <div className="info-item">
+          <span className="info-label">生成类型：</span>
+          {app?.codeGenType ? (
+            <Tag color="blue">{formatCodeGenType(app.codeGenType)}</Tag>
+          ) : (
+            <span>未知类型</span>
+          )}
+        </div>
+        {app?.template && (
+          <div className="info-item">
+            <span className="info-label">工程模板：</span>
+            <Tag>
+              {app.template.id}@{app.template.version}
+            </Tag>
+          </div>
+        )}
+        {showActions && (
+          <div className="app-detail-actions">
+            <Space>
+              <Button type="primary" icon={<EditOutlined aria-hidden="true" />} onClick={onEdit}>
+                修改
+              </Button>
+              <Popconfirm
+                title="确定要删除这个应用吗？"
+                okText="确定"
+                cancelText="取消"
+                onConfirm={onDelete}
+              >
+                <Button danger icon={<DeleteOutlined aria-hidden="true" />}>
+                  删除
+                </Button>
+              </Popconfirm>
+            </Space>
+          </div>
+        )}
       </div>
-      <div className="info-item">
-        <span className="info-label">创建时间：</span>
-        <span>{formatCreateTime(app?.createTime)}</span>
-      </div>
-      <div className="info-item">
-        <span className="info-label">生成类型：</span>
-        {app?.codeGenType ? <Tag color="blue">{formatCodeGenType(app.codeGenType)}</Tag> : <span>未知类型</span>}
-      </div>
-      {app?.template && <div className="info-item"><span className="info-label">工程模板：</span><Tag>{app.template.id}@{app.template.version}</Tag></div>}
-      {showActions && <div className="app-detail-actions">
-        <Space>
-          <Button type="primary" icon={<EditOutlined aria-hidden="true" />} onClick={onEdit}>修改</Button>
-          <Popconfirm title="确定要删除这个应用吗？" okText="确定" cancelText="取消" onConfirm={onDelete}>
-            <Button danger icon={<DeleteOutlined aria-hidden="true" />}>删除</Button>
-          </Popconfirm>
-        </Space>
-      </div>}
-    </div>
-  </Modal>;
+    </Modal>
+  );
 }

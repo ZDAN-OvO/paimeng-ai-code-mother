@@ -1,15 +1,43 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq, inArray } from 'drizzle-orm';
 import {
-  applyBillingMigrations, billingBalancesOf, billingRequest, createBillingUser, envelopeOf,
-  grantBillingCredits, loadBillingDatabase, purgeBillingRateCards, seedBillingApp, seedBillingGeneration,
-  seedBillingRate, seedBillingStep, withoutMonthlyQuota, type BillingTestUser,
+  applyBillingMigrations,
+  billingBalancesOf,
+  billingRequest,
+  createBillingUser,
+  envelopeOf,
+  grantBillingCredits,
+  loadBillingDatabase,
+  purgeBillingRateCards,
+  seedBillingApp,
+  seedBillingGeneration,
+  seedBillingRate,
+  seedBillingStep,
+  withoutMonthlyQuota,
+  type BillingTestUser,
 } from '../../support/billing';
 import { db, getPool } from '@/server/infra/db';
-import { apps, creditBalance, creditCharges, creditLedger, generations, sessions, users } from '@/server/infra/schema';
-import { effectiveCreditsOf, entriesOfCharge, rebuildBalance, reverseCharge } from '@/server/billing/ledger';
+import {
+  apps,
+  creditBalance,
+  creditCharges,
+  creditLedger,
+  generations,
+  sessions,
+  users,
+} from '@/server/infra/schema';
+import {
+  effectiveCreditsOf,
+  entriesOfCharge,
+  rebuildBalance,
+  reverseCharge,
+} from '@/server/billing/ledger';
 import { settleGenerationBilling } from '@/server/billing/settlement';
-import { platformReversalReason, monthlyQuotaCredits, type BillingChargeView } from '@/shared/billing';
+import {
+  platformReversalReason,
+  monthlyQuotaCredits,
+  type BillingChargeView,
+} from '@/shared/billing';
 
 /**
  * 终态归责（`docs/adr/0004-credit-billing.md`「Outcome decides reversibility, not amount」）：
@@ -30,22 +58,29 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (createdGenerations.length) {
-    const chargeIds = (await db().select({ generationId: creditCharges.generationId }).from(creditCharges)
-      .where(inArray(creditCharges.generationId, createdGenerations))).map(row => row.generationId);
-    if (chargeIds.length) await db().delete(creditLedger).where(inArray(creditLedger.chargeId, chargeIds));
+    const chargeIds = (
+      await db()
+        .select({ generationId: creditCharges.generationId })
+        .from(creditCharges)
+        .where(inArray(creditCharges.generationId, createdGenerations))
+    ).map((row) => row.generationId);
+    if (chargeIds.length)
+      await db().delete(creditLedger).where(inArray(creditLedger.chargeId, chargeIds));
     await db().delete(creditCharges).where(inArray(creditCharges.generationId, createdGenerations));
     await db().delete(generations).where(inArray(generations.id, createdGenerations));
   }
   if (createdApps.length) await db().delete(apps).where(inArray(apps.id, createdApps));
   if (createdUsers.length) {
-    const ids = createdUsers.map(id => BigInt(id));
+    const ids = createdUsers.map((id) => BigInt(id));
     await db().delete(creditLedger).where(inArray(creditLedger.userId, ids));
     await db().delete(creditBalance).where(inArray(creditBalance.userId, ids));
     await db().delete(sessions).where(inArray(sessions.userId, ids));
     await db().delete(users).where(inArray(users.id, ids));
   }
   await purgeBillingRateCards();
-  await getPool().end().catch(() => undefined);
+  await getPool()
+    .end()
+    .catch(() => undefined);
 });
 
 type Fixture = { owner: BillingTestUser; appId: string };
@@ -59,12 +94,19 @@ async function fixture(): Promise<Fixture> {
   return { owner, appId: app.id };
 }
 
-async function seedTerminal(input: Fixture & {
-  status: string; stopReason: string; messageId?: string | null;
-}): Promise<string> {
+async function seedTerminal(
+  input: Fixture & {
+    status: string;
+    stopReason: string;
+    messageId?: string | null;
+  },
+): Promise<string> {
   const id = await seedBillingGeneration({
-    appId: input.appId, userId: input.owner.id, status: input.status,
-    stopReason: input.stopReason, messageId: input.messageId ?? null,
+    appId: input.appId,
+    userId: input.owner.id,
+    status: input.status,
+    stopReason: input.stopReason,
+    messageId: input.messageId ?? null,
   });
   createdGenerations.push(id);
   return id;
@@ -81,7 +123,11 @@ async function chargesOf(session: string, appId: string) {
 }
 
 /** 账本自洽：charge 投影 = 消费净额取正，且可用额的变化正好等于分录净额。 */
-async function expectConsistent(userId: string, generationId: string, balanceBefore: { available: number; limited: number; lasting: number }) {
+async function expectConsistent(
+  userId: string,
+  generationId: string,
+  balanceBefore: { available: number; limited: number; lasting: number },
+) {
   const entries = await entriesOfCharge(generationId);
   const net = entries.reduce((sum, entry) => sum + entry.credits, 0) || 0;
   const [charge] = await chargeRows(generationId);
@@ -121,10 +167,21 @@ describe('终态归责：失败与取消按实收，平台故障自动退还', (
       const charges = await chargeRows(generationId);
       expect(charges, terminal.stopReason).toHaveLength(1);
       expect(charges[0], terminal.stopReason).toMatchObject({ credits: 60, status: 'settled' });
-      const { net, entries } = await expectConsistent(owner.id, generationId, { available: (0) + (100), limited: 0, lasting: 100 });
+      const { net, entries } = await expectConsistent(owner.id, generationId, {
+        available: 0 + 100,
+        limited: 0,
+        lasting: 100,
+      });
       expect(net, terminal.stopReason).toBe(-60);
-      expect(entries.every(entry => entry.reversalOf === null), terminal.stopReason).toBe(true);
-      expect(await billingBalancesOf(owner.id)).toEqual({ available: (0) + (40), limited: 0, lasting: 40 });
+      expect(
+        entries.every((entry) => entry.reversalOf === null),
+        terminal.stopReason,
+      ).toBe(true);
+      expect(await billingBalancesOf(owner.id)).toEqual({
+        available: 0 + 40,
+        limited: 0,
+        lasting: 40,
+      });
     }
   });
 
@@ -135,7 +192,13 @@ describe('终态归责：失败与取消按实收，平台故障自动退还', (
       await withoutMonthlyQuota(owner);
       await grantBillingCredits(owner.id, 'limited', 10);
       await grantBillingCredits(owner.id, 'lasting', 100);
-      const generationId = await seedTerminal({ owner, appId, status: 'failed', stopReason, messageId: `msg-${stopReason}` });
+      const generationId = await seedTerminal({
+        owner,
+        appId,
+        status: 'failed',
+        stopReason,
+        messageId: `msg-${stopReason}`,
+      });
       await seedBillingStep(generationId, { modelName: model, input: 100_000 });
 
       await settleGenerationBilling(generationId);
@@ -143,20 +206,30 @@ describe('终态归责：失败与取消按实收，平台故障自动退还', (
       const [charge] = await chargeRows(generationId);
       // 原 Charge 行保留（app/user/create_time 不变），投影被冲正改写
       expect(charge, stopReason).toMatchObject({
-        appId: BigInt(appId), userId: BigInt(owner.id), credits: 0, status: 'reversed',
+        appId: BigInt(appId),
+        userId: BigInt(owner.id),
+        credits: 0,
+        status: 'reversed',
       });
       const entries = await entriesOfCharge(generationId);
-      expect(entries.map(entry => ({ kind: entry.kind, credits: entry.credits })), stopReason).toEqual([
+      expect(
+        entries.map((entry) => ({ kind: entry.kind, credits: entry.credits })),
+        stopReason,
+      ).toEqual([
         { kind: 'consume', credits: -10 },
         { kind: 'consume', credits: -50 },
         { kind: 'refund', credits: 10 },
         { kind: 'refund', credits: 50 },
       ]);
-      const reversals = entries.filter(entry => entry.reversalOf !== null);
-      expect(reversals.every(entry => entry.reason === platformReversalReason)).toBe(true);
-      expect(reversals.every(entry => entry.operatorId === null)).toBe(true);
+      const reversals = entries.filter((entry) => entry.reversalOf !== null);
+      expect(reversals.every((entry) => entry.reason === platformReversalReason)).toBe(true);
+      expect(reversals.every((entry) => entry.operatorId === null)).toBe(true);
       expect(await effectiveCreditsOf(generationId)).toBe(0);
-      expect(await billingBalancesOf(owner.id)).toEqual({ available: (10) + (100), limited: 10, lasting: 100 });
+      expect(await billingBalancesOf(owner.id)).toEqual({
+        available: 10 + 100,
+        limited: 10,
+        lasting: 100,
+      });
     }
   });
 
@@ -164,7 +237,12 @@ describe('终态归责：失败与取消按实收，平台故障自动退还', (
     const { owner, appId } = await fixture();
     await withoutMonthlyQuota(owner);
     await grantBillingCredits(owner.id, 'limited', 1000);
-    const generationId = await seedTerminal({ owner, appId, status: 'failed', stopReason: 'initialization-failed' });
+    const generationId = await seedTerminal({
+      owner,
+      appId,
+      status: 'failed',
+      stopReason: 'initialization-failed',
+    });
     await seedBillingStep(generationId, { modelName: model, input: 100_000 });
 
     await settleGenerationBilling(generationId);
@@ -180,13 +258,22 @@ describe('终态归责：失败与取消按实收，平台故障自动退还', (
     expect(charges[0]).toMatchObject({ credits: 0, status: 'reversed' });
     // 一条原始分录 + 一条反向分录：第二次及以后的冲正都命中「没有未冲正分录」的早退分支
     expect(await entriesOfCharge(generationId)).toHaveLength(2);
-    expect(await billingBalancesOf(owner.id)).toEqual({ available: (1000) + (0), limited: 1000, lasting: 0 });
+    expect(await billingBalancesOf(owner.id)).toEqual({
+      available: 1000 + 0,
+      limited: 1000,
+      lasting: 0,
+    });
   });
 
   it('取消与结束竞态：并发结算 + 并发冲正后账本自洽', async () => {
     const { owner, appId } = await fixture();
     await grantBillingCredits(owner.id, 'limited', 1000);
-    const generationId = await seedTerminal({ owner, appId, status: 'cancelled', stopReason: 'cancelled' });
+    const generationId = await seedTerminal({
+      owner,
+      appId,
+      status: 'cancelled',
+      stopReason: 'cancelled',
+    });
     await seedBillingStep(generationId, { modelName: model, input: 100_000 });
     const before = await billingBalancesOf(owner.id);
 
@@ -203,16 +290,27 @@ describe('终态归责：失败与取消按实收，平台故障自动退还', (
 
     const { net, entries, charge } = await expectConsistent(owner.id, generationId, before);
     expect(charge.status).toBe(net === 0 ? 'reversed' : 'settled');
-    expect(entries.filter(entry => entry.reversalOf === null)).toHaveLength(1);
+    expect(entries.filter((entry) => entry.reversalOf === null)).toHaveLength(1);
     expect(await billingBalancesOf(owner.id)).toEqual(before);
   });
 
   it('没有调用模型的失败：0 Credit 的 Charge、无分录、状态 settled', async () => {
     const { owner, appId } = await fixture();
     await grantBillingCredits(owner.id, 'lasting', 50);
-    const generationId = await seedTerminal({ owner, appId, status: 'failed', stopReason: 'model-error', messageId: 'msg-nomodel' });
+    const generationId = await seedTerminal({
+      owner,
+      appId,
+      status: 'failed',
+      stopReason: 'model-error',
+      messageId: 'msg-nomodel',
+    });
     // 只有构建步骤：构建与汇总都不计价，只有 kind='model' 才算消耗
-    await seedBillingStep(generationId, { kind: 'build', modelName: model, input: 900_000, output: 100_000 });
+    await seedBillingStep(generationId, {
+      kind: 'build',
+      modelName: model,
+      input: 900_000,
+      output: 100_000,
+    });
 
     await settleGenerationBilling(generationId);
 
@@ -220,51 +318,105 @@ describe('终态归责：失败与取消按实收，平台故障自动退还', (
     expect(charge).toMatchObject({ credits: 0, status: 'settled', estimatedSteps: 0 });
     expect(await entriesOfCharge(generationId)).toHaveLength(0);
     expect(await effectiveCreditsOf(generationId)).toBe(0);
-    expect(await billingBalancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits) + (50), limited: monthlyQuotaCredits, lasting: 50 });
+    expect(await billingBalancesOf(owner.id)).toEqual({
+      available: monthlyQuotaCredits + 50,
+      limited: monthlyQuotaCredits,
+      lasting: 50,
+    });
   });
 
   it('Usage 未知 + 失败：按估算或待处理结算，不因失败伪记为零', async () => {
     const estimatedFixture = await fixture();
     await grantBillingCredits(estimatedFixture.owner.id, 'lasting', 100);
-    const estimated = await seedTerminal({ ...estimatedFixture, status: 'failed', stopReason: 'timeout' });
-    await seedBillingStep(estimated, { modelName: model, input: 1_000, output: 400, stepNumber: 0 });
-    await seedBillingStep(estimated, { modelName: model, input: null, cacheRead: null, output: null, stepNumber: 1 });
+    const estimated = await seedTerminal({
+      ...estimatedFixture,
+      status: 'failed',
+      stopReason: 'timeout',
+    });
+    await seedBillingStep(estimated, {
+      modelName: model,
+      input: 1_000,
+      output: 400,
+      stepNumber: 0,
+    });
+    await seedBillingStep(estimated, {
+      modelName: model,
+      input: null,
+      cacheRead: null,
+      output: null,
+      stepNumber: 1,
+    });
 
     await settleGenerationBilling(estimated);
 
     const [estimatedCharge] = await chargeRows(estimated);
     expect(estimatedCharge).toMatchObject({ credits: 3, status: 'estimated', estimatedSteps: 1 });
-    expect(await billingBalancesOf(estimatedFixture.owner.id)).toEqual({ available: (monthlyQuotaCredits - 3) + (100), limited: monthlyQuotaCredits - 3, lasting: 100 });
+    expect(await billingBalancesOf(estimatedFixture.owner.id)).toEqual({
+      available: monthlyQuotaCredits - 3 + 100,
+      limited: monthlyQuotaCredits - 3,
+      lasting: 100,
+    });
 
     // 没有任何已知样本时不可估算：进待处理，仍然不动余额（不伪记 0 也不猜数）
     const pendingFixture = await fixture();
     await grantBillingCredits(pendingFixture.owner.id, 'lasting', 100);
-    const pending = await seedTerminal({ ...pendingFixture, status: 'failed', stopReason: 'model-error' });
-    await seedBillingStep(pending, { modelName: model, input: null, cacheRead: null, output: null });
+    const pending = await seedTerminal({
+      ...pendingFixture,
+      status: 'failed',
+      stopReason: 'model-error',
+    });
+    await seedBillingStep(pending, {
+      modelName: model,
+      input: null,
+      cacheRead: null,
+      output: null,
+    });
 
     await settleGenerationBilling(pending);
 
     const [pendingCharge] = await chargeRows(pending);
     expect(pendingCharge).toMatchObject({ credits: 0, status: 'unpriced' });
     expect(await entriesOfCharge(pending)).toHaveLength(0);
-    expect(await billingBalancesOf(pendingFixture.owner.id)).toEqual({ available: (monthlyQuotaCredits) + (100), limited: monthlyQuotaCredits, lasting: 100 });
+    expect(await billingBalancesOf(pendingFixture.owner.id)).toEqual({
+      available: monthlyQuotaCredits + 100,
+      limited: monthlyQuotaCredits,
+      lasting: 100,
+    });
   });
 
   it('Question 与回答后的 Generation 各一条账单，Steer 不产生第二条', async () => {
     const { owner, appId } = await fixture();
     await grantBillingCredits(owner.id, 'limited', 1000);
 
-    const questioned = await seedTerminal({ owner, appId, status: 'failed', stopReason: 'question', messageId: 'msg-question' });
+    const questioned = await seedTerminal({
+      owner,
+      appId,
+      status: 'failed',
+      stopReason: 'question',
+      messageId: 'msg-question',
+    });
     await seedBillingStep(questioned, { modelName: model, input: 100_000 });
     await settleGenerationBilling(questioned);
 
     // 回答之后发起的是新 Generation，不是同一张账单的追加
-    const answered = await seedTerminal({ owner, appId, status: 'ready', stopReason: 'completed', messageId: 'msg-answered' });
+    const answered = await seedTerminal({
+      owner,
+      appId,
+      status: 'ready',
+      stopReason: 'completed',
+      messageId: 'msg-answered',
+    });
     await seedBillingStep(answered, { modelName: model, input: 50_000 });
     await settleGenerationBilling(answered);
 
     // Steer 在同一个 Generation 里开新一轮（round 2），只多一条分录，不多一条 Charge
-    const steered = await seedTerminal({ owner, appId, status: 'ready', stopReason: 'completed', messageId: 'msg-steer' });
+    const steered = await seedTerminal({
+      owner,
+      appId,
+      status: 'ready',
+      stopReason: 'completed',
+      messageId: 'msg-steer',
+    });
     await seedBillingStep(steered, { modelName: model, input: 100_000, round: 1, stepNumber: 0 });
     await seedBillingStep(steered, { modelName: model, input: 50_000, round: 2, stepNumber: 0 });
     await settleGenerationBilling(steered);
@@ -276,47 +428,115 @@ describe('终态归责：失败与取消按实收，平台故障自动退还', (
     expect((await chargeRows(answered))[0].credits).toBe(30);
     expect((await chargeRows(steered))[0].credits).toBe(90);
     expect(await entriesOfCharge(steered)).toHaveLength(1);
-    expect(await billingBalancesOf(owner.id)).toEqual({ available: (monthlyQuotaCredits + 1000 - 180) + (0), limited: monthlyQuotaCredits + 1000 - 180, lasting: 0 });
+    expect(await billingBalancesOf(owner.id)).toEqual({
+      available: monthlyQuotaCredits + 1000 - 180 + 0,
+      limited: monthlyQuotaCredits + 1000 - 180,
+      lasting: 0,
+    });
   });
 
   it('冲正老账期的限时积分：退回后立即过期，余额不变；长期部分正常退回', async () => {
     const { owner, appId } = await fixture();
     await withoutMonthlyQuota(owner);
-    const generationId = await seedTerminal({ owner, appId, status: 'failed', stopReason: 'initialization-failed' });
-    const oldPeriod = '2020-01';
-    await db().insert(creditLedger).values([
-      { userId: BigInt(owner.id), kind: 'quota', origin: 'manual', credits: 100, period: oldPeriod, expiresAt: '2020-01-31 16:00:00.000', createTime: '2020-01-01 00:00:00.000' },
-      { userId: BigInt(owner.id), kind: 'grant', origin: 'manual', credits: 30, createTime: '2020-01-01 00:00:00.000' },
-    ]);
-    await db().insert(creditCharges).values({
-      generationId, appId: BigInt(appId), userId: BigInt(owner.id), credits: 60, costUsd: null,
-      rateCardSnapshot: [], usageSnapshot: [], status: 'settled', estimatedSteps: 0,
-      createTime: '2020-01-01 00:00:00.000',
+    const generationId = await seedTerminal({
+      owner,
+      appId,
+      status: 'failed',
+      stopReason: 'initialization-failed',
     });
-    await db().insert(creditLedger).values([
-      { userId: BigInt(owner.id), kind: 'consume', origin: 'charge', credits: -40, period: oldPeriod, expiresAt: '2020-01-31 16:00:00.000', chargeId: generationId, createTime: '2020-01-01 00:00:00.000' },
-      { userId: BigInt(owner.id), kind: 'consume', origin: 'charge', credits: -20, chargeId: generationId, createTime: '2020-01-01 00:00:00.000' },
-    ]);
+    const oldPeriod = '2020-01';
+    await db()
+      .insert(creditLedger)
+      .values([
+        {
+          userId: BigInt(owner.id),
+          kind: 'quota',
+          origin: 'manual',
+          credits: 100,
+          period: oldPeriod,
+          expiresAt: '2020-01-31 16:00:00.000',
+          createTime: '2020-01-01 00:00:00.000',
+        },
+        {
+          userId: BigInt(owner.id),
+          kind: 'grant',
+          origin: 'manual',
+          credits: 30,
+          createTime: '2020-01-01 00:00:00.000',
+        },
+      ]);
+    await db()
+      .insert(creditCharges)
+      .values({
+        generationId,
+        appId: BigInt(appId),
+        userId: BigInt(owner.id),
+        credits: 60,
+        costUsd: null,
+        rateCardSnapshot: [],
+        usageSnapshot: [],
+        status: 'settled',
+        estimatedSteps: 0,
+        createTime: '2020-01-01 00:00:00.000',
+      });
+    await db()
+      .insert(creditLedger)
+      .values([
+        {
+          userId: BigInt(owner.id),
+          kind: 'consume',
+          origin: 'charge',
+          credits: -40,
+          period: oldPeriod,
+          expiresAt: '2020-01-31 16:00:00.000',
+          chargeId: generationId,
+          createTime: '2020-01-01 00:00:00.000',
+        },
+        {
+          userId: BigInt(owner.id),
+          kind: 'consume',
+          origin: 'charge',
+          credits: -20,
+          chargeId: generationId,
+          createTime: '2020-01-01 00:00:00.000',
+        },
+      ]);
     await rebuildBalance(owner.id);
     const before = await billingBalancesOf(owner.id);
     expect(before).toEqual({ available: 10, limited: 0, lasting: 10 });
 
-    const result = await reverseCharge(generationId, { reason: '管理员冲正', operatorId: owner.id });
+    const result = await reverseCharge(generationId, {
+      reason: '管理员冲正',
+      operatorId: owner.id,
+    });
 
     expect(result).toEqual({ reversed: true, entries: 2 });
     // 老账期退回的 40 立即被一条 reversal 过期行抵消；长期 20 正常回来。
     expect(await billingBalancesOf(owner.id)).toEqual({ available: 30, limited: 0, lasting: 30 });
     const entries = await entriesOfCharge(generationId);
-    expect(entries.map(entry => ({ kind: entry.kind, credits: entry.credits }))).toEqual([
-      { kind: 'consume', credits: -40 }, { kind: 'consume', credits: -20 },
-      { kind: 'refund', credits: 40 }, { kind: 'refund', credits: 20 },
+    expect(entries.map((entry) => ({ kind: entry.kind, credits: entry.credits }))).toEqual([
+      { kind: 'consume', credits: -40 },
+      { kind: 'consume', credits: -20 },
+      { kind: 'refund', credits: 40 },
+      { kind: 'refund', credits: 20 },
     ]);
-    const expired = await db().select().from(creditLedger).where(and(
-      eq(creditLedger.userId, BigInt(owner.id)), eq(creditLedger.kind, 'expire'), eq(creditLedger.origin, 'reversal'),
-    ));
+    const expired = await db()
+      .select()
+      .from(creditLedger)
+      .where(
+        and(
+          eq(creditLedger.userId, BigInt(owner.id)),
+          eq(creditLedger.kind, 'expire'),
+          eq(creditLedger.origin, 'reversal'),
+        ),
+      );
     expect(expired).toHaveLength(1);
     expect(expired[0]).toMatchObject({ credits: -40, period: oldPeriod });
-    expect(entries.filter(entry => entry.reversalOf !== null).every(entry => entry.operatorId === BigInt(owner.id))).toBe(true);
+    expect(
+      entries
+        .filter((entry) => entry.reversalOf !== null)
+        .every((entry) => entry.operatorId === BigInt(owner.id)),
+    ).toBe(true);
   });
 });
 
@@ -325,13 +545,19 @@ describe('GET billing/charges：终态账单能取到，冲正原因与退款去
     const { owner, appId } = await fixture();
     await grantBillingCredits(owner.id, 'lasting', 100);
     // 进程中断后恢复的 Generation：messageId 为 null，界面上没有助手气泡可挂
-    const generationId = await seedTerminal({ owner, appId, status: 'failed', stopReason: 'lease-lost', messageId: null });
+    const generationId = await seedTerminal({
+      owner,
+      appId,
+      status: 'failed',
+      stopReason: 'lease-lost',
+      messageId: null,
+    });
     await seedBillingStep(generationId, { modelName: model, input: 100_000 });
     await settleGenerationBilling(generationId);
 
     const envelope = await chargesOf(owner.cookie, appId);
     expect(envelope.code).toBe(0);
-    const charge = envelope.data.find(row => row.generationId === generationId);
+    const charge = envelope.data.find((row) => row.generationId === generationId);
     expect(charge).toMatchObject({
       messageId: null,
       credits: 0,
@@ -343,20 +569,37 @@ describe('GET billing/charges：终态账单能取到，冲正原因与退款去
     // 消费落在哪一池由「哪里有钱」决定：注册配额先进配额池，所以这里的分录与反向分录都在 quota
     expect(charge?.entries).toEqual([{ bucket: 'limited', credits: 60 }]);
     expect(charge?.reversals).toEqual([
-      { bucket: 'limited', credits: -60, reason: platformReversalReason, createTime: expect.any(String) },
+      {
+        bucket: 'limited',
+        credits: -60,
+        reason: platformReversalReason,
+        createTime: expect.any(String),
+      },
     ]);
   });
 
   it('没有冲正的账单 reversals 是空数组，金额仍按有效金额给', async () => {
     const { owner, appId } = await fixture();
     await grantBillingCredits(owner.id, 'limited', 100);
-    const generationId = await seedTerminal({ owner, appId, status: 'cancelled', stopReason: 'cancelled', messageId: 'msg-cancelled' });
+    const generationId = await seedTerminal({
+      owner,
+      appId,
+      status: 'cancelled',
+      stopReason: 'cancelled',
+      messageId: 'msg-cancelled',
+    });
     await seedBillingStep(generationId, { modelName: model, input: 50_000 });
     await settleGenerationBilling(generationId);
 
-    const charge = (await chargesOf(owner.cookie, appId)).data.find(row => row.generationId === generationId);
+    const charge = (await chargesOf(owner.cookie, appId)).data.find(
+      (row) => row.generationId === generationId,
+    );
     expect(charge).toMatchObject({
-      messageId: 'msg-cancelled', credits: 30, effectiveCredits: 30, status: 'settled', stopReason: 'cancelled',
+      messageId: 'msg-cancelled',
+      credits: 30,
+      effectiveCredits: 30,
+      status: 'settled',
+      stopReason: 'cancelled',
     });
     expect(charge?.reversals).toEqual([]);
     expect(charge?.entries).toEqual([{ bucket: 'limited', credits: 30 }]);

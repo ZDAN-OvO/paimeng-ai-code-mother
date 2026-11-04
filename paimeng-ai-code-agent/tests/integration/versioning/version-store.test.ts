@@ -41,7 +41,17 @@ const created: WorkspaceApp[] = [];
 /** 台账有 app 外键：仓库测试也必须有一个真实应用行，否则提交与插行都会失败。 */
 async function newApp(): Promise<WorkspaceApp> {
   const id = await nextSnowflakeId();
-  await db().insert(apps).values({ id, appName: `版本存储 ${counter}`, initPrompt: '版本存储测试', codeGenType: 'html', userId: owner, createTime: now(), updateTime: now() });
+  await db()
+    .insert(apps)
+    .values({
+      id,
+      appName: `版本存储 ${counter}`,
+      initPrompt: '版本存储测试',
+      codeGenType: 'html',
+      userId: owner,
+      createTime: now(),
+      updateTime: now(),
+    });
   const app: WorkspaceApp = { id: String(id), codeGenType: 'html' };
   counter += 1;
   await ensureWorkspace(app);
@@ -51,24 +61,45 @@ async function newApp(): Promise<WorkspaceApp> {
 
 beforeAll(async () => {
   owner = await nextSnowflakeId();
-  await db().insert(users).values({ id: owner, userAccount: `ts_version_store_${Date.now()}`, userPassword: 'unused', userRole: 'user', createTime: now(), updateTime: now() });
+  await db()
+    .insert(users)
+    .values({
+      id: owner,
+      userAccount: `ts_version_store_${Date.now()}`,
+      userPassword: 'unused',
+      userRole: 'user',
+      createTime: now(),
+      updateTime: now(),
+    });
 });
 
 afterAll(async () => {
   for (const app of created) {
     await purgeVersions(app).catch(() => undefined);
     await rm(workspace(app), { recursive: true, force: true });
-    await db().delete(apps).where(eq(apps.id, BigInt(app.id))).catch(() => undefined);
+    await db()
+      .delete(apps)
+      .where(eq(apps.id, BigInt(app.id)))
+      .catch(() => undefined);
   }
-  await db().delete(users).where(eq(users.id, owner)).catch(() => undefined);
-  await getPool().end().catch(() => undefined);
+  await db()
+    .delete(users)
+    .where(eq(users.id, owner))
+    .catch(() => undefined);
+  await getPool()
+    .end()
+    .catch(() => undefined);
 });
 
 async function git(app: WorkspaceApp, args: string[], options: { allowFailure?: boolean } = {}) {
   try {
-    const { stdout } = await run('git', ['--git-dir', versionRepo(app), '--work-tree', workspace(app), ...args], {
-      env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C' },
-    });
+    const { stdout } = await run(
+      'git',
+      ['--git-dir', versionRepo(app), '--work-tree', workspace(app), ...args],
+      {
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C' },
+      },
+    );
     return stdout;
   } catch (error) {
     if (options.allowFailure) return '';
@@ -87,7 +118,10 @@ async function read(app: WorkspaceApp, path: string) {
 }
 
 async function fileExists(app: WorkspaceApp, path: string) {
-  return stat(join(workspace(app), path)).then(() => true, () => false);
+  return stat(join(workspace(app), path)).then(
+    () => true,
+    () => false,
+  );
 }
 
 async function commit(app: WorkspaceApp, title: string, changes: Record<string, string | null>) {
@@ -101,13 +135,21 @@ async function commit(app: WorkspaceApp, title: string, changes: Record<string, 
 }
 
 async function refs(app: WorkspaceApp) {
-  const out = await git(app, ['for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads/', 'refs/paimeng/versions/']);
+  const out = await git(app, [
+    'for-each-ref',
+    '--format=%(refname) %(objectname)',
+    'refs/heads/',
+    'refs/paimeng/versions/',
+  ]);
   return out.split('\n').filter(Boolean).sort();
 }
 
 async function commitSet(app: WorkspaceApp) {
-  const names = (await git(app, ['for-each-ref', '--format=%(refname)', 'refs/heads/', 'refs/paimeng/versions/']))
-    .split('\n').filter(Boolean);
+  const names = (
+    await git(app, ['for-each-ref', '--format=%(refname)', 'refs/heads/', 'refs/paimeng/versions/'])
+  )
+    .split('\n')
+    .filter(Boolean);
   const out = await git(app, ['rev-list', ...names, 'HEAD'], { allowFailure: true });
   return out.split('\n').filter(Boolean).sort();
 }
@@ -117,14 +159,20 @@ async function headOf(app: WorkspaceApp) {
 }
 
 async function currentBranchName(app: WorkspaceApp) {
-  const branch = await git(app, ['symbolic-ref', '--quiet', '--short', 'HEAD'], { allowFailure: true });
+  const branch = await git(app, ['symbolic-ref', '--quiet', '--short', 'HEAD'], {
+    allowFailure: true,
+  });
   return branch.trim() || null;
 }
 
 async function expectWorktreeAt(app: WorkspaceApp, sha: string) {
-  const paths = (await git(app, ['ls-tree', '-r', '-z', '--name-only', sha])).split('\0').filter(Boolean);
+  const paths = (await git(app, ['ls-tree', '-r', '-z', '--name-only', sha]))
+    .split('\0')
+    .filter(Boolean);
   for (const path of paths) {
-    expect(await read(app, path), `${path} 应等于 ${sha} 的内容`).toBe(await git(app, ['show', `${sha}:${path}`]));
+    expect(await read(app, path), `${path} 应等于 ${sha} 的内容`).toBe(
+      await git(app, ['show', `${sha}:${path}`]),
+    );
   }
   expect(await headOf(app)).toBe(sha);
 }
@@ -225,7 +273,9 @@ describe('回退（detached HEAD）', () => {
 
   it('目标路径的父目录被普通文件占住时也拒绝回退（stat 只会报 ENOTDIR，容易被当不存在）', async () => {
     const { app } = await twoVersions();
-    const withDir = await commit(app, '加一个子目录页面', { 'section/index.html': '<p>子页面</p>' });
+    const withDir = await commit(app, '加一个子目录页面', {
+      'section/index.html': '<p>子页面</p>',
+    });
     await commit(app, '删掉整个子目录', { 'section/index.html': null });
     // 用户在原来的目录位置放了一个同名普通文件（先清掉留下的空目录）。
     await rm(join(workspace(app), 'section'), { recursive: true, force: true });
@@ -245,7 +295,9 @@ describe('回退（detached HEAD）', () => {
     // 前提确认：这个文件对 git 完全不可见（ignored + untracked），status 不会报它。
     expect((await git(app, ['status', '--porcelain'])).trim()).toBe('');
 
-    await expect(restoreVersion({ app, versionId: withAsset.id })).rejects.toThrow(/assets\/photo\.png/);
+    await expect(restoreVersion({ app, versionId: withAsset.id })).rejects.toThrow(
+      /assets\/photo\.png/,
+    );
     expect(await read(app, 'assets/photo.png')).toBe('NEW-ASSET-NOT-COMMITTED');
   });
 
@@ -289,15 +341,23 @@ describe('提交', () => {
     const { app, first, second } = await twoVersions();
     await restoreVersion({ app, versionId: first.id });
 
-    const created = await commit(app, '从旧版继续改', { 'index.html': '<html><body>v1-fix</body></html>' });
+    const created = await commit(app, '从旧版继续改', {
+      'index.html': '<html><body>v1-fix</body></html>',
+    });
 
     expect(await git(app, ['rev-parse', 'HEAD^'])).toBe(`${first.id}\n`);
     // 游离 HEAD 上提交不移动任何分支：清单只按时间排，不需要分支记住「从哪一版接着改」。
     expect(await git(app, ['rev-parse', 'refs/heads/main'])).toBe(`${second.id}\n`);
-    expect(await git(app, ['rev-parse', `refs/paimeng/versions/${created.id}`])).toBe(`${created.id}\n`);
+    expect(await git(app, ['rev-parse', `refs/paimeng/versions/${created.id}`])).toBe(
+      `${created.id}\n`,
+    );
     const overview = await listVersions(app);
     expect(overview.current).toEqual({ versionId: created.id });
-    expect(overview.versions.map(version => version.id)).toEqual([created.id, second.id, first.id]);
+    expect(overview.versions.map((version) => version.id)).toEqual([
+      created.id,
+      second.id,
+      first.id,
+    ]);
     // 再提交一次没有改动：不产生提交，也不产生台账行
     expect(await commitVersion({ app, title: '再提交' })).toBe(null);
     expect((await listVersions(app)).versions).toHaveLength(3);
@@ -306,10 +366,14 @@ describe('提交', () => {
   it('在主线上的提交接在上一版后面，不新开任何分支', async () => {
     const { app, second } = await twoVersions();
 
-    const version = await commit(app, '主线的第三版', { 'index.html': '<html><body>v3</body></html>' });
+    const version = await commit(app, '主线的第三版', {
+      'index.html': '<html><body>v3</body></html>',
+    });
 
     expect(await git(app, ['rev-parse', `${version.id}^`])).toBe(`${second.id}\n`);
-    const heads = (await git(app, ['for-each-ref', '--format=%(refname:short)', 'refs/heads'])).trim();
+    const heads = (
+      await git(app, ['for-each-ref', '--format=%(refname:short)', 'refs/heads'])
+    ).trim();
     expect(heads).toBe('main');
   });
 });
@@ -322,7 +386,12 @@ describe('只读路径', () => {
     expect(overview).toEqual({ current: null, versions: [], blocked: null });
     await expect(getVersion(app, 'a'.repeat(40))).rejects.toThrow('版本不存在');
     await expect(diffVersions(app, 'a'.repeat(40), 'b'.repeat(40))).rejects.toThrow('版本不存在');
-    expect(await stat(versionRepo(app)).then(() => true, () => false)).toBe(false);
+    expect(
+      await stat(versionRepo(app)).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
   });
 
   it('清单来自台账：按时间倒序，limit 只截数量不丢顺序', async () => {
@@ -330,10 +399,12 @@ describe('只读路径', () => {
     await commit(app, '第三版', { 'index.html': '<html><body>v3</body></html>' });
 
     const all = await listVersions(app);
-    expect(all.versions.map(version => version.id)).toHaveLength(3);
-    expect(all.versions[0]!.id).not.toBe(first.id);
+    expect(all.versions.map((version) => version.id)).toHaveLength(3);
+    expect(all.versions[0].id).not.toBe(first.id);
     expect((await listVersions(app, { limit: 1 })).versions).toHaveLength(1);
-    expect((await listVersions(app, { query: '第二版' })).versions.map(version => version.id)).toEqual([second.id]);
+    expect(
+      (await listVersions(app, { query: '第二版' })).versions.map((version) => version.id),
+    ).toEqual([second.id]);
   });
 
   it('版本详情带改动文件与体积，标题取自台账', async () => {
@@ -349,14 +420,25 @@ describe('只读路径', () => {
   it('没有台账行的提交不冒充版本：钉子只在自愈时用来补行', async () => {
     const { app, first } = await twoVersions();
     const tree = (await git(app, ['rev-parse', `${first.id}^{tree}`])).trim();
-    const orphan = (await git(app, [
-      '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit-tree', tree, '-p', first.id, '-m', '只在 refs 里的历史',
-    ])).trim();
+    const orphan = (
+      await git(app, [
+        '-c',
+        'user.name=t',
+        '-c',
+        'user.email=t@t',
+        'commit-tree',
+        tree,
+        '-p',
+        first.id,
+        '-m',
+        '只在 refs 里的历史',
+      ])
+    ).trim();
     await git(app, ['update-ref', `refs/paimeng/versions/${orphan}`, orphan]);
 
     const overview = await listVersions(app);
 
-    expect(overview.versions.some(version => version.id === orphan)).toBe(false);
+    expect(overview.versions.some((version) => version.id === orphan)).toBe(false);
     expect(await versionRowOf(app.id, orphan)).toBe(null);
   });
 
@@ -365,7 +447,7 @@ describe('只读路径', () => {
     const diff = await diffVersions(app, first.id, second.id);
     expect(diff.base.id).toBe(first.id);
     expect(diff.target.id).toBe(second.id);
-    expect(diff.files.map(file => file.path).sort()).toEqual(['about.html', 'index.html']);
+    expect(diff.files.map((file) => file.path).sort()).toEqual(['about.html', 'index.html']);
     expect(diff.patch).toContain('v2');
     expect(diff.truncated).toBe(false);
   });
@@ -379,7 +461,9 @@ describe('展示缓存', () => {
     await setVersionTitle(app.id, first.id, '重写首页排版');
 
     expect((await getVersion(app, first.id)).title).toBe('重写首页排版');
-    expect((await listVersions(app)).versions.find(version => version.id === first.id)?.title).toBe('重写首页排版');
+    expect(
+      (await listVersions(app)).versions.find((version) => version.id === first.id)?.title,
+    ).toBe('重写首页排版');
     expect((await git(app, ['log', '-1', '--format=%s', first.id])).trim()).toBe('第一版');
     expect(await commitSet(app)).toEqual(commitsBefore);
   });
@@ -401,10 +485,18 @@ describe('展示缓存', () => {
     // 工作区永远只有当前版本，所以截图必须能从提交里离屏还原；
     // 只测 saveVersionThumbnail 读写字节是测不到这条的。
     const app = await newApp();
-    const first = await commit(app, '第一版', { 'index.html': '<html><body style="background:#fff"><h1>VERSION ONE</h1></body></html>' });
-    const second = await commit(app, '第二版', { 'index.html': '<html><body style="background:#123"><h1>VERSION TWO</h1></body></html>' });
+    const first = await commit(app, '第一版', {
+      'index.html': '<html><body style="background:#fff"><h1>VERSION ONE</h1></body></html>',
+    });
+    const second = await commit(app, '第二版', {
+      'index.html': '<html><body style="background:#123"><h1>VERSION TWO</h1></body></html>',
+    });
     // 工作区再改成完全不同的第三种内容。
-    await write(app, 'index.html', '<html><body style="background:#f00"><h1>CURRENT</h1></body></html>');
+    await write(
+      app,
+      'index.html',
+      '<html><body style="background:#f00"><h1>CURRENT</h1></body></html>',
+    );
 
     const [a, b] = [await versionThumbnail(app, first.id), await versionThumbnail(app, second.id)];
     const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -415,7 +507,9 @@ describe('展示缓存', () => {
 
     // 第二次直接读缓存，不再重新截图。
     expect((await versionThumbnail(app, first.id))!.equals(a!)).toBe(true);
-    expect((await listVersions(app)).versions.find(version => version.id === first.id)?.thumbnailKey).toBeTruthy();
+    expect(
+      (await listVersions(app)).versions.find((version) => version.id === first.id)?.thumbnailKey,
+    ).toBeTruthy();
   }, 120_000);
 
   it('提交时间按 UTC 朴素时间输出，展示层能按同一约定解析', async () => {
@@ -435,16 +529,58 @@ describe('旧裸库迁移', () => {
     const seed = await mkdtemp(join(tmpdir(), 'paimeng-legacy-'));
     await writeFile(join(seed, 'index.html'), 'legacy-content');
     await run('git', ['init', '--quiet', '--bare', '-b', 'main', legacy]);
-    await run('git', ['--git-dir', legacy, '--work-tree', seed, '-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '-A']);
-    await run('git', ['--git-dir', legacy, '--work-tree', seed, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--quiet', '-m', '旧版']);
+    await run('git', [
+      '--git-dir',
+      legacy,
+      '--work-tree',
+      seed,
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      'add',
+      '-A',
+    ]);
+    await run('git', [
+      '--git-dir',
+      legacy,
+      '--work-tree',
+      seed,
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      'commit',
+      '--quiet',
+      '-m',
+      '旧版',
+    ]);
     const legacyHead = (await run('git', ['--git-dir', legacy, 'rev-parse', 'HEAD'])).stdout.trim();
 
     try {
       await ensureVersionRepo(app);
 
-      expect(await stat(join(legacy, 'HEAD')).then(() => true, () => false)).toBe(true);
-      expect((await run('git', ['--git-dir', legacy, 'rev-parse', 'HEAD'])).stdout.trim()).toBe(legacyHead);
-      expect((await run('git', ['--git-dir', legacy, 'rev-parse', '--verify', '--quiet', 'refs/heads/main'])).stdout.trim()).toBe(legacyHead);
+      expect(
+        await stat(join(legacy, 'HEAD')).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(true);
+      expect((await run('git', ['--git-dir', legacy, 'rev-parse', 'HEAD'])).stdout.trim()).toBe(
+        legacyHead,
+      );
+      expect(
+        (
+          await run('git', [
+            '--git-dir',
+            legacy,
+            'rev-parse',
+            '--verify',
+            '--quiet',
+            'refs/heads/main',
+          ])
+        ).stdout.trim(),
+      ).toBe(legacyHead);
       // 迁移不检出：工作区内容保持原样，旧库提交成为当前分支头
       expect(await read(app, 'index.html')).toBe('current-content');
       const overview = await listVersions(app);
@@ -452,7 +588,9 @@ describe('旧裸库迁移', () => {
       // 迁移只搬历史、不写台账：清单只认台账，老版本的回填是另一个脚本的事。
       expect(overview.versions).toEqual([]);
       // 工作区与旧库 HEAD 不同 → 切版前必须先提交，不会被静默覆盖
-      await expect(restoreVersion({ app, versionId: legacyHead })).rejects.toThrow(/未提交的源码改动/);
+      await expect(restoreVersion({ app, versionId: legacyHead })).rejects.toThrow(
+        /未提交的源码改动/,
+      );
       expect(await read(app, 'index.html')).toBe('current-content');
     } finally {
       await rm(seed, { recursive: true, force: true });
@@ -474,7 +612,7 @@ describe('锁', () => {
 
     const recorded = [first, other].filter((version): version is AppVersion => version !== null);
     expect(recorded).toHaveLength(1);
-    expect(await git(app, ['rev-parse', `${recorded[0]!.id}^`])).toBe(`${second.id}\n`);
+    expect(await git(app, ['rev-parse', `${recorded[0].id}^`])).toBe(`${second.id}\n`);
     expect(await commitSet(app)).toHaveLength(before.length + 1);
   });
 
@@ -500,7 +638,10 @@ describe('锁', () => {
       versionId: first.id,
       guard: async () => {
         guardCalls += 1;
-        lockedDuringGuard = await stat(lockFile).then(() => true, () => false);
+        lockedDuringGuard = await stat(lockFile).then(
+          () => true,
+          () => false,
+        );
       },
     });
     expect(guardCalls).toBe(1);
@@ -508,12 +649,16 @@ describe('锁', () => {
     expect(outcome.status).toBe('restored');
 
     const headBefore = await headOf(app);
-    const second = (await listVersions(app)).versions[0]!.id;
-    await expect(restoreVersion({
-      app,
-      versionId: second === first.id ? first.id : second,
-      guard: async () => { throw new Error('应用正在生成'); },
-    })).rejects.toThrow('应用正在生成');
+    const second = (await listVersions(app)).versions[0].id;
+    await expect(
+      restoreVersion({
+        app,
+        versionId: second === first.id ? first.id : second,
+        guard: async () => {
+          throw new Error('应用正在生成');
+        },
+      }),
+    ).rejects.toThrow('应用正在生成');
     expect(await headOf(app)).toBe(headBefore);
   });
 });
@@ -524,11 +669,23 @@ describe('清理', () => {
     await saveVersionThumbnail(app, first.id, Buffer.from([1, 2, 3]));
 
     await purgeVersions(app);
-    expect(await stat(versionRepo(app)).then(() => true, () => false)).toBe(false);
-    expect(await stat(versionThumbnailPath(app, first.id)).then(() => true, () => false)).toBe(false);
+    expect(
+      await stat(versionRepo(app)).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
+    expect(
+      await stat(versionThumbnailPath(app, first.id)).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
 
     // 行由数据库级联删除，purgeVersions 不碰表：两条路径各管一半，互不重复。
-    await db().delete(apps).where(eq(apps.id, BigInt(app.id)));
+    await db()
+      .delete(apps)
+      .where(eq(apps.id, BigInt(app.id)));
     expect((await listVersions(app)).versions).toEqual([]);
   });
 });
