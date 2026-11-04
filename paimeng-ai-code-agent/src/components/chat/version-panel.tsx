@@ -213,13 +213,6 @@ export function VersionPanel({
     }
   }, [appId]);
 
-  useEffect(() => {
-    if (!open) return;
-    setState({ status: 'loading' });
-    setDiff({ status: 'idle' });
-    void loadOverview();
-  }, [open, loadOverview]);
-
   const runWrite = useCallback(
     async (key: string, action: () => Promise<WriteOutcome>) => {
       setBusy(key);
@@ -319,7 +312,14 @@ export function VersionPanel({
       placement="right"
       size={640}
       afterOpenChange={(visible) => {
-        if (!visible) onAfterClose?.();
+        if (!visible) {
+          onAfterClose?.();
+          return;
+        }
+        // 每次打开都是一次新的读取会话：先回到 loading，再取当前版本的概览。
+        setState({ status: 'loading' });
+        setDiff({ status: 'idle' });
+        void loadOverview();
       }}
       title={
         <span className="version-panel-drawer-title">

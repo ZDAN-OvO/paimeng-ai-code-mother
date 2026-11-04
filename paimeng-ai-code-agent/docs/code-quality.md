@@ -28,7 +28,7 @@ GitHub Actions 的默认检查执行 lint、格式检查、项目护栏、类型
 
 ## React 存量诊断
 
-初次接入登记 44 条既有诊断；普通页面（会话、首页、应用编辑、管理列表）修复 9 条，积分页面与弹窗会话修复 13 条。当前 [eslint-suppressions.json](../eslint-suppressions.json) 保留 22 条、5 个文件：`set-state-in-effect` 15 条、`exhaustive-deps` 2 条、`immutability` 4 条、`refs` 1 条。剩余诊断集中在模型/版本/录音的表单会话与聊天同步的 ref 所有权，需要分别核对生命周期与业务行为；规则保持开启，没有全局关闭。
+初次接入登记 44 条既有诊断；普通页面（会话、首页、应用编辑、管理列表）修复 9 条，积分页面与弹窗会话修复 13 条，模型/版本/录音的表单与录音会话修复 7 条。当前 [eslint-suppressions.json](../eslint-suppressions.json) 保留 15 条、2 个文件：`set-state-in-effect` 6 条、`exhaustive-deps` 4 条、`immutability` 4 条、`refs` 1 条，全部集中在聊天同步的 ref 所有权与终态转换；规则保持开启，没有全局关闭。
 
 使用 ESLint 官方 bulk suppressions，按“文件 + 规则 + 数量”记录存量。新文件的违规、同一文件超过登记数量的违规，以及其他未登记规则的违规都会失败。它不是按源码位置精确匹配：同文件同规则下删除一个旧问题、增加一个新问题，数量不变时可能不会阻断，代码审查仍须检查这种替换。修改这些组件时应修复相关问题，而不是把基线当成永久许可。
 

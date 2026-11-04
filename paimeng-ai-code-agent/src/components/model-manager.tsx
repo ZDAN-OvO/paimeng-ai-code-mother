@@ -183,12 +183,32 @@ function ModelConfigManager() {
   }, []);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    let live = true;
+    adminPost('model/admin/config', {}, (data) => modelAdminConfigViewSchema.parse(data))
+      .then((outcome) => {
+        if (!live) return;
+        if (outcome.ok) {
+          setConfig(outcome.data);
+          setError(null);
+          setConflict(null);
+        } else {
+          setError(outcome.message);
+        }
+      })
+      .catch((problem: unknown) => {
+        if (live) setError(problem instanceof Error ? problem.message : '读取模型配置失败');
+      })
+      .finally(() => {
+        if (live) setLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!providerEditor) return;
-    setProbeText(null);
+    // probeText 由打开事件清理（openCreateProvider/openEditProvider），这里只管回填表单。
     const values =
       providerEditor.mode === 'edit'
         ? providerFormValues(providerEditor.original)
@@ -199,7 +219,6 @@ function ModelConfigManager() {
 
   useEffect(() => {
     if (!addModelFor) return;
-    setProbeText(null);
     const timer = window.setTimeout(() => addModelForm.setFieldsValue(emptyAddModelValues()), 0);
     return () => window.clearTimeout(timer);
   }, [addModelFor, addModelForm]);

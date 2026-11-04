@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button, Tooltip } from 'antd';
 import { AudioOutlined, DeleteOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons';
 import { z } from 'zod';
@@ -13,6 +13,11 @@ import { z } from 'zod';
 
 /** 录音上限：到点自动结束并转写（服务端另有 10 MiB 字节上限）。 */
 export const maxRecordingSeconds = 120;
+
+/** MediaRecorder 只在浏览器存在：用外部存储读取，SSR 首屏与 hydration 都不会因探测而写状态。 */
+const subscribeToEnvironment = () => () => {};
+const clientHasRecorder = () => typeof MediaRecorder !== 'undefined';
+const serverHasRecorder = () => false;
 /** 优先带 opus 的 webm，其次容器默认，最后 ogg（老 Firefox）。都不支持时交给浏览器自选。 */
 export const preferredAudioMimeTypes = [
   'audio/webm;codecs=opus',
@@ -112,7 +117,11 @@ export function VoiceInput({
   serverEnabled: boolean;
   onTranscript: (text: string) => void;
 }) {
-  const [recorderSupported, setRecorderSupported] = useState(false);
+  const recorderSupported = useSyncExternalStore(
+    subscribeToEnvironment,
+    clientHasRecorder,
+    serverHasRecorder,
+  );
   const [phase, setPhase] = useState<VoicePhase>('idle');
   const [seconds, setSeconds] = useState(0);
   const [error, setError] = useState('');
@@ -120,11 +129,11 @@ export function VoiceInput({
   const stream = useRef<MediaStream | null>(null);
   const chunks = useRef<Blob[]>([]);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const maxTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const discard = useRef(false);
   const recorded = useRef<Blob | null>(null);
 
   useEffect(() => {
-    setRecorderSupported(typeof MediaRecorder !== 'undefined');
     return () => {
       // 卸载时收尾：关麦克风、停计时，并标记丢弃，避免离开页面后还把录音传到转写接口。
       discard.current = true;
@@ -132,6 +141,7 @@ export function VoiceInput({
       stream.current?.getTracks().forEach((track) => track.stop());
       stream.current = null;
       if (timer.current !== null) clearInterval(timer.current);
+      if (maxTimer.current !== null) clearTimeout(maxTimer.current);
     };
   }, []);
 
@@ -141,6 +151,10 @@ export function VoiceInput({
     if (timer.current !== null) {
       clearInterval(timer.current);
       timer.current = null;
+    }
+    if (maxTimer.current !== null) {
+      clearTimeout(maxTimer.current);
+      maxTimer.current = null;
     }
   }
 
@@ -227,13 +241,9 @@ export function VoiceInput({
     setSeconds(0);
     setPhase('recording');
     timer.current = setInterval(() => setSeconds((current) => current + 1), 1000);
+    // 自动到时由录音会话自己的计时器驱动：不靠渲染后的副作用，也就不会在重渲染时重复 stop。
+    maxTimer.current = setTimeout(() => stopRecording(), maxRecordingSeconds * 1000);
   }
-
-  // 到上限自动结束并转写：服务端有 10 MiB 上限，长时间录音也没有意义，不如在这里收住。
-  useEffect(() => {
-    if (phase === 'recording' && seconds >= maxRecordingSeconds) stopRecording();
-    // 依赖只写 phase/seconds：stopRecording 只读 ref，每次渲染重建不影响正确性。
-  }, [phase, seconds]);
 
   const recording = phase === 'recording';
   const busy = phase === 'starting' || phase === 'transcribing';
