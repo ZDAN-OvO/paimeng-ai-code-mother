@@ -9,6 +9,7 @@ export default defineConfig([
     '.next*/**',
     '.pi/**',
     '.audit/**',
+    '.claude/**',
     'dist/**',
     'out/**',
     'build/**',

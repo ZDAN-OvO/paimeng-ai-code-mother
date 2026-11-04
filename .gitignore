@@ -36,6 +36,9 @@ build/
 ### VS Code ###
 .vscode/
 
+### Claude ###
+.claude/
+
 ## Trae ##
 .trae/
 

@@ -1,0 +1,444 @@
+{
+  "generatedAt": "2026-11-03T09:45:27.788Z",
+  "environment": {
+    "image": "paimeng-app-runtime:1894779bd433",
+    "imageId": "sha256:d86ae2e4791ff1907cdcb1f1e5580870dfc4760356ba1aa3c5f645470e71937c",
+    "node": "v24.22.1",
+    "pnpm": "10.18.3",
+    "docker": "29.8.2",
+    "kernel": "7.0.0-38-generic",
+    "uid": 1000,
+    "gid": 1000,
+    "lockVersion": "lockfileVersion: '9.0'",
+    "packageJson": {
+      "name": "spike-app",
+      "private": true,
+      "type": "module",
+      "dependencies": {
+        "react": "19.1.0",
+        "react-dom": "19.1.0"
+      },
+      "devDependencies": {
+        "vite": "7.0.0",
+        "@vitejs/plugin-react": "4.6.0",
+        "typescript": "5.9.3"
+      }
+    },
+    "durationBeforeLayoutsMs": 869
+  },
+  "layouts": {
+    "linkProbe": {
+      "output": "CROSS_MOUNT_LINK_FAIL: ln: /work/p.txt: Cross-device link"
+    },
+    "naive": {
+      "install": {
+        "command": "pnpm install --frozen-lockfile --ignore-scripts --reporter=append-only --store-dir=/store",
+        "durationMs": 2388,
+        "tail": [
+          "+ react-dom 19.1.0",
+          "",
+          "devDependencies:",
+          "+ @vitejs/plugin-react 4.6.0",
+          "+ typescript 5.9.3",
+          "+ vite 7.0.0",
+          "",
+          "Done in 2.2s using pnpm v10.18.3"
+        ]
+      },
+      "measurement": {
+        "roots": [
+          {
+            "root": "/store",
+            "entries": 2905,
+            "files": 2390,
+            "dirs": 515,
+            "symlinks": 0,
+            "bytes": 60956256,
+            "blocks": 67973120,
+            "hardlinked": 0,
+            "maxNlink": 1,
+            "uniqueInodes": 2390,
+            "uniqueBytes": 60956256,
+            "uniqueBlocks": 67973120
+          },
+          {
+            "root": "/work",
+            "entries": 3021,
+            "files": 2427,
+            "dirs": 427,
+            "symlinks": 167,
+            "bytes": 60693638,
+            "blocks": 67850240,
+            "hardlinked": 0,
+            "maxNlink": 1,
+            "uniqueInodes": 2427,
+            "uniqueBytes": 60693638,
+            "uniqueBlocks": 67850240
+          }
+        ],
+        "samples": [
+          {
+            "label": "react",
+            "path": "/work/node_modules/react/index.js",
+            "realpath": "/work/node_modules/.pnpm/react@19.1.0/node_modules/react/index.js",
+            "dev": 66308,
+            "ino": 3150096,
+            "nlink": 1,
+            "size": 186,
+            "blocks": 4096
+          },
+          {
+            "label": "pnpm-dir",
+            "path": "/work/node_modules/.pnpm",
+            "realpath": "/work/node_modules/.pnpm",
+            "dev": 66308,
+            "ino": 3148785,
+            "nlink": 68,
+            "size": 4096,
+            "blocks": 4096
+          }
+        ],
+        "union": {
+          "uniqueInodes": 4817,
+          "uniqueBytes": 121649894,
+          "uniqueBlocks": 135823360
+        }
+      },
+      "modules": [
+        ".pnpm/react@19.1.0/node_modules/react",
+        "storeDir: /store/v10",
+        "virtualStoreDir: .pnpm",
+        "virtualStoreDirMaxLength: 120",
+        "66"
+      ]
+    },
+    "workaround": {
+      "installA": {
+        "command": "pnpm install --frozen-lockfile --ignore-scripts --reporter=append-only --store-dir=/store --virtual-store-dir=/store/apps/a/.paimeng-virtual",
+        "durationMs": 2308,
+        "tail": [
+          "+ react-dom 19.1.0",
+          "",
+          "devDependencies:",
+          "+ @vitejs/plugin-react 4.6.0",
+          "+ typescript 5.9.3",
+          "+ vite 7.0.0",
+          "",
+          "Done in 2.2s using pnpm v10.18.3"
+        ]
+      },
+      "installB": {
+        "command": "pnpm install --frozen-lockfile --ignore-scripts --reporter=append-only --store-dir=/store --virtual-store-dir=/store/apps/b/.paimeng-virtual",
+        "durationMs": 777,
+        "tail": [
+          "+ react-dom 19.1.0",
+          "",
+          "devDependencies:",
+          "+ @vitejs/plugin-react 4.6.0",
+          "+ typescript 5.9.3",
+          "+ vite 7.0.0",
+          "",
+          "Done in 684ms using pnpm v10.18.3"
+        ]
+      },
+      "measureA": {
+        "roots": [
+          {
+            "root": "/store",
+            "entries": 5912,
+            "files": 4809,
+            "dirs": 941,
+            "symlinks": 162,
+            "bytes": 121568013,
+            "blocks": 135720960,
+            "hardlinked": 4702,
+            "maxNlink": 18,
+            "uniqueInodes": 2425,
+            "uniqueBytes": 61123609,
+            "uniqueBlocks": 68239360
+          },
+          {
+            "root": "/work",
+            "entries": 17,
+            "files": 8,
+            "dirs": 4,
+            "symlinks": 5,
+            "bytes": 83627,
+            "blocks": 102400,
+            "hardlinked": 0,
+            "maxNlink": 1,
+            "uniqueInodes": 8,
+            "uniqueBytes": 83627,
+            "uniqueBlocks": 102400
+          }
+        ],
+        "samples": [
+          {
+            "label": "react",
+            "path": "/work/node_modules/react/index.js",
+            "realpath": "/store/apps/a/.paimeng-virtual/react@19.1.0/node_modules/react/index.js",
+            "dev": 66308,
+            "ino": 3155809,
+            "nlink": 2,
+            "size": 186,
+            "blocks": 4096
+          },
+          {
+            "label": "virtual-a",
+            "path": "/store/apps/a/.paimeng-virtual",
+            "realpath": "/store/apps/a/.paimeng-virtual",
+            "dev": 66308,
+            "ino": 3154833,
+            "nlink": 68,
+            "size": 4096,
+            "blocks": 4096
+          }
+        ],
+        "union": {
+          "uniqueInodes": 2433,
+          "uniqueBytes": 61207236,
+          "uniqueBlocks": 68341760
+        }
+      },
+      "measureB": {
+        "roots": [
+          {
+            "root": "/store",
+            "entries": 8918,
+            "files": 7228,
+            "dirs": 1366,
+            "symlinks": 324,
+            "bytes": 182179770,
+            "blocks": 203468800,
+            "hardlinked": 7086,
+            "maxNlink": 35,
+            "uniqueInodes": 2460,
+            "uniqueBytes": 61290962,
+            "uniqueBlocks": 68505600
+          },
+          {
+            "root": "/work",
+            "entries": 17,
+            "files": 8,
+            "dirs": 4,
+            "symlinks": 5,
+            "bytes": 83627,
+            "blocks": 102400,
+            "hardlinked": 0,
+            "maxNlink": 1,
+            "uniqueInodes": 8,
+            "uniqueBytes": 83627,
+            "uniqueBlocks": 102400
+          }
+        ],
+        "samples": [
+          {
+            "label": "react",
+            "path": "/work/node_modules/react/index.js",
+            "realpath": "/store/apps/b/.paimeng-virtual/react@19.1.0/node_modules/react/index.js",
+            "dev": 66308,
+            "ino": 3155809,
+            "nlink": 3,
+            "size": 186,
+            "blocks": 4096
+          },
+          {
+            "label": "virtual-b",
+            "path": "/store/apps/b/.paimeng-virtual",
+            "realpath": "/store/apps/b/.paimeng-virtual",
+            "dev": 66308,
+            "ino": 3158433,
+            "nlink": 68,
+            "size": 4096,
+            "blocks": 4096
+          }
+        ],
+        "union": {
+          "uniqueInodes": 2468,
+          "uniqueBytes": 61374589,
+          "uniqueBlocks": 68608000
+        }
+      },
+      "secondAppDelta": {
+        "storeBlocks": 266240,
+        "unionBlocks": 266240
+      },
+      "symlinks": [
+        "../../store/apps/a/.paimeng-virtual/react@19.1.0/node_modules/react",
+        "storeDir: /store/v10",
+        "virtualStoreDir: ../../store/apps/a/.paimeng-virtual",
+        "virtualStoreDirMaxLength: 120"
+      ],
+      "sharedInodes": [
+        "66308 3155809 3 node_modules/react/index.js",
+        "66308 3155809 3 /store/apps/a/.paimeng-virtual/react@19.1.0/node_modules/react/index.js",
+        "66308 3155809 3 /store/apps/b/.paimeng-virtual/react@19.1.0/node_modules/react/index.js"
+      ]
+    },
+    "sameMount": {
+      "install": {
+        "durationMs": 2193,
+        "command": "pnpm install --store-dir=/srv/store"
+      },
+      "measurement": {
+        "roots": [
+          {
+            "root": "/srv/store",
+            "entries": 2905,
+            "files": 2390,
+            "dirs": 515,
+            "symlinks": 0,
+            "bytes": 60956256,
+            "blocks": 67973120,
+            "hardlinked": 2318,
+            "maxNlink": 18,
+            "uniqueInodes": 2390,
+            "uniqueBytes": 60956256,
+            "uniqueBlocks": 67973120
+          },
+          {
+            "root": "/srv/work",
+            "entries": 3021,
+            "files": 2427,
+            "dirs": 427,
+            "symlinks": 167,
+            "bytes": 60694666,
+            "blocks": 67850240,
+            "hardlinked": 2384,
+            "maxNlink": 18,
+            "uniqueInodes": 2361,
+            "uniqueBytes": 60614428,
+            "uniqueBlocks": 67567616
+          }
+        ],
+        "samples": [
+          {
+            "label": "react",
+            "path": "/srv/work/node_modules/react/index.js",
+            "realpath": "/srv/work/node_modules/.pnpm/react@19.1.0/node_modules/react/index.js",
+            "dev": 66308,
+            "ino": 3160106,
+            "nlink": 2,
+            "size": 186,
+            "blocks": 4096
+          }
+        ],
+        "union": {
+          "uniqueInodes": 2433,
+          "uniqueBytes": 61206518,
+          "uniqueBlocks": 68341760
+        }
+      }
+    },
+    "concurrent": {
+      "runs": [
+        {
+          "name": "spike-s1-conc-a",
+          "code": 0,
+          "durationMs": 3130,
+          "tail": [
+            "devDependencies:",
+            "+ @vitejs/plugin-react 4.6.0",
+            "+ typescript 5.9.3",
+            "+ vite 7.0.0",
+            "",
+            "Done in 3s using pnpm v10.18.3"
+          ]
+        },
+        {
+          "name": "spike-s1-conc-b",
+          "code": 0,
+          "durationMs": 3102,
+          "tail": [
+            "devDependencies:",
+            "+ @vitejs/plugin-react 4.6.0",
+            "+ typescript 5.9.3",
+            "+ vite 7.0.0",
+            "",
+            "Done in 3s using pnpm v10.18.3"
+          ]
+        }
+      ],
+      "measureA": {
+        "roots": [
+          {
+            "root": "/store",
+            "entries": 8918,
+            "files": 7228,
+            "dirs": 1366,
+            "symlinks": 324,
+            "bytes": 182179770,
+            "blocks": 203468800,
+            "hardlinked": 7086,
+            "maxNlink": 35,
+            "uniqueInodes": 2460,
+            "uniqueBytes": 61290962,
+            "uniqueBlocks": 68505600
+          },
+          {
+            "root": "/work",
+            "entries": 17,
+            "files": 8,
+            "dirs": 4,
+            "symlinks": 5,
+            "bytes": 83627,
+            "blocks": 102400,
+            "hardlinked": 0,
+            "maxNlink": 1,
+            "uniqueInodes": 8,
+            "uniqueBytes": 83627,
+            "uniqueBlocks": 102400
+          }
+        ],
+        "samples": [],
+        "union": {
+          "uniqueInodes": 2468,
+          "uniqueBytes": 61374589,
+          "uniqueBlocks": 68608000
+        }
+      },
+      "measureB": {
+        "roots": [
+          {
+            "root": "/store",
+            "entries": 8918,
+            "files": 7228,
+            "dirs": 1366,
+            "symlinks": 324,
+            "bytes": 182179770,
+            "blocks": 203468800,
+            "hardlinked": 7086,
+            "maxNlink": 35,
+            "uniqueInodes": 2460,
+            "uniqueBytes": 61290962,
+            "uniqueBlocks": 68505600
+          },
+          {
+            "root": "/work",
+            "entries": 17,
+            "files": 8,
+            "dirs": 4,
+            "symlinks": 5,
+            "bytes": 83627,
+            "blocks": 102400,
+            "hardlinked": 0,
+            "maxNlink": 1,
+            "uniqueInodes": 8,
+            "uniqueBytes": 83627,
+            "uniqueBlocks": 102400
+          }
+        ],
+        "samples": [],
+        "union": {
+          "uniqueInodes": 2468,
+          "uniqueBytes": 61374589,
+          "uniqueBlocks": 68608000
+        }
+      }
+    },
+    "ownership": {
+      "stat": "1000:1000 host-owner/file.txt",
+      "removedByHost": true
+    }
+  }
+}
