@@ -26,7 +26,7 @@ F1 前置：按 Appendix A 的任务准备 /spike；只有获明确授权后才�
 依赖图：G0 + F1 → PR-01 → PR-02 → PR-03 → PR-04。每个子 PR 从父 PR 合入后的实际 trunk 分叉；父项未合入，子项不进入 merge-ready。
 每轮集成检查：`npm run check:fast && npm run type-check && npm test`，再执行该轮真实浏览器场景；最后全量 `npm run test:integration` 串行运行。
 
-实施进度（只记事实，不勾选下方验收框）：G0 已提交并推送 `1c41a93`；F1 实验见 Appendix A。PR-01 已在 `agent/react-lint-pages` 实现（`bf709c9`）：四文件原始诊断清零、抑制 44 → 35，类型检查、512 单测与真实浏览器回归通过，证据包 `react-page-lifecycle-010629` 与 `platform-010141`。仍未满足该 PR 的全部门禁：没有受控故障注入、没有性能采样、没有独立验证者，也没有 PR 实体，因此不宣称 merge-ready。
+实施进度（只记事实，不勾选下方验收框）：G0 已提交并推送 `1c41a93`；F1 实验见 Appendix A。PR-01 已在 `agent/react-lint-pages` 实现并开 PR（`bf709c9`，[#159](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/159)）：四文件原始诊断清零、抑制 44 → 35，类型检查、512 单测与真实浏览器回归通过，证据包 `react-page-lifecycle-010629` 与 `platform-010141`。仍未满足该 PR 的全部门禁：没有受控故障注入、没有性能采样、没有独立验证者，也没有 PR 实体，因此不宣称 merge-ready。
 
 Parallel. None. 四组共同修改 `eslint-suppressions.json`、质量说明并共享 `_test` 数据库及 Redis DB 15；串行交付比为本次清理新增四套数据库更合理。后续若要并行，必须先指定唯一集成者处理共享文件，拆分数据库并重审本计划；单换端口不构成隔离。
 Feasibility. F1 已在隔离 worktree 完成：原始诊断 44 条可复现；Ref 命名、纯 prepare 回调、带存活校验的 promise 回调、`afterOpenChange` + `initialValues` 表单会话、派生标记与按预览身份保存选中态五类修法，分别用原始 ESLint 扫描确认对应诊断消失（44 → 35，详见 Appendix A）。PR-01 已在叠加分支实现并跑真实浏览器证据；PR-02–04 仍须按各自 Verify 门禁验证。
@@ -62,7 +62,7 @@ Input boundary. 主要结论用真实 UI → Next API → harness/preview，模�
 
 ### Verdict and handoff
 
-Review entity. 使用 GitHub `ZDAN-GHN/paimeng-ai-code-mother` 的真实 PR，正文按 /opening-a-pr；当前未创建。创建或发布需单独授权，URL 写入每组 handoff 后才可宣称 merge-ready。没有 forge 时只有用户明确接受绑定 base/head、diff、原始证据与审阅人的持久审阅记录才能替代。
+Review entity. GitHub `ZDAN-OvO/paimeng-ai-code-mother`：G0 为 [PR #158](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/158)，PR-01 为叠加在 #158 之上的 [PR #159](https://github.com/ZDAN-OvO/paimeng-ai-code-mother/pull/159)，正文按 /opening-a-pr。URL 已记录；合并仍需独立验证、交互批准与显式授权。没有 forge 时只有用户明确接受绑定 base/head、diff、原始证据与审阅人的持久审阅记录才能替代。
 Verdict. 每个 Behavior PR 的非作者验证者使用 /verify-pr 运行真实路径，检查修改过的测试、故障位置、误报论证和原始产物。未授权/未完成独立验证则 pending；验收未通过不能 PASS+NOTES。
 所有 PR 都是交互行为变更，合并前用户须审阅 screenshots/video 并批准；发媒体不等于批准。CI、独立 PASS/PASS+NOTES、交互批准与显式合并授权缺一不可；按顺序合入后重新确认下一组实际基线。
 
