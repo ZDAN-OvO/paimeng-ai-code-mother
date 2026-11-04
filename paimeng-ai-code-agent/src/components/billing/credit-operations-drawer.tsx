@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { App, Drawer, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from '@/client/api';
@@ -39,10 +39,6 @@ export function CreditOperationsDrawer({ open, onClose }: { open: boolean; onClo
       setLoading(false);
     }
   }, [message]);
-
-  useEffect(() => {
-    if (open) void load();
-  }, [open, load]);
 
   const columns: ColumnsType<CreditOperationView> = [
     {
@@ -102,7 +98,17 @@ export function CreditOperationsDrawer({ open, onClose }: { open: boolean; onClo
   ];
 
   return (
-    <Drawer title="最近操作" open={open} onClose={onClose} size={860} destroyOnHidden>
+    <Drawer
+      title="最近操作"
+      open={open}
+      onClose={onClose}
+      afterOpenChange={(next) => {
+        // 打开动画结束后再取数：不靠「open 变化」的副作用，重开一次自然重取一次。
+        if (next) void load();
+      }}
+      size={860}
+      destroyOnHidden
+    >
       <Table
         rowKey="id"
         size="small"

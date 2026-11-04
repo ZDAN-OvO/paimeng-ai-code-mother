@@ -18,54 +18,6 @@
       "count": 2
     }
   },
-  "src/components/billing/admin-usage-panel.tsx": {
-    "react-hooks/set-state-in-effect": {
-      "count": 1
-    }
-  },
-  "src/components/billing/billing-history.tsx": {
-    "react-hooks/set-state-in-effect": {
-      "count": 1
-    }
-  },
-  "src/components/billing/credit-balance.tsx": {
-    "react-hooks/set-state-in-effect": {
-      "count": 1
-    }
-  },
-  "src/components/billing/credit-grant-dialog.tsx": {
-    "react-hooks/set-state-in-effect": {
-      "count": 1
-    }
-  },
-  "src/components/billing/credit-operations-drawer.tsx": {
-    "react-hooks/set-state-in-effect": {
-      "count": 1
-    }
-  },
-  "src/components/billing/credit-page.tsx": {
-    "react-hooks/set-state-in-effect": {
-      "count": 4
-    }
-  },
-  "src/components/billing/credit-rule-dialog.tsx": {
-    "react-hooks/set-state-in-effect": {
-      "count": 1
-    }
-  },
-  "src/components/billing/reconcile-panel.tsx": {
-    "react-hooks/set-state-in-effect": {
-      "count": 1
-    }
-  },
-  "src/components/billing/user-search-select.tsx": {
-    "react-hooks/exhaustive-deps": {
-      "count": 1
-    },
-    "react-hooks/set-state-in-effect": {
-      "count": 1
-    }
-  },
   "src/components/chat/version-panel.tsx": {
     "react-hooks/set-state-in-effect": {
       "count": 1

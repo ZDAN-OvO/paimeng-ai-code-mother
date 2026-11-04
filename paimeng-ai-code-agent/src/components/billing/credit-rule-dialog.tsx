@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { App, Form, Input, InputNumber, Modal, Radio, Select } from 'antd';
 import { api } from '@/client/api';
 import {
@@ -135,24 +135,25 @@ export function CreditRuleDialog({
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    if (!open) return;
+  const load = useCallback(async () => {
     setLoading(true);
     const suffix = user ? `?userId=${encodeURIComponent(user.userId)}` : '';
-    api<QuotaPolicyAdminView>('admin/billing/quota/policy' + suffix)
-      .then((data) => {
-        setPolicy(data);
-        form.setFieldsValue({
-          scope: 'global',
-          effectivePeriod: data.nextPeriod,
-          mode: 'override',
-          credits: data.global.next.credits,
-          note: '',
-        });
-      })
-      .catch((problem) => message.error((problem as Error).message))
-      .finally(() => setLoading(false));
-  }, [open, user, form, message]);
+    try {
+      const data = await api<QuotaPolicyAdminView>('admin/billing/quota/policy' + suffix);
+      setPolicy(data);
+      form.setFieldsValue({
+        scope: 'global',
+        effectivePeriod: data.nextPeriod,
+        mode: 'override',
+        credits: data.global.next.credits,
+        note: '',
+      });
+    } catch (problem) {
+      message.error((problem as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [user, form, message]);
 
   async function submit() {
     if (!policy) return;
@@ -195,6 +196,10 @@ export function CreditRuleDialog({
       okText="保存规则"
       cancelText="取消"
       destroyOnHidden
+      afterOpenChange={(next) => {
+        // 打开后再取当前规则并回填：一次打开就是一次表单会话，不靠 open 值的副作用。
+        if (next) void load();
+      }}
     >
       {open && <RuleFormBody form={form} policy={policy} user={user} />}
     </Modal>

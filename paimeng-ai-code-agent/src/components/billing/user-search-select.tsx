@@ -1,8 +1,15 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Select, Spin } from 'antd';
 import { api } from '@/client/api';
 import type { AdminCreditUser, AdminUserSearchResult } from '@/shared/billing';
+
+async function fetchUsers(query: string): Promise<AdminCreditUser[]> {
+  const result = await api<AdminUserSearchResult>(
+    'admin/billing/users?limit=10&q=' + encodeURIComponent(query.trim()),
+  );
+  return result.users;
+}
 
 /**
  * 管理面的用户选择器：按账号/用户名模糊搜索，完整用户 ID 直接粘贴也能命中。
@@ -24,14 +31,7 @@ export function UserSearchSelect({
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requested = useRef('');
 
-  async function fetchUsers(query: string): Promise<AdminCreditUser[]> {
-    const result = await api<AdminUserSearchResult>(
-      'admin/billing/users?limit=10&q=' + encodeURIComponent(query.trim()),
-    );
-    return result.users;
-  }
-
-  async function search(query: string) {
+  const search = useCallback(async (query: string) => {
     requested.current = query;
     setLoading(true);
     try {
@@ -42,10 +42,11 @@ export function UserSearchSelect({
     } finally {
       if (requested.current === query) setLoading(false);
     }
-  }
+  }, []);
 
   /** 完整 ID 粘贴后直接回车：先取一次精确结果，有候选就选中第一条，不要求用户再点下拉。 */
   async function selectFirst(query: string) {
+    requested.current = query;
     try {
       const users = await fetchUsers(query);
       setOptions(users);
@@ -58,7 +59,20 @@ export function UserSearchSelect({
 
   useEffect(() => {
     // 已选中的 ID 可能来自总览行或直接粘贴：即使没有搜索词，也要把它解析成可读身份。
-    void search(value ?? '');
+    // 这里不置 loading：候选只是回填可读身份，输入搜索的等待态由 schedule 自己维护。
+    let live = true;
+    const query = value ?? '';
+    requested.current = query;
+    fetchUsers(query)
+      .then((users) => {
+        if (live && requested.current === query) setOptions(users);
+      })
+      .catch(() => {
+        if (live && requested.current === query) setOptions([]);
+      });
+    return () => {
+      live = false;
+    };
   }, [value]);
 
   function schedule(query: string) {

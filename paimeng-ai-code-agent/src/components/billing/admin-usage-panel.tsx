@@ -22,6 +22,9 @@ type ReversalForm = { reason: string };
 
 const percentOf = (ratio: number) => `${(ratio * 100).toFixed(1)}%`;
 
+const fetchUsage = (userId: string) =>
+  api<AdminUserUsage>('admin/billing/usage?userId=' + encodeURIComponent(userId));
+
 /** 只有还有未冲正分录的账单才允许冲正；待处理/0 Credit 显示「无需冲正」。 */
 function reversalStateOf(charge: BillingChargeView): 'ready' | 'reversed' | 'empty' {
   if (charge.status === 'reversed') return 'reversed';
@@ -34,31 +37,46 @@ function reversalStateOf(charge: BillingChargeView): 'ready' | 'reversed' | 'emp
  */
 export function AdminUsagePanel({ user }: { user: AdminCreditUser }) {
   const { message } = App.useApp();
-  const [usage, setUsage] = useState<AdminUserUsage | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // 详情连同它所属的用户一起存：切人后旧读数不显示，也不需要先清空的副作用。
+  const [usage, setUsage] = useState<{ userId: string; value: AdminUserUsage } | null>(null);
+  const [error, setError] = useState<{ userId: string; message: string } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [target, setTarget] = useState<BillingChargeView | null>(null);
   const [reversing, setReversing] = useState(false);
   const [form] = Form.useForm<ReversalForm>();
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
-      setUsage(
-        await api<AdminUserUsage>('admin/billing/usage?userId=' + encodeURIComponent(user.userId)),
-      );
+      const value = await fetchUsage(user.userId);
+      setUsage({ userId: user.userId, value });
       setError(null);
     } catch (problem) {
       setUsage(null);
-      setError((problem as Error).message);
-    } finally {
-      setLoading(false);
+      setError({ userId: user.userId, message: (problem as Error).message });
     }
   }, [user.userId]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    let live = true;
+    fetchUsage(user.userId)
+      .then((value) => {
+        if (!live) return;
+        setUsage({ userId: user.userId, value });
+        setError(null);
+      })
+      .catch((problem: unknown) => {
+        if (!live) return;
+        setUsage(null);
+        setError({ userId: user.userId, message: (problem as Error).message });
+      });
+    return () => {
+      live = false;
+    };
+  }, [user.userId]);
+
+  const value = usage?.userId === user.userId ? usage.value : null;
+  const currentError = error?.userId === user.userId ? error.message : null;
+  const loading = refreshing || (!value && !currentError);
 
   async function submitReversal(values: ReversalForm) {
     if (!target) return;
@@ -75,7 +93,12 @@ export function AdminUsagePanel({ user }: { user: AdminCreditUser }) {
       );
       setTarget(null);
       form.resetFields();
-      await load();
+      setRefreshing(true);
+      try {
+        await load();
+      } finally {
+        setRefreshing(false);
+      }
     } catch (problem) {
       message.error((problem as Error).message);
     } finally {
@@ -189,8 +212,10 @@ export function AdminUsagePanel({ user }: { user: AdminCreditUser }) {
         style={{ marginBottom: 16 }}
         items={[{ key: 'user', label: '用户', children: <AdminUserIdentity user={user} /> }]}
       />
-      {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 12 }} />}
-      {usage && (
+      {currentError && (
+        <Alert type="error" showIcon title={currentError} style={{ marginBottom: 12 }} />
+      )}
+      {value && (
         <>
           <Descriptions
             bordered
@@ -200,33 +225,33 @@ export function AdminUsagePanel({ user }: { user: AdminCreditUser }) {
               {
                 key: 'total',
                 label: '可用积分',
-                children: `${usage.credit.account.available} 积分`,
+                children: `${value.credit.account.available} 积分`,
               },
               {
                 key: 'limited',
                 label: '限时积分',
-                children: `${usage.credit.account.limited} 积分`,
+                children: `${value.credit.account.limited} 积分`,
               },
               {
                 key: 'lasting',
                 label: '长期积分',
-                children: `${usage.credit.account.lasting} 积分`,
+                children: `${value.credit.account.lasting} 积分`,
               },
               {
                 key: 'purchased',
                 label: '近 60 天充值',
-                children: `${usage.credit.purchasedCredits60d} 积分`,
+                children: `${value.credit.purchasedCredits60d} 积分`,
               },
-              { key: 'overdraft', label: '当前透支线', children: `${usage.credit.overdraft} 积分` },
+              { key: 'overdraft', label: '当前透支线', children: `${value.credit.overdraft} 积分` },
             ]}
           />
           <div className={styles.usageLegend}>
-            <span>最近 {usage.charges.length} 笔账单</span>
-            <Tag color={usage.estimatedRatio > 0 ? 'orange' : 'default'}>
-              含估算 {percentOf(usage.estimatedRatio)}
+            <span>最近 {value.charges.length} 笔账单</span>
+            <Tag color={value.estimatedRatio > 0 ? 'orange' : 'default'}>
+              含估算 {percentOf(value.estimatedRatio)}
             </Tag>
-            <Tag color={usage.unpricedRatio > 0 ? 'gold' : 'default'}>
-              含未定价 {percentOf(usage.unpricedRatio)}
+            <Tag color={value.unpricedRatio > 0 ? 'gold' : 'default'}>
+              含未定价 {percentOf(value.unpricedRatio)}
             </Tag>
             <span>比例按账单条数计；{creditDenominationLabel}</span>
           </div>
@@ -235,7 +260,7 @@ export function AdminUsagePanel({ user }: { user: AdminCreditUser }) {
             size="small"
             loading={loading}
             columns={columns}
-            dataSource={usage.charges}
+            dataSource={value.charges}
             pagination={false}
             scroll={{ x: 1260 }}
             locale={{ emptyText: '这个用户还没有账单' }}

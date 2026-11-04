@@ -40,13 +40,17 @@ export function CreditPage() {
   const [page, setPage] = useState(1);
   const listRequest = useRef(0);
   const detailRequest = useRef(0);
-  const [overview, setOverview] = useState<AdminCreditOverview | null>(null);
+  // 列表/详情都连同「属于哪次查询、哪个人」一起存：旧响应不显示，也不需要先清空的副作用。
+  const [overview, setOverview] = useState<{ key: string; data: AdminCreditOverview } | null>(null);
+  const [listFailed, setListFailed] = useState<string | null>(null);
   const [stats, setStats] = useState<AdminCreditOverview['stats'] | null>(null);
-  const [listLoading, setListLoading] = useState(true);
+  const [listLoading, setListLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<AdminUserCreditDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [ledger, setLedger] = useState<CreditLedgerPage>({ entries: [], hasMore: false });
+  const [detail, setDetail] = useState<{ userId: string; value: AdminUserCreditDetail } | null>(
+    null,
+  );
+  const [detailFailed, setDetailFailed] = useState<string | null>(null);
+  const [ledger, setLedger] = useState<{ userId: string; page: CreditLedgerPage } | null>(null);
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [grantKind, setGrantKind] = useState<IssueKind | null>(null);
   const [ruleOpen, setRuleOpen] = useState(false);
@@ -54,6 +58,8 @@ export function CreditPage() {
   const [reconcileOpen, setReconcileOpen] = useState(false);
   const [chargesOpen, setChargesOpen] = useState(false);
   const [issuing, setIssuing] = useState(false);
+
+  const listKey = `${page}|${filter}|${search}`;
 
   const loadStats = useCallback(async () => {
     const data = await api<AdminCreditOverview>(
@@ -64,53 +70,45 @@ export function CreditPage() {
 
   const loadList = useCallback(async () => {
     const token = ++listRequest.current;
-    setListLoading(true);
-    try {
-      const params = new URLSearchParams({
-        page: String(page),
-        pageSize: String(pageSize),
-        filter,
-      });
-      if (search) params.set('q', search);
-      const data = await api<AdminCreditOverview>('admin/billing/overview?' + params.toString());
-      // 快速输入会并发多个请求：只让最后一次生效，避免旧结果盖住新筛选。
-      if (token === listRequest.current) setOverview(data);
-    } catch (problem) {
-      if (token === listRequest.current) message.error((problem as Error).message);
-    } finally {
-      if (token === listRequest.current) setListLoading(false);
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      filter,
+    });
+    if (search) params.set('q', search);
+    const data = await api<AdminCreditOverview>('admin/billing/overview?' + params.toString());
+    // 快速输入会并发多个请求：只让最后一次生效，避免旧结果盖住新筛选。
+    if (token === listRequest.current) {
+      setOverview({ key: listKey, data });
+      setListFailed(null);
     }
-  }, [page, filter, search, message]);
+  }, [page, filter, search, listKey]);
 
-  const loadDetail = useCallback(
-    async (userId: string) => {
-      const token = ++detailRequest.current;
-      setDetailLoading(true);
-      try {
-        const [data, pageOne] = await Promise.all([
-          api<AdminUserCreditDetail>(`admin/billing/user/${encodeURIComponent(userId)}`),
-          api<CreditLedgerPage>(
-            `admin/billing/ledger?userId=${encodeURIComponent(userId)}&limit=50`,
-          ),
-        ]);
-        if (token !== detailRequest.current) return;
-        setDetail(data);
-        setLedger(pageOne);
-      } catch (problem) {
-        if (token === detailRequest.current) {
-          message.error((problem as Error).message);
-          setDetail(null);
-        }
-      } finally {
-        if (token === detailRequest.current) setDetailLoading(false);
-      }
-    },
-    [message],
-  );
+  const loadDetail = useCallback(async (userId: string) => {
+    const token = ++detailRequest.current;
+    const [data, pageOne] = await Promise.all([
+      api<AdminUserCreditDetail>(`admin/billing/user/${encodeURIComponent(userId)}`),
+      api<CreditLedgerPage>(`admin/billing/ledger?userId=${encodeURIComponent(userId)}&limit=50`),
+    ]);
+    if (token === detailRequest.current) {
+      setDetail({ userId, value: data });
+      setLedger({ userId, page: pageOne });
+      setDetailFailed(null);
+    }
+  }, []);
 
   useEffect(() => {
-    void loadStats().catch(() => undefined);
-  }, [loadStats]);
+    let live = true;
+    api<AdminCreditOverview>('admin/billing/overview?page=1&pageSize=1&filter=all')
+      .then((data) => {
+        if (live) setStats(data.stats);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+
   useEffect(() => {
     // 输入停顿 250ms 再查，避免每个字符都打一次接口。
     const timer = setTimeout(() => {
@@ -119,39 +117,103 @@ export function CreditPage() {
     }, 250);
     return () => clearTimeout(timer);
   }, [query]);
+
   useEffect(() => {
-    void loadList();
-  }, [loadList]);
+    const token = ++listRequest.current;
+    let live = true;
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      filter,
+    });
+    if (search) params.set('q', search);
+    api<AdminCreditOverview>('admin/billing/overview?' + params.toString())
+      .then((data) => {
+        if (!live || token !== listRequest.current) return;
+        setOverview({ key: listKey, data });
+        setListFailed(null);
+      })
+      .catch((problem: unknown) => {
+        if (!live || token !== listRequest.current) return;
+        message.error((problem as Error).message);
+        setListFailed(listKey);
+      });
+    return () => {
+      live = false;
+    };
+  }, [listKey, page, filter, search, message]);
+
+  // 选中的人优先保留；他不在当前页时退回到第一个——由渲染期推导，不再用副作用改状态。
+  const listData = overview?.key === listKey ? overview.data : null;
+  const items: AdminCreditOverviewItem[] = listData?.items ?? [];
+  const activeId =
+    selectedId && items.some((item) => item.userId === selectedId)
+      ? selectedId
+      : (items[0]?.userId ?? null);
+  const detailValue = activeId && detail?.userId === activeId ? detail.value : null;
+  const ledgerPage =
+    activeId && ledger?.userId === activeId ? ledger.page : { entries: [], hasMore: false };
+  const listPending = listLoading || (!listData && listFailed !== listKey);
+  const detailPending = activeId !== null && !detailValue && detailFailed !== activeId;
+
   useEffect(() => {
-    // 列表变了但选中的人不在当前页：优先保留选中，找不到就选第一个。
-    if (selectedId && overview?.items.some((item) => item.userId === selectedId)) return;
-    setSelectedId(overview?.items[0]?.userId ?? null);
-  }, [overview, selectedId]);
-  useEffect(() => {
-    if (selectedId) void loadDetail(selectedId);
-    else setDetail(null);
-  }, [selectedId, loadDetail]);
+    if (!activeId) return;
+    const token = ++detailRequest.current;
+    let live = true;
+    Promise.all([
+      api<AdminUserCreditDetail>(`admin/billing/user/${encodeURIComponent(activeId)}`),
+      api<CreditLedgerPage>(`admin/billing/ledger?userId=${encodeURIComponent(activeId)}&limit=50`),
+    ])
+      .then(([data, pageOne]) => {
+        if (!live || token !== detailRequest.current) return;
+        setDetail({ userId: activeId, value: data });
+        setLedger({ userId: activeId, page: pageOne });
+        setDetailFailed(null);
+      })
+      .catch((problem: unknown) => {
+        if (!live || token !== detailRequest.current) return;
+        message.error((problem as Error).message);
+        setDetailFailed(activeId);
+      });
+    return () => {
+      live = false;
+    };
+  }, [activeId, message]);
 
   async function reloadAll() {
-    await Promise.all([
-      loadList(),
-      loadStats(),
-      selectedId ? loadDetail(selectedId) : Promise.resolve(),
-    ]);
+    setListLoading(true);
+    try {
+      await Promise.all([
+        loadList(),
+        loadStats(),
+        activeId ? loadDetail(activeId) : Promise.resolve(),
+      ]);
+    } finally {
+      setListLoading(false);
+    }
   }
 
   async function loadMoreLedger() {
-    if (!selectedId || ledger.entries.length === 0) return;
+    const userId = activeId;
+    if (!userId || ledgerPage.entries.length === 0) return;
     setLedgerLoading(true);
     try {
-      const before = ledger.entries[ledger.entries.length - 1]?.id;
+      const before = ledgerPage.entries[ledgerPage.entries.length - 1]?.id;
       const next = await api<CreditLedgerPage>(
-        `admin/billing/ledger?userId=${encodeURIComponent(selectedId)}&limit=50&beforeId=${encodeURIComponent(before ?? '')}`,
+        `admin/billing/ledger?userId=${encodeURIComponent(userId)}&limit=50&beforeId=${encodeURIComponent(before ?? '')}`,
       );
-      setLedger((current) => ({
-        entries: [...current.entries, ...next.entries],
-        hasMore: next.hasMore,
-      }));
+      // 迟到的翻页只能追加到它自己的用户：切人后旧页不能混进新流水。
+      setLedger((current) =>
+        current?.userId === userId
+          ? {
+              userId,
+              page: {
+                entries: [...current.page.entries, ...next.entries],
+                hasMore: next.hasMore,
+              },
+            }
+          : current,
+      );
     } catch (problem) {
       message.error((problem as Error).message);
     } finally {
@@ -181,9 +243,8 @@ export function CreditPage() {
     }
   }
 
-  const items: AdminCreditOverviewItem[] = overview?.items ?? [];
-  const selected = detail?.user ?? items.find((item) => item.userId === selectedId) ?? null;
-  const pages = overview ? Math.max(1, Math.ceil(overview.total / overview.pageSize)) : 1;
+  const selected = detailValue?.user ?? items.find((item) => item.userId === activeId) ?? null;
+  const pages = listData ? Math.max(1, Math.ceil(listData.total / listData.pageSize)) : 1;
 
   function switchFilter(next: AdminCreditFilter) {
     setFilter(next);
@@ -239,8 +300,8 @@ export function CreditPage() {
         <aside className={styles.listPane} aria-label="用户列表">
           <CreditUserList
             items={items}
-            selectedId={selectedId}
-            loading={listLoading}
+            selectedId={activeId}
+            loading={listPending}
             filter={filter}
             query={query}
             onFilter={switchFilter}
@@ -249,7 +310,7 @@ export function CreditPage() {
           />
           <footer className={styles.listFoot}>
             <span>
-              共 {overview?.total ?? 0} 人
+              共 {listData?.total ?? 0} 人
               {filter !== 'all' ? `（${adminCreditFilterLabels[filter]}）` : ''}
             </span>
             <span className={styles.pager}>
@@ -290,8 +351,8 @@ export function CreditPage() {
                       {selected.userName || '未设置用户名'} · {selected.userId}
                     </span>
                   </div>
-                  <Tag color={detail?.account.status === 'pending' ? 'gold' : 'green'}>
-                    {adminQuotaStatusLabels[detail?.account.status ?? 'pending']}
+                  <Tag color={detailValue?.account.status === 'pending' ? 'gold' : 'green'}>
+                    {adminQuotaStatusLabels[detailValue?.account.status ?? 'pending']}
                   </Tag>
                 </div>
 
@@ -300,44 +361,46 @@ export function CreditPage() {
                     <span className={styles.hint}>可用积分</span>
                     <b
                       className={
-                        detail && detail.account.available < 0 ? styles.amountNeg : undefined
+                        detailValue && detailValue.account.available < 0
+                          ? styles.amountNeg
+                          : undefined
                       }
                     >
-                      {detail?.account.available ?? '—'}
+                      {detailValue?.account.available ?? '—'}
                     </b>
                   </div>
                   <div className={styles.metrics}>
                     <span>
                       <i>限时积分</i>
-                      <b>{detail?.account.limited ?? '—'}</b>
+                      <b>{detailValue?.account.limited ?? '—'}</b>
                     </span>
                     <span>
                       <i>到期</i>
                       <b>
-                        {detail?.account.limitedExpiresAt
-                          ? formatBeijingTime(detail.account.limitedExpiresAt)
+                        {detailValue?.account.limitedExpiresAt
+                          ? formatBeijingTime(detailValue.account.limitedExpiresAt)
                           : '—'}
                       </b>
                     </span>
                     <span>
                       <i>长期积分</i>
-                      <b>{detail?.account.lasting ?? '—'}</b>
+                      <b>{detailValue?.account.lasting ?? '—'}</b>
                     </span>
                     <span>
                       <i>本期已发</i>
-                      <b>{detail?.account.issued ?? '—'}</b>
+                      <b>{detailValue?.account.issued ?? '—'}</b>
                     </span>
                     <span>
                       <i>本期已用</i>
-                      <b>{detail?.account.spent ?? '—'}</b>
+                      <b>{detailValue?.account.spent ?? '—'}</b>
                     </span>
                     <span>
                       <i>近 60 天充值</i>
-                      <b>{detail?.purchasedCredits60d ?? '—'}</b>
+                      <b>{detailValue?.purchasedCredits60d ?? '—'}</b>
                     </span>
                     <span>
                       <i>透支线</i>
-                      <b>{detail?.overdraft ?? '—'}</b>
+                      <b>{detailValue?.overdraft ?? '—'}</b>
                     </span>
                   </div>
                 </div>
@@ -351,18 +414,18 @@ export function CreditPage() {
                   </Button>
                   <Button onClick={() => setRuleOpen(true)}>改规则</Button>
                   <Button onClick={() => setChargesOpen(true)}>账单与冲正</Button>
-                  {detail?.snapshotAnomaly && (
+                  {detailValue?.snapshotAnomaly && (
                     <Tooltip
-                      title={`快照 ${detail.snapshot.available}，账本 ${detail.account.available}`}
+                      title={`快照 ${detailValue.snapshot.available}，账本 ${detailValue.account.available}`}
                     >
                       <Tag color="red">快照与账本不一致</Tag>
                     </Tooltip>
                   )}
                 </div>
-                {detail?.account.status === 'pending' && (
+                {detailValue?.account.status === 'pending' && (
                   <p className={styles.hint}>
-                    本月还没有规则发放。规则：每月 {detail.rule.current.credits} 积分（
-                    {detail.rule.current.source}）。
+                    本月还没有规则发放。规则：每月 {detailValue.rule.current.credits} 积分（
+                    {detailValue.rule.current.source}）。
                   </p>
                 )}
               </div>
@@ -370,17 +433,17 @@ export function CreditPage() {
               <div className={styles.ledgerHead}>
                 <strong>流水</strong>
                 <span className={styles.statusHint}>按时间倒序，结余是这一行之后的可用积分</span>
-                {detail && (
+                {detailValue && (
                   <span className={styles.statusHint}>
-                    最近更新 {formatStoredTime(detail.asOf)}
+                    最近更新 {formatStoredTime(detailValue.asOf)}
                   </span>
                 )}
               </div>
               <div className={styles.ledgerScroll}>
                 <CreditLedger
-                  entries={ledger.entries}
-                  loading={detailLoading}
-                  hasMore={ledger.hasMore}
+                  entries={ledgerPage.entries}
+                  loading={detailPending}
+                  hasMore={ledgerPage.hasMore}
                   onLoadMore={() => void loadMoreLedger()}
                 />
                 {ledgerLoading && <div className={styles.listState}>加载中…</div>}
