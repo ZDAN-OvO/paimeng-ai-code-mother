@@ -42,6 +42,7 @@ import {
   providerModelsViewSchema,
   reasoningLevelLabels,
   reasoningLevels,
+  type ModelAliasCapabilities,
   type ModelAliasSettings,
   type ModelConfigVersion,
   type ModelProviderOptions,
@@ -50,7 +51,6 @@ import {
   type ProviderApiFormat,
   type ProviderKeySource,
   type ProviderModelsView,
-  type ReasoningLevel,
 } from '@/shared/model-config';
 import {
   currentPriceOf,
@@ -89,12 +89,7 @@ type ProviderFormValues = {
 type AddModelFormValues = {
   upstream: string;
   displayName: string;
-  capabilities: {
-    streaming: boolean;
-    toolCalling: boolean;
-    structuredOutput: boolean;
-    imageInput: boolean;
-  };
+  capabilities: ModelAliasCapabilities;
   enabled: boolean;
   inputMissYuan?: number | null;
   inputHitYuan?: number | null;
@@ -103,12 +98,7 @@ type AddModelFormValues = {
 
 type PriceFormValues = {
   displayName: string;
-  capabilities: {
-    streaming: boolean;
-    toolCalling: boolean;
-    structuredOutput: boolean;
-    imageInput: boolean;
-  };
+  capabilities: ModelAliasCapabilities;
   enabled: boolean;
   inputMissYuan?: number | null;
   inputHitYuan?: number | null;
@@ -116,18 +106,16 @@ type PriceFormValues = {
   note?: string;
 };
 
+/** 表单值跟随别名设置 schema：新增一个设置项，这里自动多一个字段，不会被手抄的字段表漏掉。 */
+type SlotSettingsValues = { [K in keyof ModelAliasSettings]?: ModelAliasSettings[K] | null };
+
 type SlotFormValues = {
   modelId: string;
-  settings: {
-    temperature?: number | null;
-    topP?: number | null;
-    maxOutputTokens?: number | null;
-    reasoning?: ReasoningLevel | null;
-    reasoningContentPassthrough?: boolean;
-  };
+  settings: SlotSettingsValues;
 };
 
-const emptyCapabilities = {
+/** 类型标注是护栏本身：schema 新增必填能力时这里编译失败，而不是悄悄少传一个字段。 */
+const emptyCapabilities: ModelAliasCapabilities = {
   streaming: false,
   toolCalling: false,
   structuredOutput: false,
@@ -1889,26 +1877,22 @@ function priceFormValues(model: ModelAdminModelView): PriceFormValues {
 }
 
 function slotFormValues(assignment: ModelAssignmentView | null): SlotFormValues {
-  return {
-    modelId: assignment?.modelId ?? '',
-    settings: {
-      temperature: assignment?.settings.temperature ?? null,
-      topP: assignment?.settings.topP ?? null,
-      maxOutputTokens: assignment?.settings.maxOutputTokens ?? null,
-      reasoning: assignment?.settings.reasoning ?? null,
-      reasoningContentPassthrough: assignment?.settings.reasoningContentPassthrough ?? false,
-    },
-  };
+  // 直接展开别名设置：schema 新增字段会自动进入表单，不需要在这里补一行。
+  return { modelId: assignment?.modelId ?? '', settings: { ...assignment?.settings } };
 }
 
+/**
+ * 只丢掉空值和未勾选的开关（保持原先「false 不落库」的语义）。
+ * 字段来自 `SlotSettingsValues`，它是 `ModelAliasSettings` 的映射类型，
+ * 所以新设置项不会被一张手写清单悄悄吞掉。
+ */
 function settingsOf(settings: SlotFormValues['settings']): ModelAliasSettings {
   const next: ModelAliasSettings = {};
-  if (typeof settings?.temperature === 'number') next.temperature = settings.temperature;
-  if (typeof settings?.topP === 'number') next.topP = settings.topP;
-  if (typeof settings?.maxOutputTokens === 'number')
-    next.maxOutputTokens = settings.maxOutputTokens;
-  if (settings?.reasoning) next.reasoning = settings.reasoning;
-  if (settings?.reasoningContentPassthrough) next.reasoningContentPassthrough = true;
+  for (const key of Object.keys(settings ?? {}) as (keyof ModelAliasSettings)[]) {
+    const value = settings?.[key];
+    if (value === null || value === undefined || value === false) continue;
+    Object.assign(next, { [key]: value });
+  }
   return next;
 }
 
