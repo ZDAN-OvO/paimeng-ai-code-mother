@@ -28,11 +28,11 @@ GitHub Actions 的默认检查执行 lint、格式检查、项目护栏、类型
 
 ## React 存量诊断
 
-初次接入保留 44 条既有诊断，记录在 [eslint-suppressions.json](../eslint-suppressions.json)：29 条 `set-state-in-effect`、10 条 `exhaustive-deps`、4 条 `immutability`、1 条 `refs`。它们涉及现有聊天同步、录音、表单初始化等状态管理，需要分别核对生命周期与业务行为；本次工具接入没有把它们视为已修复，也没有全局关闭这些规则。
+初次接入登记 44 条既有诊断；普通页面这一组（会话、首页、应用编辑、管理列表）已修复其中 9 条。当前 [eslint-suppressions.json](../eslint-suppressions.json) 保留 35 条、14 个文件：24 条 `set-state-in-effect`、6 条 `exhaustive-deps`、4 条 `immutability`、1 条 `refs`。剩余诊断涉及聊天同步、账单主从状态、录音与表单初始化，需要分别核对生命周期与业务行为；规则保持开启，没有全局关闭。
 
 使用 ESLint 官方 bulk suppressions，按“文件 + 规则 + 数量”记录存量。新文件的违规、同一文件超过登记数量的违规，以及其他未登记规则的违规都会失败。它不是按源码位置精确匹配：同文件同规则下删除一个旧问题、增加一个新问题，数量不变时可能不会阻断，代码审查仍须检查这种替换。修改这些组件时应修复相关问题，而不是把基线当成永久许可。
 
-修复已有诊断后运行 `npm run lint:prune` 缩减记录。普通 `npm run lint` 会拒绝过时的抑制记录，要求维护基线。不要用 `--suppress-all`、扩大基线或全局关闭规则来让检查通过；新增豁免必须单独说明理由并审查。
+修复已有诊断后运行 `npm run lint:prune` 缩减记录。该文件由 ESLint 生成并维护，已排除在 Prettier 之外；`prune` 后不需要再格式化它。普通 `npm run lint` 会拒绝过时的抑制记录，要求维护基线。不要用 `--suppress-all`、扩大基线或全局关闭规则来让检查通过；新增豁免必须单独说明理由并审查。
 
 少量逐行例外在源码旁写明原因：例如需要登录 Cookie 的图片不能使用服务端图片优化代理，文件名过滤需要匹配控制字符，antd Popconfirm 实际会等待返回的 Promise。无效的 `eslint-disable` 会作为 error 报告。
 
