@@ -11,6 +11,68 @@ const wrapperTags = new Set([
   'Card',
 ]);
 
+/**
+ * 一条 antd 废弃属性。表是唯一来源：新踩一次就在表里加一行，而不是再加一条正则。
+ * `since` 只是给人看的版本线索，判定不看它。
+ */
+export type DeprecatedProp = {
+  readonly component: string;
+  readonly prop: string;
+  readonly replacement: string;
+  readonly since: string;
+};
+
+/**
+ * antd v6 的废弃属性只在开发构建里告警，生产构建和现有 E2E 都看不见。
+ * 每条都对应一次真实事故，见 `scripts/verify/check-ui-patterns.ts` 顶部说明。
+ */
+export const antdDeprecatedProps: readonly DeprecatedProp[] = [
+  {
+    component: 'Input',
+    prop: 'addonAfter',
+    replacement: '用 Space.Compact 组合输入框与按钮',
+    since: 'antd v6',
+  },
+  {
+    component: 'Input',
+    prop: 'addonBefore',
+    replacement: '用 Space.Compact 组合输入框与按钮',
+    since: 'antd v6',
+  },
+  { component: 'Space', prop: 'direction', replacement: 'orientation', since: 'antd v6' },
+  { component: 'Drawer', prop: 'width', replacement: 'size', since: 'antd v6' },
+];
+
+/** 按表逐条比对 JSX 属性；命中一行报一行。 */
+export function deprecatedPropViolations(
+  file: string,
+  text: string,
+  rules: readonly DeprecatedProp[] = antdDeprecatedProps,
+): string[] {
+  if (rules.length === 0) return [];
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const violations: string[] = [];
+  function visit(node: ts.Node) {
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const tag = node.tagName.getText(source);
+      for (const rule of rules) {
+        if (tag !== rule.component) continue;
+        for (const attribute of node.attributes.properties) {
+          if (!ts.isJsxAttribute(attribute)) continue;
+          if (attribute.name.getText(source) !== rule.prop) continue;
+          const line = source.getLineAndCharacterOfPosition(attribute.getStart(source)).line + 1;
+          violations.push(
+            `${file}:${line}: <${rule.component}> 的 ${rule.prop} 在 ${rule.since} 已废弃（只在 dev 告警）：改用 ${rule.replacement}`,
+          );
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  return violations;
+}
+
 /** Only named Form.Item children receive antd's injected value/onChange. */
 export function formItemWiringViolations(file: string, text: string): string[] {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
