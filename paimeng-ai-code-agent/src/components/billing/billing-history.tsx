@@ -22,6 +22,11 @@ import styles from './billing-history.module.css';
 /** 服务端一次最多返回 20 条：账单页只展示最近的，不做分页。 */
 const chargeLimit = 20;
 
+const fetchCharges = (scope?: string) =>
+  api<BillingChargeView[]>(
+    `billing/charges?limit=${chargeLimit}` + (scope ? `&appId=${encodeURIComponent(scope)}` : ''),
+  );
+
 function splitOf(
   entries: { bucket: BillingChargeView['entries'][number]['bucket']; credits: number }[],
   sign: 1 | -1,
@@ -40,53 +45,66 @@ function splitOf(
 export function BillingHistory() {
   const { user, loading } = useAuth();
   const { message } = App.useApp();
-  const [charges, setCharges] = useState<BillingChargeView[]>([]);
-  const [apps, setApps] = useState<AppInfo[]>([]);
+  // 账单与筛选条件、用户一起存：切人/切应用后旧响应不显示，无需先清空的副作用。
+  const [charges, setCharges] = useState<{
+    userId: string;
+    appId?: string;
+    rows: BillingChargeView[];
+  } | null>(null);
+  const [apps, setApps] = useState<{ userId: string; rows: AppInfo[] } | null>(null);
   const [appId, setAppId] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
 
   const load = useCallback(
     async (scope?: string) => {
-      setBusy(true);
       try {
-        const query =
-          `billing/charges?limit=${chargeLimit}` +
-          (scope ? `&appId=${encodeURIComponent(scope)}` : '');
-        setCharges(await api<BillingChargeView[]>(query));
+        const rows = await fetchCharges(scope);
+        setCharges(user ? { userId: user.id, appId: scope, rows } : null);
         setRevision((value) => value + 1);
       } catch (error) {
         message.error((error as Error).message);
-      } finally {
-        setBusy(false);
       }
     },
-    [message],
+    [message, user],
   );
 
   useEffect(() => {
-    if (!user) {
-      setCharges([]);
-      setApps([]);
-      return;
-    }
-    void load(appId);
-  }, [user, appId, load]);
+    if (!user) return;
+    let live = true;
+    fetchCharges(appId)
+      .then((rows) => {
+        if (!live) return;
+        setCharges({ userId: user.id, appId, rows });
+        setRevision((value) => value + 1);
+      })
+      .catch((error: unknown) => {
+        if (live) message.error((error as Error).message);
+      });
+    return () => {
+      live = false;
+    };
+  }, [user, appId, message]);
 
   useEffect(() => {
     if (!user) return;
-    void (async () => {
-      try {
-        const page = await api<Page<AppInfo>>('app/my/list/page/vo', { pageNum: 1, pageSize: 20 });
-        setApps(page.records);
-      } catch {
+    let live = true;
+    api<Page<AppInfo>>('app/my/list/page/vo', { pageNum: 1, pageSize: 20 })
+      .then((page) => {
+        if (live) setApps({ userId: user.id, rows: page.records });
+      })
+      .catch(() => {
         // 应用列表只用于筛选：拉不到就退化成「全部应用」，不挡账单本身。
-        setApps([]);
-      }
-    })();
+        if (live) setApps({ userId: user.id, rows: [] });
+      });
+    return () => {
+      live = false;
+    };
   }, [user]);
 
-  const appNameOf = (id: string) => apps.find((app) => app.id === id)?.appName ?? id;
+  const rows = user && charges?.userId === user.id && charges.appId === appId ? charges.rows : [];
+  const appRows = user && apps?.userId === user.id ? apps.rows : [];
+  const appNameOf = (id: string) => appRows.find((app) => app.id === id)?.appName ?? id;
 
   const columns: ColumnsType<BillingChargeView> = [
     {
@@ -175,7 +193,8 @@ export function BillingHistory() {
         <h1>我的账单</h1>
         <Button
           onClick={() => {
-            void load(appId);
+            setBusy(true);
+            void load(appId).finally(() => setBusy(false));
           }}
           loading={busy}
         >
@@ -192,7 +211,7 @@ export function BillingHistory() {
             style={{ width: 260, maxWidth: '100%' }}
             value={appId}
             onChange={(value?: string) => setAppId(value)}
-            options={apps.map((app) => ({ value: app.id, label: app.appName ?? app.id }))}
+            options={appRows.map((app) => ({ value: app.id, label: app.appName ?? app.id }))}
           />
           <span className={styles.hint}>最多显示最近 {chargeLimit} 笔</span>
         </div>
@@ -201,7 +220,7 @@ export function BillingHistory() {
           size="small"
           loading={busy}
           columns={columns}
-          dataSource={charges}
+          dataSource={rows}
           pagination={false}
           scroll={{ x: 1180 }}
           locale={{ emptyText: '还没有账单：每次生成结束后，这里会出现该次的消耗' }}

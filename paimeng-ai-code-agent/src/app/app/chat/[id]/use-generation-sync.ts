@@ -41,6 +41,7 @@ export function useGenerationSync({
   liveRef,
   mounted,
   activeGenerationId,
+  adoptGeneration,
   setMessages,
   setProgress,
   message,
@@ -53,6 +54,8 @@ export function useGenerationSync({
   liveRef: RefObject<boolean>;
   mounted: RefObject<boolean>;
   activeGenerationId: RefObject<string | null>;
+  /** 页面持有 activeGenerationId；收尾时通过它把历史任务认领为当前这一轮。 */
+  adoptGeneration: (id: string) => void;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setProgress: Dispatch<SetStateAction<ProgressState>>;
   message: MessageInstance;
@@ -71,8 +74,12 @@ export function useGenerationSync({
   /** 正在等回答的提问（`runtime.question`）；旧后端缺省为 null。 */
   question: GenerationQuestion | null;
   setQuestion: Dispatch<SetStateAction<GenerationQuestion | null>>;
-  settledGenerations: RefObject<Set<string>>;
-  shownMessageIds: RefObject<Set<string>>;
+  /** 把一批消息标记为「已经在对话里显示」：页面不再直接改 hook 内部的 ref。 */
+  markShownMessages: (messages: { id: string }[]) => void;
+  hasShownMessage: (id: string) => boolean;
+  /** 记下已经收尾的生成，供重发入口判断是否要排队。 */
+  markSettled: (id: string) => void;
+  hasSettled: (id: string) => boolean;
 } {
   const [inputs, setInputs] = useState<SentInputs>(emptySentInputs);
   const [lostInputs, setLostInputs] = useState<LostInput[]>([]);
@@ -142,7 +149,7 @@ export function useGenerationSync({
       activeGenerationId.current === null &&
       (task?.status === 'generating' || task?.status === 'building')
     )
-      activeGenerationId.current = task.id;
+      adoptGeneration(task.id);
     const terminal =
       task?.status === 'ready' || task?.status === 'failed' || task?.status === 'cancelled'
         ? task.status
@@ -198,11 +205,21 @@ export function useGenerationSync({
     fetchRuntime,
     setMessages,
     message,
+    adoptGeneration,
     activeGenerationId,
     setProgress,
     mounted,
     setQuestion,
   ]);
+  // 页面不直接改 hook 内部的 ref：这三个入口是稳定的，挂进页面 effect 的依赖也不会引发重跑。
+  const markShownMessages = useCallback((messages: { id: string }[]) => {
+    shownMessageIds.current = new Set(messages.map((item) => item.id));
+  }, []);
+  const hasShownMessage = useCallback((id: string) => shownMessageIds.current.has(id), []);
+  const markSettled = useCallback((id: string) => {
+    settledGenerations.current.add(id);
+  }, []);
+  const hasSettled = useCallback((id: string) => settledGenerations.current.has(id), []);
   // 异步收尾要读最新队列而不是渲染闭包里的旧值，所以镜像成 ref；效果在渲染后同步。
   useEffect(() => {
     inputsRef.current = inputs;
@@ -223,7 +240,9 @@ export function useGenerationSync({
     handoff,
     question,
     setQuestion,
-    settledGenerations,
-    shownMessageIds,
+    markShownMessages,
+    hasShownMessage,
+    markSettled,
+    hasSettled,
   };
 }

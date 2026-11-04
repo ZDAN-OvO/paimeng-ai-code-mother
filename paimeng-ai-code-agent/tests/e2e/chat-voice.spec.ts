@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { appOrigin } from './support/app-origin';
+import { evidencePath } from './support/evidence';
 
 const origin = appOrigin();
 const prompt = '语音输入回归测试';
@@ -87,6 +88,7 @@ test('录音结束后转写文本追加进输入框，且不自动发送', async
 
   const input = page.getByLabel('对话消息');
   await expect(input).toHaveValue(prompt + ' ' + transcript);
+  await page.screenshot({ path: evidencePath('voice', '01-transcript.png'), fullPage: true });
   expect(uploads).toHaveLength(1);
   expect(uploads[0].contentType).toContain('multipart/form-data');
 });
@@ -103,4 +105,5 @@ test('未配置转写模型时麦克风禁用并说明原因', async ({ page }) 
   await expect(mic).toBeDisabled();
   await mic.hover();
   await expect(page.getByText(/未配置语音转写模型/)).toBeVisible();
+  await page.screenshot({ path: evidencePath('voice', '02-disabled.png'), fullPage: true });
 });

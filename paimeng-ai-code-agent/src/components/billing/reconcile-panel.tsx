@@ -26,30 +26,44 @@ const outcomeColors: Record<ReconcileOutcome, string> = {
   failed: 'red',
 };
 
+const fetchPending = () => api<PendingSettlementList>('admin/billing/reconcile');
+
 export function ReconcilePanel({ embedded = false }: { embedded?: boolean }) {
   const { message } = App.useApp();
-  const [items, setItems] = useState<PendingSettlementItem[]>([]);
+  const [items, setItems] = useState<PendingSettlementItem[] | null>(null);
   const [results, setResults] = useState<ReconcileItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    setLoading(true);
     try {
-      const list = await api<PendingSettlementList>('admin/billing/reconcile');
+      const list = await fetchPending();
       setItems(list.items);
       setError(null);
     } catch (problem) {
       setError((problem as Error).message);
-    } finally {
-      setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    let live = true;
+    fetchPending()
+      .then((list) => {
+        if (!live) return;
+        setItems(list.items);
+        setError(null);
+      })
+      .catch((problem: unknown) => {
+        if (live) setError((problem as Error).message);
+      })
+      .finally(() => {
+        if (live) setLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   async function retry(generationId?: string) {
     setBusy(generationId ?? 'all');
@@ -95,7 +109,7 @@ export function ReconcilePanel({ embedded = false }: { embedded?: boolean }) {
         rowKey="generationId"
         size="small"
         loading={loading}
-        dataSource={items}
+        dataSource={items ?? []}
         pagination={false}
         scroll={{ x: 900 }}
         locale={{ emptyText: '没有待处理的结算' }}

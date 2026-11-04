@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { App } from 'antd';
 import { api } from '@/client/api';
 import { useAuth } from '@/components/providers';
@@ -15,24 +15,25 @@ import styles from './credit-balance.module.css';
 export function CreditBalance({ refreshToken }: { refreshToken?: string }) {
   const { user } = useAuth();
   const { message } = App.useApp();
-  const [summary, setSummary] = useState<AccountSummary | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      setSummary(await api<AccountSummary>('billing/summary'));
-    } catch (error) {
-      message.error((error as Error).message);
-    }
-  }, [message]);
+  // 余额与它所属的用户一起存：切账号后旧响应既不会显示，也不需要额外的清空副作用。
+  const [loaded, setLoaded] = useState<{ userId: string; summary: AccountSummary } | null>(null);
 
   useEffect(() => {
-    if (!user) {
-      setSummary(null);
-      return;
-    }
-    void load();
-  }, [user, load, refreshToken]);
+    if (!user) return;
+    let live = true;
+    api<AccountSummary>('billing/summary')
+      .then((summary) => {
+        if (live) setLoaded({ userId: user.id, summary });
+      })
+      .catch((error: unknown) => {
+        if (live) message.error((error as Error).message);
+      });
+    return () => {
+      live = false;
+    };
+  }, [user, refreshToken, message]);
 
+  const summary = user && loaded?.userId === user.id ? loaded.summary : null;
   if (!user || !summary) return null;
   return (
     <section className={styles.creditBalance} aria-label="我的积分概览">

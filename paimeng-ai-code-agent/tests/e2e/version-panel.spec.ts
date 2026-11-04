@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { appOrigin } from './support/app-origin';
+import { evidencePath } from './support/evidence';
 import type { AppVersion, AppVersionOverview } from '@/shared/versioning';
 
 const origin = appOrigin();
@@ -126,6 +127,8 @@ test('一版一行，只有人类说法：标题、时间、正在使用、使�
   await expect(page.locator('.version-tree-lines')).toHaveCount(0);
   await expect(page.locator('.version-panel-branch-select')).toHaveCount(0);
   await expect(page.getByText('当前使用的是最新版本')).toBeVisible();
+
+  await page.screenshot({ path: evidencePath('versions', '01-version-list.png'), fullPage: true });
 
   const current = page.locator('.version-tree-row-current');
   await expect(current).toHaveCount(1);
@@ -436,9 +439,11 @@ test('读取失败时可以重试', async ({ page }) => {
   );
   await openPanel(page);
   await expect(page.getByText('读取版本记录失败：版本库暂时不可用')).toBeVisible();
+  await page.screenshot({ path: evidencePath('versions', '02-read-failed.png'), fullPage: true });
   await page.getByRole('button', { name: /重\s*试/ }).click();
   await expect(
     page.getByText('还没有版本记录。完成一次生成后，这里会出现第一个版本。'),
   ).toBeVisible();
+  await page.screenshot({ path: evidencePath('versions', '03-retry-empty.png'), fullPage: true });
   expect(attempts).toBe(2);
 });

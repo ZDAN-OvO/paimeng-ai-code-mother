@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { App, Button, Form, Input, InputNumber, Modal } from 'antd';
 import { api } from '@/client/api';
 import {
@@ -21,12 +21,14 @@ type GrantForm = { credits: number; reason: string };
  */
 export function CreditGrantDialog({
   open,
+  requestId,
   kind,
   user,
   onClose,
   onDone,
 }: {
   open: boolean;
+  requestId: string;
   kind: IssueKind;
   user: AdminCreditUser | null;
   onClose: () => void;
@@ -34,15 +36,7 @@ export function CreditGrantDialog({
 }) {
   const { message } = App.useApp();
   const [form] = Form.useForm<GrantForm>();
-  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    setRequestId(crypto.randomUUID());
-    form.resetFields();
-    form.setFieldsValue({ credits: kind === 'limited' ? 500 : 100, reason: '' });
-  }, [open, kind, form]);
 
   async function submit() {
     if (!user) return;
@@ -85,7 +79,13 @@ export function CreditGrantDialog({
       <p className={styles.dialogSubject}>
         {user ? `${user.userAccount}（${user.userName || '未设置用户名'}）` : ''}
       </p>
-      <Form form={form} layout="vertical" onFinish={() => void submit()}>
+      <Form
+        key={requestId}
+        form={form}
+        layout="vertical"
+        initialValues={{ credits: kind === 'limited' ? 500 : 100, reason: '' }}
+        onFinish={() => void submit()}
+      >
         <Form.Item
           name="credits"
           label="数量（积分）"
