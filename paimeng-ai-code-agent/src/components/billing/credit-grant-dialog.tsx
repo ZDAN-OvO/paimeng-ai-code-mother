@@ -21,12 +21,14 @@ type GrantForm = { credits: number; reason: string };
  */
 export function CreditGrantDialog({
   open,
+  requestId,
   kind,
   user,
   onClose,
   onDone,
 }: {
   open: boolean;
+  requestId: string;
   kind: IssueKind;
   user: AdminCreditUser | null;
   onClose: () => void;
@@ -34,7 +36,6 @@ export function CreditGrantDialog({
 }) {
   const { message } = App.useApp();
   const [form] = Form.useForm<GrantForm>();
-  const [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
 
   async function submit() {
@@ -74,18 +75,12 @@ export function CreditGrantDialog({
       okText="确认发放"
       cancelText="取消"
       destroyOnHidden
-      afterOpenChange={(next) => {
-        // 每次真正打开都是一次新的发放会话：新 requestId、空表单；关窗重开才换 ID，失败重试沿用。
-        if (!next) return;
-        setRequestId(crypto.randomUUID());
-        form.resetFields();
-        form.setFieldsValue({ credits: kind === 'limited' ? 500 : 100, reason: '' });
-      }}
     >
       <p className={styles.dialogSubject}>
         {user ? `${user.userAccount}（${user.userName || '未设置用户名'}）` : ''}
       </p>
       <Form
+        key={requestId}
         form={form}
         layout="vertical"
         initialValues={{ credits: kind === 'limited' ? 500 : 100, reason: '' }}

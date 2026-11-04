@@ -53,6 +53,7 @@ export function CreditPage() {
   const [ledger, setLedger] = useState<{ userId: string; page: CreditLedgerPage } | null>(null);
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [grantKind, setGrantKind] = useState<IssueKind | null>(null);
+  const [grantRequestId, setGrantRequestId] = useState(() => crypto.randomUUID());
   const [ruleOpen, setRuleOpen] = useState(false);
   const [operationsOpen, setOperationsOpen] = useState(false);
   const [reconcileOpen, setReconcileOpen] = useState(false);
@@ -84,18 +85,28 @@ export function CreditPage() {
     }
   }, [page, filter, search, listKey]);
 
-  const loadDetail = useCallback(async (userId: string) => {
-    const token = ++detailRequest.current;
-    const [data, pageOne] = await Promise.all([
-      api<AdminUserCreditDetail>(`admin/billing/user/${encodeURIComponent(userId)}`),
-      api<CreditLedgerPage>(`admin/billing/ledger?userId=${encodeURIComponent(userId)}&limit=50`),
-    ]);
-    if (token === detailRequest.current) {
-      setDetail({ userId, value: data });
-      setLedger({ userId, page: pageOne });
-      setDetailFailed(null);
-    }
-  }, []);
+  const loadDetail = useCallback(
+    async (userId: string) => {
+      const token = ++detailRequest.current;
+      try {
+        const [data, pageOne] = await Promise.all([
+          api<AdminUserCreditDetail>(`admin/billing/user/${encodeURIComponent(userId)}`),
+          api<CreditLedgerPage>(
+            `admin/billing/ledger?userId=${encodeURIComponent(userId)}&limit=50`,
+          ),
+        ]);
+        if (token !== detailRequest.current) return;
+        setDetail({ userId, value: data });
+        setLedger({ userId, page: pageOne });
+        setDetailFailed(null);
+      } catch (problem) {
+        if (token !== detailRequest.current) return;
+        message.error((problem as Error).message);
+        setDetailFailed(userId);
+      }
+    },
+    [message],
+  );
 
   useEffect(() => {
     let live = true;
@@ -406,10 +417,21 @@ export function CreditPage() {
                 </div>
 
                 <div className={styles.detailActions}>
-                  <Button type="primary" onClick={() => setGrantKind('limited')}>
+                  <Button
+                    type="primary"
+                    onClick={() => {
+                      setGrantRequestId(crypto.randomUUID());
+                      setGrantKind('limited');
+                    }}
+                  >
                     发放{issueKindLabels.limited}
                   </Button>
-                  <Button onClick={() => setGrantKind('lasting')}>
+                  <Button
+                    onClick={() => {
+                      setGrantRequestId(crypto.randomUUID());
+                      setGrantKind('lasting');
+                    }}
+                  >
                     发放{issueKindLabels.lasting}
                   </Button>
                   <Button onClick={() => setRuleOpen(true)}>改规则</Button>
@@ -455,6 +477,7 @@ export function CreditPage() {
 
       <CreditGrantDialog
         open={grantKind !== null}
+        requestId={grantRequestId}
         kind={grantKind ?? 'limited'}
         user={selected}
         onClose={() => setGrantKind(null)}
