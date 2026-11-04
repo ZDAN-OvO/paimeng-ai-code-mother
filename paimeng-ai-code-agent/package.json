@@ -31,6 +31,7 @@
     "db:backfill-model-config": "tsx --conditions=react-server --env-file=.env scripts/db/backfill-model-config.ts",
     "check:ui": "tsx scripts/verify/check-ui-patterns.ts",
     "check:e2e": "tsx scripts/verify/check-e2e-patterns.ts",
+    "check:ci": "tsx scripts/verify/check-ci-coverage.ts",
     "verify:boundary": "tsx scripts/verify/verify-boundary.ts",
     "verify:restart": "tsx --env-file=.env scripts/verify/verify-restart.ts",
     "preview": "tsx --conditions=react-server --env-file=.env scripts/dev/preview.ts",
@@ -53,7 +54,7 @@
     "lint:fix": "npm run lint -- --fix",
     "format": "prettier --write \"{src,scripts,tests,evals}/**/*.{ts,tsx,mjs,cjs,js,json,css}\" \"*.{json,ts,mjs,yaml,yml}\" \"config/**/*.json\" --no-error-on-unmatched-pattern",
     "format:check": "prettier --check \"{src,scripts,tests,evals}/**/*.{ts,tsx,mjs,cjs,js,json,css}\" \"*.{json,ts,mjs,yaml,yml}\" \"config/**/*.json\" --no-error-on-unmatched-pattern",
-    "check:patterns": "npm run check:ui && npm run check:e2e && npm run verify:boundary",
+    "check:patterns": "npm run check:ui && npm run check:e2e && npm run check:ci && npm run verify:boundary",
     "lint:prune": "eslint . --prune-suppressions --max-warnings=0"
   },
   "dependencies": {
