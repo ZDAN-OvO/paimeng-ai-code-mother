@@ -5,10 +5,10 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { loadEnvFile } from 'node:process';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { testDatabaseUrl } from '../support/test-database-url';
 import { db, getPool, now } from '@/server/infra/db';
-import { apps, users } from '@/server/infra/schema';
+import { appRuntimes, apps, users } from '@/server/infra/schema';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import { getConfig } from '@/server/infra/config';
 import {
@@ -275,6 +275,19 @@ describe('App runtime 执行环境', () => {
     ) as { Destination: string }[];
     expect(mounts.map((mount) => mount.Destination).sort()).toEqual(['/store', '/work']);
 
+    // 容器里写 HOME 的 .npmrc 不能改 registry：平台启动时已把 userconfig 指向 /dev/null。
+    await runInRuntime({
+      container: name,
+      command: ['sh', '-c', "printf '@evil:registry=http://127.0.0.1:9/\n' > /tmp/.npmrc"],
+      timeoutMs: 20_000,
+    });
+    const redirected = await runInRuntime({
+      container: name,
+      command: ['pnpm', 'config', 'get', '@evil:registry'],
+      timeoutMs: 20_000,
+    });
+    expect(redirected.output.trim()).not.toContain('127.0.0.1:9');
+
     const managed = await listManagedContainers(config.appRuntime.runId);
     expect(managed.map((item) => item.name)).toContain(name);
 
@@ -466,6 +479,33 @@ describe('App runtime 执行环境', () => {
     expect(outcome.stopped).not.toContain(fixture.app.id);
     expect((await readAppRuntime(fixture.app, config.appRuntime.runId))?.status).toBe('starting');
   }, 120_000);
+
+  it('回收中途崩溃留下的 stopping 行会在宽限期后被对账收束', async () => {
+    const fixture = await newProject(await newAppRow());
+    const image = await prepareRuntimeImage();
+    const name = await startContainer(fixture, image, { init: true });
+    const state = await containerState(name, RUNTIME_DEV_PORT);
+    const runId = config.appRuntime.runId;
+    await saveAppRuntime(fixture.app, runId, {
+      containerId: state.id!,
+      containerName: name,
+      port: state.port ?? RUNTIME_DEV_PORT,
+      imageIdentity: image.identity,
+      workspaceRoot: fixture.root,
+      status: 'stopping',
+      lockDigest: null,
+      lastError: '模拟回收中途崩溃',
+    });
+    await db()
+      .update(appRuntimes)
+      .set({ updateTime: '2020-01-01 00:00:00.000' })
+      .where(and(eq(appRuntimes.appId, BigInt(fixture.app.id)), eq(appRuntimes.runId, runId)));
+
+    const outcome = await reconcileRuntime();
+    expect(outcome.stopped).toContain(fixture.app.id);
+    expect((await readAppRuntime(fixture.app, runId))?.status).toBe('stopped');
+    expect((await containerState(name, RUNTIME_DEV_PORT)).running).toBe(false);
+  }, 300_000);
 
   it('容器被 kill 后对账把台账标成 stopped，并清掉 exited 容器', async () => {
     const fixture = await newProject(await newAppRow());

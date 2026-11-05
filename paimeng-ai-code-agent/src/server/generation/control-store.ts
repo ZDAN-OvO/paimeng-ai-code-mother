@@ -385,7 +385,13 @@ export async function acquireAuthority(acquire: {
     const [stopping] = await tx
       .select({ appId: appRuntimes.appId })
       .from(appRuntimes)
-      .where(and(eq(appRuntimes.appId, app.id), eq(appRuntimes.status, 'stopping')))
+      .where(
+        and(
+          eq(appRuntimes.appId, app.id),
+          eq(appRuntimes.runId, getConfig().appRuntime.runId),
+          eq(appRuntimes.status, 'stopping'),
+        ),
+      )
       .limit(1);
     if (stopping) throw new BusinessError(409, 40900, '应用运行时正在回收，请稍后重试');
 

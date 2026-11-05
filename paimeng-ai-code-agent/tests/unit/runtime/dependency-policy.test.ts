@@ -112,6 +112,16 @@ describe('依赖来源策略：package.json 只接受 registry 包名与版本�
     expect(() => assertNoPnpmHook(['package.json'])).not.toThrow();
   });
 
+  it('pnpm 的 packageExtensions/patchedDependencies 能在清单外改依赖，直接拒绝', () => {
+    for (const hook of ['packageExtensions', 'patchedDependencies']) {
+      expect(() =>
+        assertRegistryDependencies({
+          manifest: manifest({ pnpm: { [hook]: { dayjs: 'file:./evil' } } }),
+        }),
+      ).toThrow(/依赖来源不被允许/);
+    }
+  });
+
   it('npm 的 package-lock.json 只接受 registry 解析；link 与本地地址拒绝', () => {
     const npmLock = (entry: Record<string, unknown>) =>
       JSON.stringify({
@@ -139,6 +149,17 @@ describe('依赖来源策略：package.json 只接受 registry 包名与版本�
       assertRegistryDependencies({
         manifest: manifest(),
         lockfile: npmLock({ link: true }),
+        manager: 'npm',
+      }),
+    ).toThrow(/依赖来源不被允许/);
+    // 只有旧 dependencies 树、没有 packages 的 v2 锁不能确认来源。
+    expect(() =>
+      assertRegistryDependencies({
+        manifest: manifest(),
+        lockfile: JSON.stringify({
+          lockfileVersion: 2,
+          dependencies: { dayjs: { version: '1.11.13', resolved: 'http://127.0.0.1:9/dayjs.tgz' } },
+        }),
         manager: 'npm',
       }),
     ).toThrow(/依赖来源不被允许/);

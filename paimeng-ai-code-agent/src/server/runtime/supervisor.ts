@@ -282,15 +282,26 @@ async function ensureUnlocked(app: RuntimeApp, workspaceRoot: string): Promise<R
       } catch (error) {
         const detail = (error as Error).message.slice(0, 1000);
         // 容器留着但台账标 failed 会让它退出槽位计数：先推进 stopping 再删容器，删成功才删行。
-        await beginRuntimeStop(app, runId, '依赖重装失败').catch(() => undefined);
-        try {
-          await removeContainerStrict(existing.containerName);
-          await deleteAppRuntime(app, runId).catch(() => undefined);
-        } catch (removeProblem) {
+        const stop = await beginRuntimeStop(app, runId, '依赖重装失败').catch(() => ({
+          blocked: true,
+          containerId: null,
+        }));
+        if (stop.blocked) {
+          // 持权时不能停：保留 ready 行和容器，让本轮生成继续按失败收束。
           await updateAppRuntime(app, runId, { status: 'ready', lastError: detail }).catch(() => undefined);
-          log(`依赖重装失败后停止容器也失败，runtime 保持占用（应用 ${app.id}）：${(removeProblem as Error).message}`);
+          log(`依赖重装失败但应用持有写权限，runtime 保持运行：${detail}`);
+        } else {
+          try {
+            await removeContainerStrict(existing.containerName);
+            await deleteAppRuntime(app, runId).catch(() => undefined);
+          } catch (removeProblem) {
+            await updateAppRuntime(app, runId, { status: 'ready', lastError: detail }).catch(() => undefined);
+            log(
+              `依赖重装失败后停止容器也失败，runtime 保持占用（应用 ${app.id}）：${(removeProblem as Error).message}`,
+            );
+          }
         }
-        log(`应用 ${app.id} 的依赖重装失败，已停止 runtime：${detail}`);
+        log(`应用 ${app.id} 的依赖重装失败：${detail}`);
         return {
           app,
           status: 'failed',
@@ -549,7 +560,27 @@ export async function reconcileRuntime(): Promise<{
   const stopped: string[] = [];
   const startGraceMs = config.appRuntime.startTimeoutMs;
   for (const row of rows) {
-    if (live.has(row.containerName)) continue;
+    if (live.has(row.containerName)) {
+      // 卡在中间态（starting/stopping）的活容器：创建者已崩溃时没有人会再收束它。
+      if (
+        (row.status === 'starting' || row.status === 'stopping') &&
+        Date.now() - runtimeTimeMs(row.updateTime) >= startGraceMs
+      ) {
+        const container = containers.find((item) => item.name === row.containerName);
+        try {
+          if (container) await removeContainerStrict(container.id);
+          await markAppRuntimeStopped(
+            { id: row.appId, codeGenType: 'react_project' },
+            row.runId,
+            '启动/回收中途崩溃，运行时已清理',
+          );
+          stopped.push(row.appId);
+        } catch (problem) {
+          log(`清理中途崩溃的 runtime 失败（应用 ${row.appId}）：${(problem as Error).message}`);
+        }
+      }
+      continue;
+    }
     // 刚写下的预留行还没有容器：给创建者一个启动窗口，对账不能把它当成失踪容器收掉。
     if (
       row.status === 'starting' &&
@@ -598,14 +629,15 @@ async function capacityState(): Promise<{ records: AppRuntimeRecord[]; candidate
  * 名字可能被新的 runtime 复用，所以只按记录的容器 id 删。
  */
 async function stopRuntimeForCapacity(record: AppRuntimeRecord, error: string): Promise<boolean> {
-  const containerId = await beginRuntimeStop(
+  const stop = await beginRuntimeStop(
     { id: record.appId, codeGenType: 'react_project' },
     record.runId,
     error,
   );
-  if (containerId === null) return false;
+  // 到达这里之前 App 可能刚取得写权限；beginRuntimeStop 在行锁内复核，持权就不停。
+  if (stop.blocked || stop.containerId === null) return false;
   try {
-    if (containerId) await removeContainerStrict(containerId);
+    if (stop.containerId) await removeContainerStrict(stop.containerId);
     await markAppRuntimeStopped({ id: record.appId, codeGenType: 'react_project' }, record.runId, error);
   } catch (problem) {
     await restoreAppRuntime({ ...record, status: 'ready' }).catch(() => undefined);

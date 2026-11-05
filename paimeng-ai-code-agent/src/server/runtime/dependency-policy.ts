@@ -99,6 +99,13 @@ export function assertManifestSources(manifestText: string) {
     if (typeof pnpm !== 'object' || pnpm === null || Array.isArray(pnpm)) {
       throw new DependencySourceError('依赖来源不被允许：pnpm 配置必须是对象。');
     }
+    for (const hook of ['packageExtensions', 'patchedDependencies'] as const) {
+      if ((pnpm as Record<string, unknown>)[hook] !== undefined) {
+        throw new DependencySourceError(
+          `依赖来源不被允许：pnpm.${hook} 能在清单之外改写依赖；模板工程不支持。`,
+        );
+      }
+    }
     const overrides = (pnpm as Record<string, unknown>).overrides;
     if (overrides !== undefined) {
       if (typeof overrides !== 'object' || overrides === null || Array.isArray(overrides)) {
@@ -214,7 +221,10 @@ export function assertNpmLockfileSources(lockText: string, registry = DEFAULT_RE
   if (!(version === 2 || version === 3)) {
     throw new DependencySourceError('依赖来源不被允许：锁文件无法识别（缺少 lockfileVersion 2/3），不能确认依赖来源。');
   }
-  const packages = record?.packages ?? {};
+  const packages = record?.packages;
+  if (!packages || typeof packages !== 'object' || Array.isArray(packages)) {
+    throw new DependencySourceError('依赖来源不被允许：锁文件缺少 packages 树，不能确认解析来源。');
+  }
   for (const [name, entry] of Object.entries(packages)) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     const item = entry as Record<string, unknown>;
@@ -234,6 +244,20 @@ export function assertNpmLockfileSources(lockText: string, registry = DEFAULT_RE
       }
     }
   }
+  // v2 锁可能只有旧的 dependencies 树；每一层都要看 resolved 与版本声明。
+  const walkLegacy = (deps: unknown) => {
+    if (!deps || typeof deps !== 'object' || Array.isArray(deps)) return;
+    for (const [dep, value] of Object.entries(deps as Record<string, unknown>)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const item = value as Record<string, unknown>;
+      if (typeof item.resolved === 'string') {
+        assertRegistryUrl(item.resolved, origin, `锁文件 ${dep} 的 resolved`);
+      }
+      if (typeof item.version === 'string') assertStringSource(item.version, origin, `锁文件 ${dep} 的 version`);
+      walkLegacy(item.dependencies);
+    }
+  };
+  walkLegacy((record as { dependencies?: unknown } | null)?.dependencies);
 }
 
 /** 按锁文件类型分派；类型由调用方按实际锁文件决定。 */

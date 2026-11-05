@@ -135,6 +135,9 @@ export function runtimeEnvironment(input: { registry: string; virtualStore: stri
     // 模型自己执行的 pnpm 与平台安装必须落在同一个 virtual store，否则 hardlink 只在其中一次生效。
     'npm_config_virtual_store_dir=' + input.virtualStore,
     'npm_config_registry=' + input.registry,
+    // 不读 HOME 下的用户配置：容器里 HOME 可写，.npmrc 能改写 registry 或 scope。
+    'npm_config_userconfig=/dev/null',
+    'NPM_CONFIG_USERCONFIG=/dev/null',
     'CI=1',
   ];
 }

@@ -8,6 +8,8 @@ import { nextSnowflakeId } from '@/server/infra/snowflake';
 import { appAuthority, apps, users } from '@/server/infra/schema';
 import { runtimeContainerName } from '@/server/runtime/plan';
 import { acquireAuthority } from '@/server/generation/control-store';
+import { getConfig } from '@/server/infra/config';
+import { reclaimIdleRuntimes } from '@/server/runtime/supervisor';
 import {
   claimRuntimeSlot,
   listRunRuntimes,
@@ -161,8 +163,25 @@ describe('runtime 槽位准入', () => {
     expect(results.map((item) => item.claim).sort()).toEqual(['busy', 'reserved']);
   });
 
+  it('空闲回收跳过持权 App，释放后同一 App 才会被回收', async () => {
+    const run = getConfig().appRuntime.runId;
+    const app = await newApp();
+    await ready(app, run, '2020-01-01 00:00:00.000');
+    await grantAuthority(app);
+
+    expect(await reclaimIdleRuntimes()).not.toContain(app);
+    expect((await listRunRuntimes(run, ['ready'])).map((row) => row.appId)).toContain(app);
+
+    await db()
+      .update(appAuthority)
+      .set({ state: 'idle', updateTime: now() })
+      .where(eq(appAuthority.appId, BigInt(app)));
+    expect(await reclaimIdleRuntimes()).toContain(app);
+    expect((await listRunRuntimes(run, ['starting', 'ready', 'stopping'])).map((row) => row.appId)).not.toContain(app);
+  });
+
   it('正在回收的 runtime 挡住新的写权限', async () => {
-    const run = runId();
+    const run = getConfig().appRuntime.runId;
     const app = await newApp();
     await ready(app, run, '2020-01-01 00:00:00.000');
     await claim(await newApp(), run, 1);

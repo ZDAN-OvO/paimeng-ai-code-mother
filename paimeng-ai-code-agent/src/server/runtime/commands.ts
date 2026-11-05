@@ -69,6 +69,6 @@ export async function startDetached(input: {
 }): Promise<void> {
   const args = ['exec', '-d'];
   if (input.workdir) args.push('-w', input.workdir);
-  args.push(input.container, 'sh', '-lc', input.script);
+  args.push(input.container, 'sh', '-c', input.script);
   await docker(args, 30_000);
 }

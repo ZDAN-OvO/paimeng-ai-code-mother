@@ -344,19 +344,40 @@ export async function markAppRuntimeStopped(
  * 容量回收的第一阶段：把行推进到 stopping。stopping 仍计入槽位，且会让 acquireAuthority 拒绝新的写权限；
  * 容器真的删掉之后才调 markAppRuntimeStopped。
  */
-export async function beginRuntimeStop(app: RuntimeApp, runId: string, error: string): Promise<string | null> {
-  const [row] = await db()
-    .update(appRuntimes)
-    .set({ status: 'stopping', lastError: error.slice(0, 1000), updateTime: now() })
-    .where(
-      and(
-        eq(appRuntimes.appId, appIdOf(app)),
-        eq(appRuntimes.runId, runId),
-        inArray(appRuntimes.status, ['starting', 'ready']),
-      ),
-    )
-    .returning({ containerId: appRuntimes.containerId });
-  return row?.containerId ?? null;
+export async function beginRuntimeStop(
+  app: RuntimeApp,
+  runId: string,
+  error: string,
+): Promise<{ blocked: boolean; containerId: string | null }> {
+  const appId = appIdOf(app);
+  return db().transaction(async (tx) => {
+    // 与 acquireAuthority 相同的行锁顺序：先 app，再 authority。持权 App 在这里被判 blocked。
+    await tx.select({ id: apps.id }).from(apps).where(eq(apps.id, appId)).for('update');
+    const [authority] = await tx
+      .select()
+      .from(appAuthority)
+      .where(eq(appAuthority.appId, appId))
+      .for('update');
+    if (
+      authority &&
+      (authority.state === 'active' || authority.state === 'draining') &&
+      (!authority.expiresAt || runtimeTimeMs(authority.expiresAt) > Date.now())
+    ) {
+      return { blocked: true, containerId: null };
+    }
+    const [row] = await tx
+      .update(appRuntimes)
+      .set({ status: 'stopping', lastError: error.slice(0, 1000), updateTime: now() })
+      .where(
+        and(
+          eq(appRuntimes.appId, appId),
+          eq(appRuntimes.runId, runId),
+          inArray(appRuntimes.status, ['starting', 'ready']),
+        ),
+      )
+      .returning({ containerId: appRuntimes.containerId });
+    return { blocked: false, containerId: row?.containerId ?? null };
+  });
 }
 
 /** 批量读「哪些 App 正在持有写权限」：容量回收/驱逐一次查完，避免逐个 App 发查询。 */
