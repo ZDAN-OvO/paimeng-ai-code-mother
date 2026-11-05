@@ -14,7 +14,7 @@ Blockers. None。PR-00 已回答 Next 版本、自托管 Postgres、崩溃恢复
 
 Execution. 本文是实现顺序的权威来源。每条 PR 只交付到 merge-ready。推送、创建 PR 和合并分别另获授权。前一条独立核验通过并合入后，下一条才开工。
 
-Roles. 实施者负责产品代码、检查代码与原始证据。独立核验者由未参与该 PR 修改的人担任，按项目现有 `/verify-pr` 规则跑真实路径并核对原始产物。operator 决定产品体验与是否合并。
+Roles. 实施者负责产品代码、检查代码与原始证据。独立核验者由未参与该 PR 修改的人担任，按项目现有的独立核验做法跑真实路径并核对原始产物：另起一个没参与该 PR 的核验者，不用作者的自测脚本。operator 决定产品体验与是否合并。
 
 Permissions. 本轮只允许编辑本计划。改产品代码、装依赖、推送、合并和删除数据分别另获授权。例外：为让本地未跟踪的 `spike/` 目录不进入检查，`eslint.config.mjs` 与 `tsconfig.json` 各有一处 ignore，随本 PR 提交，不涉及产品代码。
 
@@ -49,7 +49,7 @@ Lanes. 每条 PR 指定 3 到 5 条 live lane，按该 PR 的真实用户路径�
 4. 持久流可在运行结束后用同一 runId 重连读回。
 5. `run.cancel()` 只改运行状态，不中断在执行的 step。取消后 20 秒，慢工具仍完成并写副作用。
 6. `@workflow/ai@5.0.3` 的根导出不含 agent，`DurableAgent` 已废弃且要求 `ai ^6`。Workflow 5 的对应包是 `@ai-sdk/workflow@2.0.95`，根导出 `WorkflowAgent`，依赖 `ai@7.0.163`。
-7. 资源量。开发模式下 5 次运行后，`next-server` 常驻 RSS 约 805 MB，事件表 208 行，step 表 64 行，数据库 8.9 MB。见 `perf.json`。
+7. 资源量。开发模式下 5 次运行后，`next-server` 常驻 RSS 约 805 MB，事件表 208 行，step 表 64 行，数据库 8.9 MB。行数与数据库大小见 `perf.json`；RSS 来自进程采样，没有单独存档。
 
 ## Design decisions
 
@@ -78,7 +78,7 @@ agentWorkflow(input)
 
 模型实例不能直接作为 step 参数。Workflow 序列化只保留字符串、数字、布尔，`config.url`、`fetch`、`headers` 这些函数会被过滤掉（AI SDK custom providers 文档），实测的表现是实例能跨过边界，模型调用再报 `this.config.url is not a function`。官方给自定义 provider 的解法是实现 `WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE`。`AgentModelRef` 按这个协议只序列化槽位，反向解析发生在 step 进程里，配置和密钥都还在。`model-ref.ts` 不 import `infra/` 与 `models/`，否则 pg 会被编进 workflow VM，构建直接报 `node-js-module-in-workflow`。
 
-2026-11-05 一次回显运行的 step 记录：`doStreamStep` → `echoToolStep` → `writeToolResults` → `doStreamStep` → `persistTurnStep` → `finishRunStep`。持久化粒度仍是每次模型调用、每个工具调用各一个 step。证据 `runtime/evidence/ai-sdk-migration/PR-01/workflow-agent-db.json` 与 `workflow-agent-run.log`。
+2026-11-05 一次回显运行的 12 个 step：`openRunStep` → `prepareTurnStep` → `prepareWorkflowAgentTelemetry` → `doStreamStep` → `writeDeferredToolCalls` → `echoToolStep` → `writeToolResults` → `doStreamStep` → `writeDeferredToolCalls` → `closeStream` → `persistTurnStep` → `finishRunStep`。产品自己的是 openRun、prepareTurn、echoTool、persistTurn、finishRun；其余由 `@ai-sdk/workflow` 生成。持久化粒度仍是每次模型调用、每个工具调用各一个 step。证据 `runtime/evidence/ai-sdk-migration/PR-01/workflow-agent-db.json` 与 `workflow-agent-run.log`。
 
 输入注入与压缩仍待评估：`prepareStep` 与 `activeTools` 接口存在，PR-02 起用它实现输入投递，压缩放在模型调用前的 step 里。落点 PR-01、PR-02。
 
@@ -237,7 +237,7 @@ Binding. 每条结论绑定「结论、断言源码行、原始产物」三件�
 隔离路径使用 `paimeng_app_test`、`paimeng_agent_test` 和 Redis DB15。先跑 `npm run db:test:setup`，再按当期 PR 的 spec 运行。
 开发实例 live 路径使用现有验证技能的 Launch、Doctor、Drive 和 Cleanup。模型只用 fixture。启动 `npm run dev` 后检查 Next、`agent-worker` 和 Postgres world 的健康状态。
 worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后台进程。
-需要故障注入时，只杀本轮拥有的 worker 进程，记录 PID 与信号，不用宽泛 `pkill`。
+需要故障注入时，只杀本轮拥有的 Next 进程。workflow 与 step 跑在它里面，worker 只做调度，杀 worker 测不到在执行的 step。记录 PID 与信号，不用宽泛 `pkill`。
 每期证据按 `runtime/evidence/ai-sdk-migration/PR-XX/` 归档，包括检查日志、原始样本、截图、trace 和 `handoff.md`。
 
 ### Verdict and handoff
@@ -251,17 +251,17 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 | 场景 | 负责 PR | 观察面 | 失败条件 | 证据 |
 | --- | --- | --- | --- | --- |
 | 创建、生成、发布 | PR-02、PR-03、PR-04、PR-06 | Web、API、DB | 生成不落库、流式中断、发布失败 | 各 PR 的 journey 截图与日志 |
-| 浏览器断开后继续 | PR-04、PR-05 | Web、worker | 断连取消运行，或重连丢消息 | 断连视频与消息计数 |
+| 浏览器断开后继续 | PR-04、PR-05 | Web、DB | 断连取消运行，或重连丢消息 | 断连视频与消息计数 |
 | Next 进程被 `kill -9` 后续跑 | PR-01、PR-05 | Web、worker、DB | 恢复超过 60 秒，或从头重跑 | 进程日志、恢复时间、trace |
-| 在执行的 step 不写重复副作用 | PR-02、PR-05 | worker、DB、文件 | `edit` 执行两次，或构建产物重复 | `agent_effect` 行与文件 hash |
+| 在执行的 step 不写重复副作用 | PR-02、PR-05 | Web、DB、文件 | `edit` 执行两次，或构建产物重复 | `agent_effect` 行与文件 hash |
 | `ask` 提问跨重启 | PR-05 | Web、DB | 回答丢失、写门禁未关闭、重启后无法继续 | 截图与 authority 行 |
 | 输入水位与 `steer` 顺序 | PR-05 | Web、DB | 插队、乱序、未结算输入被发布 | `generation_input` 行与消息序列 |
 | 取消与结算 | PR-05、PR-06 | Web、DB、文件 | 取消后 1 秒仍有新副作用、构建未停、计费步缺失 | 账目行、副作用时间戳、截图 |
 | 历史消息完整 | PR-04、PR-06 | Web、DB | 工具调用或附件丢失、顺序错乱 | 同会话跨重启的计数对比 |
 | 用量与计费一致 | PR-03、PR-06 | DB | 步骤数或 token 不一致且无解释 | 同一 fixture 的新旧对比 |
-| 预算上限 | PR-02、PR-03 | worker、DB | 超过模型、工具、构建、压缩次数 | attempt 账本 |
-| 模型身份与凭据重启不变 | PR-03、PR-05 | worker、DB | 重启后改投当前别名 | 请求日志与运行记录 |
-| authority 与写门禁 | PR-02 | worker、DB | 无权限仍写入，或持权被误拒 | 拒绝日志与行锁记录 |
+| 预算上限 | PR-02、PR-03 | Web、DB | 超过模型、工具、构建、压缩次数 | attempt 账本 |
+| 模型身份与凭据重启不变 | PR-03、PR-05 | Web、DB | 重启后改投当前别名 | 请求日志与运行记录 |
+| authority 与写门禁 | PR-02 | Web、DB | 无权限仍写入，或持权被误拒 | 拒绝日志与行锁记录 |
 | 旧会话切空 | PR-06 | Web、DB | 旧会话打不开或页面报错 | 空历史截图 |
 
 ## 验证 AI SDK 与 Workflow 可行性 (PR-00)
@@ -277,7 +277,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 - [x] 建独立 spike 包，安装 `ai@7.0.130`、`workflow@5.4.0`、`@workflow/world-postgres@5.1.1`。
 - [x] 用 Next 16.4.2 接入 `withWorkflow` 与 `instrumentation.ts`，启动 Postgres world。
 - [x] 用 `MockLanguageModelV4` 定义三个工具，模型调用与工具执行各是一个 step。
-- [x] 在工具 step 中途 `kill -9` worker，重启后确认从被中断的 step 继续。
+- [x] 在工具 step 中途 `kill -9` Next 进程（PR-00 的 spike 跑在 `next dev` 里），重启后确认从被中断的 step 继续。
 - [x] 结束运行后用同一 runId 重连，读回完整流。
 - [x] 验证 `run.cancel()` 不中断在执行的 step。
 
@@ -292,12 +292,12 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 **Verify, live.** 测试本身不足以验证。三条 lane 已跑完。
 
 - [x] Lane 1. 最小页面发起生成，收到流式消息。截图 `running.png`。
-- [x] Lane 2. 工具 step 中途杀 worker，重启后页面继续收到结果。证据 `default-lock-*`、`stale30-*`、`recovery.json`。
+- [x] Lane 2. 工具 step 中途杀 Next 进程，重启后页面继续收到结果。证据 `default-lock-*`、`stale30-*`、`recovery.json`。
 - [x] Lane 3. 运行结束后重连并读取完整流。截图 `completed.png`；取消场景截图 `cancelled.png` 与视频 `cancel-run.webm`。
 
 **Verify, perf.** 已记录绝对值。
 
-- [x] Metric. 首 token 延迟、恢复延迟、事件行数、worker 常驻内存。
+- [x] Metric. 恢复延迟、事件行数、step 行数、数据库大小、进程常驻内存。首 token 延迟留到 PR-04 测量。
 - [x] Probe. 同一场景连续跑 5 次。
 - [x] Baseline. 恢复延迟 28 秒（30 秒配置），事件 208 行，step 64 行，数据库 8.9 MB，开发模式 RSS 约 805 MB。
 - [x] Rule. 恢复超过 60 秒、事件无上限增长或常驻内存超过 1 GiB 时阻塞。PR-00 没有触发阻塞。
@@ -361,7 +361,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 - [ ] 实现 `stepTool` 与 `agentTool` 两个适配器，守卫只写一份 `withToolGuards`。
 - [ ] 在守卫内检查 authority、执行绑定、写门禁、路径、工具预算，并写 `agent_effect`。
 - [ ] 按 D4 的分类写 `replay`：`edit`、`ask`、`importImage` 是 `unsafe`，其余是 `safe`。`git` 现在没有声明，按 `unsafe` 处理，本 PR 显式标成 `safe` 并保留只读子命令限制。`buildPreview` 重跑前清理临时产物。
-- [ ] `generation_step` 增加引擎步标识与唯一约束，写入用 `ON CONFLICT DO NOTHING`。
+- [ ] `generation_step` 增加引擎步标识，写入用 `ON CONFLICT DO NOTHING`。唯一约束要等 PR-03 补上 `run_id` 列之后再建，见 D4。
 - [ ] 预算预留在 step 开始前发生，键为引擎步标识，重放时复用。
 - [ ] 运行记录写原 provider、端点、格式、请求头、模型、设置和凭据引用。
 
@@ -414,7 +414,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 - [ ] Lane 2. 运行中重启 Next 进程，模型身份不变。保存请求日志。
 - [ ] Lane 3. 完成一次生成，账目与旧引擎对比。保存 SQL。
 
-**Verify, perf.** 压缩延迟、上下文 token 上限、计费写入次数。
+**Verify, perf.** 压缩后上下文不超过上限的 90%；压缩耗时不超过该轮模型调用耗时的 30%；同一引擎步只写一次账目。
 
 **Review gate.** 压缩影响回答，需要 operator 审截图。
 
@@ -447,7 +447,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 - [ ] Lane 2. 生成中关闭网络 10 秒再恢复。保存视频。
 - [ ] Lane 3. 历史会话打开，工具调用与附件完整。保存截图。
 
-**Verify, perf.** 首 token 延迟与历史读取时间，对比旧引擎。
+**Verify, perf.** 首 token 延迟不高于旧引擎的 120%；100 条历史的消息打开时间不超过 2 秒。
 
 **Review gate.** 交互变化，需要 operator 审视频。
 
@@ -468,6 +468,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 - [ ] 工具在副作用前检查 `signal.throwIfAborted()`，构建工具 abort 时终止子进程。
 - [ ] 重试耗尽后进入诊断状态，不自动重试。
 - [ ] 恢复流程按 `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` 在 60 秒内收束。
+- [ ] 起两个 worker，确认同一 step 不会被执行两次，队列竞争不重复副作用。
 
 **You see.**
 
@@ -502,13 +503,13 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 **Build.**
 
 - [ ] 切换前停止新运行，排空队列，对 `durable_schema` 等 9 张表做 `pg_dump` 备份，备份路径与校验和写进 PR。
-- [ ] 默认切到 `agent`，保留按 App 回退到 `harness` 的开关一个发布周期。
-- [ ] 旧引擎进入只读：不再接受新生成，但已受理的运行可以跑完。
+- [ ] 默认切到 `agent`，保留按 App 回退到 `harness` 的开关一个发布周期。回退开关指向的 App 仍由旧引擎接受生成，这是本条 lane 的意义。
+- [ ] 默认路径不再写入旧引擎：只有回退开关指向的 App 会写，已受理的运行可以跑完。
 
 **You see.**
 
 - [ ] 切换后新建的会话在真实浏览器中完整可读，历史会话为空且页面不报错。
-- [ ] 新生成走新引擎，旧引擎无新写入。
+- [ ] 新生成默认走新引擎；只有回退开关指向的 App 写旧引擎。
 
 **Verify, unit.** 开关切换后路由与默认值正确。
 
@@ -519,7 +520,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 - [ ] Lane 3. 回退开关切回旧引擎，旧引擎仍能完成一次生成。保存日志。
 - [ ] Lane 4. 打开一个切换前存在、切换后没有消息的旧会话，页面正常显示空历史。保存截图。
 
-**Verify, perf.** 切换前后首屏与生成耗时对比，设绝对上限。
+**Verify, perf.** 首屏不高于切换前的 120%；生成 p95 不高于 180 秒。
 
 **Review gate.** 切换影响用户可见行为，需要 operator 审截图。
 
