@@ -6,8 +6,14 @@ import { evidencePath } from './support/evidence';
 import { grantAdmin, testConnection } from './support/model-config-fixtures';
 
 /**
- * 普通页面与会话的数据作用域：退出登录不留下上个账号的作品，管理员不因键入自动查询，
- * 编辑页旧应用的迟到响应不能覆盖新应用。断言读取本次唯一账号，截图落进证据目录。
+ * 普通页面与会话的数据作用域：退出登录不留下上个账号的作品，管理员不因键入自动查询。
+ * 断言读取本次唯一账号，截图落进证据目录。
+ *
+ * 这里曾经还有一条「编辑页迟到的读取不会把新名称改回旧名称」。它在现在的界面上不可达：
+ * 保存会先 await 刷新读，submitting 期间提交按钮是禁用的，回车也发不出第二个请求，
+ * 所以第二次保存根本不会发生（2026-11-05 在隔离栈上用扣住真实响应复现，第二个 POST
+ * 从未出现）。要覆盖这条竞态，先让界面允许刷新进行中再次保存；在那之前不要用固定等待
+ * 把它伪装成通过。
  */
 
 const password = 'password123';
@@ -96,82 +102,6 @@ test('退出登录后不再显示上个账号的作品，换账号只显示自�
   writeFileSync(
     evidencePath('react-lint', 'page-lifecycle.json'),
     JSON.stringify({ first, second, firstApp, secondApp }, null, 2) + '\n',
-  );
-});
-
-test('第一次保存后的刷新读迟到时，不会把新名称改回旧名称', async ({ page }) => {
-  const suffix = randomUUID().slice(0, 8);
-  const account = 'lifecycle_edit_' + suffix;
-  await register(page, account);
-  await login(page, account);
-  const originalName = '初始名称_' + suffix;
-  const firstSave = '第一次保存_' + suffix;
-  const secondSave = '第二次保存_' + suffix;
-  const appId = await createApp(page, originalName);
-
-  // 第一次保存后的刷新读先在服务端取回当时的旧名称并扣住，等第二次保存的刷新读落地后才交出去。
-  // 不用固定等待：扣住的是真实响应，放行时机由下面的 releaseStaleRead 决定。
-  let reads = 0;
-  let held = false;
-  let releaseStaleRead = () => {};
-  const staleReadHeld = new Promise<void>((resolve) => {
-    releaseStaleRead = resolve;
-  });
-  await page.route(
-    (url) => url.pathname === '/api/app/get/vo' && url.searchParams.get('id') === appId,
-    async (route) => {
-      reads += 1;
-      if (reads !== 2) {
-        await route.continue();
-        return;
-      }
-      const stale = await route.fetch();
-      held = true;
-      await staleReadHeld;
-      await route.fulfill({ response: stale });
-    },
-  );
-
-  await page.goto('/app/edit/' + appId);
-  await expect(page.getByLabel('应用名称', { exact: true })).toHaveValue(originalName);
-
-  const saved = () =>
-    page.waitForResponse(
-      (response) =>
-        response.url().endsWith('/api/app/update') && response.request().method() === 'POST',
-    );
-  const refreshed = () =>
-    page.waitForResponse((response) => response.url().includes('/api/app/get/vo?id=' + appId));
-
-  await page.getByLabel('应用名称', { exact: true }).fill(firstSave);
-  const firstSaved = saved();
-  await page.getByRole('button', { name: '保存修改' }).click();
-  expect((await firstSaved).ok()).toBe(true);
-  await expect.poll(() => held, { timeout: 10_000 }).toBe(true);
-
-  await page.getByLabel('应用名称', { exact: true }).fill(secondSave);
-  const secondSaved = saved();
-  const secondRefreshed = refreshed();
-  await page.getByLabel('应用名称', { exact: true }).press('Enter');
-  expect((await secondSaved).ok()).toBe(true);
-  await secondRefreshed;
-
-  releaseStaleRead();
-  await expect(page.getByLabel('应用名称', { exact: true })).toHaveValue(secondSave);
-  const stored = (await (await page.request.get('/api/app/get/vo?id=' + appId)).json()).data;
-  expect(stored.appName).toBe(secondSave);
-  await page.screenshot({
-    path: evidencePath('react-lint', '06-stale-read-ignored.png'),
-    fullPage: true,
-  });
-
-  writeFileSync(
-    evidencePath('react-lint', 'stale-read.json'),
-    JSON.stringify(
-      { appId, originalName, firstSave, secondSave, shown: secondSave, stored: stored.appName },
-      null,
-      2,
-    ) + '\n',
   );
 });
 

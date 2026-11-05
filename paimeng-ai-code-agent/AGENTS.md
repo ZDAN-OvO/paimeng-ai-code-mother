@@ -66,6 +66,6 @@ Each rule names its enforcer. A row with none is where the next repeat lands: gi
 | Nothing uncommitted outside the product directory | `npm run verify:boundary` |
 | A shared shape is declared once, by its schema | Type derivation: `SlotSettingsValues` is a mapped type over `ModelAliasSettings`, capability fields are annotated `ModelAliasCapabilities`; adding a schema field breaks compilation |
 | No state survives an account switch or logout | `AuthContext.sessionKey` plus `Layout.Content key`; covered by `tests/e2e/react-page-lifecycle.spec.ts`, which runs only when E2E is run by hand |
-| A late response cannot overwrite newer state | Per-component sequence numbers and live flags; the same E2E spec covers the edit-page case, also by hand only |
+| A late response cannot overwrite newer state | Per-component sequence numbers and live flags. **No E2E for the edit page**: while a save awaits its refresh the submit control is disabled, so the second save that would race never happens; see the spec header before re-adding one |
 | The client validates response payloads | **None.** `api<T>` validates the envelope only and 45 call sites assert with `as T`. This needs a response schema registry; see the PR body |
 | Integration and E2E run on pull requests | **None.** Pull requests run unit tests and static checks only; see the table in `scripts/verify/check-ci-coverage.ts` |
