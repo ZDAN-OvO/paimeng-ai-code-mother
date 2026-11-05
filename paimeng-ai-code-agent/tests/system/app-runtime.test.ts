@@ -326,23 +326,28 @@ describe('App runtime 执行环境', () => {
     const name = (init: boolean) =>
       `${runtimeContainerName(fixture.app, config.appRuntime.runId)}-${init ? 'init' : 'plain'}`;
 
-    // 两组只差 --init 这一个开关。PID 1 用 sleep：它不回收孤儿，
-    // 否则 busybox sh 自己会 wait 掉所有孩子，测不出 init 的作用。
+    // 两组都从平台真实启动参数出发，只差 --init 一个开关；末尾的占位命令换成 sleep：
+    // PID 1 必须是不回收孤儿的进程，否则 busybox sh 自己会 wait 掉所有孩子，测不出 init 的作用。
+    const { uid, gid } = await stat(fixture.root);
+    const base = runtimeRunArgs({
+      app: fixture.app,
+      runId: config.appRuntime.runId,
+      image: image.tag,
+      uid,
+      gid,
+      mounts: runtimeMounts({ workspaceRoot: fixture.root, storeRoot }),
+      registry: config.buildNpmRegistry,
+      virtualStore: runtimeVirtualStore(fixture.app),
+    });
     for (const init of [true, false]) {
       await removeContainer(name(init));
-      await docker(
-        [
-          'run',
-          '-d',
-          ...(init ? ['--init'] : []),
-          '--name',
-          name(init),
-          image.tag,
-          'sleep',
-          '100000',
-        ],
-        120_000,
+      const args = base.slice();
+      args[args.indexOf('--name') + 1] = name(init);
+      args.splice(args.length - 3, 3, 'sleep', '100000');
+      const withoutInit = args.filter(
+        (value, index) => !(value === '--init' && args[index - 1] === '-d'),
       );
+      await docker(init ? args : withoutInit, 120_000);
       containers.push(name(init));
     }
 
