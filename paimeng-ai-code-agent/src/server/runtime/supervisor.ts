@@ -107,6 +107,11 @@ async function ensureRuntimeImage(): Promise<{ tag: string; identity: string }> 
   return { tag, identity: `${tag}@${id.slice(0, 19)}` };
 }
 
+/** 准备运行时镜像；system 测试与运维入口共用同一份构建逻辑。 */
+export async function prepareRuntimeImage(): Promise<{ tag: string; identity: string }> {
+  return ensureRuntimeImage();
+}
+
 function isConnectionRefused(error: unknown) {
   return ['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENOTFOUND'].includes(
     (error as NodeJS.ErrnoException)?.code ?? '',
