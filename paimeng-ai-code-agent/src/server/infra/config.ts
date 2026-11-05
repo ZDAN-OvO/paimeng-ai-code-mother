@@ -50,6 +50,10 @@ const environment = z.object({
     .enum(['true', 'false', '1', '0'])
     .default('true')
     .transform((value) => value === 'true' || value === '1'),
+  RUNTIME_RUN_ID: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9-]{0,15}$/, 'RUNTIME_RUN_ID 只能是小写字母、数字和连字符，最长 16 位')
+    .default('default'),
   RUNTIME_IMAGE: z.string().min(1, 'RUNTIME_IMAGE 不能为空').default('node:24-alpine'),
   RUNTIME_PNPM_VERSION: z
     .string()
@@ -258,6 +262,7 @@ export function getConfig() {
     buildRepairRounds: env.BUILD_REPAIR_ROUNDS,
     appRuntime: {
       enabled: env.APP_RUNTIME_ENABLED,
+      runId: env.RUNTIME_RUN_ID,
       image: env.RUNTIME_IMAGE,
       pnpmVersion: env.RUNTIME_PNPM_VERSION,
       startTimeoutMs: env.RUNTIME_START_TIMEOUT_MS,

@@ -149,11 +149,11 @@ async function startDevServer(app: RuntimeApp, port: number) {
   const base = runtimePreviewBase(app);
   const command = devServerCommand({ basePath: base });
   const script = `${command.map((part) => `'${part.replace(/'/g, `'\\''`)}'`).join(' ')} > ${RUNTIME_DEV_LOG} 2>&1`;
-  await startDetached({ container: runtimeContainerName(app), script, workdir: '/work' });
+  await startDetached({ container: runtimeContainerName(app, getConfig().appRuntime.runId), script, workdir: '/work' });
   const ready = await waitForDevServer(port, base, getConfig().appRuntime.devReadyTimeoutMs);
   if (!ready) {
     const tail = await runInRuntime({
-      container: runtimeContainerName(app),
+      container: runtimeContainerName(app, getConfig().appRuntime.runId),
       command: ['tail', '-c', '1200', RUNTIME_DEV_LOG],
       timeoutMs: 20_000,
     }).catch(() => null);
@@ -174,7 +174,7 @@ async function installDependencies(input: {
   return ensureDependencies({
     app: input.app,
     workspaceRoot: input.workspaceRoot,
-    container: runtimeContainerName(input.app),
+    container: runtimeContainerName(input.app, getConfig().appRuntime.runId),
     imageIdentity: input.imageIdentity,
     timeoutMs: getConfig().appRuntime.startTimeoutMs,
   });
@@ -188,14 +188,18 @@ async function createContainer(
 ): Promise<AppRuntimeRecord> {
   const config = getConfig();
   await runtimeBaseDirectory();
-  await ensureSafeDirectory(runtimeStorePath(config.runtimeRoot));
-  const name = runtimeContainerName(app);
-  const mounts = runtimeMounts({ workspaceRoot, storeRoot: runtimeStorePath(config.runtimeRoot) });
+  await ensureSafeDirectory(runtimeStorePath(config.runtimeRoot, config.appRuntime.runId));
+  const name = runtimeContainerName(app, getConfig().appRuntime.runId);
+  const mounts = runtimeMounts({
+    workspaceRoot,
+    storeRoot: runtimeStorePath(config.runtimeRoot, config.appRuntime.runId),
+  });
   await removeContainer(name);
   const { uid, gid } = await stat(workspaceRoot);
   await docker(
     runtimeRunArgs({
       app,
+      runId: config.appRuntime.runId,
       image,
       uid,
       gid,
@@ -249,7 +253,7 @@ async function ensureUnlocked(app: RuntimeApp, workspaceRoot: string): Promise<R
   if (!config.appRuntime.enabled || !appNeedsRuntime(app)) return disabled(app);
   const image = await ensureRuntimeImage();
   const existing = await readAppRuntime(app);
-  const name = runtimeContainerName(app);
+  const name = runtimeContainerName(app, getConfig().appRuntime.runId);
   if (existing) {
     const state = await containerState(existing.containerName, RUNTIME_DEV_PORT);
     if (state.running && existing.workspaceRoot === workspaceRoot && existing.imageIdentity === image.identity) {
@@ -375,7 +379,7 @@ export async function ensureAppRuntime(input: {
 
 /** 停止并忘记这个 App 的 runtime；容器与台账都不留。 */
 export async function stopAppRuntime(app: RuntimeApp): Promise<void> {
-  await removeContainer(runtimeContainerName(app));
+  await removeContainer(runtimeContainerName(app, getConfig().appRuntime.runId));
   await deleteAppRuntime(app);
 }
 
@@ -431,7 +435,7 @@ export async function prepareGenerationRuntime(input: {
 export async function reconcileRuntime(): Promise<{ orphaned: string[]; stopped: string[] }> {
   const config = getConfig();
   if (!config.appRuntime.enabled) return { orphaned: [], stopped: [] };
-  const containers = await listManagedContainers('paimeng.managed-by').catch(() => []);
+  const containers = await listManagedContainers(config.appRuntime.runId).catch(() => []);
   const rows = await listAppRuntimes(['starting', 'ready']);
   const known = new Map(rows.map((row) => [`${row.containerName}`, row]));
   const live = new Set(containers.map((container) => container.name));

@@ -3,6 +3,7 @@ import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { dirname, join } from 'node:path';
 import { loadEnvFile } from 'node:process';
+import { stopRunContainers } from './runtime-containers';
 
 const root = process.cwd();
 try {
@@ -10,6 +11,12 @@ try {
 } catch {
   console.warn('未找到 .env，直接使用当前环境变量');
 }
+
+// 每轮一个运行标识：runtime 容器名、标签和 store 目录都按它隔离；显式设置时沿用调用方的。
+const runId =
+  process.env.RUNTIME_RUN_ID ??
+  `dev-${process.pid.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+process.env.RUNTIME_RUN_ID = runId;
 
 const pgUrl =
   process.env.DURABLE_PG_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_agent';
@@ -53,7 +60,7 @@ function persistState() {
   mkdirSync(dirname(statePath), { recursive: true });
   writeFileSync(
     statePath,
-    JSON.stringify({ parentPid: process.pid, startedAt, children: stateChildren }, null, 2),
+    JSON.stringify({ parentPid: process.pid, startedAt, runId, children: stateChildren }, null, 2),
   );
 }
 
@@ -93,6 +100,12 @@ function stop(code: number) {
     const deadline = Date.now() + 5000;
     while ([...children].some(groupAlive) && Date.now() < deadline) await delay(100);
     for (const child of children) if (groupAlive(child)) signalGroup(child, 'SIGKILL');
+    const stopped = stopRunContainers(runId);
+    if (stopped.removed || stopped.failed) {
+      console.log(
+        `已停止本轮 runtime 容器 ${stopped.removed} 个${stopped.failed ? `，${stopped.failed} 个失败` : ''}`,
+      );
+    }
     clearState();
   })();
   return cleanup.then(() => {

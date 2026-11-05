@@ -34,6 +34,8 @@ const exec = promisify(execFile);
 
 loadEnvFile('.env');
 process.env.DATABASE_URL = testDatabaseUrl(process.env.DATABASE_URL ?? '');
+// 每轮一个运行标识：容器名与 store 目录都按它隔离，和其他 checkout 的 runtime 互不相干。
+process.env.RUNTIME_RUN_ID ??= `sys-${randomUUID().slice(0, 8)}`;
 
 /**
  * PR-02 的真实 Docker 验收：镜像身份、两个 App 的包文件共享、第二 App 增量、--init 僵尸回收。
@@ -43,7 +45,7 @@ process.env.DATABASE_URL = testDatabaseUrl(process.env.DATABASE_URL ?? '');
  */
 
 const config = getConfig();
-const storeRoot = runtimeStorePath(config.runtimeRoot);
+const storeRoot = runtimeStorePath(config.runtimeRoot, config.appRuntime.runId);
 /** `runtimeVirtualStore()` 返回容器内路径；宿主上的同一目录在 store 挂载源下面。 */
 const virtualStoreOnHost = (app: { id: string; codeGenType: 'react_project' }) =>
   join(storeRoot, 'apps', appRuntimeKey(app), '.paimeng-virtual');
@@ -54,6 +56,14 @@ const appIds: bigint[] = [];
 
 type Fixture = { app: { id: string; codeGenType: 'react_project' }; root: string };
 const fixtures: Fixture[] = [];
+
+/** 探针样例：PROBE_OUTPUT 存在时把本轮实测写成 lifecycle.json，没设就什么都不写。 */
+const probe: Record<string, unknown> = {
+  unsupported: ['dev-server-anon: 测试工程没有 Vite dev server，只有容器本身的匿名内存'],
+};
+function record(key: string, value: unknown) {
+  probe[key] = value;
+}
 
 async function newAppRow() {
   const id = await nextSnowflakeId();
@@ -94,10 +104,11 @@ async function startContainer(
   image: { tag: string },
   options: { init: boolean },
 ) {
-  const name = runtimeContainerName(fixture.app);
+  const name = runtimeContainerName(fixture.app, config.appRuntime.runId);
   const { uid, gid } = await stat(fixture.root);
   const args = runtimeRunArgs({
     app: fixture.app,
+    runId: config.appRuntime.runId,
     image: image.tag,
     uid,
     gid,
@@ -192,6 +203,13 @@ beforeAll(async () => {
 }, 600_000);
 
 afterAll(async () => {
+  if (process.env.PROBE_OUTPUT) {
+    await mkdir(process.env.PROBE_OUTPUT, { recursive: true });
+    await writeFile(
+      join(process.env.PROBE_OUTPUT, 'lifecycle.json'),
+      JSON.stringify({ ...probe, capturedAt: new Date().toISOString() }, null, 2) + '\n',
+    );
+  }
   for (const container of containers) await removeContainer(container);
   for (const root of workspaces) await rm(root, { recursive: true, force: true });
   for (const appId of appIds) await db().delete(apps).where(eq(apps.id, appId));
@@ -220,8 +238,12 @@ describe('App runtime 执行环境', () => {
     expect((await stat(file)).uid).toBe((await stat(fixture.root)).uid);
     await rm(file);
 
-    const managed = await listManagedContainers('paimeng.managed-by');
+    const managed = await listManagedContainers(config.appRuntime.runId);
     expect(managed.map((item) => item.name)).toContain(name);
+
+    const stopStarted = Date.now();
+    await removeContainer(name);
+    record('containerStopMs', Date.now() - stopStarted);
     expect(managed.find((item) => item.name === name)?.appKey).toBe(appRuntimeKey(fixture.app));
   }, 180_000);
 
@@ -238,6 +260,7 @@ describe('App runtime 执行环境', () => {
       '--store-dir=/store',
       '--virtual-store-dir=' + runtimeVirtualStore(fixture.app),
     ];
+    const firstStarted = Date.now();
     const generated = await runInRuntime({
       container: nameA,
       command: lockOnly(first),
@@ -253,11 +276,15 @@ describe('App runtime 执行环境', () => {
       timeoutMs: 300_000,
     });
     expect(installedA.installed).toBe(true);
+    record('installFirstMs', Date.now() - firstStarted);
 
     const storeBefore = await directorySize(storeRoot);
+    record('storeFirstBytes', storeBefore);
+    record('workspaceBytes', await directorySize(first.root));
 
     const second = await newProject(await newAppRow());
     const nameB = await startContainer(second, image, { init: true });
+    const secondStarted = Date.now();
     const generatedB = await runInRuntime({
       container: nameB,
       command: lockOnly(second),
@@ -273,6 +300,7 @@ describe('App runtime 执行环境', () => {
       timeoutMs: 300_000,
     });
     expect(installedB.installed).toBe(true);
+    record('installSecondMs', Date.now() - secondStarted);
 
     const fileA = await findPackageFile(virtualStoreOnHost(first.app), 'dayjs');
     const fileB = await findPackageFile(virtualStoreOnHost(second.app), 'dayjs');
@@ -288,6 +316,7 @@ describe('App runtime 执行环境', () => {
     const storeAfter = await directorySize(storeRoot);
     const firstShare = await directorySize(join(storeRoot, 'apps', appRuntimeKey(first.app)));
     const incremental = storeAfter - storeBefore;
+    record('storeIncrementalBytes', incremental);
     expect(incremental).toBeLessThanOrEqual(Math.max(firstShare * 0.2, 1024 * 1024));
   }, 600_000);
 
@@ -295,7 +324,7 @@ describe('App runtime 执行环境', () => {
     const image = await prepareRuntimeImage();
     const fixture = await newProject(await newAppRow());
     const name = (init: boolean) =>
-      `${runtimeContainerName(fixture.app)}-${init ? 'init' : 'plain'}`;
+      `${runtimeContainerName(fixture.app, config.appRuntime.runId)}-${init ? 'init' : 'plain'}`;
 
     // 两组只差 --init 这一个开关。PID 1 用 sleep：它不回收孤儿，
     // 否则 busybox sh 自己会 wait 掉所有孩子，测不出 init 的作用。
@@ -319,7 +348,11 @@ describe('App runtime 执行环境', () => {
 
     await spawnOrphans(name(true));
     await spawnOrphans(name(false));
-    expect(await zombieCount(name(true))).toBe(0);
-    expect(await zombieCount(name(false))).toBeGreaterThan(0);
+    const withInitZombies = await zombieCount(name(true));
+    const plainZombies = await zombieCount(name(false));
+    record('zombiesWithInit', withInitZombies);
+    record('zombiesWithoutInit', plainZombies);
+    expect(withInitZombies).toBe(0);
+    expect(plainZombies).toBeGreaterThan(0);
   }, 300_000);
 });

@@ -33,10 +33,6 @@ export function runtimeVirtualStore(app: RuntimeApp) {
   return `${RUNTIME_STORE}/apps/${appRuntimeKey(app)}/.paimeng-virtual`;
 }
 
-/** 宿主上该 App 的 runtime 数据目录（virtual store 落在共享 store 下，删除应用时一并回收）。 */
-export function runtimeAppDataPath(runtimeRoot: string, app: RuntimeApp) {
-  return join(runtimeStorePath(runtimeRoot), 'apps', appRuntimeKey(app));
-}
 /** dev server 在容器内的固定端口；宿主端口由 Docker 随机分配并记录。 */
 export const RUNTIME_DEV_PORT = 5173;
 /** 容器名前缀；supervisor 对账与测试都按它识别「本平台的运行时容器」。 */
@@ -53,9 +49,18 @@ export function appRuntimeKey(app: RuntimeApp) {
   return `${app.codeGenType}_${app.id}`;
 }
 
-export function runtimeContainerName(app: RuntimeApp) {
-  return RUNTIME_CONTAINER_PREFIX + appRuntimeKey(app);
+/**
+ * 容器名带上运行标识：同一台机器上并行跑两个 checkout 时，同名 App 不会互相抢容器。
+ * 运行标识只由本轮的 launcher 或环境给出，不由 App 内容派生。
+ */
+export function runtimeContainerName(app: RuntimeApp, runId: string) {
+  return `${RUNTIME_CONTAINER_PREFIX}${runId}-${appRuntimeKey(app)}`;
 }
+
+/** 按运行标识过滤容器；对账与清理都只碰本轮自己的容器。 */
+export const RUNTIME_RUN_LABEL = 'paimeng.run';
+export const RUNTIME_MANAGED_LABEL = 'paimeng.managed-by';
+export const RUNTIME_APP_LABEL = 'paimeng.app-runtime';
 
 /** 预览路由里的 dev server 基路径；Vite 用它生成资源 URL 和 HMR websocket 路径。 */
 export function runtimePreviewBase(app: RuntimeApp) {
@@ -72,9 +77,12 @@ export function runtimePaths(runtimeRoot: string, app: RuntimeApp) {
   return { base };
 }
 
-/** 全机共享的 pnpm store：与每个 App 的 node_modules 在同一个文件系统上才能硬链接。 */
-export function runtimeStorePath(runtimeRoot: string) {
-  return join(runtimeRoot, 'app-runtime', 'store');
+/**
+ * 本轮共享的 pnpm store：同一轮的两个 App 在宿主上共享包内容，不同运行轮次各自一份，
+ * 一轮的清理或异常不会影响另一轮。store 与 Workspace 必须在同一文件系统上才能硬链接。
+ */
+export function runtimeStorePath(runtimeRoot: string, runId: string) {
+  return join(runtimeRoot, 'app-runtime', 'runs', runId, 'store');
 }
 
 /** 运行时镜像标签由「基础镜像 + pnpm 版本」决定：同一组合永远得到同一身份。 */
@@ -123,6 +131,8 @@ export function runtimeEnvironment(input: { registry: string; virtualStore: stri
 /** `docker run -d ...` 的完整参数；`--publish 127.0.0.1::5173` 让 Docker 分配宿主端口并只绑本机。 */
 export type RuntimeRunInput = {
   app: RuntimeApp;
+  /** 本轮运行标识；容器名与标签都带上它，另一轮对账不会碰到这台容器。 */
+  runId: string;
   image: string;
   uid: number;
   gid: number;
@@ -136,9 +146,10 @@ export function runtimeRunArgs(input: RuntimeRunInput): string[] {
     'run', '-d',
     // 容器里被杀掉的进程需要一个 1 号进程回收，否则每轮收束都会累积僵尸。
     '--init',
-    '--name', runtimeContainerName(input.app),
-    '--label', `paimeng.managed-by=paimeng-platform`,
-    '--label', `paimeng.app-runtime=${appRuntimeKey(input.app)}`,
+    '--name', runtimeContainerName(input.app, input.runId),
+    '--label', `${RUNTIME_MANAGED_LABEL}=paimeng-platform`,
+    '--label', `${RUNTIME_APP_LABEL}=${appRuntimeKey(input.app)}`,
+    '--label', `${RUNTIME_RUN_LABEL}=${input.runId}`,
     '--user', `${input.uid}:${input.gid}`,
     '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=256',
     '--memory=1g', '--memory-swap=1g', '--cpus=1',

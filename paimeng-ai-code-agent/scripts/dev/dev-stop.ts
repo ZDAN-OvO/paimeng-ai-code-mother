@@ -1,10 +1,13 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { stopRunContainers } from './runtime-containers';
 
 type DevState = {
   parentPid: number;
   startedAt: string;
+  /** 该轮 runtime 容器的运行标识；旧状态文件没有这一项。 */
+  runId?: string;
   children: { label: string; pid: number }[];
 };
 
@@ -124,6 +127,14 @@ if (isProjectProcess(parentPid)) {
 }
 
 const survivors = groupsToStop.filter(groupAlive);
+if (state.runId) {
+  const stopped = stopRunContainers(state.runId);
+  if (stopped.removed || stopped.failed) {
+    console.log(
+      `已停止本轮 runtime 容器 ${stopped.removed} 个${stopped.failed ? `，${stopped.failed} 个失败` : ''}`,
+    );
+  }
+}
 removeState();
 if (survivors.length > 0) {
   console.error(`仍有进程组未退出：${survivors.join(', ')}`);

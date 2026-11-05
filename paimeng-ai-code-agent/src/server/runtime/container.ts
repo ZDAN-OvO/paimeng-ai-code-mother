@@ -1,6 +1,7 @@
 import 'server-only';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { RUNTIME_APP_LABEL, RUNTIME_MANAGED_LABEL, RUNTIME_RUN_LABEL } from './plan';
 
 const run = promisify(execFile);
 
@@ -94,9 +95,18 @@ export type ManagedContainer = { id: string; name: string; appKey: string | null
  * 按平台标签列出本平台管理的容器。supervisor 重启、或台账与 Docker 不一致时，
  * 只认标签，不按名字前缀猜——别的工具起的容器不能算进来。
  */
-export async function listManagedContainers(label: string): Promise<ManagedContainer[]> {
+export async function listManagedContainers(runId: string): Promise<ManagedContainer[]> {
   const output = await docker(
-    ['ps', '-a', '--filter', `label=${label}=paimeng-platform`, '--format', '{{.ID}}\t{{.Names}}\t{{.Labels}}'],
+    [
+      'ps',
+      '-a',
+      '--filter',
+      `label=${RUNTIME_MANAGED_LABEL}=paimeng-platform`,
+      '--filter',
+      `label=${RUNTIME_RUN_LABEL}=${runId}`,
+      '--format',
+      '{{.ID}}\t{{.Names}}\t{{.Labels}}',
+    ],
     20_000,
   );
   // 测试与脚本会自己起容器；在没有 Docker 的环境里这里返回空，而不是让调用方崩掉。
@@ -105,7 +115,10 @@ export async function listManagedContainers(label: string): Promise<ManagedConta
     .filter(Boolean)
     .map((line) => {
       const [id, name, labels = ''] = line.split('\t');
-      const match = /paimeng\.app-runtime=([^\s,]+)/.exec(labels);
-      return { id, name, appKey: match ? match[1] : null };
+      const appLabel = labels
+        .split(',')
+        .map((value) => value.trim())
+        .find((value) => value.startsWith(`${RUNTIME_APP_LABEL}=`));
+      return { id, name, appKey: appLabel ? appLabel.slice(RUNTIME_APP_LABEL.length + 1) : null };
     });
 }

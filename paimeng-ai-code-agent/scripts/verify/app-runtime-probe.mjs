@@ -17,12 +17,12 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-const SCENARIOS = new Set(['generation', 'versions']);
+const SCENARIOS = new Set(['generation', 'versions', 'lifecycle']);
 
 function usage(message) {
   if (message) console.error(message);
   console.error(
-    '用法: node app-runtime-probe.mjs --checkout <绝对路径> --scenario <generation|versions> --output <绝对路径>',
+    '用法: node app-runtime-probe.mjs --checkout <绝对路径> --scenario <generation|versions|lifecycle> --output <绝对路径>',
   );
   process.exit(2);
 }
@@ -168,12 +168,63 @@ function p95(values) {
   return sorted[index];
 }
 
+/**
+ * lifecycle：调用 checkout 自己的隔离 system 驱动，收集依赖安装、store 增量、回收耗时与僵尸数。
+ * trunk 没有常驻 runtime 时驱动不存在，如实记 unsupported，不用别的场景的数字顶替。
+ */
+function runLifecycle(checkout, output) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const factsDir = join(output, `raw-lifecycle-${stamp}`);
+  mkdirSync(factsDir, { recursive: true });
+  const summaryPath = join(output, 'probe-lifecycle.json');
+  const base = { scenario: 'lifecycle', checkout, capturedAt: new Date().toISOString() };
+  const driver = join(checkout, 'tests/system/app-runtime.test.ts');
+  if (!existsSync(driver)) {
+    writeFileSync(
+      summaryPath,
+      JSON.stringify(
+        {
+          ...base,
+          unsupported: [
+            'trunk 没有常驻 runtime 的 system 驱动：tests/system/app-runtime.test.ts 不存在',
+          ],
+          facts: null,
+          exitCode: 0,
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+    console.log('该 checkout 没有 runtime system 驱动，lifecycle 记为 unsupported');
+    return 0;
+  }
+  const runId = 'probe-' + Date.now().toString(36);
+  let exitCode = 0;
+  try {
+    execFileSync('npm', ['run', 'test:system', '--', 'tests/system/app-runtime.test.ts'], {
+      cwd: checkout,
+      stdio: 'inherit',
+      env: { ...process.env, PROBE_OUTPUT: factsDir, RUNTIME_RUN_ID: runId },
+    });
+  } catch (error) {
+    exitCode = error?.status ?? 1;
+  }
+  const factsPath = join(factsDir, 'lifecycle.json');
+  const facts = existsSync(factsPath) ? JSON.parse(readFileSync(factsPath, 'utf8')) : null;
+  writeFileSync(summaryPath, JSON.stringify({ ...base, runId, facts, exitCode }, null, 2) + '\n');
+  console.log(
+    facts ? `lifecycle 事实 → ${summaryPath}` : `没有 lifecycle.json（退出码 ${exitCode}）`,
+  );
+  return exitCode;
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const checkout = resolve(args.checkout);
   const output = resolve(args.output);
   if (!existsSync(join(checkout, 'package.json'))) usage(`不是产品目录: ${checkout}`);
   mkdirSync(output, { recursive: true });
+  if (args.scenario === 'lifecycle') process.exit(runLifecycle(checkout, output));
 
   const specPath = join(checkout, 'tests/e2e/app-runtime-probe-run.spec.ts');
   if (existsSync(specPath)) usage(`临时 spec 已存在，先确认残留来源再删除: ${specPath}`);

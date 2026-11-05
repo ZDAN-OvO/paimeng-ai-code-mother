@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createConnection, createServer } from 'node:net';
 import { loadEnvFile } from 'node:process';
+import { stopRunContainers } from '../dev/runtime-containers';
 import { storageTestDatabaseUrl, testDatabaseUrl } from '../../tests/support/test-database-url';
 
 function testPort(name: string, fallback: number) {
@@ -195,6 +196,9 @@ for (const value of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(value, 
 
 let budgetTimer: ReturnType<typeof setTimeout> | undefined;
 
+// 隔离轮次独占自己的 runtime 容器与 store；端口不同就是不同轮次。
+const runtimeRunId = process.env.RUNTIME_RUN_ID ?? `e2e-${appPort}`;
+
 let exitCode = 1;
 try {
   loadEnvFile('.env');
@@ -222,6 +226,7 @@ try {
     DURABLE_FAUX_MODEL: '0',
     DURABLE_FAUX_FIXTURE: '1',
     DURABLE_HARNESS_RESET: '1',
+    RUNTIME_RUN_ID: runtimeRunId,
     DURABLE_HARNESS_RUN_DIR: `runtime/e2e-harness-${appPort}`,
   };
   for (const name of [
@@ -290,6 +295,7 @@ try {
 } finally {
   if (budgetTimer) clearTimeout(budgetTimer);
   await stopOwnProcesses();
+  stopRunContainers(runtimeRunId);
   for (const value of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const)
     process.removeListener(value, onSignal);
 }

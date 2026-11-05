@@ -19,7 +19,7 @@ const app = { id: '1234567890', codeGenType: 'react_project' as const };
 describe('运行时容器定义', () => {
   it('一个 App 一套标识：容器名、预览基路径与 virtual store 都由 <类型>_<id> 派生', () => {
     expect(appRuntimeKey(app)).toBe('react_project_1234567890');
-    expect(runtimeContainerName(app)).toBe('paimeng-app-runtime-react_project_1234567890');
+    expect(runtimeContainerName(app, 'run1')).toBe('paimeng-app-runtime-run1-react_project_1234567890');
     expect(runtimePreviewBase(app)).toBe('/preview/react_project_1234567890/');
     expect(runtimeVirtualStore(app)).toBe('/store/apps/react_project_1234567890/.paimeng-virtual');
   });
@@ -41,6 +41,7 @@ describe('运行时容器定义', () => {
   it('容器以宿主 uid/gid 运行、带 --init，端口只绑本机', () => {
     const args = runtimeRunArgs({
       app,
+      runId: 'run1',
       image: 'paimeng-app-runtime:abc',
       uid: 1000,
       gid: 1000,
