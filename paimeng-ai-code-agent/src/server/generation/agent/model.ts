@@ -13,11 +13,56 @@ const fixtureUsage = () => ({
 /**
  * 夹具模型只用于 PR-01 的回显场景：第一次调用返回 echo 工具，拿到工具结果后回文本。
  * 与 AI_MODE=fixture 同义，生产环境仍由配置校验拒绝。
+ * WorkflowAgent 走 doStream，所以两条路径都要给；只给 doGenerate 会报 Not implemented。
  */
 export function fixtureAgentModel(): LanguageModel {
   return new MockLanguageModelV4({
     provider: 'fixture',
     modelId: 'agent-echo',
+    doStream: async ({ prompt }) => {
+      const answered = prompt.some((message) => message.role === 'tool');
+      const parts = answered
+        ? [
+            { type: 'stream-start' as const, warnings: [] },
+            { type: 'text-start' as const, id: 'fixture-text' },
+            { type: 'text-delta' as const, id: 'fixture-text', delta: 'echo: hello' },
+            { type: 'text-end' as const, id: 'fixture-text' },
+            {
+              type: 'finish' as const,
+              finishReason: { unified: 'stop' as const, raw: 'stop' },
+              usage: fixtureUsage(),
+            },
+          ]
+        : [
+            { type: 'stream-start' as const, warnings: [] },
+            { type: 'tool-input-start' as const, id: 'echo-1', toolName: 'echo' },
+            {
+              type: 'tool-input-delta' as const,
+              id: 'echo-1',
+              delta: JSON.stringify({ text: 'hello' }),
+            },
+            { type: 'tool-input-end' as const, id: 'echo-1' },
+            {
+              type: 'tool-call' as const,
+              toolCallId: 'echo-1',
+              toolName: 'echo',
+              input: JSON.stringify({ text: 'hello' }),
+            },
+            {
+              type: 'finish' as const,
+              finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
+              usage: fixtureUsage(),
+            },
+          ];
+      return {
+        stream: new ReadableStream({
+          start(controller) {
+            for (const part of parts) controller.enqueue(part);
+            controller.close();
+          },
+        }),
+      };
+    },
     doGenerate: async ({ prompt }) => {
       const answered = prompt.some((message) => message.role === 'tool');
       if (!answered)

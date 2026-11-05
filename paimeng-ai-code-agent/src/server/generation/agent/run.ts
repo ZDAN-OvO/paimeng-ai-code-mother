@@ -5,6 +5,7 @@ import { start } from 'workflow/api';
 import { db, now } from '../../infra/db';
 import { generationInputs, generations } from '../../infra/schema';
 import { agentWorkflow } from './loop';
+import { openRun } from './run-store';
 import { ensureConversation } from './transcript';
 import { assertAgentWorldEnv } from './world';
 
@@ -55,6 +56,13 @@ export async function startEchoRun(input: {
   const run = await start(agentWorkflow, [
     { appId: input.appId, generationId, conversationId: conversationId.toString() },
   ]);
+  // 运行记录在接口返回前落库，调用方拿到 runId 立刻查不会 404；第一个 step 里的写入是幂等兜底。
+  await openRun({
+    runId: run.runId,
+    appId: input.appId,
+    generationId,
+    conversationId: conversationId.toString(),
+  });
   await db()
     .update(generationInputs)
     .set({ runId: run.runId, updateTime: now() })
