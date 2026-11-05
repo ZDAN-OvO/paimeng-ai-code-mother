@@ -81,8 +81,9 @@ export const appRuntimes = pgTable(
   'app_runtime',
   {
     appId: bigint('app_id', { mode: 'bigint' })
-      .primaryKey()
+      .notNull()
       .references(() => apps.id, { onDelete: 'cascade' }),
+    runId: varchar('run_id', { length: 16 }).notNull(),
     containerId: varchar('container_id', { length: 64 }).notNull(),
     containerName: varchar('container_name', { length: 128 }).notNull(),
     port: integer('port').notNull(),
@@ -95,6 +96,7 @@ export const appRuntimes = pgTable(
     ...times,
   },
   (t) => [
+    primaryKey({ columns: [t.appId, t.runId] }),
     uniqueIndex('uk_app_runtime_container').on(t.containerName),
     index('idx_app_runtime_activity').on(t.lastActivityAt),
     index('idx_app_runtime_status').on(t.status),

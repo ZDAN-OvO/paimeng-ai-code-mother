@@ -4,7 +4,8 @@
 -- 时间列与其它表一致：UTC 朴素时间戳 TIMESTAMP(3)。
 
 CREATE TABLE app_runtime (
-  app_id           BIGINT PRIMARY KEY REFERENCES app(id) ON DELETE CASCADE,
+  app_id           BIGINT NOT NULL REFERENCES app(id) ON DELETE CASCADE,
+  run_id           VARCHAR(16) NOT NULL,
   container_id     VARCHAR(64) NOT NULL,
   container_name   VARCHAR(128) NOT NULL,
   port             INTEGER NOT NULL CHECK (port > 0 AND port <= 65535),
@@ -15,7 +16,8 @@ CREATE TABLE app_runtime (
   last_error       VARCHAR(1000),
   last_activity_at TIMESTAMP(3) NOT NULL,
   create_time      TIMESTAMP(3) NOT NULL,
-  update_time      TIMESTAMP(3) NOT NULL
+  update_time      TIMESTAMP(3) NOT NULL,
+  PRIMARY KEY (app_id, run_id)
 );
 
 CREATE UNIQUE INDEX uk_app_runtime_container ON app_runtime (container_name);

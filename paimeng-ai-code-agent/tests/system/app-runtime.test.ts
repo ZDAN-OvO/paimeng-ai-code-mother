@@ -293,6 +293,7 @@ describe('App runtime 执行环境', () => {
       workspaceRoot: first.root,
       container: nameA,
       imageIdentity: image.identity,
+      storeRoot,
       timeoutMs: 300_000,
     });
     expect(installedA.installed).toBe(true);
@@ -317,6 +318,7 @@ describe('App runtime 执行环境', () => {
       workspaceRoot: second.root,
       container: nameB,
       imageIdentity: image.identity,
+      storeRoot,
       timeoutMs: 300_000,
     });
     expect(installedB.installed).toBe(true);
@@ -420,12 +422,30 @@ describe('App runtime 执行环境', () => {
     expect(result.stable).toBe(true);
   }, 300_000);
 
+  it('对账不碰刚开始创建、还没有容器的预留行', async () => {
+    const fixture = await newProject(await newAppRow());
+    await saveAppRuntime(fixture.app, config.appRuntime.runId, {
+      containerId: '',
+      containerName: runtimeContainerName(fixture.app, config.appRuntime.runId),
+      port: RUNTIME_DEV_PORT,
+      imageIdentity: 'image@sha',
+      workspaceRoot: fixture.root,
+      status: 'starting',
+      lockDigest: null,
+      lastError: null,
+    });
+
+    const outcome = await reconcileRuntime();
+    expect(outcome.stopped).not.toContain(fixture.app.id);
+    expect((await readAppRuntime(fixture.app, config.appRuntime.runId))?.status).toBe('starting');
+  }, 120_000);
+
   it('容器被 kill 后对账把台账标成 stopped，并清掉 exited 容器', async () => {
     const fixture = await newProject(await newAppRow());
     const image = await prepareRuntimeImage();
     const name = await startContainer(fixture, image, { init: true });
     const state = await containerState(name, RUNTIME_DEV_PORT);
-    await saveAppRuntime(fixture.app, {
+    await saveAppRuntime(fixture.app, config.appRuntime.runId, {
       containerId: state.id!,
       containerName: name,
       port: state.port ?? RUNTIME_DEV_PORT,
@@ -442,6 +462,6 @@ describe('App runtime 执行环境', () => {
     record('reconcileStopped', outcome.stopped);
     expect(outcome.skipped).not.toBe(true);
     expect(outcome.stopped).toContain(fixture.app.id);
-    expect((await readAppRuntime(fixture.app))?.status).toBe('stopped');
+    expect((await readAppRuntime(fixture.app, config.appRuntime.runId))?.status).toBe('stopped');
   }, 300_000);
 });

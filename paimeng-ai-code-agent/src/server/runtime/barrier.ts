@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { runInRuntime } from './commands';
-import { RUNTIME_KEEPALIVE_PID_FILE } from './plan';
+import { RUNTIME_KEEPALIVE } from './plan';
 
 /**
  * 停止屏障：把容器里不属于平台保活进程的进程先冻结再杀掉，然后确认源码在观察窗口内不再变化。
@@ -16,7 +16,18 @@ import { RUNTIME_KEEPALIVE_PID_FILE } from './plan';
 
 const preamble = `
 self=$$
-main=$(cat ${RUNTIME_KEEPALIVE_PID_FILE} 2>/dev/null)
+# 容器主进程是 PID 1 的最小 pid 子进程：它先于任何 App 代码创建，pid 由内核单调分配，
+# 容器里的代码无法让自己排到它前面。App 留下的孤儿会比它晚创建，pids 都更大。
+main=""
+for status in /proc/[0-9]*/status; do
+  pid=\${status#/proc/}; pid=\${pid%/status}
+  [ "$pid" = "$self" ] && continue
+  ppid=$(awk '/^PPid:/{print $2}' "$status")
+  [ "$ppid" = 1 ] || continue
+  cmd=$(tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null)
+  case "$cmd" in *"${RUNTIME_KEEPALIVE}"*) ;; *) continue ;; esac
+  if [ -z "$main" ] || [ "$pid" -lt "$main" ]; then main=$pid; fi
+done
 keep="$main"
 for status in /proc/[0-9]*/status; do
   pid=\${status#/proc/}; pid=\${pid%/status}

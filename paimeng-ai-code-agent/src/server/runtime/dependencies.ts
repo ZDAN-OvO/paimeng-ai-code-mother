@@ -1,8 +1,13 @@
 import 'server-only';
 import { createHash } from 'node:crypto';
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { lstat, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { assertNoNpmrc, assertRegistryDependencies, DependencySourceError } from './dependency-policy';
+import {
+  assertNoNpmrc,
+  assertNoWorkspaceFile,
+  assertRegistryDependencies,
+  DependencySourceError,
+} from './dependency-policy';
 import { getConfig } from '../infra/config';
 import { runInRuntime, type CommandResult } from './commands';
 import { installCommand, runtimeVirtualStore, RUNTIME_WORKDIR, type RuntimeApp } from './plan';
@@ -49,31 +54,68 @@ export async function lockfileDigest(root: string, manager: PackageManager): Pro
   }
 }
 
-export type DependencyPair = { imageIdentity: string; lockDigest: string | null };
+/**
+ * 安装标记：镜像、锁文件与共享 store 三者都一致才复用。
+ * store 也必须进标记：换一轮 run 后 store 是空的，旧 node_modules 里的链接会全部悬空。
+ */
+export type DependencyPair = {
+  imageIdentity: string;
+  lockDigest: string | null;
+  storeRoot: string;
+};
 
-/** 安装标记：镜像与锁文件都一致才复用，任何一个变了都必须重装。 */
+const markerName = '.paimeng-dependencies.json';
+
 export async function readInstallMarker(root: string): Promise<DependencyPair | null> {
+  const path = join(root, markerName);
   try {
-    const raw = await readFile(join(root, '.paimeng-dependencies.json'), 'utf8');
+    const info = await lstat(path);
+    // 软链接不是平台写的标记：拒绝跟随，避免本轮安装把 Workspace 外的文件当成标记。
+    if (!info.isFile()) return null;
+    const raw = await readFile(path, 'utf8');
     const parsed = JSON.parse(raw) as Partial<DependencyPair>;
-    if (typeof parsed.imageIdentity !== 'string') return null;
-    return { imageIdentity: parsed.imageIdentity, lockDigest: parsed.lockDigest ?? null };
+    if (typeof parsed.imageIdentity !== 'string' || typeof parsed.storeRoot !== 'string') return null;
+    return {
+      imageIdentity: parsed.imageIdentity,
+      lockDigest: parsed.lockDigest ?? null,
+      storeRoot: parsed.storeRoot,
+    };
   } catch {
     return null;
   }
 }
 
 export async function writeInstallMarker(root: string, pair: DependencyPair): Promise<void> {
-  await writeFile(join(root, '.paimeng-dependencies.json'), JSON.stringify(pair));
+  const path = join(root, markerName);
+  const existing = await lstat(path).catch(() => null);
+  if (existing && !existing.isFile()) {
+    throw new DependencySourceError('依赖来源不被允许：Workspace 里的安装标记不是普通文件，拒绝写入');
+  }
+  // 先写临时文件再 rename：原子替换，且不会跟随 Workspace 里预置的软链接写到目录外。
+  const temp = join(root, `${markerName}.${process.pid}.tmp`);
+  await writeFile(temp, JSON.stringify(pair), { flag: 'wx' });
+  await rename(temp, path);
 }
 
-/** 工程里出现 `.npmrc`，或清单/锁文件指向 registry 之外，一律在安装前拒绝。 */
+/** 工程里出现 `.npmrc` / `pnpm-workspace.yaml`，或清单/锁文件指向 registry 之外，一律在安装前拒绝。 */
 export async function assertDependencySources(root: string): Promise<void> {
   const present = await stat(join(root, '.npmrc')).then(
     () => ['.npmrc'],
     () => [],
   );
   assertNoNpmrc(present);
+  const workspaceFiles: string[] = [];
+  for (const workspaceFile of ['pnpm-workspace.yaml', 'pnpm-workspace.yml']) {
+    if (
+      await stat(join(root, workspaceFile)).then(
+        () => true,
+        () => false,
+      )
+    ) {
+      workspaceFiles.push(workspaceFile);
+    }
+  }
+  assertNoWorkspaceFile(workspaceFiles);
   const manifest = await readFile(join(root, 'package.json'), 'utf8');
   const manager = (await detectPackageManager(root)) ?? 'pnpm';
   const lock = await readFile(join(root, lockfiles[manager]), 'utf8').catch(() => null);
@@ -96,19 +138,38 @@ export async function ensureDependencies(input: {
   workspaceRoot: string;
   container: string;
   imageIdentity: string;
+  storeRoot: string;
   timeoutMs: number;
 }): Promise<InstallResult & { pair: DependencyPair }> {
   const manager = await detectPackageManager(input.workspaceRoot);
   const digest = manager ? await lockfileDigest(input.workspaceRoot, manager) : null;
-  const pair: DependencyPair = { imageIdentity: input.imageIdentity, lockDigest: digest };
+  const pair: DependencyPair = {
+    imageIdentity: input.imageIdentity,
+    lockDigest: digest,
+    storeRoot: input.storeRoot,
+  };
   if (!manager) return { installed: false, command: [], pair };
 
   const marker = await readInstallMarker(input.workspaceRoot);
-  if (marker && marker.imageIdentity === pair.imageIdentity && marker.lockDigest === pair.lockDigest) {
-    // node_modules 的条目在宿主上是相对符号链接，只有容器里能确认真实存在。
+  if (marker && marker.storeRoot !== pair.storeRoot) {
+    // 换了一轮 store：旧的 node_modules 条目都指向已经不存在的 virtual store，先清掉再装。
+    await rm(join(input.workspaceRoot, 'node_modules'), { recursive: true, force: true });
+  }
+  if (
+    marker &&
+    marker.imageIdentity === pair.imageIdentity &&
+    marker.lockDigest === pair.lockDigest &&
+    marker.storeRoot === pair.storeRoot
+  ) {
+    // node_modules 的条目在宿主上是相对符号链接，只有容器里能确认真实存在；
+    // 包里还必须留着包管理器自己的布局文件，否则只是同名空目录。
     const probe = await runInRuntime({
       container: input.container,
-      command: ['test', '-d', 'node_modules'],
+      command: [
+        'sh',
+        '-lc',
+        'test -d node_modules && { test -e node_modules/.modules.yaml || test -e node_modules/.package-lock.json; }',
+      ],
       timeoutMs: 20_000,
     });
     if (probe.exitCode === 0) return { installed: false, command: [], pair };

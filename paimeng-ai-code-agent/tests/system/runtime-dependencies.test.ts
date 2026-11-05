@@ -13,6 +13,7 @@ import {
   runtimeVirtualStore,
 } from '@/server/runtime/plan';
 import { docker, removeContainer } from '@/server/runtime/container';
+import { runInRuntime } from '@/server/runtime/commands';
 import {
   buildProject,
   ensureDependencies,
@@ -35,6 +36,8 @@ const storeRoot = runtimeStorePath(config.runtimeRoot, config.appRuntime.runId);
 const app = { id: `dep-${randomUUID().slice(0, 8)}`, codeGenType: 'react_project' as const };
 const root = join(config.runtimeRoot, 'code_output', appRuntimeKey(app));
 let container = '';
+let altContainer = '';
+let altStore = '';
 
 beforeAll(async () => {
   const version = await docker(['version', '--format', '{{.Server.Version}}'], 10_000).catch(
@@ -98,6 +101,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (container) await removeContainer(container);
+  if (altContainer) await removeContainer(altContainer);
+  if (altStore) await rm(altStore, { recursive: true, force: true });
   await rm(root, { recursive: true, force: true });
 }, 120_000);
 
@@ -110,6 +115,7 @@ describe('统一依赖核心', () => {
         workspaceRoot: root,
         container,
         imageIdentity: image.identity,
+        storeRoot,
         timeoutMs: 300_000,
       });
 
@@ -137,10 +143,49 @@ describe('统一依赖核心', () => {
       workspaceRoot: root,
       container,
       imageIdentity: `${image.identity}-rebuilt`,
+      storeRoot,
       timeoutMs: 300_000,
     });
     expect(afterImageChange.installed).toBe(true);
     expect((await readInstallMarker(root))?.imageIdentity).toBe(`${image.identity}-rebuilt`);
+  }, 600_000);
+
+  it('换一轮空 store 时按标记重装：node_modules 里的链接重新接上，不再复用悬空安装', async () => {
+    const image = await prepareRuntimeImage();
+    altStore = `${storeRoot}-alt-${Date.now()}`;
+    await mkdir(altStore, { recursive: true });
+    altContainer = `${runtimeContainerName(app, config.appRuntime.runId)}-alt`;
+    const { uid, gid } = await stat(root);
+    await removeContainer(altContainer);
+    const args = runtimeRunArgs({
+      app,
+      runId: config.appRuntime.runId,
+      image: image.tag,
+      uid,
+      gid,
+      mounts: runtimeMounts({ workspaceRoot: root, storeRoot: altStore }),
+      registry: config.buildNpmRegistry,
+      virtualStore: runtimeVirtualStore(app),
+    });
+    args[args.indexOf('--name') + 1] = altContainer;
+    await docker(args, 120_000);
+
+    const reinstalled = await ensureDependencies({
+      app,
+      workspaceRoot: root,
+      container: altContainer,
+      imageIdentity: image.identity,
+      storeRoot: altStore,
+      timeoutMs: 300_000,
+    });
+    expect(reinstalled.installed).toBe(true);
+    const linked = await runInRuntime({
+      container: altContainer,
+      command: ['test', '-e', 'node_modules/typescript/package.json'],
+      workdir: '/work',
+      timeoutMs: 20_000,
+    });
+    expect(linked.exitCode, linked.output).toBe(0);
   }, 600_000);
 
   it('类型检查与构建走同一容器执行路径：合法源码通过，类型错误可辨认，构建产物落在 Workspace', async () => {

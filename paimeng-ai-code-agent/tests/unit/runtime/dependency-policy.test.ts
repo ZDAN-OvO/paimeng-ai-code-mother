@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assertRegistryDependencies } from '@/server/runtime/dependency-policy';
+import { assertNoWorkspaceFile, assertRegistryDependencies } from '@/server/runtime/dependency-policy';
 
 function manifest(extra: Record<string, unknown> = {}, sections: Record<string, Record<string, string>> = {}) {
   return JSON.stringify({
@@ -94,6 +94,12 @@ describe('依赖来源策略：package.json 只接受 registry 包名与版本�
     expect(() => assertRegistryDependencies({ manifest: manifest(), lockfile: escaped })).toThrow(
       /依赖来源不被允许/,
     );
+  });
+
+  it('pnpm-workspace.yaml 能在清单之外改写来源，直接拒绝', () => {
+    expect(() => assertNoWorkspaceFile(['pnpm-workspace.yaml'])).toThrow(/依赖来源不被允许/);
+    expect(() => assertNoWorkspaceFile(['sub/pnpm-workspace.yml'])).toThrow(/依赖来源不被允许/);
+    expect(() => assertNoWorkspaceFile(['package.json'])).not.toThrow();
   });
 
   it('npm 的 package-lock.json 只接受 registry 解析；link 与本地地址拒绝', () => {

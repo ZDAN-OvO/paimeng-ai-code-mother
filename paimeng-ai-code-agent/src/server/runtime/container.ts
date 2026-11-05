@@ -89,9 +89,17 @@ export async function removeContainer(ref: string): Promise<void> {
   await docker(['rm', '-f', ref], 30_000).catch(() => undefined);
 }
 
-/** 必须成功才释放槽位的删除：容量回收只有在容器真的没了之后才能把行标成 stopped。 */
+/**
+ * 必须成功才释放槽位的删除：容量回收只有在容器真的没了之后才能把行标成 stopped。
+ * 容器已经不存在视为成功（另一个进程先一步删掉了），其它错误照常抛出。
+ */
 export async function removeContainerStrict(ref: string): Promise<void> {
-  await docker(['rm', '-f', ref], 30_000);
+  try {
+    await docker(['rm', '-f', ref], 30_000);
+  } catch (error) {
+    if (/no such container/i.test((error as Error).message)) return;
+    throw error;
+  }
 }
 
 export type ManagedContainer = { id: string; name: string; appKey: string | null; running: boolean };

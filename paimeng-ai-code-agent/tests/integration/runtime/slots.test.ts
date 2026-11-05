@@ -7,7 +7,12 @@ import { db, getPool, now } from '@/server/infra/db';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import { appAuthority, apps, users } from '@/server/infra/schema';
 import { runtimeContainerName } from '@/server/runtime/plan';
-import { claimRuntimeSlot, listRunRuntimes, saveAppRuntime } from '@/server/runtime/store';
+import {
+  claimRuntimeSlot,
+  listRunRuntimes,
+  markAppRuntimeStopped,
+  saveAppRuntime,
+} from '@/server/runtime/store';
 
 loadEnvFile('.env');
 process.env.DATABASE_URL = testDatabaseUrl(process.env.DATABASE_URL ?? '');
@@ -39,7 +44,7 @@ async function newApp(): Promise<string> {
 }
 
 async function ready(id: string, run: string, lastActivityAt: string) {
-  await saveAppRuntime(appOf(id), {
+  await saveAppRuntime(appOf(id), run, {
     containerId: `container-${id}`,
     containerName: runtimeContainerName(appOf(id), run),
     port: 49000,
@@ -104,9 +109,14 @@ describe('runtime 槽位准入', () => {
     await ready(middle, run, '2020-01-02 00:00:00.000');
     await ready(newest, run, '2020-01-03 00:00:00.000');
 
-    const claimed = await claim(await newApp(), run);
+    // 事务只给决定：先驱逐（行仍 ready），停掉容器并释放行之后才能重新领取。
+    const fourth = await newApp();
+    const evicting = await claim(fourth, run);
+    expect(evicting.claim).toBe('evict');
+    expect(evicting.evicted.map((item) => item.appId)).toEqual([oldest]);
+    await markAppRuntimeStopped(appOf(oldest), run, '为新的运行时让出槽位');
+    const claimed = await claim(fourth, run);
     expect(claimed.claim).toBe('reserved');
-    expect(claimed.evicted.map((item) => item.appId)).toEqual([oldest]);
 
     const rows = await listRunRuntimes(run, ['starting', 'ready']);
     expect(rows).toHaveLength(3);
@@ -122,9 +132,10 @@ describe('runtime 槽位准入', () => {
     await grantAuthority(protectedApp);
 
     const claimed = await claim(await newApp(), run, 2);
-    expect(claimed.claim).toBe('reserved');
+    expect(claimed.claim).toBe('evict');
     expect(claimed.evicted.map((item) => item.appId)).toEqual([disposable]);
-    expect((await listRunRuntimes(run, ['ready'])).map((row) => row.appId)).toEqual([protectedApp]);
+    // 驱逐决定不写台账：调用方停掉容器之前，两行都还在。
+    expect((await listRunRuntimes(run, ['ready'])).map((row) => row.appId)).toContain(protectedApp);
   });
 
   it('所有槽位都在写时返回 full，不驱逐任何活动写者', async () => {

@@ -36,11 +36,11 @@ export function runtimeVirtualStore(app: RuntimeApp) {
 /** dev server 在容器内的固定端口；宿主端口由 Docker 随机分配并记录。 */
 export const RUNTIME_DEV_PORT = 5173;
 /**
- * 容器的主进程（保活）。它把自己的 pid 写进容器内的 pid 文件，停止屏障按文件保留它和它的子进程；
- * 把它杀掉等于结束容器，`docker exec` 会一起被终止。按 pid 文件识别，不靠命令行签名。
+ * 容器的主进程（保活）。停止屏障保留 PID 1 的最小 pid 子进程和它的子进程；
+ * 把它杀掉等于结束容器，`docker exec` 会一起被终止。不写容器内可篡改的 pid 文件，
+ * pid 顺序由内核分配，App 代码无法让自己排到更前。
  */
-export const RUNTIME_KEEPALIVE_PID_FILE = '/tmp/paimeng-keep.pid';
-export const RUNTIME_KEEPALIVE = `echo $$ > ${RUNTIME_KEEPALIVE_PID_FILE}; trap "" TERM; while :; do sleep 3600; done`;
+export const RUNTIME_KEEPALIVE = 'while :; do sleep 3600; done';
 /** 容器名前缀；supervisor 对账与测试都按它识别「本平台的运行时容器」。 */
 export const RUNTIME_CONTAINER_PREFIX = 'paimeng-app-runtime-';
 /** 平台在容器里跑 dev server 的日志文件；`.paimeng-` 前缀让它不进版本、文件工具也读不到。 */

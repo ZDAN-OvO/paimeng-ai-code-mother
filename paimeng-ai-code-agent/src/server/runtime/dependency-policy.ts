@@ -259,6 +259,16 @@ export function assertRegistryDependencies(input: {
   }
 }
 
+/** pnpm-workspace.yaml 能在清单之外改写依赖来源（overrides/catalog），一律拒绝。 */
+export function assertNoWorkspaceFile(paths: readonly string[]) {
+  const hit = paths.find((path) => /(^|\/)pnpm-workspace\.ya?ml$/.test(path));
+  if (hit) {
+    throw new DependencySourceError(
+      `依赖来源不被允许：工程里有 ${hit}，它能在清单之外改写依赖来源；模板工程不支持 workspace 覆盖。`,
+    );
+  }
+}
+
 /** 工程里出现 .npmrc 一律拒绝：它能把 registry、认证与脚本行为指向 platform 之外。 */
 export function assertNoNpmrc(paths: readonly string[]) {
   if (paths.some(path => path === '.npmrc' || path.endsWith('/.npmrc'))) {
