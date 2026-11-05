@@ -11,7 +11,7 @@ CREATE TABLE app_runtime (
   port             INTEGER NOT NULL CHECK (port > 0 AND port <= 65535),
   image_identity   VARCHAR(256) NOT NULL,
   workspace_root   TEXT NOT NULL,
-  status           VARCHAR(16) NOT NULL CHECK (status IN ('starting', 'ready', 'failed', 'stopped')),
+  status           VARCHAR(16) NOT NULL CHECK (status IN ('starting', 'ready', 'stopping', 'failed', 'stopped')),
   lock_digest      CHAR(64),
   last_error       VARCHAR(1000),
   last_activity_at TIMESTAMP(3) NOT NULL,

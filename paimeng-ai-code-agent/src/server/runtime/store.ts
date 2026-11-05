@@ -14,6 +14,8 @@ import { runtimeTimeMs } from './capacity';
  * 这张表只记录容器标识、dev server 端口、挂载的源码根、镜像身份与最后活动时间。
  */
 
+export const ACTIVE_RUNTIME_STATUSES = ['starting', 'ready', 'stopping'] as const;
+
 export type AppRuntimeRecord = {
   appId: string;
   runId: string;
@@ -221,11 +223,14 @@ export async function claimRuntimeSlot(input: {
       .where(
         and(
           eq(appRuntimes.runId, input.runId),
-          inArray(appRuntimes.status, ['starting', 'ready']),
+          inArray(appRuntimes.status, [...ACTIVE_RUNTIME_STATUSES]),
         ),
       );
     const own = rows.find((row) => row.appId === appId);
-    if (own && own.status === 'starting' && Date.now() - runtimeTimeMs(own.updateTime) < input.staleMs) {
+    if (own && own.status !== 'ready') {
+      return { claim: 'busy' as const, evicted: [] };
+    }
+    if (own && Date.now() - runtimeTimeMs(own.updateTime) < input.staleMs && own.status === 'starting') {
       return { claim: 'busy' as const, evicted: [] };
     }
     const others = rows.filter((row) => row.appId !== appId);
@@ -252,15 +257,30 @@ export async function claimRuntimeSlot(input: {
           )
           .map((row) => String(row.appId)),
       );
-      const victims = others
+      const chosen = others
         .filter((row) => row.status === 'ready' && !privileged.has(String(row.appId)))
         .sort((left, right) => runtimeTimeMs(left.lastActivityAt) - runtimeTimeMs(right.lastActivityAt))
-        .slice(0, others.length + 1 - input.maxSlots)
-        .map((row) => ({ appId: String(row.appId), containerId: row.containerId }));
-      if (victims.length < others.length + 1 - input.maxSlots) {
+        .slice(0, others.length + 1 - input.maxSlots);
+      if (chosen.length < others.length + 1 - input.maxSlots) {
         return { claim: 'full' as const, evicted: [] };
       }
-      return { claim: 'evict' as const, evicted: victims };
+      // 先把行标成 stopping 并提交：acquireAuthority 在同一事务里会查到这个状态，拒绝新的写权限。
+      for (const victim of chosen) {
+        await tx
+          .update(appRuntimes)
+          .set({ status: 'stopping', lastError: '为新的运行时让出槽位', updateTime: at })
+          .where(
+            and(
+              eq(appRuntimes.appId, victim.appId),
+              eq(appRuntimes.runId, input.runId),
+              eq(appRuntimes.status, 'ready'),
+            ),
+          );
+      }
+      return {
+        claim: 'evict' as const,
+        evicted: chosen.map((row) => ({ appId: String(row.appId), containerId: row.containerId })),
+      };
     }
     await tx
       .insert(appRuntimes)
@@ -309,6 +329,25 @@ export async function markAppRuntimeStopped(
   const [row] = await db()
     .update(appRuntimes)
     .set({ status: 'stopped', lastError: error.slice(0, 1000), updateTime: now() })
+    .where(
+      and(
+        eq(appRuntimes.appId, appIdOf(app)),
+        eq(appRuntimes.runId, runId),
+        inArray(appRuntimes.status, [...ACTIVE_RUNTIME_STATUSES]),
+      ),
+    )
+    .returning({ containerId: appRuntimes.containerId });
+  return row?.containerId ?? null;
+}
+
+/**
+ * 容量回收的第一阶段：把行推进到 stopping。stopping 仍计入槽位，且会让 acquireAuthority 拒绝新的写权限；
+ * 容器真的删掉之后才调 markAppRuntimeStopped。
+ */
+export async function beginRuntimeStop(app: RuntimeApp, runId: string, error: string): Promise<string | null> {
+  const [row] = await db()
+    .update(appRuntimes)
+    .set({ status: 'stopping', lastError: error.slice(0, 1000), updateTime: now() })
     .where(
       and(
         eq(appRuntimes.appId, appIdOf(app)),

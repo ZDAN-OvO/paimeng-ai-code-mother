@@ -7,6 +7,7 @@ import { BusinessError } from '../infra/http';
 import {
   appAuthority,
   appDeployments,
+  appRuntimes,
   apps,
   generationAttempts,
   generationExecutions,
@@ -380,6 +381,13 @@ export async function acquireAuthority(acquire: {
       .limit(1)
       .for('update');
     if (deployment) throw new BusinessError(409, 40900, '应用正在部署，请稍后重试');
+    // 正在回收 runtime 的 App 不接受新写权限：回收事务已提交 stopping，这里在同一把 authority 行锁之后可见。
+    const [stopping] = await tx
+      .select({ appId: appRuntimes.appId })
+      .from(appRuntimes)
+      .where(and(eq(appRuntimes.appId, app.id), eq(appRuntimes.status, 'stopping')))
+      .limit(1);
+    if (stopping) throw new BusinessError(409, 40900, '应用运行时正在回收，请稍后重试');
 
     // 全局并发是准入事实，不是 per-app 事实：advisory lock 让多个 app 的 acquire 串行比较。
     await tx.execute(sql`select pg_advisory_xact_lock(0x67656e61646d6974)`);

@@ -269,6 +269,16 @@ export function assertNoWorkspaceFile(paths: readonly string[]) {
   }
 }
 
+/** pnpm 的 hook 文件能在来源检查之后改写依赖，一律拒绝。 */
+export function assertNoPnpmHook(paths: readonly string[]) {
+  const hit = paths.find((path) => /(^|\/)\.pnpmfile\.(?:c|m)?js$/.test(path));
+  if (hit) {
+    throw new DependencySourceError(
+      `依赖来源不被允许：工程里有 ${hit}，它能在来源检查之后改写依赖；请删除这个文件。`,
+    );
+  }
+}
+
 /** 工程里出现 .npmrc 一律拒绝：它能把 registry、认证与脚本行为指向 platform 之外。 */
 export function assertNoNpmrc(paths: readonly string[]) {
   if (paths.some(path => path === '.npmrc' || path.endsWith('/.npmrc'))) {

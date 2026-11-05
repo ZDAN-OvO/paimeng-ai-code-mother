@@ -53,8 +53,9 @@ process.env.RUNTIME_RUN_ID ??= `sys-${randomUUID().slice(0, 8)}`;
 const config = getConfig();
 const storeRoot = runtimeStorePath(config.runtimeRoot, config.appRuntime.runId);
 /** `runtimeVirtualStore()` 返回容器内路径；宿主上的同一目录在 store 挂载源下面。 */
-const virtualStoreOnHost = (app: { id: string; codeGenType: 'react_project' }) =>
-  join(storeRoot, 'apps', appRuntimeKey(app), '.paimeng-virtual');
+const virtualStoreOnHost = (app: { id: string; codeGenType: 'react_project' }, store = storeRoot) =>
+  join(store, 'apps', appRuntimeKey(app), '.paimeng-virtual');
+const extraStores: string[] = [];
 const containers: string[] = [];
 const workspaces: string[] = [];
 let userId: bigint;
@@ -109,6 +110,7 @@ async function startContainer(
   fixture: Fixture,
   image: { tag: string },
   options: { init: boolean },
+  store = storeRoot,
 ) {
   const name = runtimeContainerName(fixture.app, config.appRuntime.runId);
   const { uid, gid } = await stat(fixture.root);
@@ -118,7 +120,7 @@ async function startContainer(
     image: image.tag,
     uid,
     gid,
-    mounts: runtimeMounts({ workspaceRoot: fixture.root, storeRoot }),
+    mounts: runtimeMounts({ workspaceRoot: fixture.root, storeRoot: store }),
     registry: config.buildNpmRegistry,
     virtualStore: runtimeVirtualStore(fixture.app),
   });
@@ -219,6 +221,7 @@ afterAll(async () => {
   }
   for (const container of containers) await removeContainer(container);
   for (const root of workspaces) await rm(root, { recursive: true, force: true });
+  for (const store of extraStores) await rm(store, { recursive: true, force: true });
   for (const appId of appIds) await db().delete(apps).where(eq(apps.id, appId));
   if (userId) await db().delete(users).where(eq(users.id, userId));
   await getPool().end();
@@ -258,6 +261,20 @@ describe('App runtime 执行环境', () => {
     expect((await stat(file)).uid).toBe((await stat(fixture.root)).uid);
     await rm(file);
 
+    // 环境与挂载只允许白名单内容：平台密钥不能以任何名字进容器。
+    process.env.PAIMENG_TEST_SENTINEL = 'sentinel-value-should-not-leak';
+    const environment = JSON.parse(
+      await docker(['inspect', '--format', '{{json .Config.Env}}', name], 20_000),
+    ) as string[];
+    const joined = environment.join('\n');
+    expect(joined).not.toMatch(
+      /PAIMENG_TEST_SENTINEL|sentinel-value-should-not-leak|DATABASE_URL|REDIS/,
+    );
+    const mounts = JSON.parse(
+      await docker(['inspect', '--format', '{{json .Mounts}}', name], 20_000),
+    ) as { Destination: string }[];
+    expect(mounts.map((mount) => mount.Destination).sort()).toEqual(['/store', '/work']);
+
     const managed = await listManagedContainers(config.appRuntime.runId);
     expect(managed.map((item) => item.name)).toContain(name);
 
@@ -270,7 +287,11 @@ describe('App runtime 执行环境', () => {
   it('两个 App 装同一个包：包文件同 inode，第二个 App 的磁盘增量不超过首份的 20%', async () => {
     const image = await prepareRuntimeImage();
     const first = await newProject(await newAppRow());
-    const nameA = await startContainer(first, image, { init: true });
+    // 冷安装必须在空 store 上计时：本用例独占一份新 store，不复用前面测试的安装。
+    const coldStore = `${storeRoot}-cold-${Date.now()}`;
+    await mkdir(coldStore, { recursive: true });
+    extraStores.push(coldStore);
+    const nameA = await startContainer(first, image, { init: true }, coldStore);
     const lockOnly = (fixture: Fixture) => [
       'pnpm',
       'install',
@@ -293,18 +314,18 @@ describe('App runtime 执行环境', () => {
       workspaceRoot: first.root,
       container: nameA,
       imageIdentity: image.identity,
-      storeRoot,
+      storeRoot: coldStore,
       timeoutMs: 300_000,
     });
     expect(installedA.installed).toBe(true);
     record('installFirstMs', Date.now() - firstStarted);
 
-    const storeBefore = await directorySize(storeRoot);
+    const storeBefore = await directorySize(coldStore);
     record('storeFirstBytes', storeBefore);
     record('workspaceBytes', await directorySize(first.root));
 
     const second = await newProject(await newAppRow());
-    const nameB = await startContainer(second, image, { init: true });
+    const nameB = await startContainer(second, image, { init: true }, coldStore);
     const secondStarted = Date.now();
     const generatedB = await runInRuntime({
       container: nameB,
@@ -318,14 +339,14 @@ describe('App runtime 执行环境', () => {
       workspaceRoot: second.root,
       container: nameB,
       imageIdentity: image.identity,
-      storeRoot,
+      storeRoot: coldStore,
       timeoutMs: 300_000,
     });
     expect(installedB.installed).toBe(true);
     record('installSecondMs', Date.now() - secondStarted);
 
-    const fileA = await findPackageFile(virtualStoreOnHost(first.app), 'dayjs');
-    const fileB = await findPackageFile(virtualStoreOnHost(second.app), 'dayjs');
+    const fileA = await findPackageFile(virtualStoreOnHost(first.app, coldStore), 'dayjs');
+    const fileB = await findPackageFile(virtualStoreOnHost(second.app, coldStore), 'dayjs');
     expect(fileA, '第一个 App 的 dayjs 必须落在 virtual store 里').not.toBeNull();
     expect(fileB, '第二个 App 的 dayjs 必须落在 virtual store 里').not.toBeNull();
     const statA = await stat(fileA!);
@@ -335,8 +356,8 @@ describe('App runtime 执行环境', () => {
     expect(statA.nlink).toBeGreaterThanOrEqual(2);
 
     // 第二份安装只追加自己的虚拟 store 条目；20% 上限是计划给出的预算。
-    const storeAfter = await directorySize(storeRoot);
-    const firstShare = await directorySize(join(storeRoot, 'apps', appRuntimeKey(first.app)));
+    const storeAfter = await directorySize(coldStore);
+    const firstShare = await directorySize(join(coldStore, 'apps', appRuntimeKey(first.app)));
     const incremental = storeAfter - storeBefore;
     record('storeIncrementalBytes', incremental);
     // 计划的上限是严格 20%，没有给小工程的兜底；用实际分配块，不用 apparent size。
@@ -403,6 +424,12 @@ describe('App runtime 执行环境', () => {
       timeoutMs: 30_000,
     });
     expect(spawned.exitCode, spawned.output).toBe(0);
+    // 登录启动脚本是屏障的经典绕过点：HOME 在容器里可写，sh -lc 会执行 /tmp/.profile。
+    await runInRuntime({
+      container: name,
+      command: ['sh', '-c', "printf 'echo KILLED=0\necho COUNTS=0 0\nexit 0\n' > /tmp/.profile"],
+      timeoutMs: 20_000,
+    });
     await new Promise((done) => setTimeout(done, 1200));
 
     const result = await stopRuntimeWriters({

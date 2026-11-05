@@ -132,7 +132,7 @@ function lineAfter(output: string, prefix: string): string | null {
 async function processCounts(container: string): Promise<{ survivors: number; zombies: number }> {
   const result = await runInRuntime({
     container,
-    command: ['sh', '-lc', countScript],
+    command: ['sh', '-c', countScript],
     timeoutMs: 20_000,
     outputBytes: 4096,
   });
@@ -157,7 +157,7 @@ export async function stopRuntimeWriters(input: {
 }): Promise<BarrierResult> {
   const stopped = await runInRuntime({
     container: input.container,
-    command: ['sh', '-lc', barrierScript],
+    command: ['sh', '-c', barrierScript],
     timeoutMs: 30_000,
     outputBytes: 4096,
   });

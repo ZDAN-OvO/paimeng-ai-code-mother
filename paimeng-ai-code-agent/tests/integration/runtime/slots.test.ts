@@ -7,6 +7,7 @@ import { db, getPool, now } from '@/server/infra/db';
 import { nextSnowflakeId } from '@/server/infra/snowflake';
 import { appAuthority, apps, users } from '@/server/infra/schema';
 import { runtimeContainerName } from '@/server/runtime/plan';
+import { acquireAuthority } from '@/server/generation/control-store';
 import {
   claimRuntimeSlot,
   listRunRuntimes,
@@ -158,6 +159,17 @@ describe('runtime 槽位准入', () => {
     const fresh = await newApp();
     const results = await Promise.all([claim(fresh, run), claim(fresh, run)]);
     expect(results.map((item) => item.claim).sort()).toEqual(['busy', 'reserved']);
+  });
+
+  it('正在回收的 runtime 挡住新的写权限', async () => {
+    const run = runId();
+    const app = await newApp();
+    await ready(app, run, '2020-01-01 00:00:00.000');
+    await claim(await newApp(), run, 1);
+    // claim 已把被驱逐的行标成 stopping；此时取得写权限必须被拒绝。
+    await expect(acquireAuthority({ appId: app, generationId: '1', holder: 'slot-test', ttlMs: 30_000 })).rejects.toThrow(
+      /正在回收/,
+    );
   });
 
   it('并发领取不同 App 也不会超过槽位上限', async () => {

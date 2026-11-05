@@ -24,6 +24,8 @@ import {
 } from './plan';
 import {
   appsWithWriteAuthority,
+  ACTIVE_RUNTIME_STATUSES,
+  beginRuntimeStop,
   claimRuntimeSlot,
   deleteAppRuntime,
   listRunRuntimes,
@@ -279,9 +281,15 @@ async function ensureUnlocked(app: RuntimeApp, workspaceRoot: string): Promise<R
         await updateAppRuntime(app, runId, { lockDigest: installed.pair.lockDigest });
       } catch (error) {
         const detail = (error as Error).message.slice(0, 1000);
-        // 容器留着但台账标 failed 会让它退出槽位计数：停掉容器并删行，下一次按失败重建。
-        await removeContainer(existing.containerName);
-        await deleteAppRuntime(app, runId).catch(() => undefined);
+        // 容器留着但台账标 failed 会让它退出槽位计数：先推进 stopping 再删容器，删成功才删行。
+        await beginRuntimeStop(app, runId, '依赖重装失败').catch(() => undefined);
+        try {
+          await removeContainerStrict(existing.containerName);
+          await deleteAppRuntime(app, runId).catch(() => undefined);
+        } catch (removeProblem) {
+          await updateAppRuntime(app, runId, { status: 'ready', lastError: detail }).catch(() => undefined);
+          log(`依赖重装失败后停止容器也失败，runtime 保持占用（应用 ${app.id}）：${(removeProblem as Error).message}`);
+        }
         log(`应用 ${app.id} 的依赖重装失败，已停止 runtime：${detail}`);
         return {
           app,
@@ -352,7 +360,7 @@ async function ensureUnlocked(app: RuntimeApp, workspaceRoot: string): Promise<R
     let releasedAll = true;
     for (const victim of claim.evicted) {
       try {
-        // 行保持 ready 直到容器真的删掉：其他进程不会在删除期间看到空槽。
+        // claim 已把行标成 stopping（仍占槽位、并挡住新的写权限）；容器删掉之后才标 stopped。
         if (victim.containerId) await removeContainerStrict(victim.containerId);
         await markAppRuntimeStopped(
           { id: victim.appId, codeGenType: 'react_project' },
@@ -361,6 +369,11 @@ async function ensureUnlocked(app: RuntimeApp, workspaceRoot: string): Promise<R
         );
       } catch (problem) {
         releasedAll = false;
+        // 删除失败：把行退回 ready，否则 stopping 会一直挡住该 App 的写权限。
+        await updateAppRuntime({ id: victim.appId, codeGenType: 'react_project' }, runId, {
+          status: 'ready',
+          lastError: null,
+        }).catch(() => undefined);
         log(`驱逐 runtime 失败（应用 ${victim.appId}）：${(problem as Error).message}`);
       }
     }
@@ -522,7 +535,7 @@ export async function reconcileRuntime(): Promise<{
     log(`对账跳过：${(problem as Error).message}`);
     return { orphaned: [], stopped: [], skipped: true };
   }
-  const rows = await listRunRuntimes(config.appRuntime.runId, ['starting', 'ready']);
+  const rows = await listRunRuntimes(config.appRuntime.runId, [...ACTIVE_RUNTIME_STATUSES]);
   const known = new Map(rows.map((row) => [row.containerName, row]));
   const live = new Set(containers.filter((container) => container.running).map((container) => container.name));
   const present = new Set(containers.map((container) => container.name));
@@ -568,7 +581,7 @@ export async function reconcileRuntime(): Promise<{
 }
 
 async function capacityState(): Promise<{ records: AppRuntimeRecord[]; candidates: RuntimeCandidate[] }> {
-  const records = await listRunRuntimes(getConfig().appRuntime.runId, ['starting', 'ready']);
+  const records = await listRunRuntimes(getConfig().appRuntime.runId, [...ACTIVE_RUNTIME_STATUSES]);
   if (!records.length) return { records, candidates: [] };
   const privileged = await appsWithWriteAuthority(records.map((record) => record.appId));
   const candidates = records.map((record) => ({
@@ -585,7 +598,7 @@ async function capacityState(): Promise<{ records: AppRuntimeRecord[]; candidate
  * 名字可能被新的 runtime 复用，所以只按记录的容器 id 删。
  */
 async function stopRuntimeForCapacity(record: AppRuntimeRecord, error: string): Promise<boolean> {
-  const containerId = await markAppRuntimeStopped(
+  const containerId = await beginRuntimeStop(
     { id: record.appId, codeGenType: 'react_project' },
     record.runId,
     error,
@@ -593,8 +606,9 @@ async function stopRuntimeForCapacity(record: AppRuntimeRecord, error: string): 
   if (containerId === null) return false;
   try {
     if (containerId) await removeContainerStrict(containerId);
+    await markAppRuntimeStopped({ id: record.appId, codeGenType: 'react_project' }, record.runId, error);
   } catch (problem) {
-    await restoreAppRuntime(record).catch(() => undefined);
+    await restoreAppRuntime({ ...record, status: 'ready' }).catch(() => undefined);
     log(`停止 runtime 容器失败（应用 ${record.appId}），槽位保持占用：${(problem as Error).message}`);
     return false;
   }
@@ -642,7 +656,7 @@ export type CapacityOutcome = { reclaimed: string[]; evicted: string[]; orphaned
 /** 一次容量维护：对账 → 回收空闲 → 超限驱逐。常驻 tick 与测试共用。 */
 export async function maintainRuntimeCapacity(): Promise<CapacityOutcome> {
   // 没有 runtime 的进程不为「对账」每 5 秒跑一次 docker ps；启动时已经对过一次账。
-  const rows = await listRunRuntimes(getConfig().appRuntime.runId, ['starting', 'ready']);
+  const rows = await listRunRuntimes(getConfig().appRuntime.runId, [...ACTIVE_RUNTIME_STATUSES]);
   if (!rows.length) return { reclaimed: [], evicted: [], orphaned: [], stopped: [] };
   const reconciliation = await reconcileRuntime();
   const reclaimed = await reclaimIdleRuntimes();
@@ -680,7 +694,7 @@ export async function runtimeCapacitySnapshot(): Promise<{
   idleTimeoutMs: number;
 }> {
   const config = getConfig();
-  const rows = await listRunRuntimes(config.appRuntime.runId, ['starting', 'ready']);
+  const rows = await listRunRuntimes(config.appRuntime.runId, [...ACTIVE_RUNTIME_STATUSES]);
   return { used: rows.length, limit: config.appRuntime.maxSlots, idleTimeoutMs: config.appRuntime.idleTimeoutMs };
 }
 

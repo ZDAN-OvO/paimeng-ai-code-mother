@@ -4,6 +4,7 @@ import { lstat, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   assertNoNpmrc,
+  assertNoPnpmHook,
   assertNoWorkspaceFile,
   assertRegistryDependencies,
   DependencySourceError,
@@ -104,6 +105,19 @@ export async function assertDependencySources(root: string): Promise<void> {
     () => [],
   );
   assertNoNpmrc(present);
+  // pnpm 的 hook 能在来源检查之后改写依赖：.pnpmfile.cjs 的 readPackage 可以把 registry 声明换成本地路径。
+  const hooks: string[] = [];
+  for (const hook of ['.pnpmfile.cjs', '.pnpmfile.mjs', '.pnpmfile.js']) {
+    if (
+      await stat(join(root, hook)).then(
+        () => true,
+        () => false,
+      )
+    ) {
+      hooks.push(hook);
+    }
+  }
+  assertNoPnpmHook(hooks);
   const workspaceFiles: string[] = [];
   for (const workspaceFile of ['pnpm-workspace.yaml', 'pnpm-workspace.yml']) {
     if (

@@ -76,7 +76,7 @@ export const snowflakeState = pgTable('id_sequence', {
 // ---- App runtime（migrations/025_app_runtime.sql）----
 // 一个 App 一行：容器的持久身份、dev server 端口、挂载的源码根、镜像身份与最后活动时间。
 // 容器本身由 runtime supervisor 启停；这张表只记录「平台认为它在哪」，重启后按容器标签对账。
-export type AppRuntimeStatus = 'starting' | 'ready' | 'failed' | 'stopped';
+export type AppRuntimeStatus = 'starting' | 'ready' | 'stopping' | 'failed' | 'stopped';
 export const appRuntimes = pgTable(
   'app_runtime',
   {
