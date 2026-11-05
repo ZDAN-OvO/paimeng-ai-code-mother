@@ -91,10 +91,10 @@ export async function ensureDependencies(input: {
 
   const marker = await readInstallMarker(input.workspaceRoot);
   if (marker && marker.imageIdentity === pair.imageIdentity && marker.lockDigest === pair.lockDigest) {
-    // node_modules 的条目在宿主上是相对符号链接，只有容器里能确认真实可用。
+    // node_modules 的条目在宿主上是相对符号链接，只有容器里能确认真实存在。
     const probe = await runInRuntime({
       container: input.container,
-      command: ['test', '-x', 'node_modules/.bin/vite'],
+      command: ['test', '-d', 'node_modules'],
       timeoutMs: 20_000,
     });
     if (probe.exitCode === 0) return { installed: false, command: [], pair };
@@ -114,8 +114,13 @@ export async function ensureDependencies(input: {
   if (result.exitCode !== 0 || result.timedOut) {
     throw new DependencyInstallError(manager, result);
   }
-  await writeInstallMarker(input.workspaceRoot, pair);
-  return { installed: true, command, pair };
+  // 没有锁文件时安装会新生成一份：标记必须记下生成后的指纹，否则下一次调用永远判定为失效。
+  const installedPair: DependencyPair = {
+    ...pair,
+    lockDigest: await lockfileDigest(input.workspaceRoot, manager),
+  };
+  await writeInstallMarker(input.workspaceRoot, installedPair);
+  return { installed: true, command, pair: installedPair };
 }
 
 export class DependencyInstallError extends Error {
