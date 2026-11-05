@@ -1,7 +1,7 @@
 # 用 Vercel AI SDK 替换 pi-durable 的重构计划
 
 把生成执行从 `@earendil-works/pi-durable` 1.4.0 换到 AI SDK 7 加 Workflow DevKit。产品控制面保持不变，包括 authority、输入水位、预算、写门禁、构建、发布和计费。
-范围覆盖新执行引擎、工具迁移、上下文压缩、流式与历史、崩溃恢复、人机追问、转录迁移和旧依赖删除。
+范围覆盖新执行引擎、工具迁移、上下文压缩、流式与历史、崩溃恢复、人机追问和旧依赖删除。
 不加入多机调度、跨区域队列、模型管理改造，也不恢复已搁置的沙箱计划。
 整体通过条件。真实浏览器完成创建、生成、断连后继续、`kill -9` 后续跑、追问、取消和发布；旧会话切换后显示空历史且页面不报错；产品代码不再 import `@earendil-works`。
 顺序为 PR-00 spike，然后 PR-01 到 PR-07 串行。PR-00 已完成，不合并；其余每条在前一条合入后开工。
@@ -127,7 +127,7 @@ PR-07 的删表清单是 `durable_schema` 等 9 张表（`durable/storage-pg.ts:
 
 取消使用 Workflow 的持久 `AbortController`，不用产品轮询标志。
 
-workflow 函数创建 `new AbortController()`，并把 `signal` 传给模型调用、`streamText` 和每个工具。工具在写副作用前调用 `signal.throwIfAborted()`。构建工具把 signal 传给 Docker 子进程，abort 时杀掉子进程。
+workflow 函数创建 `new AbortController()`，并把 `signal` 传给模型调用和每个工具。工具在写副作用前调用 `signal.throwIfAborted()`。构建工具把 signal 传给 Docker 子进程，abort 时杀掉子进程。
 
 取消入口先用产品鉴权确认调用者。运行创建时把取消 hook 的 token 写入 `agent_run`。运行已注册取消 hook 时调用 `resumeHook('agent-cancel:<runId>')`。workflow 用 `Promise.race` 等待模型循环与取消 hook，hook 先到时调用 `controller.abort()`，等待当前 step 收束，写 `cancelled` 终态并结算已发生步骤。运行还没注册 hook 时，写 `agent_run.cancel_requested`，workflow 启动时先检查该列。
 
@@ -149,7 +149,7 @@ PR-01 复核结论。独立 worker 保留，但它只是调度器。队列消息
 
 ### D11. 流式
 
-模型调用使用 `streamText`，产出 AI SDK 原生 `UIMessageChunk`。workflow 通过 `getWritable()` 把分片写入持久流，Next 的流式路由用 `run.getReadable()` 读出。客户端断开只结束读取，不结束运行。刷新或重连时用同一 runId 重新读取，已写入的分片可以重放。落点 PR-04。
+模型调用使用 `WorkflowAgent.stream`（底层是 `streamText`），产出 AI SDK 原生 `UIMessageChunk`。workflow 通过 `getWritable()` 把分片写入持久流，Next 的流式路由用 `run.getReadable()` 读出。客户端断开只结束读取，不结束运行。刷新或重连时用同一 runId 重新读取，已写入的分片可以重放。落点 PR-04。
 
 ### D12. 压缩与预算
 
@@ -169,11 +169,11 @@ PR-01 复核结论。独立 worker 保留，但它只是调度器。队列消息
 | 上下文压缩 | 阻塞压缩 | `compact()` step | D12 |
 | 转录存储 | 9 张 SDK 表 | `agent_conversation` 与 `agent_message` | D5、D6 |
 | 流式事件 | AgentEvent 与适配器 | 原生 `UIMessageChunk` 与持久流 | D11 |
-| 每轮模型描述 | `app.run-model` 文档 | `agent_run` 行 | D9、PR-03 |
+| 每轮模型描述 | `app.run-model` 文档 | `agent_run` 行 | PR-03 |
 | 工具前写门禁与预算 | beforeTool 与 beforeRequest hook | `withToolGuards` | D3、D12 |
 | 人机追问 | `ask` 与投稿队列 | 两段式输入与取消 hook | D6、D8 |
 | 单写者 | advisory lock | Postgres world 队列 | D10 |
-| 模型目录与凭据 | pi-ai 适配 | `src/server/models/registry.ts` 与 `adapters.ts` | D9 |
+| 模型目录与凭据 | pi-ai 适配 | `src/server/models/registry.ts` 与 `adapters.ts` | 无 |
 
 ## Program checklist
 
@@ -429,7 +429,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 
 **Build.**
 
-- [ ] 模型调用使用 `streamText`，输出原生 `UIMessageChunk`，删除 AgentEvent 翻译层。
+- [ ] 模型调用使用 `WorkflowAgent.stream`，输出原生 `UIMessageChunk`，删除 AgentEvent 翻译层。
 - [ ] `loadMessages` 改读 `agent_message`，返回 `UIMessage[]`，保持现有组件契约。
 - [ ] 加按 runId 的重连端点，客户端断开不结束运行。
 - [ ] 历史消息的工具 part 与附件 part 完整映射。
@@ -578,11 +578,11 @@ PR-00 的原始产物在 `runtime/evidence/ai-sdk-migration/PR-00/`。已验证�
 
 - 已答。Workflow 5.4.0 与 Next 16.4.2、自托管 Postgres 16 共存，队列正常消费。
 - 已答。手写 step 循环在 `kill -9` 后只重跑被中断的 step；已完成 step 的 attempt 保持 1。
-- 已答。默认 job 锁配置下恢复停滞；30 秒配置下 28 秒完成。
+- 已答。默认 job 锁配置下恢复停滞；30 秒配置下，重启后 28 秒完成。
 - 已答。流是持久的，运行结束后可重连读回。
 - 已答。取消只改运行状态，不中断在执行的 step。
 - 已答（PR-01，不是 PR-00）。`WorkflowAgent` 可用：模型实例以槽位引用跨 step，在 step 内重建，见 D2。
-- 未答。压缩、计费、ask、steer、多 worker 与生产部署，分别由 PR-02 到 PR-05 验收。真实 provider 已在 PR-01 的回显里跑过。
+- 未答。压缩与计费在 PR-03，ask、steer 与多 worker 在 PR-05。生产部署不在本计划范围内。真实 provider 已在 PR-01 的回显里跑过。
 
 ## Appendix B. Alternatives rejected
 
@@ -595,7 +595,7 @@ D Temporal、Restate 或 Trigger.dev。持久化能力成熟，但引入第二�
 Workflow DevKit 的 API 处于快速演进期。风险与 pi-durable 同类。PR-00 记录了实际版本，PR-07 的 ADR 必须写明升级与回退策略。
 step 结果进入事件日志，长工具输出会放大数据库。PR-00 测量了行数与字节，PR-02 的工具守卫给输出设上限。
 workflow 代码要求确定性，时间和随机数受限。产品控制面调用必须放进 step，不能留在编排代码里。
-在执行的 step 会被重放。`edit` 与构建不是天然幂等，`agent_effect` 与幂等键必须在 PR-02 落地。
+在执行的 step 会被重放。`edit` 与构建不是天然幂等。`agent_effect` 在 PR-02 落地，`generation_step` 的幂等键在 PR-03。
 取消是协作式的。工具不检查 signal 时仍会跑完；PR-05 必须逐个工具验证。
 历史转录不迁移。切换后旧会话为空，页面必须正常显示空历史，见 PR-06 的 Lane 4。
 两条引擎并存期间维护与测试成本翻倍。只允许存在到 PR-07，不能长期保留。
