@@ -3,7 +3,8 @@ node_modules/
 .env
 .env.*
 !.env.example
-runtime/
+# 只忽略产品根目录下的本地运行数据；源码里同名目录（src/server/runtime/、tests/*/runtime/）必须入库。
+/runtime/
 coverage/
 playwright-report/
 test-results/

@@ -46,6 +46,60 @@ const environment = z.object({
       .max(3, 'BUILD_REPAIR_ROUNDS 不能超过 3')
       .default(2),
   ),
+  APP_RUNTIME_ENABLED: z
+    .enum(['true', 'false', '1', '0'])
+    .default('true')
+    .transform((value) => value === 'true' || value === '1'),
+  RUNTIME_IMAGE: z.string().min(1, 'RUNTIME_IMAGE 不能为空').default('node:24-alpine'),
+  RUNTIME_PNPM_VERSION: z
+    .string()
+    .regex(/^\d+\.\d+\.\d+$/, 'RUNTIME_PNPM_VERSION 必须是精确版本号')
+    .default('10.18.3'),
+  RUNTIME_START_TIMEOUT_MS: z.preprocess(
+    blankAsUnset,
+    z.coerce
+      .number()
+      .int()
+      .min(10000, 'RUNTIME_START_TIMEOUT_MS 必须不小于 10000')
+      .max(1800000, 'RUNTIME_START_TIMEOUT_MS 不能超过 1800000')
+      .default(240000),
+  ),
+  RUNTIME_DEV_READY_TIMEOUT_MS: z.preprocess(
+    blankAsUnset,
+    z.coerce
+      .number()
+      .int()
+      .min(1000, 'RUNTIME_DEV_READY_TIMEOUT_MS 必须不小于 1000')
+      .max(600000, 'RUNTIME_DEV_READY_TIMEOUT_MS 不能超过 600000')
+      .default(60000),
+  ),
+  RUNTIME_MAX_SLOTS: z.preprocess(
+    blankAsUnset,
+    z.coerce
+      .number()
+      .int()
+      .min(1, 'RUNTIME_MAX_SLOTS 必须不小于 1')
+      .max(64, 'RUNTIME_MAX_SLOTS 不能超过 64')
+      .default(3),
+  ),
+  RUNTIME_IDLE_TIMEOUT_MS: z.preprocess(
+    blankAsUnset,
+    z.coerce
+      .number()
+      .int()
+      .min(1000, 'RUNTIME_IDLE_TIMEOUT_MS 必须不小于 1000')
+      .max(86400000, 'RUNTIME_IDLE_TIMEOUT_MS 不能超过 86400000')
+      .default(900000),
+  ),
+  RUNTIME_SUPERVISOR_TICK_MS: z.preprocess(
+    blankAsUnset,
+    z.coerce
+      .number()
+      .int()
+      .min(500, 'RUNTIME_SUPERVISOR_TICK_MS 必须不小于 500')
+      .max(600000, 'RUNTIME_SUPERVISOR_TICK_MS 不能超过 600000')
+      .default(5000),
+  ),
   GENERATION_TIMEOUT_MS: z.preprocess(
     blankAsUnset,
     z.coerce
@@ -202,6 +256,16 @@ export function getConfig() {
     buildNpmRegistry: env.BUILD_NPM_REGISTRY,
     buildTimeoutMs: env.BUILD_TIMEOUT_MS,
     buildRepairRounds: env.BUILD_REPAIR_ROUNDS,
+    appRuntime: {
+      enabled: env.APP_RUNTIME_ENABLED,
+      image: env.RUNTIME_IMAGE,
+      pnpmVersion: env.RUNTIME_PNPM_VERSION,
+      startTimeoutMs: env.RUNTIME_START_TIMEOUT_MS,
+      devReadyTimeoutMs: env.RUNTIME_DEV_READY_TIMEOUT_MS,
+      maxSlots: env.RUNTIME_MAX_SLOTS,
+      idleTimeoutMs: env.RUNTIME_IDLE_TIMEOUT_MS,
+      tickMs: env.RUNTIME_SUPERVISOR_TICK_MS,
+    },
     generationTimeoutMs: env.GENERATION_TIMEOUT_MS,
     generationMaxConcurrent: env.GENERATION_MAX_CONCURRENT,
     modelReplyTimeoutMs: env.MODEL_REPLY_TIMEOUT_MS,

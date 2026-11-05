@@ -56,6 +56,7 @@ import { completeAttempt, reserveAttempt } from '../control-store';
 import { BusinessError } from '../../infra/http';
 import { harnessProtocol } from './protocol';
 import { getConfig } from '../../infra/config';
+import { startRuntimeMaintenance, stopRuntimeMaintenance } from '../../runtime/supervisor';
 import {
   createWebAccessOperations,
   createWebAccessSession,
@@ -1471,9 +1472,12 @@ const server = createServer((request, response) => {
 
 await new Promise<void>((resolveListen) => server.listen(port, host, resolveListen));
 log(`listening on http://${host}:${port}`);
+// 常驻 runtime 的容量维护挂在 harness 进程里：Next 进程只读台账，不直接启停 Docker。
+startRuntimeMaintenance();
 
 async function shutdown(signal: string) {
   log(`${signal} — closing`);
+  stopRuntimeMaintenance();
   server.close();
   await harness.close(context).catch((error) => log(`close failed ${String(error)}`));
   process.exit(0);

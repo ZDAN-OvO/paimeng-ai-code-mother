@@ -72,6 +72,34 @@ export const snowflakeState = pgTable('id_sequence', {
   nodeId: smallint('node_id').primaryKey(),
   lastId: bigint('last_id', { mode: 'bigint' }).notNull(),
 });
+
+// ---- App runtime（migrations/025_app_runtime.sql）----
+// 一个 App 一行：容器的持久身份、dev server 端口、挂载的源码根、镜像身份与最后活动时间。
+// 容器本身由 runtime supervisor 启停；这张表只记录「平台认为它在哪」，重启后按容器标签对账。
+export type AppRuntimeStatus = 'starting' | 'ready' | 'failed' | 'stopped';
+export const appRuntimes = pgTable(
+  'app_runtime',
+  {
+    appId: bigint('app_id', { mode: 'bigint' })
+      .primaryKey()
+      .references(() => apps.id, { onDelete: 'cascade' }),
+    containerId: varchar('container_id', { length: 64 }).notNull(),
+    containerName: varchar('container_name', { length: 128 }).notNull(),
+    port: integer('port').notNull(),
+    imageIdentity: varchar('image_identity', { length: 256 }).notNull(),
+    workspaceRoot: text('workspace_root').notNull(),
+    status: varchar('status', { length: 16 }).$type<AppRuntimeStatus>().notNull(),
+    lockDigest: char('lock_digest', { length: 64 }),
+    lastError: varchar('last_error', { length: 1000 }),
+    lastActivityAt: timestamp('last_activity_at', { mode: 'string', precision: 3 }).notNull(),
+    ...times,
+  },
+  (t) => [
+    uniqueIndex('uk_app_runtime_container').on(t.containerName),
+    index('idx_app_runtime_activity').on(t.lastActivityAt),
+    index('idx_app_runtime_status').on(t.status),
+  ],
+);
 export const sessions = pgTable(
   'user_session',
   {
