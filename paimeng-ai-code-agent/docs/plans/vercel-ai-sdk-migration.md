@@ -8,7 +8,7 @@
 
 ## How to read this
 
-Status. PR-01 已在分支 `agent/vercel-ai-sdk-p01` 实现并推送（PR #172），等待独立核验。PR-00 有条件通过，四条设计缺口已在本文件关闭。2026-11-05 operator 决定采用 `WorkflowAgent`，模型以可序列化的槽位引用跨 step 边界，见 D2。operator 同时确认 pi-durable 的历史对话可以丢弃，PR-06 因此从「导出加双读」简化为「备份后切换」，见 PR-06。
+Status. PR-01 已在分支 `agent/vercel-ai-sdk-p01` 实现并推送（PR #172），等待独立核验。PR-00 有条件通过，它提出的设计缺口已在本文件逐条关闭。2026-11-05 operator 决定采用 `WorkflowAgent`，模型以可序列化的槽位引用跨 step 边界，见 D2。operator 同时确认 pi-durable 的历史对话可以丢弃，PR-06 因此从「导出加双读」简化为「备份后切换」，见 PR-06。
 
 Blockers. None。PR-00 已回答 Next 版本、自托管 Postgres、崩溃恢复和流式重连。默认 job 锁不满足恢复需求，已定为部署必配项。
 
@@ -45,7 +45,7 @@ Lanes. 每条 PR 指定 3 到 5 条 live lane，按该 PR 的真实用户路径�
 
 1. Workflow 5.4.0 在 Next 16.4.2 与自托管 Postgres 16 上运行，`withWorkflow` 与 `world.start()` 可用。Next 16 的 `allowedDevOrigins` 必须包含本机来源，否则浏览器端 HMR 失败。
 2. AI SDK 7 的模型调用与工具执行可以拆成独立 workflow step。一次运行产生 16 个 step，已完成 step 在重启后不重放，只有被中断的 step attempt 从 1 变 2。
-3. 默认 job 锁配置下，`kill -9` 后运行在 90 秒观察期内一直 `running`，job 锁在已死 worker 上。设置 `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS=30` 后，同一运行在 28 秒内恢复并完成（`recoveredAfterSeconds`）；整次运行含崩溃前的部分，总时长 206.9 秒。
+3. 默认 job 锁配置下，`kill -9` 后运行在 90 秒观察期内一直 `running`，job 锁在已死 worker 上。设置 `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS=30` 后，重启后 28 秒恢复并完成（`recoveredAfterSeconds`）；整次运行含崩溃前的部分，总时长 206.9 秒。
 4. 持久流可在运行结束后用同一 runId 重连读回。
 5. `run.cancel()` 只改运行状态，不中断在执行的 step。取消后 20 秒，慢工具仍完成并写副作用。
 6. `@workflow/ai@5.0.3` 的根导出不含 agent，`DurableAgent` 已废弃且要求 `ai ^6`。Workflow 5 的对应包是 `@ai-sdk/workflow@2.0.95`，根导出 `WorkflowAgent`，依赖 `ai@7.0.163`。
@@ -80,7 +80,7 @@ agentWorkflow(input)
 
 2026-11-05 一次回显运行的 12 个 step：`openRunStep` → `prepareTurnStep` → `prepareWorkflowAgentTelemetry` → `doStreamStep` → `writeDeferredToolCalls` → `echoToolStep` → `writeToolResults` → `doStreamStep` → `writeDeferredToolCalls` → `closeStream` → `persistTurnStep` → `finishRunStep`。产品自己的是 openRun、prepareTurn、echoTool、persistTurn、finishRun；其余由 `@ai-sdk/workflow` 生成。持久化粒度仍是每次模型调用、每个工具调用各一个 step。证据 `runtime/evidence/ai-sdk-migration/PR-01/workflow-agent-db.json` 与 `workflow-agent-run.log`。
 
-输入注入与压缩仍待评估：`prepareStep` 与 `activeTools` 接口存在，PR-02 起用它实现输入投递，压缩放在模型调用前的 step 里。落点 PR-01、PR-02。
+输入注入与压缩仍未实现：`prepareStep` 与 `activeTools` 接口存在。输入投递的落点按 D6 是 PR-05，压缩的落点按 D12 是 PR-03；PR-02 只做工具与守卫，不含这两项。
 
 ### D3. 工具形状
 
@@ -169,7 +169,7 @@ PR-01 复核结论。独立 worker 保留，但它只是调度器。队列消息
 | 上下文压缩 | 阻塞压缩 | `compact()` step | D12 |
 | 转录存储 | 9 张 SDK 表 | `agent_conversation` 与 `agent_message` | D5、D6 |
 | 流式事件 | AgentEvent 与适配器 | 原生 `UIMessageChunk` 与持久流 | D11 |
-| 每轮模型描述 | `app.run-model` 文档 | `agent_run` 行 | D2、PR-03 |
+| 每轮模型描述 | `app.run-model` 文档 | `agent_run` 行 | D9、PR-03 |
 | 工具前写门禁与预算 | beforeTool 与 beforeRequest hook | `withToolGuards` | D3、D12 |
 | 人机追问 | `ask` 与投稿队列 | 两段式输入与取消 hook | D6、D8 |
 | 单写者 | advisory lock | Postgres world 队列 | D10 |
@@ -192,7 +192,7 @@ PR-01 复核结论。独立 worker 保留，但它只是调度器。队列消息
 - [ ] Spawn one owner per PR with the full lifecycle this plan names. PR-00 is complete and does not run again.
 - [ ] Follow the dependency graph. PR-01 to PR-07 run in order, and each starts only after the previous one merges.
 - [ ] Hold the file boundaries each PR declares. `src/server/generation/agent/**` is written only by PR-01 to PR-07.
-- [ ] Hold the review gate. PR-02 to PR-07 wait for the operator's screenshots and video review before merge. PR-01 has no user-visible change.
+- [ ] Hold the review gate. PR-02 to PR-06 wait for the operator's screenshots and video review before merge. PR-01 has no user-visible change. PR-07 changes no interaction, so it waits for approval of the backup and deletion instead.
 
 ### PR mechanics, for every PR
 
@@ -243,7 +243,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 ### Verdict and handoff
 
 每个 Behavior PR 由独立核验者跑真实用户路径，核对原始产物，给出绑定当前 base 与 head 的 PASS 或 PASS+NOTES。缺独立核验时保持 pending。
-交互变化发生在 PR-02 之后的每一条。operator 需要审截图和视频并记录批准。
+交互变化发生在 PR-02 之后的每一条，PR-07 除外：它只删旧引擎，operator 审的是备份与删除。
 每条 PR 在 `handoff.md` 记录分支、SHA、未完成项、已知限制和授权记录。
 
 ### Cross-PR acceptance
@@ -276,7 +276,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 
 - [x] 建独立 spike 包，安装 `ai@7.0.130`、`workflow@5.4.0`、`@workflow/world-postgres@5.1.1`。
 - [x] 用 Next 16.4.2 接入 `withWorkflow` 与 `instrumentation.ts`，启动 Postgres world。
-- [x] 用 `MockLanguageModelV4` 定义三个工具，模型调用与工具执行各是一个 step。
+- [x] 用 `MockLanguageModelV4` 定义两个工具（`increment` 与 `slow`），模型调用与工具执行各是一个 step。
 - [x] 在工具 step 中途 `kill -9` Next 进程（PR-00 的 spike 跑在 `next dev` 里），重启后确认从被中断的 step 继续。
 - [x] 结束运行后用同一 runId 重连，读回完整流。
 - [x] 验证 `run.cancel()` 不中断在执行的 step。
@@ -358,10 +358,11 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 **Build.**
 
 - [ ] 把 11 个产品工具改为 `ToolSpec`，清单见 D4。`read`、`write`、`edit` 重新实现，保留工作区相对路径准入。
-- [ ] 实现 `stepTool` 与 `agentTool` 两个适配器，守卫只写一份 `withToolGuards`。
+- [ ] 实现 `agentTool` 适配器，守卫只写一份 `withToolGuards`。
 - [ ] 在守卫内检查 authority、执行绑定、写门禁、路径、工具预算，并写 `agent_effect`。
+- [ ] 守卫给工具输出设上限，超过就截断并留痕，防止事件日志被长输出撑大。
 - [ ] 按 D4 的分类写 `replay`：`edit`、`ask`、`importImage` 是 `unsafe`，其余是 `safe`。`git` 现在没有声明，按 `unsafe` 处理，本 PR 显式标成 `safe` 并保留只读子命令限制。`buildPreview` 重跑前清理临时产物。
-- [ ] `generation_step` 增加引擎步标识，写入用 `ON CONFLICT DO NOTHING`。唯一约束要等 PR-03 补上 `run_id` 列之后再建，见 D4。
+- [ ] `generation_step` 增加引擎步标识。唯一约束与 `ON CONFLICT DO NOTHING` 的去重都等 PR-03 补上 `run_id` 列之后再做，见 D4。
 - [ ] 预算预留在 step 开始前发生，键为引擎步标识，重放时复用。
 - [ ] 运行记录写原 provider、端点、格式、请求头、模型、设置和凭据引用。
 
@@ -498,12 +499,12 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 
 历史对话不迁移。operator 在 2026-11-05 确认这不是真实数据，可以丢弃；切换后旧会话为空，应用、草稿、已发布版本和账单不受影响，它们在 `paimeng_app` 的业务表里。
 
-**Files.** `src/server/generation/agent/**`、`src/server/generation/durable-engine.ts`、`scripts/ops/backup-durable-tables.ts`。
+**Files.** `src/server/generation/agent/**`、`src/server/generation/durable-engine.ts`、`src/server/infra/config.ts`、`src/app/api/[...path]/route.ts`、新增迁移、`scripts/ops/backup-durable-tables.ts`。
 
 **Build.**
 
 - [ ] 切换前停止新运行，排空队列，对 `durable_schema` 等 9 张表做 `pg_dump` 备份，备份路径与校验和写进 PR。
-- [ ] 默认切到 `agent`，保留按 App 回退到 `harness` 的开关一个发布周期。回退开关指向的 App 仍由旧引擎接受生成，这是本条 lane 的意义。
+- [ ] 默认切到 `agent`，保留按 App 回退到 `harness` 的开关一个发布周期。开关现在是全局的 `GENERATION_ENGINE`，本 PR 要给它加按 App 的覆盖（配置加迁移），回退开关指向的 App 仍由旧引擎接受生成。
 - [ ] 默认路径不再写入旧引擎：只有回退开关指向的 App 会写，已受理的运行可以跑完。
 
 **You see.**
@@ -581,7 +582,7 @@ PR-00 的原始产物在 `runtime/evidence/ai-sdk-migration/PR-00/`。已验证�
 - 已答。流是持久的，运行结束后可重连读回。
 - 已答。取消只改运行状态，不中断在执行的 step。
 - 已答（PR-01，不是 PR-00）。`WorkflowAgent` 可用：模型实例以槽位引用跨 step，在 step 内重建，见 D2。
-- 未答。真实 provider、压缩、计费、ask、steer、多 worker 与生产部署，分别由 PR-02 到 PR-05 验收。
+- 未答。压缩、计费、ask、steer、多 worker 与生产部署，分别由 PR-02 到 PR-05 验收。真实 provider 已在 PR-01 的回显里跑过。
 
 ## Appendix B. Alternatives rejected
 
@@ -592,7 +593,7 @@ D Temporal、Restate 或 Trigger.dev。持久化能力成熟，但引入第二�
 ## Appendix C. Risks
 
 Workflow DevKit 的 API 处于快速演进期。风险与 pi-durable 同类。PR-00 记录了实际版本，PR-07 的 ADR 必须写明升级与回退策略。
-step 结果进入事件日志，长工具输出会放大数据库。PR-00 测量了行数与字节，PR-02 给工具输出设上限。
+step 结果进入事件日志，长工具输出会放大数据库。PR-00 测量了行数与字节，PR-02 的工具守卫给输出设上限。
 workflow 代码要求确定性，时间和随机数受限。产品控制面调用必须放进 step，不能留在编排代码里。
 在执行的 step 会被重放。`edit` 与构建不是天然幂等，`agent_effect` 与幂等键必须在 PR-02 落地。
 取消是协作式的。工具不检查 signal 时仍会跑完；PR-05 必须逐个工具验证。
