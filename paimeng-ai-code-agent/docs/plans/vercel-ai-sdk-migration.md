@@ -8,7 +8,7 @@
 
 ## How to read this
 
-Status. PR-01 已完成本地实现并核验，未推送。PR-00 有条件通过，四条设计缺口已在本文件关闭。2026-11-05 operator 决定采用 `WorkflowAgent`，模型以可序列化的槽位引用跨 step 边界，见 D2。operator 同时确认 pi-durable 的历史对话可以丢弃，PR-06 因此从「导出加双读」简化为「备份后切换」，见 PR-06。
+Status. PR-01 已在分支 `agent/vercel-ai-sdk-p01` 实现并推送（PR #172），等待独立核验。PR-00 有条件通过，四条设计缺口已在本文件关闭。2026-11-05 operator 决定采用 `WorkflowAgent`，模型以可序列化的槽位引用跨 step 边界，见 D2。operator 同时确认 pi-durable 的历史对话可以丢弃，PR-06 因此从「导出加双读」简化为「备份后切换」，见 PR-06。
 
 Blockers. None。PR-00 已回答 Next 版本、自托管 Postgres、崩溃恢复和流式重连。默认 job 锁不满足恢复需求，已定为部署必配项。
 
@@ -20,7 +20,7 @@ Permissions. 本轮只允许编辑本计划。改产品代码、装依赖、推�
 
 One box is one unit of work. Every box names the evidence that checks it. A nested box is a sub-step of the box above it. Check a box only when its evidence exists, a file, a log line, a screenshot, a test run, or a SHA. The body is a how-to. The appendices explain and record.
 
-The program runs `pstack/skills/poteto-mode/playbooks/autopilot-stack.md`. Each PR is built and verified to merge-ready, and the operator lands it. PR-00 is a spike and never lands.
+The program runs the `autopilot-stack` playbook from the local pstack plugin, which is not in this repository; see "Arm the program" below. Each PR is built and verified to merge-ready, and the operator lands it. PR-00 is a spike and never lands.
 
 Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Live evidence uses a real browser and real services. Thresholds move only with the operator's written approval, never to make a PR pass.
 
@@ -92,7 +92,7 @@ agentWorkflow(input)
 
 Workflow 对崩溃时正在执行的 step 是至少一次语义。`maxRetries` 只约束抛错后的重试，拦不住崩溃重放。产品用一张 `agent_effect` 表兜底。
 
-表的主键是 `(run_id, tool_call_id)`，字段包含 `tool_name`、`replay`、`status`、`result_json`、`started_at`、`completed_at`。`status` 取 `started`、`completed`、`failed`、`cancelled`。
+表的主键是 `(run_id, tool_call_id)`，字段包含 `tool_name`、`replay`、`status`、`result_json`、`create_time`、`update_time`。`status` 取 `started`、`completed`、`failed`、`cancelled`。
 
 执行顺序。
 
@@ -101,13 +101,13 @@ Workflow 对崩溃时正在执行的 step 是至少一次语义。`maxRetries` �
 3. 查到 `started` 且工具是 `safe` 时，重新执行并更新结果。
 4. 没有记录时，先插入 `started`，执行，再写 `completed`。
 
-工具面共 11 个：`read`、`write`、`edit`、`listFiles`、`buildPreview`、`git`、`ask`、`webSearch`、`readWebPage`、`searchImages`、`importImage`。`m1_wait` 只在夹具模式注册，不参与迁移。`edit`、`ask`、`importImage` 是 `unsafe`；`importImage` 会把图片写进工作区，重放会重复写入。`read`、`write`、`listFiles`、`buildPreview`、`git`、`webSearch`、`readWebPage`、`searchImages` 是 `safe`，其中 `git` 只允许只读子命令。`buildPreview` 重跑前要清掉上一次的临时产物，保持构建幂等。
+工具面共 11 个：`read`、`write`、`edit`、`listFiles`、`buildPreview`、`git`、`ask`、`webSearch`、`readWebPage`、`searchImages`、`importImage`。`m1_wait` 只在夹具模式注册，不参与迁移。`edit`、`ask`、`importImage` 是 `unsafe`；`importImage` 会把图片写进工作区，重放会重复写入。`read`、`write`、`listFiles`、`buildPreview`、`webSearch`、`readWebPage`、`searchImages` 是 `safe`。`git` 目前在 `git-tool.ts` 里没有声明 `replay`，pi-durable 对未声明的按 `unsafe` 处理，PR-02 要显式标成 `safe`，它只允许只读子命令。`buildPreview` 重跑前要清掉上一次的临时产物，保持构建幂等。
 
 模型调用的计费也要幂等。`generation_step` 增加引擎步标识，并对 `(generation_id, run_id, engine_step_id)` 建唯一约束，写入用 `ON CONFLICT DO NOTHING`。预算预留同样以引擎步标识为键，step 重放时复用已预留的额度，不重复计数。落点 PR-02、PR-03。
 
 ### D5. 转录
 
-新增两张表。`agent_conversation` 保存 app 到 conversation 的映射和最后序号。`agent_message` 保存消息，字段为 `id`、`conversation_id`、`run_id`、`seq`、`role`、`parts`、`input_id`、`created_at`。`parts` 直接存 AI SDK `UIMessage` 的 parts，不另造一套中间格式。
+新增两张表。`agent_conversation` 保存 app 到 conversation 的映射和最后序号。`agent_message` 保存消息，字段为 `id`、`conversation_id`、`run_id`、`seq`、`role`、`parts`、`input_id`、`create_time`、`update_time`。`parts` 直接存 AI SDK `UIMessage` 的 parts，不另造一套中间格式。
 
 消息 id 在写入时生成，稳定持久。`loadMessages` 按 `seq` 升序投影为 `UIMessage[]`。工具调用、工具结果和附件都放在 parts 里。旧转录不迁移：operator 在 2026-11-05 确认历史对话可以丢弃。落点 PR-01、PR-04、PR-06。
 
@@ -121,7 +121,7 @@ Workflow 对崩溃时正在执行的 step 是至少一次语义。`maxRetries` �
 
 Workflow 的 `workflow` 与 `workflow_drizzle` schema 放在 `paimeng_agent`。它是现有的执行库，备份已经覆盖。job prefix 固定为 `paimeng_agent_`，避免与同库其他应用冲突。
 
-PR-07 的删表清单是 `durable_schema` 及其中的 8 张表，共 9 张（`durable/storage-pg.ts:167-253`），明确排除 `workflow` 与 `workflow_drizzle`。删表前必须有 `pg_dump` 备份和 operator 授权。落点 PR-01、PR-07。
+PR-07 的删表清单是 `durable_schema` 等 9 张表（`durable/storage-pg.ts:186-253` 建 8 张业务表，`1202` 建 `durable_schema` 本身，`1247` 的 reset 列表正好是这 9 张），明确排除 `workflow` 与 `workflow_drizzle`。删表前必须有 `pg_dump` 备份和 operator 授权。落点 PR-01、PR-07。
 
 ### D8. 取消
 
@@ -268,7 +268,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 
 **Depends on.** None.
 
-**Result.** 有条件通过。记录、截图、视频与原始数据在 `runtime/evidence/ai-sdk-migration/PR-00/`。handoff 的八条发现中七条已写入本文的 PR-00 findings，设计决策已吸收 Job 锁与取消语义。
+**Result.** 有条件通过。记录、截图、视频与原始数据在 `runtime/evidence/ai-sdk-migration/PR-00/`。handoff 的八条发现都已写入本文的 PR-00 findings（F2 与 F4 合为第 2 条），设计决策已吸收 Job 锁与取消语义。
 
 **Files.** 只写 `spike/ai-sdk-durable/**` 与 `runtime/evidence/ai-sdk-migration/PR-00/**`。不改产品源码。spike 不合并。
 
@@ -310,7 +310,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 
 **Depends on.** PR-00。
 
-**Result.** 本地完成，未推送。`WorkflowAgent` 跑通，模型以槽位引用跨 step 边界，独立 worker 只做调度。证据与未完成项在 `runtime/evidence/ai-sdk-migration/PR-01/handoff.md`。
+**Result.** 本地完成，已推送为 PR #172，待核验。`WorkflowAgent` 跑通，模型以槽位引用跨 step 边界，独立 worker 只做调度。证据与未完成项在 `runtime/evidence/ai-sdk-migration/PR-01/handoff.md`。
 
 **Files.** `src/server/generation/agent/world.ts`、`run-store.ts`、`transcript.ts`、`loop.ts`、`steps.ts`、`model.ts`、`model-ref.ts`、`run.ts`、`src/server/generation/agent/worker.ts`、`src/server/infra/config.ts`、`package.json`、`next.config.ts`、`scripts/dev/durable-dev.ts`、新增迁移、`tests/integration/agent/**`。
 
@@ -360,7 +360,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 - [ ] 把 11 个产品工具改为 `ToolSpec`，清单见 D4。`read`、`write`、`edit` 重新实现，保留工作区相对路径准入。
 - [ ] 实现 `stepTool` 与 `agentTool` 两个适配器，守卫只写一份 `withToolGuards`。
 - [ ] 在守卫内检查 authority、执行绑定、写门禁、路径、工具预算，并写 `agent_effect`。
-- [ ] `edit`、`ask` 标记 `unsafe`，其余标记 `safe`。`buildPreview` 重跑前清理临时产物。
+- [ ] 按 D4 的分类写 `replay`：`edit`、`ask`、`importImage` 是 `unsafe`，其余是 `safe`。`git` 现在没有声明，按 `unsafe` 处理，本 PR 显式标成 `safe` 并保留只读子命令限制。`buildPreview` 重跑前清理临时产物。
 - [ ] `generation_step` 增加引擎步标识与唯一约束，写入用 `ON CONFLICT DO NOTHING`。
 - [ ] 预算预留在 step 开始前发生，键为引擎步标识，重放时复用。
 - [ ] 运行记录写原 provider、端点、格式、请求头、模型、设置和凭据引用。
@@ -501,7 +501,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 
 **Build.**
 
-- [ ] 切换前停止新运行，排空队列，对 `durable_schema` 及其中的 8 张表，共 9 张，做 `pg_dump` 备份，备份路径与校验和写进 PR。
+- [ ] 切换前停止新运行，排空队列，对 `durable_schema` 等 9 张表做 `pg_dump` 备份，备份路径与校验和写进 PR。
 - [ ] 默认切到 `agent`，保留按 App 回退到 `harness` 的开关一个发布周期。
 - [ ] 旧引擎进入只读：不再接受新生成，但已受理的运行可以跑完。
 
@@ -536,7 +536,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 - [ ] 删除三个 `@earendil-works` 依赖与全部 import。
 - [ ] 删除 `harness-server.ts`、`storage-pg.ts`、`model-domain.ts`、`effect-gate.ts`、`harness.ts`、`protocol.ts`。
 - [ ] 删除 `GENERATION_ENGINE` 开关与 harness 分支。
-- [ ] 迁移删除 `paimeng_agent` 的 9 张 SDK 表与 `durable_schema`，明确排除 `workflow` 与 `workflow_drizzle`。执行前确认备份，删除需 operator 明确授权。
+- [ ] 迁移删除 `paimeng_agent` 里的 `durable_schema` 等 9 张 SDK 表，明确排除 `workflow` 与 `workflow_drizzle`。执行前确认备份，删除需 operator 明确授权。
 - [ ] 删除或改写 18 个 harness 集成测试，保留由新引擎覆盖的等价场景。
 - [ ] 写 ADR，取代 ADR 0003，记录选择 AI SDK 加 Workflow 的理由、代价与回退边界。
 - [ ] 更新 `docs/pi-durable-deployment.md` 与 `docs/provider-convergence.md` 的执行引擎描述。
@@ -579,7 +579,7 @@ PR-00 的原始产物在 `runtime/evidence/ai-sdk-migration/PR-00/`。已验证�
 - 已答。默认 job 锁配置下恢复停滞；30 秒配置下 28 秒完成。
 - 已答。流是持久的，运行结束后可重连读回。
 - 已答。取消只改运行状态，不中断在执行的 step。
-- 已答。`WorkflowAgent` 不可用：模型实例跨 step 无法序列化，第一步即失败。手写循环保留。
+- 已答。`WorkflowAgent` 可用：模型实例以槽位引用跨 step，在 step 内重建，见 D2。
 - 未答。真实 provider、压缩、计费、ask、steer、多 worker 与生产部署，分别由 PR-02 到 PR-05 验收。
 
 ## Appendix B. Alternatives rejected
@@ -595,7 +595,7 @@ step 结果进入事件日志，长工具输出会放大数据库。PR-00 测量
 workflow 代码要求确定性，时间和随机数受限。产品控制面调用必须放进 step，不能留在编排代码里。
 在执行的 step 会被重放。`edit` 与构建不是天然幂等，`agent_effect` 与幂等键必须在 PR-02 落地。
 取消是协作式的。工具不检查 signal 时仍会跑完；PR-05 必须逐个工具验证。
-转录映射可能丢失 pi 条目的字段。PR-06 报告未映射条目，零清单是切换前提。
+历史转录不迁移。切换后旧会话为空，页面必须正常显示空历史，见 PR-06 的 Lane 4。
 两条引擎并存期间维护与测试成本翻倍。只允许存在到 PR-07，不能长期保留。
 自托管 worker 的排空与重启语义由产品 launcher 负责。退出不排空会留下悬挂运行。
 Postgres world 默认的 job 锁回收是 4 小时。不设置 `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` 时，崩溃恢复会长时间停滞。
