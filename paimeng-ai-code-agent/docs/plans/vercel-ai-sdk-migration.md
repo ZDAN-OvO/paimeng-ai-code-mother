@@ -3,7 +3,7 @@
 把生成执行从 `@earendil-works/pi-durable` 1.4.0 换到 AI SDK 7 加 Workflow DevKit。产品控制面保持不变，包括 authority、输入水位、预算、写门禁、构建、发布和计费。
 范围覆盖新执行引擎、工具迁移、上下文压缩、流式与历史、崩溃恢复、人机追问、转录迁移和旧依赖删除。
 不加入多机调度、跨区域队列、模型管理改造，也不恢复已搁置的沙箱计划。
-整体通过条件。真实浏览器完成创建、生成、断连后继续、`kill -9` 后续跑、追问、取消和发布；旧会话历史可读；产品代码不再 import `@earendil-works`。
+整体通过条件。真实浏览器完成创建、生成、断连后继续、`kill -9` 后续跑、追问、取消和发布；旧会话切换后显示空历史且页面不报错；产品代码不再 import `@earendil-works`。
 顺序为 PR-00 spike，然后 PR-01 到 PR-07 串行。PR-00 已完成，不合并；其余每条在前一条合入后开工。
 
 ## How to read this
@@ -45,7 +45,7 @@ Lanes. 每条 PR 指定 3 到 5 条 live lane，按该 PR 的真实用户路径�
 
 1. Workflow 5.4.0 在 Next 16.4.2 与自托管 Postgres 16 上运行，`withWorkflow` 与 `world.start()` 可用。Next 16 的 `allowedDevOrigins` 必须包含本机来源，否则浏览器端 HMR 失败。
 2. AI SDK 7 的模型调用与工具执行可以拆成独立 workflow step。一次运行产生 16 个 step，已完成 step 在重启后不重放，只有被中断的 step attempt 从 1 变 2。
-3. 默认 job 锁配置下，`kill -9` 后运行在 90 秒观察期内一直 `running`，job 锁在已死 worker 上。设置 `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS=30` 后，同一运行 28 秒完成。
+3. 默认 job 锁配置下，`kill -9` 后运行在 90 秒观察期内一直 `running`，job 锁在已死 worker 上。设置 `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS=30` 后，同一运行在 28 秒内恢复并完成（`recoveredAfterSeconds`）；整次运行含崩溃前的部分，总时长 206.9 秒。
 4. 持久流可在运行结束后用同一 runId 重连读回。
 5. `run.cancel()` 只改运行状态，不中断在执行的 step。取消后 20 秒，慢工具仍完成并写副作用。
 6. `@workflow/ai@5.0.3` 的根导出不含 agent，`DurableAgent` 已废弃且要求 `ai ^6`。Workflow 5 的对应包是 `@ai-sdk/workflow@2.0.95`，根导出 `WorkflowAgent`，依赖 `ai@7.0.163`。
@@ -103,7 +103,7 @@ Workflow 对崩溃时正在执行的 step 是至少一次语义。`maxRetries` �
 
 工具面共 11 个：`read`、`write`、`edit`、`listFiles`、`buildPreview`、`git`、`ask`、`webSearch`、`readWebPage`、`searchImages`、`importImage`。`m1_wait` 只在夹具模式注册，不参与迁移。`edit`、`ask`、`importImage` 是 `unsafe`；`importImage` 会把图片写进工作区，重放会重复写入。`read`、`write`、`listFiles`、`buildPreview`、`webSearch`、`readWebPage`、`searchImages` 是 `safe`。`git` 目前在 `git-tool.ts` 里没有声明 `replay`，pi-durable 对未声明的按 `unsafe` 处理，PR-02 要显式标成 `safe`，它只允许只读子命令。`buildPreview` 重跑前要清掉上一次的临时产物，保持构建幂等。
 
-模型调用的计费也要幂等。`generation_step` 增加引擎步标识，并对 `(generation_id, run_id, engine_step_id)` 建唯一约束，写入用 `ON CONFLICT DO NOTHING`。预算预留同样以引擎步标识为键，step 重放时复用已预留的额度，不重复计数。落点 PR-02、PR-03。
+模型调用的计费也要幂等。`generation_step` 增加引擎步标识；它现在没有 `run_id` 列，PR-03 先补列，再对 `(generation_id, run_id, engine_step_id)` 建唯一约束，写入用 `ON CONFLICT DO NOTHING`。预算预留同样以引擎步标识为键，step 重放时复用已预留的额度，不重复计数。落点 PR-02、PR-03。
 
 ### D5. 转录
 
@@ -139,7 +139,7 @@ workflow 函数创建 `new AbortController()`，并把 `signal` 传给模型调�
 
 ### D10. Worker 拓扑
 
-默认让 Next 只负责入队、读状态和流式读取，队列由单独的 `agent-worker` 进程消费。PR-01 先验证 Postgres world 的 worker 能否在独立进程里执行 workflow 与 step，而不是回调 Next 的 `/.well-known/workflow/v1/flow`。能，就保持独立进程，由 launcher 起停并在退出时排空。不能，就退回 spike 验证过的 `instrumentation.ts` 进程内模式，并记录「长 step 运行在 Web 进程」的风险与单实例约束。单 worker 与双 worker 都在 PR-01 观察，双 worker 只用于确认队列竞争不会重复执行已完成 step，不作为生产默认。落点 PR-01。
+默认让 Next 只负责入队、读状态和流式读取，队列由单独的 `agent-worker` 进程消费。PR-01 的结论与预期不同：worker 不能在自己的进程里执行 workflow 与 step，队列消息以 HTTP 投递到 Next 的 `/.well-known/workflow/v1/flow`。worker 因此只是调度器，workflow 与 step 跑在 Web 进程里。`instrumentation.ts` 进程内模式也被否掉，理由见下一条。PR-01 只观察了单 worker，双 worker 的队列竞争留到 PR-05。落点 PR-01。
 
 PR-01 复核结论。独立 worker 保留，但它只是调度器。队列消息以 HTTP 投递到 Next 的 flow 路由，workflow 与 step 仍在 Web 进程执行。三个约束必须写进部署：
 
@@ -161,7 +161,7 @@ PR-01 复核结论。独立 worker 保留，但它只是调度器。队列消息
 
 | 现有能力 | pi-durable 的承担者 | 新方案承担者 | 需要产品补的部分 |
 | --- | --- | --- | --- |
-| 模型与工具循环 | `GenerationTask` 与 `ToolTask` | 手写 AI SDK 循环，每次调用是一个 step | D2、D3 |
+| 模型与工具循环 | `GenerationTask` 与 `ToolTask` | `WorkflowAgent`，模型调用与工具调用各是一个 step | D2、D3 |
 | 每步检查点与恢复 | `tasks` 表、checkpoint | Workflow 事件日志与 step | 无 |
 | 工具安全重放 | `replay: safe` 与 `unsafe` | `agent_effect` 加 step 重放 | D4 |
 | 跨重启等待 | `sleeping` 状态 | Workflow `sleep` | 无 |
@@ -169,7 +169,7 @@ PR-01 复核结论。独立 worker 保留，但它只是调度器。队列消息
 | 上下文压缩 | 阻塞压缩 | `compact()` step | D12 |
 | 转录存储 | 9 张 SDK 表 | `agent_conversation` 与 `agent_message` | D5、D6 |
 | 流式事件 | AgentEvent 与适配器 | 原生 `UIMessageChunk` 与持久流 | D11 |
-| 每轮模型描述 | `app.run-model` 文档 | `agent_run` 行 | D3、PR-03 |
+| 每轮模型描述 | `app.run-model` 文档 | `agent_run` 行 | D2、PR-03 |
 | 工具前写门禁与预算 | beforeTool 与 beforeRequest hook | `withToolGuards` | D3、D12 |
 | 人机追问 | `ask` 与投稿队列 | 两段式输入与取消 hook | D6、D8 |
 | 单写者 | advisory lock | Postgres world 队列 | D10 |
@@ -252,7 +252,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 | --- | --- | --- | --- | --- |
 | 创建、生成、发布 | PR-02、PR-03、PR-04、PR-06 | Web、API、DB | 生成不落库、流式中断、发布失败 | 各 PR 的 journey 截图与日志 |
 | 浏览器断开后继续 | PR-04、PR-05 | Web、worker | 断连取消运行，或重连丢消息 | 断连视频与消息计数 |
-| worker 被 `kill -9` 后续跑 | PR-01、PR-05 | worker、DB、Web | 恢复超过 60 秒，或从头重跑 | 进程日志、恢复时间、trace |
+| Next 进程被 `kill -9` 后续跑 | PR-01、PR-05 | Web、worker、DB | 恢复超过 60 秒，或从头重跑 | 进程日志、恢复时间、trace |
 | 在执行的 step 不写重复副作用 | PR-02、PR-05 | worker、DB、文件 | `edit` 执行两次，或构建产物重复 | `agent_effect` 行与文件 hash |
 | `ask` 提问跨重启 | PR-05 | Web、DB | 回答丢失、写门禁未关闭、重启后无法继续 | 截图与 authority 行 |
 | 输入水位与 `steer` 顺序 | PR-05 | Web、DB | 插队、乱序、未结算输入被发布 | `generation_input` 行与消息序列 |
@@ -318,7 +318,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 
 - [x] 把 `ai` 升到 `7.0.163`，同步 provider 包，跑现有模型适配测试，确认 `npm ls ai` 只有一个版本。
 - [x] 建 `agent/world.ts`，初始化 Postgres world 与 worker。world schema 放 `paimeng_agent`，job prefix 用 `paimeng_agent_`，设置 `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS=30` 与 `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1`。
-- [x] 建 `agent/worker.ts`，单独进程启动 `world.start()`，提供健康检查与排空。先验证它能在独立进程执行 workflow 与 step；只能回调 Next 时，改用 `instrumentation.ts` 并在 handoff 记录 Web 进程承载长 step 的风险。
+- [x] 建 `agent/worker.ts`，单独进程启动 `world.start()`，提供健康检查与排空。实测它不能在独立进程执行 workflow 与 step：队列消息以 HTTP 投递到 Next 的 flow 路由。worker 因此只做调度，风险记录见 D10。
 - [x] 新增 `agent_run`、`agent_conversation`、`agent_message`、`agent_effect` 四张表，以及 `generation_input` 的 `run_id` 与 `message_id` 列。
 - [x] 复用 `src/server/models/registry.ts` 与 `adapters.ts` 构造 AI SDK 模型，不保留 pi-ai 路径。
 - [x] 加 `GENERATION_ENGINE` 开关，默认 `harness`，路由按开关选择引擎。
@@ -332,7 +332,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 
 - [x] 开关为 `harness` 时旧路径行为完全不变。
 - [x] 开关为 `agent` 时能创建会话、写入用户消息、跑一次 echo 工具并结束。
-- [ ] worker 重启后健康检查恢复，未完成运行继续。
+- [ ] 重启 Next 进程与 worker 后健康检查恢复，未完成运行继续。
 - [x] `WorkflowAgent` 评估有书面结论与原始日志。结论：可用，见 D2。
 
 **Verify, unit.** 四张表的 CRUD、开关路由、输入状态机。
@@ -341,7 +341,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 
 - [x] Lane 1. 旧路径生成一次完整页面，确认无回归。保存截图。产物 `01-home-filled.png`、`02-chat-opened.png`、`03-generated.png`。
 - [x] Lane 2. `agent` 开关下跑 echo 生成，刷新后消息仍在。保存截图。回显场景没有 UI 入口，证据是 `workflow-agent-run.log` 与 `workflow-agent-db.json`。
-- [ ] Lane 3. 重启 worker，未完成运行继续。保存视频与日志。
+- [ ] Lane 3. 重启 Next 进程与 worker，未完成运行继续。workflow 与 step 跑在 Web 进程里，只重启调度器测不到在执行的 step。保存视频与日志。
 
 **Verify, perf.** 空转 worker 内存与启动时间，记录绝对值。
 
@@ -377,7 +377,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 **Verify, live.** 测试本身不足以验证。
 
 - [ ] Lane 1. 新建 App，生成一个 React 页面，读写文件并发布。保存截图。
-- [ ] Lane 2. `edit` 执行中杀 worker，恢复后不重复写入。保存 `agent_effect` 行与文件 hash。
+- [ ] Lane 2. `edit` 执行中杀 Next 进程，恢复后不重复写入。保存 `agent_effect` 行与文件 hash。
 - [ ] Lane 3. 每个工具至少真实调用一次，失败场景给出可读结果。保存日志。
 - [ ] Lane 4. 预算耗尽后本轮停止，账本数字正确。保存 SQL 与截图。
 
@@ -411,7 +411,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 **Verify, live.** 测试本身不足以验证。
 
 - [ ] Lane 1. 长对话触发压缩，下一轮回答仍引用早期需求。保存截图与 token 记录。
-- [ ] Lane 2. 运行中重启 worker，模型身份不变。保存请求日志。
+- [ ] Lane 2. 运行中重启 Next 进程，模型身份不变。保存请求日志。
 - [ ] Lane 3. 完成一次生成，账目与旧引擎对比。保存 SQL。
 
 **Verify, perf.** 压缩延迟、上下文 token 上限、计费写入次数。
@@ -480,7 +480,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 
 **Verify, live.** 测试本身不足以验证。
 
-- [ ] Lane 1. 生成中 `kill -9` worker，重启后 60 秒内完成。保存视频与进程日志。
+- [ ] Lane 1. 生成中 `kill -9` Next 进程，重启后 60 秒内完成。保存视频与进程日志。
 - [ ] Lane 2. 模型提问，回答后新一轮继续。保存截图。
 - [ ] Lane 3. 生成中发送追加输入，顺序与水位数正确。保存消息序列。
 - [ ] Lane 4. 取消生成，构建停止，账目只结算已完成步骤。保存 SQL、副作用时间戳与截图。
@@ -553,7 +553,7 @@ worker 必须由 launcher 起停，并在退出时排空队列。不能遗留后
 **Verify, live.** 测试本身不足以验证。
 
 - [ ] Lane 1. 新应用完整旅程。保存截图与视频。
-- [ ] Lane 2. 旧会话历史可读。保存截图。
+- [ ] Lane 2. 切换前存在、切换后没有消息的旧会话，页面正常显示空历史。保存截图。
 - [ ] Lane 3. 重启 Next 与 worker 后继续生成。保存日志。
 
 **Verify, perf.** 与 PR-06 的数值对比，无回归超过 10%。
@@ -579,7 +579,7 @@ PR-00 的原始产物在 `runtime/evidence/ai-sdk-migration/PR-00/`。已验证�
 - 已答。默认 job 锁配置下恢复停滞；30 秒配置下 28 秒完成。
 - 已答。流是持久的，运行结束后可重连读回。
 - 已答。取消只改运行状态，不中断在执行的 step。
-- 已答。`WorkflowAgent` 可用：模型实例以槽位引用跨 step，在 step 内重建，见 D2。
+- 已答（PR-01，不是 PR-00）。`WorkflowAgent` 可用：模型实例以槽位引用跨 step，在 step 内重建，见 D2。
 - 未答。真实 provider、压缩、计费、ask、steer、多 worker 与生产部署，分别由 PR-02 到 PR-05 验收。
 
 ## Appendix B. Alternatives rejected
