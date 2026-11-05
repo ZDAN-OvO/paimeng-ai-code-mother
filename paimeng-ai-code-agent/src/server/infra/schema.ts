@@ -273,6 +273,8 @@ export const generationInputs = pgTable(
     status: varchar('status', { length: 16 }).$type<InputStatus>().notNull(),
     sdkSubmissionId: bigint('sdk_submission_id', { mode: 'number' }),
     sdkEntryId: varchar('sdk_entry_id', { length: 64 }),
+    runId: varchar('run_id', { length: 64 }),
+    messageId: varchar('message_id', { length: 36 }),
     ...controlTimes,
   },
   (t) => [
@@ -748,4 +750,80 @@ export const creditEntries = pgTable(
     createTime: timestamp('create_time', { mode: 'string', precision: 3 }).notNull(),
   },
   (t) => [index('idx_credit_entry_charge').on(t.chargeId, t.id)],
+);
+
+// AI SDK 执行引擎（docs/plans/vercel-ai-sdk-migration.md）。PR-01 只建骨架，默认开关仍走 harness。
+export type AgentRunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+export type AgentEffectStatus = 'started' | 'completed' | 'failed' | 'cancelled';
+export type AgentReplay = 'safe' | 'unsafe';
+
+export const agentConversations = pgTable(
+  'agent_conversation',
+  {
+    id: bigserial('id', { mode: 'bigint' }).primaryKey(),
+    appId: bigint('app_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => apps.id, { onDelete: 'cascade' }),
+    lastSeq: integer('last_seq').notNull().default(0),
+    ...controlTimes,
+  },
+  (t) => [uniqueIndex('uk_agent_conversation_app').on(t.appId)],
+);
+
+export const agentRuns = pgTable(
+  'agent_run',
+  {
+    runId: varchar('run_id', { length: 64 }).primaryKey(),
+    appId: bigint('app_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => apps.id, { onDelete: 'cascade' }),
+    generationId: varchar('generation_id', { length: 36 }).notNull(),
+    conversationId: bigint('conversation_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => agentConversations.id, { onDelete: 'cascade' }),
+    status: varchar('status', { length: 16 }).$type<AgentRunStatus>().notNull(),
+    cancelRequested: boolean('cancel_requested').notNull().default(false),
+    cancelHookToken: varchar('cancel_hook_token', { length: 128 }),
+    error: text('error'),
+    ...controlTimes,
+    finishedAt: timestamp('finished_at', { mode: 'string', precision: 3 }),
+  },
+  (t) => [
+    index('idx_agent_run_generation').on(t.generationId),
+    index('idx_agent_run_status').on(t.status, t.updateTime),
+  ],
+);
+
+export const agentMessages = pgTable(
+  'agent_message',
+  {
+    id: varchar('id', { length: 36 }).primaryKey(),
+    conversationId: bigint('conversation_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => agentConversations.id, { onDelete: 'cascade' }),
+    runId: varchar('run_id', { length: 64 }),
+    seq: integer('seq').notNull(),
+    role: varchar('role', { length: 16 }).$type<'system' | 'user' | 'assistant'>().notNull(),
+    parts: jsonb('parts').notNull(),
+    inputId: varchar('input_id', { length: 36 }),
+    ...controlTimes,
+  },
+  (t) => [
+    uniqueIndex('uk_agent_message_seq').on(t.conversationId, t.seq),
+    index('idx_agent_message_run').on(t.runId),
+  ],
+);
+
+export const agentEffects = pgTable(
+  'agent_effect',
+  {
+    runId: varchar('run_id', { length: 64 }).notNull(),
+    toolCallId: varchar('tool_call_id', { length: 128 }).notNull(),
+    toolName: varchar('tool_name', { length: 64 }).notNull(),
+    replay: varchar('replay', { length: 8 }).$type<AgentReplay>().notNull(),
+    status: varchar('status', { length: 16 }).$type<AgentEffectStatus>().notNull(),
+    resultJson: jsonb('result_json'),
+    ...controlTimes,
+  },
+  (t) => [primaryKey({ columns: [t.runId, t.toolCallId] })],
 );

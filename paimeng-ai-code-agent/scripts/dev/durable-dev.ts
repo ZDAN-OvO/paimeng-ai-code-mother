@@ -44,7 +44,12 @@ function portOpen(host: string, port: number): Promise<boolean> {
   });
 }
 
-const labels = { harness: '\u001b[36m', preview: '\u001b[35m', app: '\u001b[32m' } as const;
+const labels = {
+  harness: '\u001b[36m',
+  preview: '\u001b[35m',
+  app: '\u001b[32m',
+  agent: '\u001b[33m',
+} as const;
 const children = new Set<ChildProcess>();
 let closing = false;
 let cleanup: Promise<void> | undefined;
@@ -223,15 +228,41 @@ while (Date.now() < deadline) {
 }
 if (Date.now() >= deadline) await stop(1);
 
+const agentDatabaseUrl = process.env.AGENT_DATABASE_URL ?? pgUrl;
+const workflowEnv: NodeJS.ProcessEnv = {
+  ...process.env,
+  DURABLE_HARNESS_URL: harnessUrl,
+  APP_ORIGIN: appOrigin,
+  AGENT_DATABASE_URL: agentDatabaseUrl,
+  // Workflow 在运行时按这个变量动态加载 world，不能打包进 Next 的任何一个 layer。
+  WORKFLOW_TARGET_WORLD: '@workflow/world-postgres',
+  WORKFLOW_POSTGRES_URL: agentDatabaseUrl,
+  WORKFLOW_POSTGRES_JOB_PREFIX: 'paimeng_agent_',
+  // 默认 0 交给 graphile 的 4 小时回收，崩溃恢复会停滞；PR-00 的对照实验见计划 F3。
+  WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS:
+    process.env.WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS ?? '30',
+  WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN: '1',
+  // 独立 worker 只负责调度；workflow 与 step 由 Next 的 flow 路由执行，必须给出可达来源。
+  WORKFLOW_LOCAL_BASE_URL: appOrigin,
+};
 start(
   'app',
   join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'next.cmd' : 'next'),
   ['dev', '--webpack', '--hostname', '127.0.0.1', '--port', String(appPort)],
-  {
-    cwd: root,
-    env: { ...process.env, DURABLE_HARNESS_URL: harnessUrl, APP_ORIGIN: appOrigin },
-  },
+  { cwd: root, env: workflowEnv },
 );
+if ((process.env.GENERATION_ENGINE ?? 'harness') === 'agent')
+  start(
+    'agent',
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      '--conditions=react-server',
+      join(root, 'src', 'server', 'generation', 'agent', 'worker.ts'),
+    ],
+    { cwd: root, env: workflowEnv },
+  );
 start(
   'preview',
   join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'tsx.cmd' : 'tsx'),

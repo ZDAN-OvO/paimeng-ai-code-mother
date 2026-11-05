@@ -25,3 +25,7 @@ migrations/
 .pi/
 .audit/
 paimeng-ai-code-agent/
+
+# withWorkflow 生成的 flow 路由、step 注册表与 manifest 不进版本库
+src/app/.well-known/
+spike/

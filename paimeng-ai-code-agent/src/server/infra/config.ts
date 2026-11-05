@@ -16,6 +16,21 @@ const booleanFlag = (value: unknown) => {
 };
 const environment = z.object({
   DATABASE_URL: z.string().default('postgres://postgres:postgres@127.0.0.1:5432/paimeng_app'),
+  AGENT_DATABASE_URL: z.preprocess(
+    blankAsUnset,
+    z
+      .string()
+      .default(
+        process.env.DURABLE_PG_URL ?? 'postgres://postgres:postgres@127.0.0.1:5432/paimeng_agent',
+      ),
+  ),
+  GENERATION_ENGINE: z.preprocess(
+    (value) => {
+      const text = blankAsUnset(value);
+      return typeof text === 'string' ? text.trim().toLowerCase() : text;
+    },
+    z.enum(['harness', 'agent']).default('harness'),
+  ),
   REDIS_URL: z.preprocess(blankAsUnset, z.url().default('redis://127.0.0.1:6379')),
   APP_ORIGIN: z.url().default('http://localhost:3000'),
   PREVIEW_ORIGIN: z.url().default('http://127.0.0.1:3001'),
@@ -156,6 +171,10 @@ export function getConfig() {
   }
   if (!/^paimeng_app(?:_test)?$/.test(db.pathname.slice(1)))
     throw new Error('DATABASE_URL 必须指向独立的 paimeng_app 或 paimeng_app_test 数据库');
+  const agentDb = new URL(env.AGENT_DATABASE_URL);
+  if (agentDb.protocol !== 'postgres:') throw new Error('AGENT_DATABASE_URL 必须使用 Postgres');
+  if (!/^paimeng_agent(?:_test)?$/.test(agentDb.pathname.slice(1)))
+    throw new Error('AGENT_DATABASE_URL 必须指向独立的 paimeng_agent 或 paimeng_agent_test 数据库');
   if (new URL(env.APP_ORIGIN).origin === new URL(env.PREVIEW_ORIGIN).origin)
     throw new Error('预览与管理端必须使用不同来源');
   if (new URL(env.APP_ORIGIN).hostname === new URL(env.PREVIEW_ORIGIN).hostname)
@@ -188,6 +207,8 @@ export function getConfig() {
   const webAccessAllowNetworks = parseExtraNetworks(csv(env.WEB_ACCESS_ALLOW_NETWORKS));
   return {
     databaseUrl: env.DATABASE_URL,
+    agentDatabaseUrl: env.AGENT_DATABASE_URL,
+    generationEngine: env.GENERATION_ENGINE,
     redisUrl: env.REDIS_URL,
     appOrigin: new URL(env.APP_ORIGIN).origin,
     previewOrigin: new URL(env.PREVIEW_ORIGIN).origin,

@@ -1,7 +1,10 @@
+import { withWorkflow } from 'workflow/next';
 import type { NextConfig } from 'next';
 const config: NextConfig = {
   poweredByHeader: false,
   devIndicators: false,
+  // Next 16 的浏览器端 HMR 握手按来源校验；不列出来时 Start 之类的按钮事件不生效（PR-00 F1）。
+  allowedDevOrigins: ['127.0.0.1', 'localhost'],
   // 隔离的 dev 检查（npm run test:e2e:dev）要在你已占着 3000 的同一个工程目录里再起一个 dev server；
   // Next 16 用 <distDir>/dev/lock 做单例锁，换一个 distDir 就能并行。默认行为不变。
   distDir: process.env.NEXT_DIST_DIR ?? '.next',
@@ -25,7 +28,14 @@ const config: NextConfig = {
     'next-server': ['runtime/**/*', '.env', '.env.*'],
   },
   turbopack: { root: process.cwd() },
-  serverExternalPackages: ['archiver', 'playwright'],
+  // Workflow 的 world 带动态 require 与 Node 内建依赖，必须在运行时从 node_modules 解析。
+  serverExternalPackages: [
+    'archiver',
+    'playwright',
+    '@workflow/world-postgres',
+    'graphile-worker',
+    'graceful-fs',
+  ],
   experimental: { cpus: 2 },
 };
-export default config;
+export default withWorkflow(config);

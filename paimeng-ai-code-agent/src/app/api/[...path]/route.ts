@@ -41,6 +41,7 @@ import { pendingSettlements, reconcileSettlements } from '@/server/billing/settl
 import { uploadImages } from '@/server/generation/image-upload';
 import { transcribeEnabled, transcribeSpeech } from '@/server/generation/speech';
 import { readAttachmentOriginal } from '@/server/generation/attachment-store';
+import { getConfig } from '@/server/infra/config';
 import { idSchema } from '@/shared/contracts';
 import {
   adminCreditLedgerQuerySchema,
@@ -52,6 +53,11 @@ import {
   reconcileRequestSchema,
 } from '@/shared/billing';
 import { versionIdSchema } from '@/shared/versioning';
+
+// agent 引擎按需加载：world-postgres 带动态 require，静态进 API 路由包会让整条 /api 路径启动失败。
+const agentEngine = () => import('@/server/generation/agent/run');
+const agentStore = () => import('@/server/generation/agent/run-store');
+
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 async function dispatch(req: Request, context: { params: Promise<{ path: string[] }> }) {
@@ -101,6 +107,48 @@ async function dispatch(req: Request, context: { params: Promise<{ path: string[
         const id = idSchema.parse(query.get('appId'));
         await business.getApp(id, user, true, true);
         return success(await generationStatus(id));
+      }
+      if (path === 'app/agent/messages') {
+        const user = await requireUser(req);
+        const appId = idSchema.parse(query.get('appId'));
+        await business.getApp(appId, user, true);
+        if (getConfig().generationEngine !== 'agent')
+          throw new BusinessError(409, 40900, '当前生成引擎不是 agent');
+        const transcript = await import('@/server/generation/agent/transcript');
+        const conversationId = await transcript.conversationOf(appId);
+        return success(conversationId ? await transcript.loadMessages(conversationId) : []);
+      }
+      if (path === 'app/agent/run') {
+        const user = await requireUser(req);
+        const runId = z.string().trim().min(1).max(64).parse(query.get('runId'));
+        const run = await (await agentStore()).getAgentRun(runId);
+        if (!run) throw new BusinessError(404, 40400, '运行不存在');
+        await business.getApp(run.appId, user, true);
+        return success(run);
+      }
+      if (path === 'app/agent/stream') {
+        const user = await requireUser(req);
+        const runId = z.string().trim().min(1).max(64).parse(query.get('runId'));
+        const record = await (await agentStore()).getAgentRun(runId);
+        if (!record) throw new BusinessError(404, 40400, '运行不存在');
+        await business.getApp(record.appId, user, true);
+        const { getRun } = await import('workflow/api');
+        const run = getRun(runId);
+        // WorkflowAgent 写出的是 ModelCallStreamPart，这里按行转成 JSON，后续接 UI chunk 转换。
+        const encoder = new TextEncoder();
+        const body = run.getReadable().pipeThrough(
+          new TransformStream({
+            transform(part, controller) {
+              controller.enqueue(encoder.encode(`${JSON.stringify(part)}\n`));
+            },
+          }),
+        );
+        return new Response(body, {
+          headers: {
+            'content-type': 'text/plain; charset=utf-8',
+            'cache-control': 'no-store',
+          },
+        });
       }
       if (path === 'app/generation/accounts') {
         const user = await requireUser(req);
@@ -320,6 +368,23 @@ async function dispatch(req: Request, context: { params: Promise<{ path: string[
         return withHeartbeat(async () => success(await business.rebuildPreview(value, user)));
       if (path === 'app/versions/restore')
         return withHeartbeat(async () => success(await business.restoreAppVersion(value, user)));
+      if (path === 'app/agent/echo') {
+        const request = z
+          .object({ appId: idSchema, text: z.string().trim().min(1).max(2000) })
+          .parse(value);
+        const app = await business.getApp(request.appId, user, true);
+        if (getConfig().generationEngine !== 'agent')
+          throw new BusinessError(409, 40900, '当前生成引擎不是 agent');
+        return success(
+          await (
+            await agentEngine()
+          ).startEchoRun({
+            appId: String(app.id),
+            userId: String(user.id),
+            prompt: request.text,
+          }),
+        );
+      }
       if (path === 'app/chat/gen/code') return await harnessChatResponse(req, value, user);
       if (path === 'app/generation/cancel') {
         const appId = z.object({ appId: idSchema }).parse(value).appId;

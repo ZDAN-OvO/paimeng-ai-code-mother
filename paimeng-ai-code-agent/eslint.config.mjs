@@ -16,6 +16,8 @@ export default defineConfig([
     'runtime/**',
     // Local-only spike packages are never committed; linting them gates commits on scratch code.
     'spike/**',
+    // withWorkflow 生成的 flow 路由与 step 注册表，不进版本库。
+    'src/app/.well-known/**',
     'coverage/**',
     'playwright-report/**',
     'test-results/**',
