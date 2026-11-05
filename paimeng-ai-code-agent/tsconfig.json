@@ -25,5 +25,5 @@
     ".next/dev-check/types/**/*.ts",
     ".next/dev-check/dev/types/**/*.ts"
   ],
-  "exclude": ["node_modules", "runtime", "templates"]
+  "exclude": ["node_modules", "runtime", "templates", "spike"]
 }
