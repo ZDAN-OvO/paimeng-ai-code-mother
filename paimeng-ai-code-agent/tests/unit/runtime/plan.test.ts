@@ -89,6 +89,10 @@ describe('运行时容器定义', () => {
     expect(command).toContain('--store-dir=/store');
     expect(command).toContain('--virtual-store-dir=/store/apps/x/.paimeng-virtual');
     expect(command).toContain('--frozen-lockfile');
+    // 新工程还没有锁时安装要能生成锁，不能继续用冻结模式把安装挡死。
+    expect(
+      installCommand({ packageManager: 'pnpm', hasLockfile: false, virtualStore: '/store/x' }),
+    ).toContain('--no-frozen-lockfile');
     expect(installCommand({ packageManager: 'npm', hasLockfile: true, virtualStore: '' })).toEqual([
       'npm',
       'ci',

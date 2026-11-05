@@ -13,7 +13,6 @@ import {
   runtimeVirtualStore,
 } from '@/server/runtime/plan';
 import { docker, removeContainer } from '@/server/runtime/container';
-import { runInRuntime } from '@/server/runtime/commands';
 import {
   buildProject,
   ensureDependencies,
@@ -95,22 +94,6 @@ beforeAll(async () => {
     120_000,
   );
   container = name;
-  // 依赖核心按锁文件判断包管理器；新工程由生成端先产出锁，这里用同一容器补出锁文件。
-  const locked = await runInRuntime({
-    container,
-    command: [
-      'pnpm',
-      'install',
-      '--lockfile-only',
-      '--ignore-scripts',
-      '--reporter=append-only',
-      '--store-dir=/store',
-      '--virtual-store-dir=' + runtimeVirtualStore(app),
-    ],
-    workdir: '/work',
-    timeoutMs: 300_000,
-  });
-  expect(locked.exitCode, locked.output).toBe(0);
 }, 600_000);
 
 afterAll(async () => {

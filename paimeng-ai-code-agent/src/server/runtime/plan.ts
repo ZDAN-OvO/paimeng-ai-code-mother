@@ -35,6 +35,12 @@ export function runtimeVirtualStore(app: RuntimeApp) {
 
 /** dev server 在容器内的固定端口；宿主端口由 Docker 随机分配并记录。 */
 export const RUNTIME_DEV_PORT = 5173;
+/**
+ * 容器的主进程（保活）。它把自己的 pid 写进容器内的 pid 文件，停止屏障按文件保留它和它的子进程；
+ * 把它杀掉等于结束容器，`docker exec` 会一起被终止。按 pid 文件识别，不靠命令行签名。
+ */
+export const RUNTIME_KEEPALIVE_PID_FILE = '/tmp/paimeng-keep.pid';
+export const RUNTIME_KEEPALIVE = `echo $$ > ${RUNTIME_KEEPALIVE_PID_FILE}; trap "" TERM; while :; do sleep 3600; done`;
 /** 容器名前缀；supervisor 对账与测试都按它识别「本平台的运行时容器」。 */
 export const RUNTIME_CONTAINER_PREFIX = 'paimeng-app-runtime-';
 /** 平台在容器里跑 dev server 的日志文件；`.paimeng-` 前缀让它不进版本、文件工具也读不到。 */
@@ -55,6 +61,11 @@ export function appRuntimeKey(app: RuntimeApp) {
  */
 export function runtimeContainerName(app: RuntimeApp, runId: string) {
   return `${RUNTIME_CONTAINER_PREFIX}${runId}-${appRuntimeKey(app)}`;
+}
+
+/** 台账里的容器名是否属于本轮：对账与容量只处理本轮的行，不碰别的 checkout。 */
+export function runtimeBelongsToRun(containerName: string, runId: string) {
+  return containerName.startsWith(`${RUNTIME_CONTAINER_PREFIX}${runId}-`);
 }
 
 /** 按运行标识过滤容器；对账与清理都只碰本轮自己的容器。 */
@@ -158,7 +169,7 @@ export function runtimeRunArgs(input: RuntimeRunInput): string[] {
     ...runtimeEnvironment({ registry: input.registry, virtualStore: input.virtualStore }).flatMap(value => ['--env', value]),
     '--workdir', RUNTIME_WORKDIR,
     input.image,
-    'sh', '-lc', 'while :; do sleep 3600; done',
+    'sh', '-lc', RUNTIME_KEEPALIVE,
   ];
 }
 
@@ -166,7 +177,7 @@ export function runtimeRunArgs(input: RuntimeRunInput): string[] {
 export function installCommand(input: { packageManager: 'npm' | 'pnpm'; hasLockfile: boolean; virtualStore: string }): string[] {
   if (input.packageManager === 'pnpm') {
     // 镜像里装了固定版本的 pnpm；直接用它，避免 corepack 每次再下载一份。
-    return ['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts', '--reporter=append-only', '--store-dir=' + RUNTIME_STORE, '--virtual-store-dir=' + input.virtualStore];
+    return ['pnpm', 'install', input.hasLockfile ? '--frozen-lockfile' : '--no-frozen-lockfile', '--ignore-scripts', '--reporter=append-only', '--store-dir=' + RUNTIME_STORE, '--virtual-store-dir=' + input.virtualStore];
   }
   return ['npm', input.hasLockfile ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund'];
 }

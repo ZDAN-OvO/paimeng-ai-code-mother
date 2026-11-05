@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { assertNoNpmrc, assertRegistryDependencies, DependencySourceError } from './dependency-policy';
+import { getConfig } from '../infra/config';
 import { runInRuntime, type CommandResult } from './commands';
 import { installCommand, runtimeVirtualStore, RUNTIME_WORKDIR, type RuntimeApp } from './plan';
 
@@ -17,7 +18,10 @@ export type PackageManager = 'npm' | 'pnpm';
 
 const lockfiles: Record<PackageManager, string> = { npm: 'package-lock.json', pnpm: 'pnpm-lock.yaml' };
 
-/** 静态模板没有依赖；工程模板用哪个包管理器由锁文件决定，和模板注册表解耦。 */
+/**
+ * 静态模板没有依赖；工程模板用哪个包管理器由锁文件决定，和模板注册表解耦。
+ * 还没有锁的新工程按 pnpm 装（镜像里固定了版本），安装本身会生成锁文件。
+ */
 export async function detectPackageManager(root: string): Promise<PackageManager | null> {
   for (const manager of ['pnpm', 'npm'] as const) {
     try {
@@ -26,6 +30,11 @@ export async function detectPackageManager(root: string): Promise<PackageManager
     } catch {
       // 没有这个锁文件，继续看下一个。
     }
+  }
+  try {
+    if ((await stat(join(root, 'package.json'))).isFile()) return 'pnpm';
+  } catch {
+    // 没有清单：静态工程，不需要安装。
   }
   return null;
 }
@@ -66,9 +75,14 @@ export async function assertDependencySources(root: string): Promise<void> {
   );
   assertNoNpmrc(present);
   const manifest = await readFile(join(root, 'package.json'), 'utf8');
-  const manager = await detectPackageManager(root);
-  const lock = manager ? await readFile(join(root, lockfiles[manager]), 'utf8').catch(() => null) : null;
-  assertRegistryDependencies({ manifest, lockfile: lock });
+  const manager = (await detectPackageManager(root)) ?? 'pnpm';
+  const lock = await readFile(join(root, lockfiles[manager]), 'utf8').catch(() => null);
+  assertRegistryDependencies({
+    manifest,
+    lockfile: lock,
+    manager,
+    registry: getConfig().buildNpmRegistry,
+  });
 }
 
 export type InstallResult = { installed: boolean; command: string[] };

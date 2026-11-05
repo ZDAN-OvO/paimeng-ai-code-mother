@@ -3,7 +3,8 @@
 # 身份只由 BASE_IMAGE 与 PNPM_VERSION 决定（src/server/runtime/plan.ts 的 runtimeImageTag）。
 # 镜像里不放平台代码、不接平台密钥；容器只挂 App 自己的 Workspace 与共享 pnpm store。
 
-ARG BASE_IMAGE=node:24-alpine
+# 基础镜像按 digest 固定：标签会漂移，镜像身份不能跟着漂移。
+ARG BASE_IMAGE=node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53
 FROM ${BASE_IMAGE}
 
 ARG PNPM_VERSION=10.18.3

@@ -89,7 +89,12 @@ export async function removeContainer(ref: string): Promise<void> {
   await docker(['rm', '-f', ref], 30_000).catch(() => undefined);
 }
 
-export type ManagedContainer = { id: string; name: string; appKey: string | null };
+/** 必须成功才释放槽位的删除：容量回收只有在容器真的没了之后才能把行标成 stopped。 */
+export async function removeContainerStrict(ref: string): Promise<void> {
+  await docker(['rm', '-f', ref], 30_000);
+}
+
+export type ManagedContainer = { id: string; name: string; appKey: string | null; running: boolean };
 
 /**
  * 按平台标签列出本平台管理的容器。supervisor 重启、或台账与 Docker 不一致时，
@@ -105,7 +110,7 @@ export async function listManagedContainers(runId: string): Promise<ManagedConta
       '--filter',
       `label=${RUNTIME_RUN_LABEL}=${runId}`,
       '--format',
-      '{{.ID}}\t{{.Names}}\t{{.Labels}}',
+      '{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Labels}}',
     ],
     20_000,
   );
@@ -114,11 +119,16 @@ export async function listManagedContainers(runId: string): Promise<ManagedConta
     .split('\n')
     .filter(Boolean)
     .map((line) => {
-      const [id, name, labels = ''] = line.split('\t');
+      const [id, name, state = '', labels = ''] = line.split('\t');
       const appLabel = labels
         .split(',')
         .map((value) => value.trim())
         .find((value) => value.startsWith(`${RUNTIME_APP_LABEL}=`));
-      return { id, name, appKey: appLabel ? appLabel.slice(RUNTIME_APP_LABEL.length + 1) : null };
+      return {
+        id,
+        name,
+        appKey: appLabel ? appLabel.slice(RUNTIME_APP_LABEL.length + 1) : null,
+        running: state === 'running',
+      };
     });
 }

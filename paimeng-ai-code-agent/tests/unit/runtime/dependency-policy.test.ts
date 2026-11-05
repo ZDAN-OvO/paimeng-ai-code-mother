@@ -82,4 +82,49 @@ describe('依赖来源策略：package.json 只接受 registry 包名与版本�
       }),
     ).toThrow(/依赖来源不被允许/);
   });
+
+  it('YAML 转义不能把 registry 以外的地址藏过检查', () => {
+    const escaped = [
+      "lockfileVersion: '9.0'",
+      'packages:',
+      '  dayjs@1.11.13:',
+      '    resolution: {"tarball": "\\u0068ttps://evil.invalid/dayjs.tgz"}',
+      '',
+    ].join('\n');
+    expect(() => assertRegistryDependencies({ manifest: manifest(), lockfile: escaped })).toThrow(
+      /依赖来源不被允许/,
+    );
+  });
+
+  it('npm 的 package-lock.json 只接受 registry 解析；link 与本地地址拒绝', () => {
+    const npmLock = (entry: Record<string, unknown>) =>
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          '': { dependencies: { dayjs: '^1.11.0' } },
+          'node_modules/dayjs': { version: '1.11.13', ...entry },
+        },
+      });
+    expect(() =>
+      assertRegistryDependencies({
+        manifest: manifest(),
+        lockfile: npmLock({ resolved: 'https://registry.npmjs.org/dayjs/-/dayjs-1.11.13.tgz' }),
+        manager: 'npm',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertRegistryDependencies({
+        manifest: manifest(),
+        lockfile: npmLock({ resolved: 'https://evil.invalid/dayjs.tgz' }),
+        manager: 'npm',
+      }),
+    ).toThrow(/依赖来源不被允许/);
+    expect(() =>
+      assertRegistryDependencies({
+        manifest: manifest(),
+        lockfile: npmLock({ link: true }),
+        manager: 'npm',
+      }),
+    ).toThrow(/依赖来源不被允许/);
+  });
 });

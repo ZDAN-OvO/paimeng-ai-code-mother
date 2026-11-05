@@ -3,7 +3,8 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, now } from '../infra/db';
 import { appAuthority, appRuntimes, type AppRuntimeStatus } from '../infra/schema';
 import { idSchema } from '@/shared/contracts';
-import type { RuntimeApp } from './plan';
+import { runtimeBelongsToRun, type RuntimeApp } from './plan';
+import { runtimeTimeMs } from './capacity';
 
 /**
  * App runtime 的持久台账（migrations/023_app_runtime.sql）。
@@ -134,6 +135,133 @@ export async function markAppRuntimeStopped(app: RuntimeApp, error: string): Pro
     .where(and(eq(appRuntimes.appId, appIdOf(app)), inArray(appRuntimes.status, ['starting', 'ready'])))
     .returning({ containerId: appRuntimes.containerId });
   return row?.containerId ?? null;
+}
+
+/** 本轮台账行：别的 checkout 的行不参与对账、容量与恢复。 */
+export async function listRunRuntimes(
+  runId: string,
+  statuses?: readonly AppRuntimeStatus[],
+): Promise<AppRuntimeRecord[]> {
+  const rows = await listAppRuntimes(statuses);
+  return rows.filter((row) => runtimeBelongsToRun(row.containerName, runId));
+}
+
+/** 回收失败时把行还原，避免容器还在跑、槽位却已经释放。 */
+export async function restoreAppRuntime(record: AppRuntimeRecord): Promise<void> {
+  await saveAppRuntime({ id: record.appId, codeGenType: 'react_project' }, {
+    containerId: record.containerId,
+    containerName: record.containerName,
+    port: record.port,
+    imageIdentity: record.imageIdentity,
+    workspaceRoot: record.workspaceRoot,
+    status: record.status,
+    lockDigest: record.lockDigest,
+    lastError: record.lastError,
+    lastActivityAt: record.lastActivityAt,
+  });
+}
+
+export type SlotClaim = {
+  claim: 'reserved' | 'busy' | 'full';
+  evicted: { appId: string; containerId: string }[];
+};
+
+/**
+ * 跨进程的槽位准入：在一个 Postgres 事务里持有 advisory lock，数本轮活跃 runtime、挑 LRU 牺牲者、
+ * 写入自己的预留行。Docker 启停都在事务外做，槽位事实先落库，别的进程数得到。
+ *
+ * `busy` 表示同一 App 的另一进程正在启动；`full` 表示没有可驱逐的 runtime（都在写）。
+ */
+export async function claimRuntimeSlot(input: {
+  app: RuntimeApp;
+  runId: string;
+  maxSlots: number;
+  staleMs: number;
+  containerName: string;
+  port: number;
+  imageIdentity: string;
+  workspaceRoot: string;
+}): Promise<SlotClaim> {
+  const appId = appIdOf(input.app);
+  return db().transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext('paimeng-app-runtime'))`);
+    const at = now();
+    const rows = (await tx.select().from(appRuntimes)).filter(
+      (row) =>
+        (row.status === 'starting' || row.status === 'ready') &&
+        runtimeBelongsToRun(row.containerName, input.runId),
+    );
+    const own = rows.find((row) => row.appId === appId);
+    if (own && own.status === 'starting' && Date.now() - runtimeTimeMs(own.updateTime) < input.staleMs) {
+      return { claim: 'busy' as const, evicted: [] };
+    }
+    const others = rows.filter((row) => row.appId !== appId);
+    const evicted: { appId: string; containerId: string }[] = [];
+    let active = others.length + 1;
+    if (active > input.maxSlots) {
+      const privileged = new Set(
+        (
+          await tx
+            .select({ appId: appAuthority.appId })
+            .from(appAuthority)
+            .where(
+              and(
+                inArray(
+                  appAuthority.appId,
+                  others.map((row) => row.appId),
+                ),
+                inArray(appAuthority.state, ['active', 'draining']),
+                sql`(${appAuthority.expiresAt} is null or ${appAuthority.expiresAt} > timezone('UTC', now()))`,
+              ),
+            )
+        ).map((row) => String(row.appId)),
+      );
+      const victims = others
+        .filter((row) => row.status === 'ready' && !privileged.has(String(row.appId)))
+        .sort((left, right) => runtimeTimeMs(left.lastActivityAt) - runtimeTimeMs(right.lastActivityAt));
+      for (const victim of victims) {
+        if (active <= input.maxSlots) break;
+        await tx
+          .update(appRuntimes)
+          .set({ status: 'stopped', lastError: '为新的运行时让出槽位', updateTime: at })
+          .where(and(eq(appRuntimes.appId, victim.appId), eq(appRuntimes.status, 'ready')));
+        evicted.push({ appId: String(victim.appId), containerId: victim.containerId });
+        active -= 1;
+      }
+      if (active > input.maxSlots) return { claim: 'full' as const, evicted };
+    }
+    await tx
+      .insert(appRuntimes)
+      .values({
+        appId,
+        containerId: '',
+        containerName: input.containerName,
+        port: input.port,
+        imageIdentity: input.imageIdentity,
+        workspaceRoot: input.workspaceRoot,
+        status: 'starting',
+        lockDigest: null,
+        lastError: null,
+        lastActivityAt: at,
+        createTime: at,
+        updateTime: at,
+      })
+      .onConflictDoUpdate({
+        target: appRuntimes.appId,
+        set: {
+          containerId: '',
+          containerName: input.containerName,
+          port: input.port,
+          imageIdentity: input.imageIdentity,
+          workspaceRoot: input.workspaceRoot,
+          status: 'starting',
+          lastError: null,
+          lastActivityAt: at,
+          updateTime: at,
+        },
+      });
+    return { claim: 'reserved' as const, evicted };
+  });
 }
 
 /** 批量读「哪些 App 正在持有写权限」：容量回收/驱逐一次查完，避免逐个 App 发查询。 */

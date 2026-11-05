@@ -12,10 +12,13 @@ try {
   console.warn('未找到 .env，直接使用当前环境变量');
 }
 
-// 每轮一个运行标识：runtime 容器名、标签和 store 目录都按它隔离；显式设置时沿用调用方的。
+// 每轮一个运行标识：runtime 容器名、标签和 store 目录都按它隔离。
+// 旧文档里的 `default` 是两个 checkout 共用的坑，按未设置处理，强制生成本轮唯一值。
+const explicitRunId = process.env.RUNTIME_RUN_ID;
 const runId =
-  process.env.RUNTIME_RUN_ID ??
-  `dev-${process.pid.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  explicitRunId && explicitRunId !== 'default'
+    ? explicitRunId
+    : `dev-${process.pid.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 process.env.RUNTIME_RUN_ID = runId;
 
 const pgUrl =

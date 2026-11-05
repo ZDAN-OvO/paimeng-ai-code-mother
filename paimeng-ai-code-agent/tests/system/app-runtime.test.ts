@@ -28,7 +28,13 @@ import {
 } from '@/server/runtime/container';
 import { runInRuntime } from '@/server/runtime/commands';
 import { ensureDependencies } from '@/server/runtime/dependencies';
-import { prepareRuntimeImage } from '@/server/runtime/supervisor';
+import { stopRuntimeWriters } from '@/server/runtime/barrier';
+import {
+  ensureAppRuntime,
+  prepareRuntimeImage,
+  reconcileRuntime,
+} from '@/server/runtime/supervisor';
+import { readAppRuntime, saveAppRuntime } from '@/server/runtime/store';
 
 const exec = promisify(execFile);
 
@@ -151,8 +157,9 @@ async function findPackageFile(
   return null;
 }
 
+/** 实际分配的空间（块），不是 apparent size：共享包的价值在于宿主上只存一份块。 */
 async function directorySize(path: string): Promise<number> {
-  const { stdout } = await exec('du', ['-sb', path]);
+  const { stdout } = await exec('du', ['-sB1', path]);
   return Number(stdout.split('\t')[0]);
 }
 
@@ -218,6 +225,19 @@ afterAll(async () => {
 }, 120_000);
 
 describe('App runtime 执行环境', () => {
+  it('全新一轮的 store 目录由 supervisor 自己建出来，不依赖测试先 mkdir', async () => {
+    const fixture = await newProject(await newAppRow());
+    const name = runtimeContainerName(fixture.app, config.appRuntime.runId);
+    containers.push(name);
+    // 模拟第一次运行：本轮目录不存在，createContainer 必须补出 runs/<runId>/store。
+    await rm(storeRoot, { recursive: true, force: true });
+
+    const view = await ensureAppRuntime({ app: fixture.app, workspaceRoot: fixture.root });
+    expect((await stat(storeRoot)).isDirectory()).toBe(true);
+    // fixture 没有 dev server，失败可以接受；失败原因必须来自 dev server，而不是目录不存在。
+    expect(view.error ?? '').not.toMatch(/ENOENT/);
+  }, 300_000);
+
   it('容器以宿主 uid 写出文件，宿主可直接删除；容器带平台标签，supervisor 重启后按标签认得它', async () => {
     const fixture = await newProject(await newAppRow());
     const image = await prepareRuntimeImage();
@@ -317,7 +337,8 @@ describe('App runtime 执行环境', () => {
     const firstShare = await directorySize(join(storeRoot, 'apps', appRuntimeKey(first.app)));
     const incremental = storeAfter - storeBefore;
     record('storeIncrementalBytes', incremental);
-    expect(incremental).toBeLessThanOrEqual(Math.max(firstShare * 0.2, 1024 * 1024));
+    // 计划的上限是严格 20%，没有给小工程的兜底；用实际分配块，不用 apparent size。
+    expect(incremental).toBeLessThanOrEqual(firstShare * 0.2);
   }, 600_000);
 
   it('--init 回收被遗留的孤儿进程；没有 --init 的控制组会累积僵尸', async () => {
@@ -359,5 +380,68 @@ describe('App runtime 执行环境', () => {
     record('zombiesWithoutInit', plainZombies);
     expect(withInitZombies).toBe(0);
     expect(plainZombies).toBeGreaterThan(0);
+  }, 300_000);
+
+  it('停止屏障清掉 detached、setsid、忽略 TERM 的写者，屏障后 5 秒源码不再变化', async () => {
+    const fixture = await newProject(await newAppRow());
+    const image = await prepareRuntimeImage();
+    const name = await startContainer(fixture, image, { init: true });
+
+    const spawned = await runInRuntime({
+      container: name,
+      command: [
+        'sh',
+        '-lc',
+        [
+          'for i in $(seq 1 50); do (while :; do date +%s%N >> /work/writers.log; sleep 0.05; done) & done',
+          'setsid sh -c \'trap "" TERM; while :; do echo x >> /work/ignored-term.log; sleep 0.05; done\' >/dev/null 2>&1 &',
+          'exit 0',
+        ].join('\n'),
+      ],
+      timeoutMs: 30_000,
+    });
+    expect(spawned.exitCode, spawned.output).toBe(0);
+    await new Promise((done) => setTimeout(done, 1200));
+
+    const result = await stopRuntimeWriters({
+      container: name,
+      workspaceRoot: fixture.root,
+      observeMs: 5_000,
+    });
+    record('barrier', {
+      killed: result.killed,
+      survivors: result.survivors,
+      zombies: result.zombies,
+      stable: result.stable,
+    });
+    expect(result.killed).toBeGreaterThan(0);
+    expect(result.survivors).toBe(0);
+    expect(result.zombies).toBe(0);
+    expect(result.stable).toBe(true);
+  }, 300_000);
+
+  it('容器被 kill 后对账把台账标成 stopped，并清掉 exited 容器', async () => {
+    const fixture = await newProject(await newAppRow());
+    const image = await prepareRuntimeImage();
+    const name = await startContainer(fixture, image, { init: true });
+    const state = await containerState(name, RUNTIME_DEV_PORT);
+    await saveAppRuntime(fixture.app, {
+      containerId: state.id!,
+      containerName: name,
+      port: state.port ?? RUNTIME_DEV_PORT,
+      imageIdentity: image.identity,
+      workspaceRoot: fixture.root,
+      status: 'ready',
+      lockDigest: null,
+      lastError: null,
+    });
+
+    await docker(['kill', name], 30_000);
+    await new Promise((done) => setTimeout(done, 500));
+    const outcome = await reconcileRuntime();
+    record('reconcileStopped', outcome.stopped);
+    expect(outcome.skipped).not.toBe(true);
+    expect(outcome.stopped).toContain(fixture.app.id);
+    expect((await readAppRuntime(fixture.app))?.status).toBe('stopped');
   }, 300_000);
 });
