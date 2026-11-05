@@ -14,6 +14,8 @@ export default defineConfig([
     'out/**',
     'build/**',
     'runtime/**',
+    // Local-only spike packages are never committed; linting them gates commits on scratch code.
+    'spike/**',
     'coverage/**',
     'playwright-report/**',
     'test-results/**',
