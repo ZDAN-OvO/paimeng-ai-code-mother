@@ -37,7 +37,7 @@ const rules: readonly Rule[] = [
   },
   {
     pattern:
-      /(?:runtime\/evidence|\.agents\/skills\/verify-paimeng|verify-paimeng-agent\/evidences|['"`]evidences\/)/,
+      /(?:runtime\/evidence|\.(?:agents|pi|claude)\/skills\/verify-paimeng|verify-paimeng-agent\/evidences|['"`]evidences\/)/,
     advice:
       'E2E 证据位置由 tests/e2e/support/evidence.ts 决定（默认 runtime/evidence，验证技能用 E2E_EVIDENCE_ROOT 改写）；spec 里只能用 evidenceDir/evidencePath，不要自己拼目录',
   },

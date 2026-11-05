@@ -1,6 +1,7 @@
 import type { UIMessage } from 'ai';
 import type { AttachmentPart } from '@/shared/attachments';
 import type {
+  ChatInput,
   ChatInputMode,
   ChatInputReceipt,
   ChatMessage,
@@ -47,12 +48,8 @@ export type SentInputs = {
   boundaries: Record<string, { boundary: number; messageId: string | null }>;
 };
 
-export type InputEntry = {
-  id: string;
-  mode: ChatInputMode;
-  text: string;
-  attachments: AttachmentPart[];
-};
+/** 本地队列里的输入：服务端 schema 去掉应用 id（由请求路径决定），文本提交前不做 trim。 */
+export type InputEntry = Omit<ChatInput, 'appId' | 'text'> & { text: string };
 
 /** 终态收尾时转录里没有的输入：它没进这一轮对话，要连附件一起保留下来让用户重发或移除。 */
 export type LostInput = InputEntry;

@@ -26,6 +26,11 @@ type EditForm = { appName: string; cover?: string; priority?: number };
 
 export default function AppEdit({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  // 换一个应用就重挂：上一个应用的表单值和读取状态不会带进新的 id。
+  return <AppEditBody key={id} id={id} />;
+}
+
+function AppEditBody({ id }: { id: string }) {
   const { user, loading } = useAuth();
   const router = useRouter();
   const { message } = AntApp.useApp();

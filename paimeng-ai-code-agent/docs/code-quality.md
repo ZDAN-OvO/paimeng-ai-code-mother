@@ -40,6 +40,12 @@ GitHub Actions 的默认检查执行 lint、格式检查、项目护栏、类型
 
 `check:ui` 的表单绑定检查按 JSX 语法树识别有 `name` 的 `Form.Item`。它拒绝直接的布局包装元素和显式空白表达式，避免 antd 丢失注入的 `value` / `onChange`；普通文案中的 Prettier `{' '}` 不受限制。对应回归用例见 [ui-patterns.test.ts](../tests/unit/infra/ui-patterns.test.ts)。
 
+antd v6 的废弃属性同样按语法树检查，规则只认一张表：[ui-patterns.ts](../scripts/lib/ui-patterns.ts) 的 `antdDeprecatedProps`（组件、属性、替代写法）。这些属性只在开发构建里告警，生产构建和隔离 E2E 都看不见；再踩一次就往表里加一行，不要为单个组件另写一条正则。
+
+## 测试归属
+
+`check:ci` 读 [check-ci-coverage.ts](../scripts/verify/check-ci-coverage.ts) 的表，要求每个 `test*` 脚本都写明它在哪条流水线执行，并核对表与 `tests.yml` 一致。今天是：单元测试每次 push 和 PR；集成与 system 只在手动触发的 full job；E2E 与 dev 告警检查只在本机人工执行。新增脚本不填表会直接失败，把「只有作者本机跑过」变成一次显式决定。
+
 ## 维护依据
 
 - [Next.js ESLint 配置](https://nextjs.org/docs/app/api-reference/config/eslint)

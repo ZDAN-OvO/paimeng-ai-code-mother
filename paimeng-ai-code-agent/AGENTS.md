@@ -51,3 +51,21 @@ paimeng-ai-code-agent/
 
 - The repository-root `archive/` Java and Vue code is read-only reference material.
 - End-to-end evidence uses the running development app and its real databases. The Vitest integration harness resets storage and must stay on the isolated `_test` databases; never point a resetting suite at the development databases.
+
+## Rules and what enforces them
+
+Each rule names its enforcer. A row with none is where the next repeat lands: give that rule an enforcer first, then delete the note.
+
+| Rule | Enforcer |
+| --- | --- |
+| antd v6 deprecated props (`Space direction`, `Input addonAfter/addonBefore`, `Drawer width`) | `npm run check:ui`; the table lives in `scripts/lib/ui-patterns.ts` as `antdDeprecatedProps` |
+| A named `Form.Item` binds its control directly | Same check, `formItemWiringViolations` |
+| E2E specs use no hard-coded origins, no `role=option/alert` locators, no hand-built evidence paths | `npm run check:e2e` |
+| A new test script states which pipeline runs it | `npm run check:ci`; the table is `scripts/verify/check-ci-coverage.ts` |
+| Unit tests start no services and open no databases | `tests/support/unit-boundaries.ts`, refused at run time |
+| Nothing uncommitted outside the product directory | `npm run verify:boundary` |
+| A shared shape is declared once, by its schema | Type derivation: `SlotSettingsValues` is a mapped type over `ModelAliasSettings`, capability fields are annotated `ModelAliasCapabilities`; adding a schema field breaks compilation |
+| No state survives an account switch or logout | `AuthContext.sessionKey` plus `Layout.Content key`; covered by `tests/e2e/react-page-lifecycle.spec.ts`, which runs only when E2E is run by hand |
+| A late response cannot overwrite newer state | Per-component sequence numbers and live flags. **No E2E for the edit page**: while a save awaits its refresh the submit control is disabled, so the second save that would race never happens; see the spec header before re-adding one |
+| The client validates response payloads | **None.** `api<T>` validates the envelope only and 45 call sites assert with `as T`. This needs a response schema registry; see the PR body |
+| Integration and E2E run on pull requests | **None.** Pull requests run unit tests and static checks only; see the table in `scripts/verify/check-ci-coverage.ts` |

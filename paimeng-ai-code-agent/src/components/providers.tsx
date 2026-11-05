@@ -1,5 +1,13 @@
 'use client';
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  type ReactNode,
+} from 'react';
 import { ConfigProvider, App as AntApp, Layout, Button, Dropdown, Avatar, Menu } from 'antd';
 import { HomeOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import Link from 'next/link';
@@ -10,8 +18,14 @@ import { api } from '@/client/api';
 const AuthContext = createContext<{
   user: User | null;
   loading: boolean;
+  /**
+   * 身份作用域：登录用户变了（换账号或退出）就 +1。
+   * 页面用 `<X key={sessionKey}>` 挂到它上面，上一位用户留下的组件状态会随重新挂载一起消失，
+   * 不需要每个组件自己判断「这条响应是不是上个用户的」。
+   */
+  sessionKey: number;
   refresh: () => Promise<void>;
-}>({ user: null, loading: true, refresh: async () => {} });
+}>({ user: null, loading: true, sessionKey: 0, refresh: async () => {} });
 export const useAuth = () => useContext(AuthContext);
 
 /** 会话读取失败就是未登录；挂载和登录后的 refresh 共用同一份判断。 */
@@ -25,24 +39,31 @@ async function readSession(): Promise<User | null> {
 export function Providers({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sessionKey, setSessionKey] = useState(0);
   const pathname = usePathname();
   const router = useRouter();
-  const refresh = useCallback(async () => {
-    setUser(await readSession());
+  // 已确认过的身份。首次读会话是 null → 用户，不算切换，避免刚打开页面就整页重挂。
+  const knownIdentity = useRef<string | null>(null);
+  // 登录、退出和挂载会并发读会话；只有最后一次请求能决定当前身份。
+  const sessionTicket = useRef(0);
+  const adopt = useCallback((next: User | null) => {
+    const identity = next?.id ?? null;
+    if (knownIdentity.current !== null && knownIdentity.current !== identity) {
+      setSessionKey((value) => value + 1);
+    }
+    knownIdentity.current = identity;
+    setUser(next);
     setLoading(false);
   }, []);
+  const refresh = useCallback(async () => {
+    const ticket = ++sessionTicket.current;
+    const next = await readSession();
+    if (ticket !== sessionTicket.current) return;
+    adopt(next);
+  }, [adopt]);
   useEffect(() => {
-    // 挂载时读一次会话；组件卸载后到达的响应不再写状态。
-    let live = true;
-    void readSession().then((next) => {
-      if (!live) return;
-      setUser(next);
-      setLoading(false);
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
+    void refresh();
+  }, [refresh]);
   const items = [
     { key: '/', icon: <HomeOutlined />, label: '主页' },
     ...(user ? [{ key: '/billing', label: '我的账单' }] : []),
@@ -63,7 +84,7 @@ export function Providers({ children }: { children: ReactNode }) {
   return (
     <ConfigProvider theme={{ token: { colorPrimary: '#cb573e', colorInfo: '#cb573e' } }}>
       <AntApp>
-        <AuthContext.Provider value={{ user, loading, refresh }}>
+        <AuthContext.Provider value={{ user, loading, sessionKey, refresh }}>
           <Layout className="site-layout">
             <Layout.Header className="site-header">
               <Link className="brand" href="/">
@@ -103,7 +124,10 @@ export function Providers({ children }: { children: ReactNode }) {
                 </Link>
               )}
             </Layout.Header>
-            <Layout.Content className="site-content">{children}</Layout.Content>
+            {/* 换账号或退出后整块内容重挂：上一位用户的页面状态不可能留到新身份下。 */}
+            <Layout.Content key={sessionKey} className="site-content">
+              {children}
+            </Layout.Content>
             {pathname.startsWith('/app/chat/') ? null : (
               <Layout.Footer className="site-footer">
                 <a
