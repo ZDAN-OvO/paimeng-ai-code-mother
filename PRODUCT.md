@@ -38,7 +38,7 @@ Next.js（App Router）+ React + TypeScript，代码位于仓库根。Tailwind C
 
 ## Capabilities and Constraints
 
-- 单用户本地优先，不做注册登录；Studio 默认只监听 `127.0.0.1`。
+- 单用户本地优先，不做注册登录；产品默认只监听 `127.0.0.1`。
 - 生成的应用只在 Docker 沙箱内运行，沙箱默认禁出站。
 - 模型密钥只放在环境变量，不写入数据库、不写入镜像。
 - 不做持久化执行：进程中断即失败，用户重试。
@@ -46,7 +46,7 @@ Next.js（App Router）+ React + TypeScript，代码位于仓库根。Tailwind C
 
 ## Brand
 
-- 产品名：**Paimeng Studio**，中文名保留「派蒙」。
+- 产品名：**Paimeng**，中文名保留「派蒙」。
 - 界面结构与交互对齐 v0：三栏（对话、预览、代码）、版本条、发布按钮。视觉使用 shadcn/ui 默认体系，不做像素级复刻。
 - 中文优先，语气直接、克制、具体。
 

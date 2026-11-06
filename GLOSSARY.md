@@ -1,4 +1,4 @@
-# Paimeng Studio 术语
+# Paimeng 术语
 
 ## 产品结构
 
