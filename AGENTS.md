@@ -1,32 +1,38 @@
 # paimeng-ai-code-mother
 
-AI web-app generator: users describe what they want in natural language; the platform generates, validates, previews and publishes the site.
+开源版 v0：一句话生成完整的 Next.js 应用，沙箱预览，对话迭代，发布。
 
 ## Layering
 
 ```
 /
-├── AGENTS.md               # this file: repo navigation; each subdirectory has its own
-├── PRODUCT.md              # product scope, users, stack, prototype lifecycle
-├── GLOSSARY.md             # domain terms; `_Avoid_` lines list the synonyms not to use
-├── docs/
-│   └── agents/             # engineering-skill config: issue tracker, triage labels, domain docs
-├── archive/                # old Java + Vue code, read-only reference; never current truth
-└── paimeng-ai-code-agent/  # the product (Next.js + TS); its own AGENTS.md takes over
+├── AGENTS.md          # this file: repo navigation and collaboration rules
+├── PRODUCT.md         # product scope, users, constraints
+├── GLOSSARY.md        # domain terms; `_Avoid_` lines list the synonyms not to use
+├── docs/              # architecture.md and adr/
+├── archive/           # old implementations, read-only reference; never current truth
+└── src/, skills/, templates/, config/, migrations/   # the product, once it lands
 ```
 
-This file covers the root level only. Layout, commands and code conventions for `paimeng-ai-code-agent/` live in its own `AGENTS.md` and in the `AGENTS.md` files below it, and must not be duplicated here.
+新代码直接位于仓库根。`archive/` 里的任何东西都不参与构建、不被新代码导入。
 
-## Artifact locality
+## Source of truth
 
-Artifacts follow ownership: project-specific docs, specs, plans and prototypes belong under that project's `docs/`; root `docs/` is for repository-wide concerns. Follow the owning directory's `AGENTS.md` for placement and lifecycle; keep root instructions navigational, with detailed rules in the owning project.
+- 架构与验收契约只在 `docs/architecture.md`。决策的理由在 `docs/adr/`，不在别处复述。
+- 术语以 `GLOSSARY.md` 为准。
+- 不把代码能表达的东西写进文档；文档只解释为什么。
 
 ## Pull request evidence
 
-Evidence is what a reviewer can see, not what a command printed. In a pull request, evidence is a screenshot or a screen recording only; command output, logs, test summaries and JSON dumps may accompany it but never stand in for it.
+证据是评审者能看见的东西，不是命令打印了什么。
 
-- Put screenshots inline, in the description or in a comment on the pull request.
-- A recording plays inline only when it was uploaded as a GitHub attachment. A video file linked from a branch renders as a broken image, whatever its format. Playwright writes `.webm`, so embed a GIF copy (under 10 MB) and link the original, or attach the video through the GitHub web UI. The `verify-paimeng` skill writes that GIF next to every recording, at half speed, because machine-speed UI is not reviewable.
-- Say which state each recording shows.
-- A branch used only to host evidence is fine. Keep it out of the change under review and do not merge it.
-- When a change has no visible surface, say so in the pull request instead of substituting terminal output.
+- 每个功能 PR 附浏览器录屏（GIF，嵌入正文）与必要的截图；数据库行、沙箱输出、日志可以随附，但不能替代。
+- Playwright 产出 `.webm`；GitHub 只内嵌上传为附件的视频，因此同时产出 GIF（小于 10 MB）并保留原视频链接。
+- 说明每段录屏演示的状态。
+- 没有可见界面的改动，在 PR 里说明，不要用终端输出冒充证据。
+
+## Scope and data
+
+- `archive/` 只读。
+- 开发数据库可以被迁移，但不得重置；破坏性的测试只能跑在 `_test` 库上。
+- 生成的用户代码只在沙箱容器内执行，不在宿主机执行。
