@@ -4,9 +4,22 @@
 
 ## 当前状态
 
-仓库正在重建。旧的实现整体归档在 [archive/paimeng-ai-code-agent/](archive/paimeng-ai-code-agent/)，只作为参考，不是当前事实。新的实现将直接落在仓库根目录，架构与交付顺序见 [docs/architecture.md](docs/architecture.md)。
+骨架已经落地：Next.js、Tailwind 与 shadcn 的基础、Drizzle 与首条迁移、健康检查、CI。生成、沙箱与发布尚未接通，首页按钮是禁用的占位。
 
-在新代码落地之前，仓库根没有可运行的 package.json。
+旧的实现整体归档在 [archive/paimeng-ai-code-agent/](archive/paimeng-ai-code-agent/)，只作为参考，不是当前事实。架构与交付顺序见 [docs/architecture.md](docs/architecture.md)。
+
+## 快速开始
+
+```bash
+docker compose up -d          # Postgres，监听 127.0.0.1:5433
+cp .env.example .env
+npm install
+npm run db:migrate
+npm run dev                   # http://127.0.0.1:3000
+curl -s localhost:3000/api/health
+```
+
+`/api/health` 返回 `{"ok":true,"database":true}` 表示应用与数据库都就绪。
 
 ## 目录
 

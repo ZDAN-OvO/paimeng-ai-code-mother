@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: paimeng
+      POSTGRES_PASSWORD: paimeng
+      POSTGRES_DB: paimeng
+    ports:
+      - '127.0.0.1:5433:5432'
+    volumes:
+      - paimeng-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U paimeng -d paimeng']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  paimeng-postgres:

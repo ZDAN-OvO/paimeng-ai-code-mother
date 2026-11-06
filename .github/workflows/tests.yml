@@ -1,0 +1,51 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run type-check
+      - run: npm test
+      - run: npm run build
+        env:
+          DATABASE_URL: postgres://paimeng:paimeng@127.0.0.1:5432/paimeng
+
+  migrate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: paimeng
+          POSTGRES_PASSWORD: paimeng
+          POSTGRES_DB: paimeng
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U paimeng -d paimeng"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://paimeng:paimeng@127.0.0.1:5432/paimeng
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      - run: npm run db:migrate

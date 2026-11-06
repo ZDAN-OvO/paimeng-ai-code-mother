@@ -12,21 +12,21 @@
 
 每条以「能在浏览器里演示的路径」为完成标准，不以百分比衡量。
 
-| # | 能力 | 演示路径 |
-| --- | --- | --- |
-| 1 | 一句话建项目 | 首页输入描述，创建 Project 与首个 Chat |
-| 2 | 流式对话 | 发送后逐字出现，工具调用有状态 |
-| 3 | 生成完整 Next.js + Tailwind + shadcn 项目 | 沙箱里出现多文件项目并通过构建 |
-| 4 | 代码面板 | 文件树、语法高亮、只读查看 |
-| 5 | 沙箱内实时预览 | 保存即可见，刷新不丢 |
-| 6 | 多轮迭代 | 同一 Chat 连续修改，文件真实变化 |
-| 7 | 版本、diff、回滚 | 每条助手消息一个版本；可看 diff；回滚追加新版本 |
-| 8 | 发布 | 得到 `/p/<deployKey>` 可访问地址，回滚后可重新发布 |
-| 9 | Design mode 元素选择 | 点选预览元素，生成一句指向该组件的对话输入 |
-| 10 | 截图导入 | 上传截图，作为视觉参考进入本轮生成 |
-| 11 | 模板 | 新建时可选内置起始模板 |
-| 12 | 浏览器与联网搜索 | 抓取网页正文、调用可配置搜索 API |
-| 13 | 环境变量面板 | 为 Project 配置环境变量，沙箱与发布实例都注入 |
+| #   | 能力                                      | 演示路径                                           |
+| --- | ----------------------------------------- | -------------------------------------------------- |
+| 1   | 一句话建项目                              | 首页输入描述，创建 Project 与首个 Chat             |
+| 2   | 流式对话                                  | 发送后逐字出现，工具调用有状态                     |
+| 3   | 生成完整 Next.js + Tailwind + shadcn 项目 | 沙箱里出现多文件项目并通过构建                     |
+| 4   | 代码面板                                  | 文件树、语法高亮、只读查看                         |
+| 5   | 沙箱内实时预览                            | 保存即可见，刷新不丢                               |
+| 6   | 多轮迭代                                  | 同一 Chat 连续修改，文件真实变化                   |
+| 7   | 版本、diff、回滚                          | 每条助手消息一个版本；可看 diff；回滚追加新版本    |
+| 8   | 发布                                      | 得到 `/p/<deployKey>` 可访问地址，回滚后可重新发布 |
+| 9   | Design mode 元素选择                      | 点选预览元素，生成一句指向该组件的对话输入         |
+| 10  | 截图导入                                  | 上传截图，作为视觉参考进入本轮生成                 |
+| 11  | 模板                                      | 新建时可选内置起始模板                             |
+| 12  | 浏览器与联网搜索                          | 抓取网页正文、调用可配置搜索 API                   |
+| 13  | 环境变量面板                              | 为 Project 配置环境变量，沙箱与发布实例都注入      |
 
 明确不做：多人协作与邀请、Figma 导入、Vercel 一键部署、GitHub PR 导出、数据连接向导、计费与额度、组件市场、移动端 App、公开模板画廊。
 
@@ -40,38 +40,38 @@
 
 ## 4. 关键决策
 
-| 编号 | 决策 | 理由 |
-| --- | --- | --- |
-| D1 | 旧应用整体归档，新代码落在仓库根 | 旧架构被 pi-durable 的假设塑形，重构成本高于重建 |
-| D2 | 零代码复用 | 旧 schema 压着计费与配额，带进来会把复刻拖成计费系统复刻 |
-| D3 | `ToolLoopAgent` 承载循环 | 循环、多步、工具、流式都是 SDK 已有的能力 |
-| D4 | 不做 durable execution | 中断即失败并重试；Workflow DevKit 是上一轮返工的来源 |
-| D5 | 沙箱实现 SDK 的 `SandboxSession` 接口 | 沙箱直接接入 agent 工具上下文，不另造一层 |
-| D6 | 每个 Chat 一个常驻容器 | 文件系统按 Chat 持久；空闲 30 分钟回收，硬顶 24 小时 |
-| D7 | 沙箱默认禁出站，只放行 npm registry | 生成代码不可信；需要联网时按技能临时放行 |
-| D8 | 预览用 `next dev` 加反向代理 | 迭代必须改完即见；`build` 的分钟级等待不可接受 |
-| D9 | 版本是源码树快照 | 文件级 diff 与回滚只需两棵树比对，不引入 git 推送语义 |
-| D10 | 发布用通用 runner 镜像挂载产物 | 不为每个应用构建镜像，也不需要本地 registry |
-| D11 | 技能是带 frontmatter 的目录 | `SKILL.md`、`references/`、`scripts/`，与 Claude Code 同构 |
-| D12 | 技能路由由生成模型自己做 | 描述进 system prompt，正文靠 `load_skill` 工具按需加载 |
-| D13 | 技能描述全量列出，不设上限 | 一行一条，五十条约一千多 token |
-| D14 | 用户技能落盘，脚本在沙箱内执行 | 正文由服务进程读，脚本只读挂载进沙箱，导入时显式信任 |
-| D15 | 单用户本地优先 | clone 下来就能跑；所有表带 `user_id`，多用户是后续 PR |
-| D16 | Project → Chat → Version 三层 | 与 v0 同构，发布挂在 Project 上 |
-| D17 | 模型配置在 `config/providers.json` | 密钥走环境变量，永不入库 |
-| D18 | 单实例部署 | 沙箱与预览代理都在同一进程拓扑内，横向扩展不在范围内 |
+| 编号 | 决策                                  | 理由                                                       |
+| ---- | ------------------------------------- | ---------------------------------------------------------- |
+| D1   | 旧应用整体归档，新代码落在仓库根      | 旧架构被 pi-durable 的假设塑形，重构成本高于重建           |
+| D2   | 零代码复用                            | 旧 schema 压着计费与配额，带进来会把复刻拖成计费系统复刻   |
+| D3   | `ToolLoopAgent` 承载循环              | 循环、多步、工具、流式都是 SDK 已有的能力                  |
+| D4   | 不做 durable execution                | 中断即失败并重试；Workflow DevKit 是上一轮返工的来源       |
+| D5   | 沙箱实现 SDK 的 `SandboxSession` 接口 | 沙箱直接接入 agent 工具上下文，不另造一层                  |
+| D6   | 每个 Chat 一个常驻容器                | 文件系统按 Chat 持久；空闲 30 分钟回收，硬顶 24 小时       |
+| D7   | 沙箱默认禁出站，只放行 npm registry   | 生成代码不可信；需要联网时按技能临时放行                   |
+| D8   | 预览用 `next dev` 加反向代理          | 迭代必须改完即见；`build` 的分钟级等待不可接受             |
+| D9   | 版本是源码树快照                      | 文件级 diff 与回滚只需两棵树比对，不引入 git 推送语义      |
+| D10  | 发布用通用 runner 镜像挂载产物        | 不为每个应用构建镜像，也不需要本地 registry                |
+| D11  | 技能是带 frontmatter 的目录           | `SKILL.md`、`references/`、`scripts/`，与 Claude Code 同构 |
+| D12  | 技能路由由生成模型自己做              | 描述进 system prompt，正文靠 `load_skill` 工具按需加载     |
+| D13  | 技能描述全量列出，不设上限            | 一行一条，五十条约一千多 token                             |
+| D14  | 用户技能落盘，脚本在沙箱内执行        | 正文由服务进程读，脚本只读挂载进沙箱，导入时显式信任       |
+| D15  | 单用户本地优先                        | clone 下来就能跑；所有表带 `user_id`，多用户是后续 PR      |
+| D16  | Project → Chat → Version 三层         | 与 v0 同构，发布挂在 Project 上                            |
+| D17  | 模型配置在 `config/providers.json`    | 密钥走环境变量，永不入库                                   |
+| D18  | 单实例部署                            | 沙箱与预览代理都在同一进程拓扑内，横向扩展不在范围内       |
 
 ## 5. 数据模型
 
-| 表 | 作用 | 关键列 |
-| --- | --- | --- |
-| `project` | 一次产品，对应一个发布地址 | `id`、`user_id`、`name`、`env jsonb` |
-| `chat` | 一条对话线，属于 Project | `id`、`project_id`、`model_id`、`title` |
-| `message` | 对话消息，AI SDK `UIMessage` 的 parts | `id`、`chat_id`、`seq`、`role`、`parts jsonb` |
-| `version` | 一条助手消息对应的源码快照 | `id`、`chat_id`、`message_id`、`seq`、`snapshot_path` |
-| `skill` | 技能索引，正文在磁盘 | `id`、`owner_id`、`slug`、`description`、`source`、`trusted` |
-| `deploy` | 一次发布 | `id`、`project_id`、`version_id`、`deploy_key`、`state` |
-| `sandbox_session` | 沙箱容器与工作区 | `id`、`chat_id`、`container_id`、`volume`、`expires_at` |
+| 表                | 作用                                  | 关键列                                                       |
+| ----------------- | ------------------------------------- | ------------------------------------------------------------ |
+| `project`         | 一次产品，对应一个发布地址            | `id`、`user_id`、`name`、`env jsonb`                         |
+| `chat`            | 一条对话线，属于 Project              | `id`、`project_id`、`model_id`、`title`                      |
+| `message`         | 对话消息，AI SDK `UIMessage` 的 parts | `id`、`chat_id`、`seq`、`role`、`parts jsonb`                |
+| `version`         | 一条助手消息对应的源码快照            | `id`、`chat_id`、`message_id`、`seq`、`snapshot_path`        |
+| `skill`           | 技能索引，正文在磁盘                  | `id`、`owner_id`、`slug`、`description`、`source`、`trusted` |
+| `deploy`          | 一次发布                              | `id`、`project_id`、`version_id`、`deploy_key`、`state`      |
+| `sandbox_session` | 沙箱容器与工作区                      | `id`、`chat_id`、`container_id`、`volume`、`expires_at`      |
 
 内置模板与内置技能直接扫描 `templates/` 与 `skills/`，不建表。用户技能的正文与文件在 `data/users/<userId>/skills/<slug>/`，表里只存索引。
 
