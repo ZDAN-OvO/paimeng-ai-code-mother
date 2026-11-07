@@ -47,7 +47,7 @@ _Avoid_：容器（在指代这一概念时）、执行环境。
 
 **Preview**：通过宿主机反向代理访问沙箱里 `next dev` 的页面。
 
-**Deploy**：把某个 Version 的构建产物放进只读容器并对外提供访问。发布地址是 `/p/<deployKey>`。
+**Deploy**：把某个 Version 的构建产物放进只读容器并对外提供访问。发布地址是 `/deploys/<deployKey>`。
 _Avoid_：上线、部署（在指代数据实体时）。
 
 **Deploy key**：发布地址里的不可猜测标识。
