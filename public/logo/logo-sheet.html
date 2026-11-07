@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paimeng logo</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      body {
+        margin: 0;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          'PingFang SC',
+          sans-serif;
+        background: #f5f5f4;
+        color: #1c1917;
+      }
+      main {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 48px 28px 72px;
+        display: grid;
+        gap: 36px;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0 0 6px;
+        letter-spacing: -0.01em;
+      }
+      p {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.7;
+        color: #57534e;
+      }
+      section {
+        display: grid;
+        gap: 14px;
+      }
+      h2 {
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #a8a29e;
+        margin: 0;
+        font-weight: 600;
+      }
+      .row {
+        display: flex;
+        gap: 28px;
+        align-items: flex-end;
+        flex-wrap: wrap;
+      }
+      .sizes {
+        display: flex;
+        gap: 20px;
+        align-items: flex-end;
+      }
+      .size {
+        display: grid;
+        gap: 6px;
+        justify-items: center;
+        font-size: 10px;
+        color: #a8a29e;
+      }
+      .light {
+        background: #fafaf9;
+        border: 1px solid #e7e5e4;
+        border-radius: 12px;
+        padding: 16px 18px;
+      }
+      .dark {
+        background: #0c0a09;
+        color: #fafaf9;
+        border-radius: 12px;
+        padding: 16px 18px;
+      }
+      .bar {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+      .bar span.word {
+        font-size: 13.5px;
+        font-weight: 600;
+      }
+      .bar span.badge {
+        font-size: 9.5px;
+        border: 1px solid currentColor;
+        opacity: 0.5;
+        border-radius: 4px;
+        padding: 1px 4px;
+      }
+      .files {
+        display: grid;
+        gap: 8px;
+        font-size: 12px;
+      }
+      .files code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: #e7e5e4;
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+      .note {
+        font-size: 12px;
+        line-height: 1.7;
+        color: #78716c;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Paimeng mark</h1>
+        <p>
+          深色圆角方块加白色 P，P 的碗形与转折用 45° 切面呼应 ZCode 的几何手法。方块 178×178、圆角
+          44，标记左右上下各留 37。
+        </p>
+      </header>
+
+      <section>
+        <h2>Primary</h2>
+        <div class="row">
+          <img src="/logo/paimeng-mark.svg" width="160" height="160" alt="Paimeng mark" />
+          <img
+            src="/logo/paimeng-mark-ring.svg"
+            width="96"
+            height="96"
+            alt="Paimeng mark with ring"
+          />
+          <img
+            src="/logo/paimeng-mark-light.svg"
+            width="96"
+            height="96"
+            alt="Paimeng mark for dark surfaces"
+          />
+        </div>
+      </section>
+
+      <section>
+        <h2>In context</h2>
+        <div class="row">
+          <div class="light">
+            <div class="bar">
+              <img src="/logo/paimeng-mark.svg" width="26" height="26" alt="" /><span class="word"
+                >Paimeng</span
+              ><span class="badge">v0 原型</span>
+            </div>
+          </div>
+          <div class="dark">
+            <div class="bar">
+              <img src="/logo/paimeng-mark-ring.svg" width="26" height="26" alt="" /><span
+                class="word"
+                >Paimeng</span
+              ><span class="badge">v0 原型</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Sizes</h2>
+        <div class="sizes">
+          <div class="size">
+            <img src="/logo/paimeng-mark.svg" width="128" height="128" alt="" />128
+          </div>
+          <div class="size">
+            <img src="/logo/paimeng-mark.svg" width="64" height="64" alt="" />64
+          </div>
+          <div class="size">
+            <img src="/logo/paimeng-mark.svg" width="32" height="32" alt="" />32
+          </div>
+          <div class="size">
+            <img src="/logo/paimeng-mark.svg" width="24" height="24" alt="" />24
+          </div>
+          <div class="size">
+            <img src="/logo/paimeng-mark.svg" width="16" height="16" alt="" />16
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Files</h2>
+        <div class="files">
+          <div><code>public/logo/paimeng-mark.svg</code> — 浅色界面默认用</div>
+          <div><code>public/logo/paimeng-mark-ring.svg</code> — 深色界面用，补一圈描边</div>
+          <div><code>public/logo/paimeng-mark-light.svg</code> — 需要反白时用</div>
+          <div><code>src/app/icon.svg</code> — 浏览器 favicon</div>
+          <div><code>src/components/brand/paimeng-mark.tsx</code> — 组件，跟随主题</div>
+        </div>
+        <p class="note">在开发服务器上直接打开 <code>/logo/logo-sheet.html</code> 查看这一页。</p>
+      </section>
+    </main>
+  </body>
+</html>

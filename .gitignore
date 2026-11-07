@@ -1,49 +1,35 @@
-### CUSTOM ###
-application-local.yml
-tmp
+# dependencies
+node_modules/
 
-HELP.md
-target/
-.mvn/wrapper/maven-wrapper.jar
-!**/src/main/**/target/
-!**/src/test/**/target/
+# next.js
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
 
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
+# runtime data: sandboxes, snapshots, deploys, evidence
+runtime/
+data/
 
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
+# env
+.env
+.env.*
+!.env.example
 
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
+# tests
+coverage/
+test-results/
+playwright-report/
 
-### VS Code ###
-.vscode/
+# os
+.DS_Store
 
-### Claude ###
+# local tooling and scratch
 .claude/
-
-## Trae ##
-.trae/
-
-## Pi ##
-.pi/
-
+.idea
+.vscode
 .archify/
 .impeccable/
+.pi/
+tmp/
+.tmp/
