@@ -4,7 +4,9 @@
 
 ## 当前状态
 
-骨架已经落地：Next.js、Tailwind 与 shadcn 的基础、Drizzle 与首条迁移、健康检查、CI。生成、沙箱与发布尚未接通，首页按钮是禁用的占位。
+骨架已经落地：Next.js、Tailwind 与 shadcn 的基础、Drizzle 与首条迁移、健康检查、CI。生成、沙箱与发布尚未接通。
+
+前端原型已经可以点：[src/prototype/](src/prototype/README.md)。`npm run dev` 之后打开 http://127.0.0.1:3000/prototype，右下角的悬浮条列出 `docs/mvp.md` 的 13 条验收路径。原型只用模拟数据，不需要数据库、Docker 或模型密钥，用来确认 MVP 的范围，并作为后端补接口的依据。
 
 旧的实现整体归档在 [archive/paimeng-ai-code-agent/](archive/paimeng-ai-code-agent/)，只作为参考，不是当前事实。架构与交付顺序见 [docs/architecture.md](docs/architecture.md)。
 
@@ -15,9 +17,11 @@ docker compose up -d          # Postgres，监听 127.0.0.1:5433
 cp .env.example .env
 npm install
 npm run db:migrate
-npm run dev                   # http://127.0.0.1:3000
+npm run dev                   # 应用与前端原型
 curl -s localhost:3000/api/health
 ```
+
+前端原型：<http://127.0.0.1:3000/prototype>（说明与接口契约见 [src/prototype/README.md](src/prototype/README.md)）。
 
 `/api/health` 返回 `{"ok":true,"database":true}` 表示应用与数据库都就绪。
 
