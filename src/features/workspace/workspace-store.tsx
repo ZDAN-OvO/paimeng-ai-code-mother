@@ -22,7 +22,13 @@ import type {
   Message,
   Model,
   Part,
+  PromoteDraftResponse,
+  ArchivedChatsResponse,
+  DraftsResponse,
+  Template,
+  TemplatesResponse,
   Project,
+  ProjectsResponse,
   RunAccepted,
   Skill,
   SseEvent,
@@ -31,11 +37,21 @@ import { api, ApiRequestError, streamEvents } from '@/lib/api/client';
 
 export type ImageAttachment = { url: string; name: string };
 
-export type RunOptions = { plan?: boolean; selection?: DesignContext };
+export type RunOptions = { selection?: DesignContext };
 
 export type WorkspaceStore = {
   /** 兼容工作区组件的读取形状：当前项目、当前对话、同项目其他对话。 */
-  state: { projects: Project[]; chats: ChatRecord[]; skills: Skill[]; models: Model[] };
+  state: {
+    projects: Project[];
+    chats: ChatRecord[];
+    /** 还没决定变成项目的会话。 */
+    drafts: ChatSummary[];
+    /** 归档的会话：不出现在默认列表里，只在这里。 */
+    archived: ChatSummary[];
+    skills: Skill[];
+    models: Model[];
+    templates: Template[];
+  };
   hydrated: boolean;
   error: string | null;
   clearError: () => void;
@@ -58,6 +74,10 @@ export type WorkspaceStore = {
   setViewVersion: (chatId: string, versionId: string) => void;
   setModel: (chatId: string, modelId: string) => void;
   createChat: (projectId: string) => void;
+  promoteDraft: (chatId: string) => Promise<void>;
+  renameChat: (chatId: string, title: string) => Promise<void>;
+  archiveChat: (chatId: string) => Promise<void>;
+  restoreChat: (chatId: string) => Promise<void>;
   renameProject: (projectId: string, name: string) => void;
   deleteProject: (projectId: string) => void;
   setEnv: (projectId: string, env: EnvVar[]) => void;
@@ -65,6 +85,15 @@ export type WorkspaceStore = {
 };
 
 const WorkspaceContext = createContext<WorkspaceStore | null>(null);
+
+/** 草稿的 chats 是空列表，但当前会话本身一定要在里面，否则工作区找不到它。 */
+function withCurrentChat(list: ChatSummary[], chat: ChatRecord | null): ChatRecord[] {
+  const chats = list.map((summary) =>
+    chat && summary.id === chat.id ? chat : emptyRecord(summary),
+  );
+  if (chat && !chats.some((item) => item.id === chat.id)) chats.unshift(chat);
+  return chats;
+}
 
 function emptyRecord(summary: ChatSummary): ChatRecord {
   return {
@@ -111,6 +140,10 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
   const [chatList, setChatList] = useState<ChatSummary[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [models, setModels] = useState<Model[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [drafts, setDrafts] = useState<ChatSummary[]>([]);
+  const [projectList, setProjectList] = useState<Project[]>([]);
+  const [archived, setArchived] = useState<ChatSummary[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -131,8 +164,16 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
   const refresh = useCallback(
     async (target = chatId) => {
       try {
-        const bundle = await api.get<ChatBundle>(`/api/chats/${target}`);
+        const [bundle, draftList, allProjects, archivedList] = await Promise.all([
+          api.get<ChatBundle>(`/api/chats/${target}`),
+          api.get<DraftsResponse>('/api/drafts'),
+          api.get<ProjectsResponse>('/api/projects'),
+          api.get<ArchivedChatsResponse>('/api/chats?archived=1'),
+        ]);
         applyBundle(bundle);
+        setDrafts(draftList.chats);
+        setProjectList(allProjects.projects);
+        setArchived(archivedList.chats);
         setError(null);
       } catch (cause) {
         if (cause instanceof ApiRequestError) setError(cause.message);
@@ -225,9 +266,19 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
     let cancelled = false;
     void (async () => {
       try {
-        const bundle = await api.get<ChatBundle>(`/api/chats/${chatId}`);
+        const [bundle, catalog, draftList, allProjects, archivedList] = await Promise.all([
+          api.get<ChatBundle>(`/api/chats/${chatId}`),
+          api.get<TemplatesResponse>('/api/templates'),
+          api.get<DraftsResponse>('/api/drafts'),
+          api.get<ProjectsResponse>('/api/projects'),
+          api.get<ArchivedChatsResponse>('/api/chats?archived=1'),
+        ]);
         if (cancelled) return;
         applyBundle(bundle);
+        setTemplates(catalog.templates);
+        setDrafts(draftList.chats);
+        setProjectList(allProjects.projects);
+        setArchived(archivedList.chats);
         setHydrated(true);
         // 首页建项目会立刻开始第一轮；进入工作区时要接上这条事件流。
         if (bundle.chat.streaming) void follow(chatId);
@@ -263,7 +314,6 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
           text,
           attachments: images.map((image) => ({ name: image.name, dataUrl: image.url })),
           selection: options.selection,
-          plan: options.plan,
         }),
         target,
       );
@@ -368,16 +418,70 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
     return result;
   }, []);
 
+  const loadDrafts = useCallback(async () => {
+    const [draftsData, archivedData] = await Promise.all([
+      api.get<DraftsResponse>('/api/drafts'),
+      api.get<ArchivedChatsResponse>('/api/chats?archived=1'),
+    ]);
+    setDrafts(draftsData.chats);
+    setArchived(archivedData.chats);
+  }, []);
+
+  /** 改名：草稿与项目会话共用 PATCH。 */
+  const renameChat = useCallback(
+    async (target: string, title: string) => {
+      await api.patch(`/api/chats/${target}`, { title });
+      await refresh(target === chatId ? target : undefined);
+    },
+    [chatId, refresh],
+  );
+
+  /** 归档不是删除：归档后还能在「对话 → 归档」里恢复。 */
+  const archiveChat = useCallback(
+    async (target: string) => {
+      await api.post(`/api/chats/${target}/archive`, {});
+      await loadDrafts();
+      if (target !== chatId) return;
+      // 归档的正好是当前会话：优先跳到同项目里另一条，其次草稿，都没有才回首页。
+      const siblings = chatList.filter((item) => item.id !== target);
+      const next = siblings[0]?.id ?? drafts.find((item) => item.id !== target)?.id ?? null;
+      router.push(next ? `/chat/${next}` : '/');
+    },
+    [chatId, chatList, drafts, loadDrafts, router],
+  );
+
+  const restoreChat = useCallback(
+    async (target: string) => {
+      await api.post(`/api/chats/${target}/restore`, {});
+      await loadDrafts();
+    },
+    [loadDrafts],
+  );
+
+  /** 草稿转项目：同一个会话就地转正，不复制、不部署。 */
+  const promoteDraft = useCallback(
+    async (target: string) => {
+      await api.post<PromoteDraftResponse>(`/api/chats/${target}/project`, {});
+      await refresh(target);
+      await loadDrafts();
+    },
+    [refresh, loadDrafts],
+  );
+
   const state = useMemo(
     () => ({
-      projects: project ? [project] : [],
-      chats: chatList.map((summary) =>
-        chat && summary.id === chat.id ? chat : emptyRecord(summary),
-      ),
+      // 侧栏要列出全部项目，草稿态也一样；当前项目以 bundle 里的最新值为准。
+      projects: project
+        ? [project, ...projectList.filter((item) => item.id !== project.id)]
+        : projectList,
+      chats: withCurrentChat(chatList, chat),
+      drafts,
+      archived,
       skills,
       models,
+      templates,
     }),
-    [chat, chatList, models, project, skills],
+    [archived, chat, chatList, drafts, models, project, projectList, skills, templates],
   );
 
   const value = useMemo<WorkspaceStore>(
@@ -394,6 +498,10 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
       setViewVersion,
       setModel,
       createChat,
+      promoteDraft,
+      renameChat,
+      archiveChat,
+      restoreChat,
       renameProject,
       deleteProject,
       setEnv,
@@ -411,6 +519,10 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
       setViewVersion,
       setModel,
       createChat,
+      promoteDraft,
+      renameChat,
+      archiveChat,
+      restoreChat,
       renameProject,
       deleteProject,
       setEnv,

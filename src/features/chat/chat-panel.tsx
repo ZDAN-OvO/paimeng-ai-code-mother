@@ -12,6 +12,7 @@ import {
   Globe,
   ImageIcon,
   ImagePlus,
+  LayoutTemplate,
   Loader2,
   Mic,
   MousePointerSquareDashed,
@@ -22,7 +23,6 @@ import {
   Terminal,
   X,
 } from 'lucide-react';
-import { PaimengMark } from '@/components/brand/paimeng-mark';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -43,6 +43,7 @@ import type {
   Model,
   Part,
   Project,
+  Template,
 } from '@/shared/api/schemas';
 import { useVoiceInput } from '@/features/chat/use-voice';
 import { ModelSelect } from '@/features/home/model-select';
@@ -56,6 +57,7 @@ export function ChatPanel({
   chat,
   project,
   models,
+  templates,
   selection,
   onClearSelection,
   onOpenVersion,
@@ -66,7 +68,8 @@ export function ChatPanel({
 }: {
   chat: ChatRecord;
   models: Model[];
-  project: Project;
+  templates: Template[];
+  project: Project | null;
   selection: DesignSelection | null;
   onClearSelection: () => void;
   onOpenVersion: (versionId: string) => void;
@@ -88,12 +91,11 @@ export function ChatPanel({
 
   const busy = chat.streaming;
   const awaiting = Boolean(chat.pendingPlan);
-  const [planning, setPlanning] = useState(false);
 
   function submit() {
     const text = draft.trim();
     if ((!text && attachments.length === 0) || busy || awaiting) return;
-    sendMessage(chat.id, text, attachments, { selection: selection ?? undefined, plan: planning });
+    sendMessage(chat.id, text, attachments, { selection: selection ?? undefined });
     onDraftChange('');
     onAttachmentsChange([]);
     onClearSelection();
@@ -120,6 +122,20 @@ export function ChatPanel({
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5">
+        {(project?.templateId ?? chat.draft?.templateId ?? 'auto') !== 'auto' ? (
+          <div
+            data-testid="template-note"
+            className="flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-[11.5px] text-muted-foreground"
+          >
+            <LayoutTemplate className="size-3.5 shrink-0" />
+            从模板「
+            {(() => {
+              const templateId = project?.templateId ?? chat.draft?.templateId ?? '';
+              return templates.find((item) => item.id === templateId)?.name ?? templateId;
+            })()}
+            」开始
+          </div>
+        ) : null}
         {chat.messages.length === 0 ? (
           <EmptyChat project={project} />
         ) : (
@@ -255,19 +271,6 @@ export function ChatPanel({
               compact
             />
 
-            <button
-              type="button"
-              aria-pressed={planning}
-              disabled={busy || awaiting}
-              onClick={() => setPlanning((value) => !value)}
-              className={cn(
-                'rounded-md px-1.5 py-1 text-[11px] disabled:opacity-40',
-                planning ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted',
-              )}
-              title="先提交计划，批准后再改文件"
-            >
-              {planning ? '先规划 ✓' : '先规划'}
-            </button>
             <span className="ml-auto flex items-center gap-1">
               <button
                 type="button"
@@ -314,7 +317,7 @@ export function ChatPanel({
   );
 }
 
-function EmptyChat({ project }: { project: Project }) {
+function EmptyChat({ project }: { project: Project | null }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="flex size-10 items-center justify-center rounded-full bg-muted">
@@ -322,12 +325,22 @@ function EmptyChat({ project }: { project: Project }) {
       </div>
       <p className="text-sm font-medium">新的对话</p>
       <p className="max-w-xs text-xs leading-5 text-muted-foreground">
-        这个对话还没有消息。描述你要在这个项目里改什么，第一条回复会生成新的版本。
+        这个对话还没有消息。描述你要做什么，第一条回复会生成新的版本。
       </p>
       <p className="mt-1 max-w-xs rounded-md bg-muted/50 px-3 py-2 text-left text-[11px] leading-5 text-muted-foreground">
-        项目：{project.name}
-        <br />
-        新对话从项目当前的源码树开始，历史消息不会带过来。
+        {project ? (
+          <>
+            项目：{project.name}
+            <br />
+            新对话从项目当前的源码树开始，历史消息不会带过来。
+          </>
+        ) : (
+          <>
+            草稿：还没创建项目
+            <br />
+            满意后点右上角「创建项目」，这条会话和版本会原地转正。
+          </>
+        )}
       </p>
     </div>
   );
@@ -337,7 +350,7 @@ function splitParts(message: Message) {
   const tools: Extract<Part, { type: 'tool' }>[] = [];
   const blocks: { tools: Extract<Part, { type: 'tool' }>[] }[] = [];
   let reasoning = '';
-  let text = '';
+  const texts: string[] = [];
   for (const part of message.parts) {
     if (part.type === 'tool') {
       if (!tools.length) blocks.push({ tools });
@@ -345,10 +358,19 @@ function splitParts(message: Message) {
       continue;
     }
     if (part.type === 'reasoning') reasoning += part.text;
-    if (part.type === 'text') text += part.text;
+    if (part.type === 'text') texts.push(part.text);
   }
   const grouped = blocks.filter((block) => block.tools.length);
-  return { groups: grouped, tools: grouped.flatMap((block) => block.tools), reasoning, text };
+  // 最后一段文字是这轮的回答，留着；前面的文字属于过程，收进折叠体。
+  const finalText = texts.at(-1) ?? '';
+  const innerText = texts.slice(0, -1).join('\n\n').trim();
+  return {
+    groups: grouped,
+    tools: grouped.flatMap((block) => block.tools),
+    reasoning,
+    finalText,
+    innerText,
+  };
 }
 
 function useNow(active: boolean): number {
@@ -382,10 +404,12 @@ function MessageRow({
   onOpenVersion: (versionId: string) => void;
   modelName: string;
 }) {
-  const [open, setOpen] = useState(false);
+  const [toggled, setToggled] = useState<boolean | null>(null);
   const now = useNow(Boolean(message.streaming));
-  const { groups, tools, reasoning, text } = splitParts(message);
+  const { groups, tools, reasoning, finalText, innerText } = splitParts(message);
   const streaming = Boolean(message.streaming);
+  // 生成中默认展开；结束后自动收起。用户点过就按用户的来。
+  const open = toggled ?? streaming;
   const status = message.status ?? (streaming ? 'running' : 'succeeded');
   const statusLabel = {
     running: '正在生成',
@@ -448,14 +472,13 @@ function MessageRow({
   }
 
   return (
-    <div className="flex gap-2.5">
-      <PaimengMark size={20} className="mt-0.5 shrink-0" />
-      <div className="min-w-0 flex-1">
+    <div className="min-w-0">
+      <div className="min-w-0">
         {steps > 0 || message.status ? (
           <button
             type="button"
             data-testid={streaming ? 'fold-streaming' : 'fold-done'}
-            onClick={() => setOpen((value) => !value)}
+            onClick={() => setToggled(!open)}
             className={cn(
               'group flex items-center gap-1.5 rounded-md border border-transparent px-1 py-0.5 text-[11px] transition-colors hover:border-border hover:bg-muted/50',
               streaming ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground',
@@ -482,27 +505,34 @@ function MessageRow({
         ) : null}
 
         {open ? (
-          <div className="mt-2 space-y-2 border-l border-border pl-2.5">
+          <div data-testid="fold-body" className="mt-2 space-y-2 border-l border-border pl-2.5">
             {reasoning ? (
               <div className="flex gap-1.5 text-[11.5px] leading-5 text-muted-foreground">
                 <Brain className="mt-0.5 size-3.5 shrink-0" />
                 <p className="whitespace-pre-wrap">{reasoning}</p>
               </div>
             ) : null}
+            {message.parts.map((part, index) =>
+              part.type === 'todos' ? <TodosCard key={index} items={part.items} /> : null,
+            )}
             {groups.map((group, index) => (
               <ToolGroup key={index} tools={group.tools} />
             ))}
+            {innerText ? (
+              <p className="text-[12.5px] leading-6 whitespace-pre-wrap text-muted-foreground">
+                {innerText}
+              </p>
+            ) : null}
           </div>
         ) : null}
 
+        {/* 方案卡带按钮，收起后点不到，所以始终在外面。 */}
         {message.parts.map((part, index) =>
-          part.type === 'todos' ? (
-            <TodosCard key={index} items={part.items} />
-          ) : part.type === 'plan' ? (
+          part.type === 'plan' ? (
             <PlanCard key={index} chatId={chatId} messageId={message.id} plan={part} />
           ) : null,
         )}
-        {text ? (
+        {finalText ? (
           <div
             className={cn(
               'mt-2 text-[13px] leading-6 whitespace-pre-wrap',
@@ -510,11 +540,11 @@ function MessageRow({
                 'after:ml-0.5 after:inline-block after:h-3.5 after:w-1.5 after:animate-pulse after:bg-foreground/60 after:align-middle',
             )}
           >
-            {text}
+            {finalText}
           </div>
         ) : null}
 
-        {streaming && !text && steps === 0 ? (
+        {streaming && !finalText && steps === 0 ? (
           <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Loader2 className="size-3 animate-spin" />
             正在准备这一轮…

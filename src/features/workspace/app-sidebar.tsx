@@ -1,7 +1,6 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   ChevronDown,
@@ -18,44 +17,62 @@ import {
   Search,
   Sparkles,
   Star,
+  MoreHorizontal,
+  Pencil,
+  Archive,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { ChatRecord, Project } from '@/shared/api/schemas';
-
-const DRAFTS = [
-  '指针 AI 落地页：一句话讲清它替谁省了什么时间',
-  '咖啡订阅定价页，三档月付，把运费写清楚',
-  '周报面板的筛选交互说明，先只做静态',
-  '作品集：只放四个项目，每个配一句结果',
-];
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import type { ChatRecord, ChatSummary, Project } from '@/shared/api/schemas';
+import type { WorkspaceView } from './types';
 
 export function AppSidebar({
   collapsed,
+  width,
   onToggleCollapsed,
   project,
   chat,
   projects,
   chats,
+  drafts,
+  view,
+  onViewChange,
   onSelectChat,
   onNewChat,
-  onDraft,
+  onNewDraft,
+  onPromoteDraft,
+  onOpenProject,
+  onRenameChat,
+  onArchiveChat,
 }: {
   collapsed: boolean;
+  width?: number;
   onToggleCollapsed: () => void;
-  project: Project;
+  project: Project | null;
   chat: ChatRecord;
   projects: Project[];
   chats: ChatRecord[];
+  drafts: ChatSummary[];
+  view: WorkspaceView;
+  onViewChange: (view: WorkspaceView) => void;
   onSelectChat: (chatId: string) => void;
   onNewChat: () => void;
-  onDraft: (text: string) => void;
+  onNewDraft: () => void;
+  onPromoteDraft: () => void;
+  onOpenProject: (projectId: string) => void;
+  onRenameChat: (chatId: string, title: string) => void;
+  onArchiveChat: (chatId: string) => void;
 }) {
   const router = useRouter();
   const [query, setQuery] = useState('');
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    [project.id]: true,
-  });
-  const [showAllDrafts, setShowAllDrafts] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(
+    project ? { [project.id]: true } : {},
+  );
 
   const needle = query.trim().toLowerCase();
   const match = (text: string) => !needle || text.toLowerCase().includes(needle);
@@ -73,17 +90,17 @@ export function AppSidebar({
           (node) =>
             match(node.project.name) ||
             node.chats.some((entry) => match(entry.title)) ||
-            node.project.id === project.id,
+            node.project.id === project?.id,
         ),
     // match 只依赖 needle；projects/chats 已是当前快照。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chats, needle, project.id, projects],
+    [chats, needle, project?.id, projects],
   );
 
   const favorites = chats
     .filter((entry) => entry.id === 'chat_cafe' || entry.id === 'chat_portfolio')
     .slice(0, 2);
-  const drafts = DRAFTS.filter(match).slice(0, showAllDrafts ? DRAFTS.length : 3);
+  const visibleDrafts = drafts.filter((draft) => match(draft.title));
 
   if (collapsed) {
     return (
@@ -99,7 +116,7 @@ export function AppSidebar({
         </button>
         <button
           type="button"
-          onClick={onNewChat}
+          onClick={project ? onNewChat : onNewDraft}
           className="mt-1 flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground"
           title="新建对话"
         >
@@ -113,27 +130,50 @@ export function AppSidebar({
         >
           <Search className="size-4" />
         </button>
-        <Link
-          href="/"
-          className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+        <button
+          type="button"
+          onClick={() => onViewChange('projects')}
+          className={cn(
+            'flex size-8 items-center justify-center rounded-md hover:bg-muted hover:text-foreground',
+            view === 'projects' ? 'bg-muted text-foreground' : 'text-muted-foreground',
+          )}
           title="项目"
         >
           <LayoutGrid className="size-4" />
-        </Link>
-        <Link
-          href="/skills"
-          className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+        </button>
+        <button
+          type="button"
+          onClick={() => onViewChange('chats')}
+          className={cn(
+            'flex size-8 items-center justify-center rounded-md hover:bg-muted hover:text-foreground',
+            view === 'chats' ? 'bg-muted text-foreground' : 'text-muted-foreground',
+          )}
+          title="对话"
+        >
+          <MessageSquare className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => onViewChange('skills')}
+          className={cn(
+            'flex size-8 items-center justify-center rounded-md hover:bg-muted hover:text-foreground',
+            view === 'skills' ? 'bg-muted text-foreground' : 'text-muted-foreground',
+          )}
           title="技能"
         >
           <Sparkles className="size-4" />
-        </Link>
-        <Link
-          href="/#templates"
-          className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+        </button>
+        <button
+          type="button"
+          onClick={() => onViewChange('templates')}
+          className={cn(
+            'flex size-8 items-center justify-center rounded-md hover:bg-muted hover:text-foreground',
+            view === 'templates' ? 'bg-muted text-foreground' : 'text-muted-foreground',
+          )}
           title="模板"
         >
           <LayoutTemplate className="size-4" />
-        </Link>
+        </button>
         <span className="mt-auto flex size-7 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground">
           本
         </span>
@@ -142,7 +182,13 @@ export function AppSidebar({
   }
 
   return (
-    <aside className="flex w-[264px] shrink-0 flex-col border-r border-border bg-card">
+    <aside
+      style={width ? { width } : undefined}
+      className={cn(
+        'flex shrink-0 flex-col border-r border-border bg-card',
+        width ? null : 'w-[264px]',
+      )}
+    >
       <div className="flex items-center gap-1 px-2.5 pt-2.5 pb-1.5">
         <button
           type="button"
@@ -170,9 +216,10 @@ export function AppSidebar({
       <div className="px-2.5 pb-2">
         <button
           type="button"
-          onClick={onNewChat}
+          onClick={project ? onNewChat : onNewDraft}
           data-testid="sidebar-new-chat"
           className="flex w-full items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1.5 text-[12px] font-medium transition-colors hover:bg-muted"
+          title={project ? '在当前项目里新建一条对话' : '草稿里新建对话要去首页描述'}
         >
           <Plus className="size-3.5" />
           新建对话
@@ -193,23 +240,29 @@ export function AppSidebar({
       </div>
 
       <nav className="px-2 pb-1">
-        <SidebarLink icon={LayoutGrid} label="项目" onClick={() => router.push('/')} />
         <SidebarLink
-          active
+          active={view === 'projects'}
+          icon={LayoutGrid}
+          label="项目"
+          onClick={() => onViewChange('projects')}
+        />
+        <SidebarLink
+          active={view === 'chats'}
           icon={MessageSquare}
           label="对话"
-          onClick={() => {
-            const latest = chats
-              .filter((entry) => entry.projectId === project.id)
-              .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-            if (latest) onSelectChat(latest.id);
-          }}
+          onClick={() => onViewChange('chats')}
         />
-        <SidebarLink icon={Sparkles} label="技能" onClick={() => router.push('/skills')} />
         <SidebarLink
+          active={view === 'skills'}
+          icon={Sparkles}
+          label="技能"
+          onClick={() => onViewChange('skills')}
+        />
+        <SidebarLink
+          active={view === 'templates'}
           icon={LayoutTemplate}
           label="模板"
-          onClick={() => router.push('/#templates')}
+          onClick={() => onViewChange('templates')}
         />
       </nav>
 
@@ -232,82 +285,103 @@ export function AppSidebar({
         ) : null}
 
         <div className="mt-3">
-          <SidebarHeading>草稿</SidebarHeading>
-          {drafts.map((draft) => (
-            <button
-              key={draft}
-              type="button"
-              onClick={() => onDraft(draft)}
-              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11.5px] text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              <FileText className="size-3 shrink-0" />
-              <span className="truncate">{draft}</span>
-            </button>
-          ))}
-          {DRAFTS.length > 3 ? (
-            <button
-              type="button"
-              onClick={() => setShowAllDrafts((value) => !value)}
-              className="px-1.5 py-1 text-[10.5px] text-muted-foreground/80 hover:text-foreground"
-            >
-              {showAllDrafts ? '收起' : '显示更多'}
-            </button>
-          ) : null}
+          <div className="flex items-center justify-between px-1.5 pb-1">
+            <span className="text-[10px] font-medium tracking-wide text-muted-foreground/80">
+              草稿
+            </span>
+            {!project ? (
+              <button
+                type="button"
+                data-testid="sidebar-promote"
+                onClick={onPromoteDraft}
+                className="text-[10px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >
+                创建项目
+              </button>
+            ) : null}
+          </div>
+          {visibleDrafts.length === 0 ? (
+            <p className="px-1.5 py-1 text-[10.5px] text-muted-foreground/80">
+              还没有草稿；首页输入一句话就开一条。
+            </p>
+          ) : (
+            visibleDrafts.map((draft) => (
+              <ChatRow
+                key={draft.id}
+                chatId={draft.id}
+                title={draft.title}
+                icon={FileText}
+                testId={`draft-${draft.id}`}
+                active={view === 'chat' && draft.id === chat.id}
+                onOpen={() => onSelectChat(draft.id)}
+                onRename={(next) => onRenameChat(draft.id, next)}
+                onArchive={() => onArchiveChat(draft.id)}
+              />
+            ))
+          )}
         </div>
 
         <div className="mt-3">
           <SidebarHeading>项目</SidebarHeading>
           {tree.map((node) => {
-            const open = expanded[node.project.id] ?? false;
+            const open = expanded[node.project.id] ?? node.project.id === project?.id;
             const deployed = node.project.deploys[0];
             return (
               <div key={node.project.id}>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setExpanded((current) => ({
-                      ...current,
-                      [node.project.id]: !open,
-                    }))
-                  }
+                <div
                   className={cn(
-                    'flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11.5px] transition-colors',
-                    node.project.id === project.id
+                    'flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-[11.5px] transition-colors',
+                    node.project.id === project?.id
                       ? 'font-medium text-foreground'
-                      : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                      : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
                   )}
                 >
-                  {open ? (
-                    <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
-                  ) : (
-                    <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
-                  )}
-                  {open ? (
-                    <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
-                  ) : (
-                    <FolderClosed className="size-3.5 shrink-0 text-muted-foreground" />
-                  )}
-                  <span className="truncate">{node.project.name}</span>
+                  <button
+                    type="button"
+                    data-testid={`project-open-${node.project.id}`}
+                    onClick={() => {
+                      setExpanded((current) => ({ ...current, [node.project.id]: true }));
+                      onOpenProject(node.project.id);
+                    }}
+                    onDoubleClick={() =>
+                      setExpanded((current) => ({
+                        ...current,
+                        [node.project.id]: !open,
+                      }))
+                    }
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                    title="打开项目概览"
+                  >
+                    {open ? (
+                      <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
+                    )}
+                    {open ? (
+                      <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <FolderClosed className="size-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="truncate">{node.project.name}</span>
+                  </button>
                   {deployed ? (
-                    <span className="ml-auto size-1.5 shrink-0 rounded-full bg-emerald-500" />
+                    <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
                   ) : null}
-                </button>
+                </div>
                 {open
                   ? node.chats.map((entry) => (
-                      <button
+                      <ChatRow
                         key={entry.id}
-                        type="button"
-                        onClick={() => onSelectChat(entry.id)}
-                        className={cn(
-                          'flex w-full items-center gap-1.5 rounded-md py-1 pr-1.5 pl-6 text-left text-[11.5px] transition-colors',
-                          entry.id === chat.id
-                            ? 'bg-muted font-medium text-foreground'
-                            : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
-                        )}
-                      >
-                        <MessageSquare className="size-3 shrink-0" />
-                        <span className="truncate">{entry.title}</span>
-                      </button>
+                        chatId={entry.id}
+                        title={entry.title}
+                        icon={MessageSquare}
+                        testId={`chat-row-${entry.id}`}
+                        indent
+                        active={view === 'chat' && entry.id === chat.id}
+                        onOpen={() => onSelectChat(entry.id)}
+                        onRename={(next) => onRenameChat(entry.id, next)}
+                        onArchive={() => onArchiveChat(entry.id)}
+                      />
                     ))
                   : null}
               </div>
@@ -315,7 +389,7 @@ export function AppSidebar({
           })}
         </div>
 
-        {needle && tree.length === 0 && drafts.length === 0 ? (
+        {needle && tree.length === 0 && visibleDrafts.length === 0 ? (
           <p className="px-1.5 py-4 text-[11px] text-muted-foreground">没有匹配的项目或对话</p>
         ) : null}
       </div>
@@ -375,5 +449,105 @@ function SidebarLink({
       <Icon className="size-3.5" />
       {label}
     </button>
+  );
+}
+
+/** 草稿与项目会话共用的一行：点名字进对话，⋯ 里改名或归档。 */
+function ChatRow({
+  chatId,
+  title,
+  icon: Icon,
+  testId,
+  active,
+  indent = false,
+  onOpen,
+  onRename,
+  onArchive,
+}: {
+  chatId: string;
+  title: string;
+  icon: typeof FileText;
+  testId: string;
+  active: boolean;
+  indent?: boolean;
+  onOpen: () => void;
+  onRename: (title: string) => void;
+  onArchive: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(title);
+
+  function commit() {
+    const next = value.trim();
+    if (next && next !== title) onRename(next);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={value}
+        data-testid={`rename-input-${chatId}`}
+        onChange={(event) => setValue(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') commit();
+          if (event.key === 'Escape') {
+            setValue(title);
+            setEditing(false);
+          }
+        }}
+        className={cn(
+          'w-full rounded-md border border-border bg-background py-1 text-[11.5px] outline-none focus:border-foreground/40',
+          indent ? 'pr-1.5 pl-6' : 'px-1.5',
+        )}
+      />
+    );
+  }
+
+  return (
+    <div className="group/row relative">
+      <button
+        type="button"
+        data-testid={testId}
+        onClick={onOpen}
+        className={cn(
+          'flex w-full items-center gap-1.5 rounded-md py-1 pr-7 text-left text-[11.5px] transition-colors',
+          indent ? 'pl-6' : 'px-1.5',
+          active
+            ? 'bg-muted font-medium text-foreground'
+            : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+        )}
+      >
+        <Icon className="size-3 shrink-0" />
+        <span className="truncate">{title}</span>
+      </button>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          data-testid={`chat-menu-${chatId}`}
+          title="会话操作"
+          className="absolute top-1/2 right-1 -translate-y-1/2 rounded p-0.5 text-muted-foreground/60 opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover/row:opacity-100 data-[state=open]:opacity-100"
+        >
+          <MoreHorizontal className="size-3" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-40">
+          <DropdownMenuItem
+            className="gap-2 text-[12px]"
+            onClick={() => {
+              setValue(title);
+              setEditing(true);
+            }}
+          >
+            <Pencil className="size-3.5" />
+            重命名
+          </DropdownMenuItem>
+          <DropdownMenuItem className="gap-2 text-[12px]" onClick={onArchive}>
+            <Archive className="size-3.5" />
+            归档
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   );
 }

@@ -27,9 +27,11 @@ const LOOK_LABEL: Record<Entry['look'], string> = {
 export function TemplateGallery({
   entries,
   onUse,
+  busy = false,
 }: {
   entries: Entry[];
   onUse: (entry: Entry) => void;
+  busy?: boolean;
 }) {
   const [look, setLook] = useState<'all' | Entry['look']>('all');
   const [preview, setPreview] = useState<Entry | null>(null);
@@ -121,13 +123,14 @@ export function TemplateGallery({
               <Button
                 size="sm"
                 data-testid="template-use"
+                disabled={busy}
                 onClick={() => {
                   if (!preview) return;
                   onUse(preview);
                   setPreview(null);
                 }}
               >
-                用这个模板开始
+                {busy ? '正在创建…' : '用这个模板开始'}
               </Button>
             </div>
           </div>

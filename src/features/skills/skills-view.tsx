@@ -52,6 +52,20 @@ description: 把品牌语气约束成一份可复用的写作规则。
 };
 
 export default function SkillsPage() {
+  return <SkillsView />;
+}
+
+/**
+ * mode='page' 是独立的 /skills 页；mode='panel' 塞进工作区中栏，共用同一份数据逻辑。
+ * 面板模式下「去 Chat 验证技能」走 onOpenChat，不整页跳走。
+ */
+export function SkillsView({
+  mode = 'page',
+  onOpenChat,
+}: {
+  mode?: 'page' | 'panel';
+  onOpenChat?: (chatId: string) => void;
+}) {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [chatId, setChatId] = useState<string | null>(null);
@@ -131,15 +145,21 @@ export default function SkillsPage() {
   const enabled = skills.filter((skill) => skill.enabled).length;
 
   return (
-    <div className="min-h-dvh bg-muted/40">
+    <div
+      className={
+        mode === 'page' ? 'min-h-dvh bg-muted/40' : 'flex h-full min-h-0 flex-col bg-muted/40'
+      }
+    >
       <header className="border-b border-border bg-card">
         <div className="mx-auto flex h-14 max-w-4xl items-center gap-2 px-5">
-          <Link
-            href="/"
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <ArrowLeft className="size-4" />
-          </Link>
+          {mode === 'page' ? (
+            <Link
+              href="/"
+              className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <ArrowLeft className="size-4" />
+            </Link>
+          ) : null}
           <span className="text-[13.5px] font-semibold text-foreground">技能</span>
           <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
             M4 · 不在 13 条内
@@ -168,7 +188,12 @@ export default function SkillsPage() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-4xl px-5 py-8">
+      <main
+        className={cn(
+          'mx-auto w-full max-w-4xl px-5',
+          mode === 'page' ? 'py-8' : 'min-h-0 flex-1 overflow-y-auto py-5',
+        )}
+      >
         <h1 className="text-xl font-semibold tracking-tight text-foreground">
           技能决定这一轮怎么做
         </h1>
@@ -183,13 +208,24 @@ export default function SkillsPage() {
             <code className="rounded bg-muted px-1">load_skill</code> 加载过程。
             启用但未信任的技能，其脚本请求会显示拒绝状态。
           </p>
-          <Link
-            href={chatId ? `/chat/${chatId}` : '/'}
-            className="font-medium text-foreground underline underline-offset-4"
-            data-testid="skill-open-chat"
-          >
-            {chatId ? '去 Chat 验证技能' : '去创建 Chat 验证技能'}
-          </Link>
+          {onOpenChat ? (
+            <button
+              type="button"
+              onClick={() => chatId && onOpenChat(chatId)}
+              className="font-medium text-foreground underline underline-offset-4"
+              data-testid="skill-open-chat"
+            >
+              去 Chat 验证技能
+            </button>
+          ) : (
+            <Link
+              href={chatId ? `/chat/${chatId}` : '/'}
+              className="font-medium text-foreground underline underline-offset-4"
+              data-testid="skill-open-chat"
+            >
+              {chatId ? '去 Chat 验证技能' : '去创建 Chat 验证技能'}
+            </Link>
+          )}
         </div>
 
         {error ? <p className="mt-3 text-[11.5px] text-red-600">{error}</p> : null}

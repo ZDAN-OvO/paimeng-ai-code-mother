@@ -22,6 +22,8 @@ import { nowIso } from '@/lib/time';
 import { uid } from './ids';
 import { finishRound, skillKey } from './flow';
 import { buildSite, deriveProjectName, resolveTemplate } from './site';
+import { buildSiteFiles } from './seed/files';
+import { TEMPLATES } from './seed/templates';
 import { seedProjects } from './seed/projects';
 import { MODELS, MODEL_FALLBACK } from './seed/models';
 
@@ -145,15 +147,19 @@ export function summaryOf(chat: ChatRecord): ChatSummary {
     activeVersionId,
     viewVersionId,
     pendingPlan,
+    draft,
+    archivedAt,
   } = chat;
   return {
     id,
-    projectId,
+    projectId: projectId ?? null,
+    draft: draft ?? null,
     title,
     modelId,
     createdAt,
     updatedAt,
     streaming,
+    archivedAt: archivedAt ?? null,
     activeVersionId,
     viewVersionId,
     pendingPlan: pendingPlan ?? null,
@@ -207,8 +213,44 @@ export function updateProject(projectId: string, update: (project: Project) => P
 
 export function findChatByProject(projectId: string): ChatRecord[] {
   return getState()
-    .chats.filter((chat) => chat.projectId === projectId)
+    .chats.filter((chat) => chat.projectId === projectId && !chat.archivedAt)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/** 归档列表：草稿与项目会话都在这里，按归档时间倒序。 */
+export function listArchivedChats(): ChatSummary[] {
+  return getState()
+    .chats.filter((chat) => chat.archivedAt)
+    .sort((a, b) => (b.archivedAt ?? '').localeCompare(a.archivedAt ?? ''))
+    .map(summaryOf);
+}
+
+export function archiveChat(chatId: string): ChatSummary {
+  const chat = findChat(chatId);
+  if (chat.projectId && chat.streaming) throw new ApiError(409, '本轮还在生成，先停止再归档');
+  const next = updateChat(chatId, (current) => ({
+    ...current,
+    archivedAt: current.archivedAt ?? nowIso(),
+    updatedAt: nowIso(),
+  }));
+  return summaryOf(next);
+}
+
+export function restoreChat(chatId: string): ChatSummary {
+  const next = updateChat(chatId, (current) => ({
+    ...current,
+    archivedAt: null,
+    updatedAt: nowIso(),
+  }));
+  return summaryOf(next);
+}
+
+/** 草稿：还没决定变成项目的会话。 */
+export function listDrafts(): ChatSummary[] {
+  return getState()
+    .chats.filter((chat) => !chat.projectId && !chat.archivedAt)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .map(summaryOf);
 }
 
 export function listProjects(): ProjectsResponse['projects'] {
@@ -228,6 +270,92 @@ export function listProjects(): ProjectsResponse['projects'] {
       };
     })
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function templateVersion(
+  chatId: string,
+  templateId: string,
+  brand: string,
+  createdAt: string,
+): Version {
+  const site = buildSite(templateId, brand, 1);
+  const files = buildSiteFiles(site);
+  return {
+    id: uid('ver'),
+    chatId,
+    messageId: null,
+    seq: 1,
+    label: 'v1',
+    summary: `模板「${TEMPLATES.find((item) => item.id === templateId)?.name ?? templateId}」的初始版本`,
+    createdAt,
+    files,
+    site,
+    changedFiles: changedPaths({}, files),
+  };
+}
+
+/** 草稿：首页一句话或模板卡先落一条会话，等用户决定要不要变成项目。 */
+export function createDraft(input: {
+  prompt: string;
+  templateId: string;
+  modelId?: string;
+}): ChatSummary {
+  const world = getState();
+  const chatId = uid('chat');
+  const createdAt = nowIso();
+  const templateId = resolveTemplate(input.templateId, input.prompt);
+  const chat: ChatRecord = {
+    id: chatId,
+    projectId: null,
+    draft: { prompt: input.prompt, templateId },
+    title: deriveProjectName(input.prompt),
+    modelId: input.modelId || MODEL_FALLBACK,
+    createdAt,
+    updatedAt: createdAt,
+    streaming: false,
+    archivedAt: null,
+    activeVersionId: null,
+    viewVersionId: null,
+    pendingPlan: null,
+    messages: [],
+    versions: [],
+  };
+  if (input.templateId !== 'auto') {
+    const version = templateVersion(chatId, templateId, chat.title, createdAt);
+    chat.versions = [version];
+    chat.activeVersionId = version.id;
+    chat.viewVersionId = version.id;
+  }
+  world.chats = [chat, ...world.chats];
+  touch();
+  return summaryOf(chat);
+}
+
+/** 草稿转项目：建 Project 并把这条会话接管过去，不部署。 */
+export function promoteChat(chatId: string): { project: Project; chat: ChatSummary } {
+  const chat = findChat(chatId);
+  if (chat.projectId) throw new ApiError(409, '这个对话已经是项目的一部分');
+  const createdAt = nowIso();
+  const project: Project = {
+    id: uid('proj'),
+    name: chat.title,
+    prompt: chat.draft?.prompt ?? chat.title,
+    templateId: chat.draft?.templateId ?? 'auto',
+    createdAt,
+    updatedAt: createdAt,
+    env: [],
+    deployKey: null,
+    deploys: [],
+  };
+  getState().projects = [project, ...getState().projects];
+  const next = updateChat(chatId, (current) => ({
+    ...current,
+    projectId: project.id,
+    draft: null,
+    updatedAt: createdAt,
+  }));
+  touch();
+  return { project, chat: summaryOf(next) };
 }
 
 export function createProject(input: { prompt: string; templateId: string; modelId?: string }): {
@@ -254,17 +382,27 @@ export function createProject(input: { prompt: string; templateId: string; model
   const chat: ChatRecord = {
     id: chatId,
     projectId,
+    draft: null,
     title: name,
     modelId: input.modelId || MODEL_FALLBACK,
     createdAt,
     updatedAt: createdAt,
     streaming: false,
+    archivedAt: null,
     activeVersionId: null,
     viewVersionId: null,
     pendingPlan: null,
     messages: [],
     versions: [],
   };
+  // 明确选了模板：先把模板产物落成 v1，用户进对话页时右栏就有东西可看。
+  if (input.templateId !== 'auto') {
+    const version = templateVersion(chatId, templateId, name, createdAt);
+    chat.versions = [version];
+    chat.activeVersionId = version.id;
+    chat.viewVersionId = version.id;
+  }
+
   world.projects = [project, ...world.projects];
   world.chats = [chat, ...world.chats];
   touch();
@@ -316,11 +454,13 @@ export function createChat(
   const chat: ChatRecord = {
     id: chatId,
     projectId,
+    draft: null,
     title: input.title?.trim() || `${project.name} · 新对话`,
     modelId: input.modelId || siblings[0]?.modelId || MODEL_FALLBACK,
     createdAt,
     updatedAt: createdAt,
     streaming: false,
+    archivedAt: null,
     pendingPlan: null,
     messages: [],
     versions: baseline ? [baseline] : [],
@@ -348,11 +488,11 @@ export function patchChat(
 
 export function getBundle(chatId: string): ChatBundle {
   const chat = findChat(chatId);
-  const project = findProject(chat.projectId);
+  const project = chat.projectId ? findProject(chat.projectId) : null;
   return {
     project,
     chat: summaryOf(chat),
-    chats: findChatByProject(chat.projectId).map(summaryOf),
+    chats: chat.projectId ? findChatByProject(chat.projectId).map(summaryOf) : [],
     messages: chat.messages,
     versions: chat.versions,
     skills: getState().skills,
@@ -588,6 +728,17 @@ export function findModel(modelId: string | undefined) {
 
 export function siteForProject(project: Project, iteration: number): SiteState {
   return buildSite(resolveTemplate(project.templateId, project.prompt), project.name, iteration);
+}
+
+/** 草稿还没有项目，站点按草稿自己的描述与模板生成。 */
+export function siteForChat(chat: ChatRecord, iteration: number): SiteState {
+  if (chat.projectId) return siteForProject(findProject(chat.projectId), iteration);
+  const prompt = chat.draft?.prompt ?? chat.title;
+  return buildSite(
+    resolveTemplate(chat.draft?.templateId ?? 'auto', prompt),
+    chat.title,
+    iteration,
+  );
 }
 
 export function filesOf(chat: ChatRecord): FileMap {

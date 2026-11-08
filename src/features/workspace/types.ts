@@ -1,3 +1,6 @@
+/** 侧栏入口切换的中栏视图：同一时刻只有一个，不换路由。 */
+export type WorkspaceView = 'chat' | 'chats' | 'projects' | 'skills' | 'templates';
+
 /** 右栏面板：同一时刻只显示一个，宽度可拖。 */
 export type RailPanel = 'preview' | 'code' | 'diff' | 'logs' | 'settings' | 'artifact';
 

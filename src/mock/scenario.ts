@@ -19,9 +19,8 @@ import {
   ApiError,
   filesOf,
   findChat,
-  findProject,
   getBundle,
-  siteForProject,
+  siteForChat,
   updateChat,
   updateMessage,
 } from './world';
@@ -121,7 +120,7 @@ export function sendMessage(chatId: string, input: SendMessageRequest): RunAccep
     updatedAt: nowIso(),
     messages: [...current.messages, { id: uid('msg'), role: 'user', parts, createdAt: nowIso() }],
   }));
-  if (input.plan || wantsPlan(input.text)) return proposePlan(chatId, input.text);
+  if (wantsPlan(input.text)) return proposePlan(chatId, input.text);
   return startRound(chatId, input.text);
 }
 
@@ -163,13 +162,12 @@ export function proposePlan(
 
   const summary = '方案已提交，等待你批准、要求修改或拒绝。本轮没有修改项目文件。';
   const chat = findChat(chatId);
-  const project = findProject(chat.projectId);
   const next = finishRound(
     chat,
     messageId,
     'awaiting_approval',
     summary,
-    siteForProject(project, chat.versions.length),
+    siteForChat(chat, chat.versions.length),
     uid('ver'),
     nowIso(),
   );
@@ -293,14 +291,13 @@ export function startRound(chatId: string, prompt: string): RunAccepted {
 
 function finalize(ctx: Ctx, status: RunStatus, summary: string) {
   const chat = findChat(ctx.chatId);
-  const project = findProject(chat.projectId);
   const previous = chat.versions.at(-1);
   const next = finishRound(
     chat,
     ctx.messageId,
     status,
     summary,
-    previous?.site ?? siteForProject(project, chat.versions.length + 1),
+    previous?.site ?? siteForChat(chat, chat.versions.length + 1),
     uid('ver'),
     nowIso(),
   );
@@ -326,12 +323,11 @@ function finalize(ctx: Ctx, status: RunStatus, summary: string) {
 
 async function execute(ctx: Ctx, prompt: string) {
   const chat = findChat(ctx.chatId);
-  const project = findProject(chat.projectId);
   const previous = chat.versions.at(-1);
   const scenario = scenarioFor(prompt);
   const iteration =
     (previous && Object.keys(previous.files).length ? previous.site.iteration : 0) + 1;
-  const site = siteForProject(project, iteration);
+  const site = siteForChat(chat, iteration);
   const lastUser = [...chat.messages].reverse().find((message) => message.role === 'user');
   const selection = lastUser?.parts.find((part) => part.type === 'selection');
   const quote = prompt.match(/[「“"]([^」”"]{2,18})[」”"]/)?.[1];

@@ -5,8 +5,14 @@
 **Project**：一个产品，拥有自己的发布地址与环境变量。一个 Project 可以有多个 Chat。
 _Avoid_：应用、App、站点。
 
-**Chat**：一条对话线，属于一个 Project。每次生成、每次迭代都发生在一个 Chat 里。
+**Chat**：一条对话线，属于一个 Project，或者在还没有 Project 时作为 Draft 存在。每次生成、每次迭代都发生在一个 Chat 里。
 _Avoid_：会话、对话（在指代数据实体时）。
+
+**Draft**：还没决定要不要变成项目的 Chat。首页一句话先开 Draft 并照常生成；用户满意后点「创建项目」，Draft 原地转成 Project（Chat 与 Version 都不复制）。Draft 没有发布地址与环境变量。
+_Avoid_：临时项目、草稿项目、未完成项目。
+
+**Archive**：把会话从默认列表里收起来，不是删除。归档后仍能在「对话 → 归档」里找到并恢复，版本、发布地址都不受影响。
+_Avoid_：删除、丢弃。
 
 **Message**：Chat 里的一条消息，结构是 AI SDK 的 `UIMessage` parts。用户消息与助手消息同表，用 `seq` 排序。
 _Avoid_：记录、条目。

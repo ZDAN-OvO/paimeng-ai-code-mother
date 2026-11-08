@@ -14,33 +14,39 @@
 
 ## 项目与目录
 
-| 方法     | 路径                    | 请求                                | 响应                                                                         |
-| -------- | ----------------------- | ----------------------------------- | ---------------------------------------------------------------------------- |
-| `GET`    | `/api/projects`         | —                                   | `{ projects: (Project & { chatCount, versionCount, lastChatId, thumb })[] }` |
-| `POST`   | `/api/projects`         | `{ prompt, templateId, modelId? }`  | `{ project, chat }`；同时开始首轮生成，前端随后订阅 `/api/chats/:id/events`  |
-| `PATCH`  | `/api/projects/:id`     | `{ name }`                          | `Project`                                                                    |
-| `DELETE` | `/api/projects/:id`     | —                                   | `204`                                                                        |
-| `PUT`    | `/api/projects/:id/env` | `{ env: { key, value, secret }[] }` | `Project`（整表覆盖，空 key 的行会被丢弃）                                   |
-| `GET`    | `/api/templates`        | —                                   | `{ templates: Template[], gallery: GalleryTemplate[] }`                      |
-| `GET`    | `/api/models`           | —                                   | `{ models: Model[] }`                                                        |
+| 方法     | 路径                    | 请求                                | 响应                                                                          |
+| -------- | ----------------------- | ----------------------------------- | ----------------------------------------------------------------------------- |
+| `GET`    | `/api/projects`         | —                                   | `{ projects: (Project & { chatCount, versionCount, lastChatId, thumb })[] }`  |
+| `POST`   | `/api/projects`         | `{ prompt, templateId, modelId? }`  | `{ project, chat }`；直接从描述建项目，前端已不用（改走草稿），保留给脚本复用 |
+| `PATCH`  | `/api/projects/:id`     | `{ name }`                          | `Project`                                                                     |
+| `DELETE` | `/api/projects/:id`     | —                                   | `204`                                                                         |
+| `PUT`    | `/api/projects/:id/env` | `{ env: { key, value, secret }[] }` | `Project`（整表覆盖，空 key 的行会被丢弃）                                    |
+| `GET`    | `/api/templates`        | —                                   | `{ templates: Template[], gallery: GalleryTemplate[] }`                       |
+| `GET`    | `/api/models`           | —                                   | `{ models: Model[] }`                                                         |
 
-`templateId: "auto"` 表示由生成模型决定结构。`GalleryTemplate.site` 是首页卡片缩略图用的站点状态，不参与生成。
+`templateId: "auto"` 表示由生成模型决定结构。首页与模板卡都只建 Draft；用户点「创建项目」才产生 Project，之后「发布」才部署。`GalleryTemplate.site` 是首页卡片缩略图用的站点状态，不参与生成。
 
 ## 对话与生成
 
-| 方法    | 路径                                | 请求                                       | 响应                                                                                         |
-| ------- | ----------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `GET`   | `/api/projects/:id/chats`           | —                                          | `{ chats: ChatSummary[] }`                                                                   |
-| `POST`  | `/api/projects/:id/chats`           | `{ modelId?, title? }`                     | `ChatSummary`；起点版本复制项目当前源码树                                                    |
-| `GET`   | `/api/chats/:id`                    | —                                          | `ChatBundle`：`{ project, chat, chats, messages, versions, skills }`                         |
-| `PATCH` | `/api/chats/:id`                    | `{ modelId?, title? }`                     | `ChatSummary`                                                                                |
-| `POST`  | `/api/chats/:id/messages`           | `{ text, attachments, selection?, plan? }` | `202 { messageId, eventsUrl }`                                                               |
-| `GET`   | `/api/chats/:id/events?since=<seq>` | —                                          | `text/event-stream`，见下节                                                                  |
-| `POST`  | `/api/chats/:id/stop`               | —                                          | `202`；本轮转为 `stopped`，已完成的改动保留为版本                                            |
-| `POST`  | `/api/chats/:id/plans/:messageId`   | `{ decision, feedback? }`                  | `202 { messageId, eventsUrl }`；`changes_requested` 必带非空 `feedback`                      |
-| `GET`   | `/api/chats/:id/preview`            | —                                          | `{ chatId, versionId, site }`（mock 阶段用本地组件渲染；将来由 `/preview/:chatId` 反代取代） |
+| 方法    | 路径                                | 请求                                | 响应                                                                                             |
+| ------- | ----------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `GET`   | `/api/projects/:id/chats`           | —                                   | `{ chats: ChatSummary[] }`                                                                       |
+| `POST`  | `/api/projects/:id/chats`           | `{ modelId?, title? }`              | `ChatSummary`；起点版本复制项目当前源码树                                                        |
+| `POST`  | `/api/chats`                        | `{ prompt, templateId, modelId? }`  | `201 { chat, eventsUrl }`；建**草稿**并开始首轮，`chat.projectId` 为 `null`                      |
+| `GET`   | `/api/chats?archived=1`             | —                                   | `{ chats: ChatSummary[] }`；归档会话，按归档时间倒序                                             |
+| `GET`   | `/api/drafts`                       | —                                   | `{ chats: ChatSummary[] }`；还没有项目的会话（不含归档），按更新时间倒序                         |
+| `GET`   | `/api/chats/:id`                    | —                                   | `ChatBundle`：`{ project, chat, chats, messages, versions, skills }`；草稿的 `project` 为 `null` |
+| `POST`  | `/api/chats/:id/project`            | —                                   | `201 { project, chat }`；草稿转项目，会话与版本原地保留，**不部署**；已是项目返回 409            |
+| `PATCH` | `/api/chats/:id`                    | `{ modelId?, title? }`              | `ChatSummary`                                                                                    |
+| `POST`  | `/api/chats/:id/archive`            | —                                   | `ChatSummary`；归档不是删除，`archivedAt` 有值后从默认列表消失；生成中返回 409                   |
+| `POST`  | `/api/chats/:id/restore`            | —                                   | `ChatSummary`；取消归档，`archivedAt` 置空                                                       |
+| `POST`  | `/api/chats/:id/messages`           | `{ text, attachments, selection? }` | `202 { messageId, eventsUrl }`                                                                   |
+| `GET`   | `/api/chats/:id/events?since=<seq>` | —                                   | `text/event-stream`，见下节                                                                      |
+| `POST`  | `/api/chats/:id/stop`               | —                                   | `202`；本轮转为 `stopped`，已完成的改动保留为版本                                                |
+| `POST`  | `/api/chats/:id/plans/:messageId`   | `{ decision, feedback? }`           | `202 { messageId, eventsUrl }`；`changes_requested` 必带非空 `feedback`                          |
+| `GET`   | `/api/chats/:id/preview`            | —                                   | `{ chatId, versionId, site }`（mock 阶段用本地组件渲染；将来由 `/preview/:chatId` 反代取代）     |
 
-`plan: true` 或输入命中「先规划 / 先做计划 / 先出方案」时，本轮只产出 plan 片段与 `awaiting_approval` 状态，不写文件。`attachments[].dataUrl` 是 `data:` URL；服务端落盘后成为 `image` 片段。
+输入命中「先规划 / 先做计划 / 先出方案」时（agent 自己判断，不由用户开关指定），本轮只产出 plan 片段与 `awaiting_approval` 状态，不写文件。`attachments[].dataUrl` 是 `data:` URL；服务端落盘后成为 `image` 片段。
 
 ### SSE 事件
 
@@ -112,9 +118,9 @@
 
 页面路由用业务词，扁平，不带 `/prototype` 前缀：
 
-| 路径                   | 页面                                      |
-| ---------------------- | ----------------------------------------- |
-| `/`                    | 首页：一句话建项目、模板画廊、最近项目    |
-| `/chat/<chatId>`       | 工作区：左栏对话线、中间对话、右栏面板    |
-| `/skills`              | 技能：启停、信任、导入、草稿              |
-| `/deploys/<deployKey>` | 已发布站点（独立外观，不含工作台 chrome） |
+| 路径                   | 页面                                                                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------------- |
+| `/`                    | 首页：一句话开草稿、模板画廊、最近项目                                                            |
+| `/chat/<chatId>`       | 工作区：左栏对话线；中栏可切对话 / 全部对话（含归档）/ 项目列表与项目概览 / 技能 / 模板，不换路由 |
+| `/skills`              | 技能：启停、信任、导入、草稿                                                                      |
+| `/deploys/<deployKey>` | 已发布站点（独立外观，不含工作台 chrome）                                                         |

@@ -147,12 +147,17 @@ export type Project = z.infer<typeof projectSchema>;
 /** 列表与导航用的对话线摘要；消息与版本走各自的端点。 */
 export const chatSummarySchema = z.object({
   id: z.string(),
-  projectId: z.string(),
+  /** 草稿没有项目：`null` 表示这条会话还没决定要不要变成项目。 */
+  projectId: z.string().nullable(),
+  /** 只有草稿带这段：转成项目时用它填 Project 的描述与模板。 */
+  draft: z.object({ prompt: z.string(), templateId: z.string() }).nullable().default(null),
   title: z.string(),
   modelId: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
   streaming: z.boolean(),
+  /** 归档时间；有值就不出现在默认列表里，只出现在「归档」列表。 */
+  archivedAt: z.string().nullable().default(null),
   activeVersionId: z.string().nullable(),
   viewVersionId: z.string().nullable(),
   pendingPlan: z.object({ messageId: z.string(), revision: z.number().int() }).nullable(),
@@ -247,6 +252,33 @@ export const createChatRequestSchema = z.object({
 });
 export type CreateChatRequest = z.infer<typeof createChatRequestSchema>;
 
+/** 首页一句话 / 模板卡：先建草稿并立刻跑首轮，等用户决定要不要变成项目。 */
+export const createDraftRequestSchema = z.object({
+  prompt: z.string().min(1),
+  templateId: z.string().default('auto'),
+  modelId: z.string().optional(),
+});
+export type CreateDraftRequest = z.infer<typeof createDraftRequestSchema>;
+
+export const createDraftResponseSchema = z.object({
+  chat: chatSummarySchema,
+  eventsUrl: z.string(),
+});
+export type CreateDraftResponse = z.infer<typeof createDraftResponseSchema>;
+
+/** 草稿转项目：创建 Project，把这条会话接管过去，不做部署。 */
+export const promoteDraftResponseSchema = z.object({
+  project: projectSchema,
+  chat: chatSummarySchema,
+});
+export type PromoteDraftResponse = z.infer<typeof promoteDraftResponseSchema>;
+
+export const archivedChatsResponseSchema = z.object({ chats: z.array(chatSummarySchema) });
+export type ArchivedChatsResponse = z.infer<typeof archivedChatsResponseSchema>;
+
+export const draftsResponseSchema = z.object({ chats: z.array(chatSummarySchema) });
+export type DraftsResponse = z.infer<typeof draftsResponseSchema>;
+
 export const patchChatRequestSchema = z.object({
   modelId: z.string().optional(),
   title: z.string().optional(),
@@ -260,8 +292,6 @@ export const sendMessageRequestSchema = z.object({
   text: z.string().default(''),
   attachments: z.array(attachmentSchema).default([]),
   selection: designContextSchema.optional(),
-  /** 「先规划」：本轮只出方案，等审批再改代码。 */
-  plan: z.boolean().optional(),
 });
 export type SendMessageRequest = z.infer<typeof sendMessageRequestSchema>;
 
@@ -275,7 +305,7 @@ export const planDecisionSchema = z.object({
 export type PlanDecision = z.infer<typeof planDecisionSchema>;
 
 export const chatBundleSchema = z.object({
-  project: projectSchema,
+  project: projectSchema.nullable(),
   chat: chatSummarySchema,
   chats: z.array(chatSummarySchema),
   messages: z.array(messageSchema),

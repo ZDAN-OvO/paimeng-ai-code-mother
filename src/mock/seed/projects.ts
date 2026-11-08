@@ -77,7 +77,9 @@ const SUMMARIES = [
 
 function seedChatBundle(options: {
   chatId: string;
-  projectId: string;
+  /** null 表示草稿：还没决定要不要变成项目。 */
+  projectId: string | null;
+  draftPrompt?: string;
   title: string;
   modelId: string;
   templateId: string;
@@ -137,6 +139,9 @@ function seedChatBundle(options: {
     chat: {
       id: options.chatId,
       projectId: options.projectId,
+      draft: options.projectId
+        ? null
+        : { prompt: options.draftPrompt ?? options.title, templateId: options.templateId },
       title: options.title,
       modelId: options.modelId,
       createdAt: options.baseAt,
@@ -146,6 +151,7 @@ function seedChatBundle(options: {
       activeVersionId: last.id,
       viewVersionId: last.id,
       streaming: false,
+      archivedAt: null,
       pendingPlan: null,
     },
     versions,
@@ -255,9 +261,43 @@ export function seedProjects(): { projects: Project[]; chats: ChatRecord[]; skil
     },
   ];
 
+  const pointerDraft = seedChatBundle({
+    chatId: 'chat_draft_pointer',
+    projectId: null,
+    draftPrompt: '做一个指针 AI 落地页：一句话讲清它替谁省了什么时间。',
+    title: '指针 AI 落地页',
+    modelId: 'anthropic/claude-sonnet-4.5',
+    templateId: 'saas',
+    brand: '指针 AI',
+    baseAt: '2026-11-07T20:10:00+08:00',
+    rounds: [
+      {
+        user: '做一个指针 AI 落地页：一句话讲清它替谁省了什么时间。',
+        at: '2026-11-07T20:11:00+08:00',
+      },
+    ],
+  });
+
+  const pricingDraft = seedChatBundle({
+    chatId: 'chat_draft_pricing',
+    projectId: null,
+    draftPrompt: '咖啡订阅定价页，三档月付，把运费和取消规则写清楚。',
+    title: '咖啡订阅定价页',
+    modelId: 'openai/gpt-5.2',
+    templateId: 'coffee',
+    brand: '山间咖啡',
+    baseAt: '2026-11-07T18:40:00+08:00',
+    rounds: [
+      {
+        user: '咖啡订阅定价页，三档月付，把运费和取消规则写清楚。',
+        at: '2026-11-07T18:41:00+08:00',
+      },
+    ],
+  });
+
   return {
     projects,
-    chats: [cafe.chat, portfolio.chat, weekly.chat],
+    chats: [cafe.chat, portfolio.chat, weekly.chat, pointerDraft.chat, pricingDraft.chat],
     skills: SKILLS_SEED.map((skill) => ({ ...skill })),
   };
 }

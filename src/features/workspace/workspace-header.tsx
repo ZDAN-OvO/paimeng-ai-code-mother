@@ -53,9 +53,10 @@ export function WorkspaceHeader({
   onSelectChat,
   onNewChat,
   onOpenDeploy,
+  onPromote,
   onRename,
 }: {
-  project: Project;
+  project: Project | null;
   chats: ChatRecord[];
   chat: ChatRecord;
   panel: RailPanel;
@@ -63,12 +64,13 @@ export function WorkspaceHeader({
   onSelectChat: (chatId: string) => void;
   onNewChat: () => void;
   onOpenDeploy: () => void;
+  onPromote: () => void;
   onRename: (name: string) => void;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
-  const [name, setName] = useState(project.name);
-  const deployed = project.deploys[0];
+  const [name, setName] = useState(project?.name ?? chat.title);
+  const deployed = project?.deploys[0] ?? null;
   const extra = panel === 'preview' || panel === 'code' ? null : panel;
 
   function commit() {
@@ -92,13 +94,13 @@ export function WorkspaceHeader({
           onKeyDown={(event) => {
             if (event.key === 'Enter') commit();
             if (event.key === 'Escape') {
-              setName(project.name);
+              setName(project?.name ?? chat.title);
               setEditing(false);
             }
           }}
           className="w-40 rounded border border-border px-2 py-1 text-[13px] outline-none focus:border-foreground/40"
         />
-      ) : (
+      ) : project ? (
         <button
           type="button"
           onClick={() => {
@@ -111,6 +113,17 @@ export function WorkspaceHeader({
           {project.name}
           <Pencil className="size-3 text-muted-foreground/50 group-hover:text-muted-foreground" />
         </button>
+      ) : (
+        <span
+          data-testid="draft-title"
+          className="flex items-center gap-1.5 rounded px-1 py-1 text-[13px] font-medium"
+          title="草稿：还没创建项目"
+        >
+          <span className="rounded border border-amber-300 bg-amber-50 px-1 py-px text-[9.5px] font-normal text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+            草稿
+          </span>
+          {chat.title}
+        </span>
       )}
 
       <span className="text-muted-foreground/40">/</span>
@@ -125,7 +138,7 @@ export function WorkspaceHeader({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-72">
           <DropdownMenuLabel className="text-xs text-muted-foreground">
-            这个项目下的对话（{chats.length}）
+            {project ? `这个项目下的对话（${chats.length}）` : '草稿：还没创建项目'}
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
           {chats.map((item) => (
@@ -270,7 +283,7 @@ export function WorkspaceHeader({
 
         <ThemeToggle />
 
-        {deployed && project.deployKey ? (
+        {deployed && project?.deployKey ? (
           <Link
             href={`/deploys/${project.deployKey}`}
             target="_blank"
@@ -282,15 +295,27 @@ export function WorkspaceHeader({
           </Link>
         ) : null}
 
-        <Button
-          size="sm"
-          data-testid="open-deploy"
-          className="h-7 gap-1 px-2.5 text-[11.5px]"
-          onClick={onOpenDeploy}
-        >
-          <Rocket className="size-3.5" />
-          发布
-        </Button>
+        {project ? (
+          <Button
+            size="sm"
+            data-testid="open-deploy"
+            className="h-7 gap-1 px-2.5 text-[11.5px]"
+            onClick={onOpenDeploy}
+          >
+            <Rocket className="size-3.5" />
+            发布
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            data-testid="promote-draft"
+            className="h-7 gap-1 px-2.5 text-[11.5px]"
+            onClick={onPromote}
+          >
+            <Rocket className="size-3.5" />
+            创建项目
+          </Button>
+        )}
         <button
           type="button"
           onClick={() => router.push('/')}

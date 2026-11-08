@@ -31,7 +31,7 @@ import { api, ApiRequestError } from '@/lib/api/client';
 import { formatTime } from '@/lib/time';
 import { cn } from '@/lib/utils';
 import type {
-  CreateProjectResponse,
+  CreateDraftResponse,
   GalleryTemplate,
   Model,
   ModelsResponse,
@@ -68,6 +68,7 @@ export default function HomeView() {
   const [gallery, setGallery] = useState<GalleryTemplate[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [creating, setCreating] = useState(false);
+  const [startingTemplate, setStartingTemplate] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const templatesRef = useRef<HTMLDivElement>(null);
@@ -117,6 +118,16 @@ export default function HomeView() {
     };
   });
 
+  // 首页只负责开一条草稿对话；要不要变成项目由用户在对话页决定。
+  async function startDraft(from: { text: string; template: string }) {
+    const created = await api.post<CreateDraftResponse>('/api/chats', {
+      prompt: from.text,
+      templateId: from.template,
+      modelId,
+    });
+    router.push(`/chat/${created.chat.id}`);
+  }
+
   async function submit() {
     const text = prompt.trim();
     if (!text || creating || !modelId) {
@@ -126,15 +137,26 @@ export default function HomeView() {
     setCreating(true);
     setError(null);
     try {
-      const created = await api.post<CreateProjectResponse>('/api/projects', {
-        prompt: text,
-        templateId,
-        modelId,
-      });
-      router.push(`/chat/${created.chat.id}`);
+      await startDraft({ text, template: templateId });
     } catch (cause) {
       setError(cause instanceof ApiRequestError ? cause.message : '创建项目失败，请重试');
       setCreating(false);
+    }
+  }
+
+  async function startFromTemplate(entry: GalleryTemplate) {
+    if (startingTemplate || creating) return;
+    if (!modelId) {
+      toast.info('模型还在加载，稍等一下再点');
+      return;
+    }
+    setError(null);
+    setStartingTemplate(entry.id);
+    try {
+      await startDraft({ text: entry.prompt, template: entry.templateId });
+    } catch (cause) {
+      setError(cause instanceof ApiRequestError ? cause.message : '创建项目失败，请重试');
+      setStartingTemplate(null);
     }
   }
 
@@ -293,14 +315,8 @@ export default function HomeView() {
         <div ref={templatesRef}>
           <TemplateGallery
             entries={gallery}
-            onUse={(entry) => {
-              setPrompt(entry.prompt);
-              setTemplateId(entry.templateId);
-              textareaRef.current?.focus();
-              toast.success(`已选模板：${entry.name}`, {
-                description: '描述已经填好，可以直接生成，也可以接着改。',
-              });
-            }}
+            busy={Boolean(startingTemplate)}
+            onUse={(entry) => void startFromTemplate(entry)}
           />
         </div>
 
