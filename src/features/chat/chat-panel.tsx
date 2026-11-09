@@ -47,7 +47,7 @@ import type {
 } from '@/shared/api/schemas';
 import { useVoiceInput } from '@/features/chat/use-voice';
 import { ModelSelect } from '@/features/home/model-select';
-import { PlanCard, TodosCard } from '@/features/chat/flow-cards';
+import { PlanCard, ReviewCard, TodosCard } from '@/features/chat/flow-cards';
 
 export type DesignSelection = DesignContext;
 
@@ -346,27 +346,35 @@ function EmptyChat({ project }: { project: Project | null }) {
   );
 }
 
+type ToolPart = Extract<Part, { type: 'tool' }>;
+type ReviewPart = Extract<Part, { type: 'review' }>;
+type Block = { kind: 'tools'; tools: ToolPart[] } | { kind: 'review'; review: ReviewPart };
+
 function splitParts(message: Message) {
-  const tools: Extract<Part, { type: 'tool' }>[] = [];
-  const blocks: { tools: Extract<Part, { type: 'tool' }>[] }[] = [];
+  // 连续的工具调用合成一组；review 卡片插在它发生的位置，让「打回 → 修复 → 再审」按顺序读。
+  const blocks: Block[] = [];
   let reasoning = '';
   const texts: string[] = [];
   for (const part of message.parts) {
     if (part.type === 'tool') {
-      if (!tools.length) blocks.push({ tools });
-      tools.push(part);
+      const last = blocks.at(-1);
+      if (last?.kind === 'tools') last.tools.push(part);
+      else blocks.push({ kind: 'tools', tools: [part] });
       continue;
     }
+    if (part.type === 'review') blocks.push({ kind: 'review', review: part });
     if (part.type === 'reasoning') reasoning += part.text;
     if (part.type === 'text') texts.push(part.text);
   }
-  const grouped = blocks.filter((block) => block.tools.length);
+  const reviews = blocks.flatMap((block) => (block.kind === 'review' ? [block.review] : []));
   // 最后一段文字是这轮的回答，留着；前面的文字属于过程，收进折叠体。
   const finalText = texts.at(-1) ?? '';
   const innerText = texts.slice(0, -1).join('\n\n').trim();
   return {
-    groups: grouped,
-    tools: grouped.flatMap((block) => block.tools),
+    blocks,
+    tools: blocks.flatMap((block) => (block.kind === 'tools' ? block.tools : [])),
+    reviews,
+    rejections: reviews.filter((item) => item.verdict === 'changes_requested').length,
     reasoning,
     finalText,
     innerText,
@@ -406,7 +414,8 @@ function MessageRow({
 }) {
   const [toggled, setToggled] = useState<boolean | null>(null);
   const now = useNow(Boolean(message.streaming));
-  const { groups, tools, reasoning, finalText, innerText } = splitParts(message);
+  const { blocks, tools, reviews, rejections, reasoning, finalText, innerText } =
+    splitParts(message);
   const streaming = Boolean(message.streaming);
   // 生成中默认展开；结束后自动收起。用户点过就按用户的来。
   const open = toggled ?? streaming;
@@ -421,7 +430,9 @@ function MessageRow({
     rejected: '已拒绝',
   }[status];
   const successful = status === 'succeeded';
-  const steps = tools.length + (reasoning ? 1 : 0);
+  const steps = tools.length + reviews.length + (reasoning ? 1 : 0);
+  // 成功但最后一版没经过 completion review；旧消息没有这个字段时不标。
+  const unreviewed = successful && message.completionReviewed === false;
   const took = message.finishedAt
     ? duration(message.createdAt, message.finishedAt, now)
     : streaming
@@ -494,6 +505,11 @@ function MessageRow({
             <span className="font-medium">
               {statusLabel} · {steps} 步
             </span>
+            {reviews.length ? (
+              <span className="text-muted-foreground/70">
+                · 审查 {reviews.length} 次{rejections ? ` · 打回 ${rejections} 次` : ''}
+              </span>
+            ) : null}
             {took ? <span className="text-muted-foreground/70">· {took}</span> : null}
             <ChevronDown
               className={cn(
@@ -515,9 +531,13 @@ function MessageRow({
             {message.parts.map((part, index) =>
               part.type === 'todos' ? <TodosCard key={index} items={part.items} /> : null,
             )}
-            {groups.map((group, index) => (
-              <ToolGroup key={index} tools={group.tools} />
-            ))}
+            {blocks.map((block, index) =>
+              block.kind === 'tools' ? (
+                <ToolGroup key={index} tools={block.tools} />
+              ) : (
+                <ReviewCard key={block.review.id} review={block.review} />
+              ),
+            )}
             {innerText ? (
               <p className="text-[12.5px] leading-6 whitespace-pre-wrap text-muted-foreground">
                 {innerText}
@@ -556,6 +576,15 @@ function MessageRow({
             <span>{formatTime(message.createdAt)}</span>
             <span>·</span>
             <span>{modelName}</span>
+            {unreviewed ? (
+              <span
+                data-testid="unreviewed-badge"
+                title="本轮只跑了 CI，主 agent 没有调用完成审查"
+                className="rounded border border-amber-300/70 px-1.5 py-0.5 text-amber-700 dark:border-amber-700/60 dark:text-amber-400"
+              >
+                未经完成审查
+              </span>
+            ) : null}
             {message.versionId ? (
               <button
                 type="button"
@@ -595,8 +624,7 @@ const TOOL_META: Record<
   },
   delete_file: { icon: FilePlus2, label: (input) => `删除 ${String(input.path ?? '')}` },
   read_skill_file: { icon: Sparkles, label: (input) => `读取技能参考 ${String(input.path ?? '')}` },
-  verify_project: { icon: Check, label: (input) => `验证修订 ${String(input.revision ?? '')}` },
-  complete_task: { icon: Check, label: () => '核对完成条件' },
+  run_checks: { icon: Check, label: (input) => `CI 检查修订 ${String(input.revision ?? '')}` },
   load_skill: { icon: Sparkles, label: (input) => `加载技能 ${String(input.skill ?? '')}` },
   read_attachment: {
     icon: ImageIcon,

@@ -145,7 +145,7 @@
 
 - 类型检查、构建与 HTTP 就绪各自只证明对应事实；review 也不能证明视觉质量与交互正确。
 - 需求本身写错或没说清时，completion review 会照着错的目标判通过；这类问题靠 Plan 审阅与 `ask_user`，不靠加审查。
-- review 的 message parts 与 SSE 事件尚未进入 [api.md](api.md) 与 `schemas.ts`，见第 13 节；在此之前它们是拟定设计，不是契约。
+- review 的 message parts、`finish` 的 `completionReviewed` 标记见 [api.md](api.md)「审查片段与完成标记」，字段以 `schemas.ts` 为准。mock 已按契约演出审查轮次；review subagent 本身还没有实现。
 
 ### 6.2 工具边界
 
@@ -331,7 +331,6 @@ skills/<slug>/
 - 取消、异常与预算耗尽时，未完成改动如何形成可恢复状态需明确；不得改变每条助手消息记录版本的既定规则来掩盖失败。
 - 用户技能脚本与生成项目共享 Sandbox。受控入口校验 Trust 不等于代码来源隔离；通用 Bash 仍有广泛能力，隔离必须靠 Sandbox 与工具权限，不能只靠提示词。
 - Skill 描述不设数量上限，需观察注意力稀释与上下文增长，不提前增设分类器或 ToolSearch。
-- review 的 message parts 与 SSE 事件还没写进 `api.md` 与 `schemas.ts`。按 ADR 0009 两者必须同步，本次只改文档、不改 `src/`，所以暂不写入；M2 实现时一起补上 part 类型（审查请求、结论、打回理由）、`finish` 是否带「未经完成审查」标记，并同步 mock 与界面。
 - subagent 内的工具不能走审批流程；review subagent 需要审批的能力目前不提供。
 - LLM 输出不确定，pass^3 是起点，k 与多数规则可能要按实测方差调整。
 - 用例要多少条才够分出调优集与保留集，20 条一份是起步值，未经验证。

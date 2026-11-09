@@ -47,4 +47,4 @@
 ## Open questions
 
 - CI 接入没落地：推送被 GitHub 拒绝（OAuth App 缺 `workflow` scope）。`.github/workflows/tests.yml` 要补两行：`npm run check:docs`，以及 checkout 的 `fetch-depth: 0`（浅克隆算不了证据新鲜度）。
-- `docs/evidence/frontend-from-prototype/` 已过期：录于 `0eb6a93`，`a7a9702` 重做了侧栏、对话面板、项目区与 mock 场景。重录还是退役，等你定；它现在记在 `docs/evidence/INDEX.md` 的「过期与退役」里。
+- 已结：`docs/evidence/frontend-from-prototype/` 等过期证据于 2026-11-09 直接删除，不再保留退役表。

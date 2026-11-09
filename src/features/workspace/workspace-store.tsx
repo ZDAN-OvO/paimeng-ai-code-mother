@@ -128,7 +128,12 @@ function applyEventToMessage(message: Message, event: SseEvent): Message {
     };
   }
   if (event.type === 'finish') {
-    return { ...message, streaming: false, status: event.status };
+    return {
+      ...message,
+      streaming: false,
+      status: event.status,
+      completionReviewed: event.completionReviewed,
+    };
   }
   return message;
 }

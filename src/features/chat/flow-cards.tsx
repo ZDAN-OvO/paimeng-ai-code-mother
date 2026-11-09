@@ -1,12 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { Check, Circle, ListTodo, Loader2, ShieldCheck } from 'lucide-react';
+import { Check, Circle, CircleAlert, ListTodo, Loader2, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { useWorkspace } from '@/features/workspace/workspace-store';
 import type { Part, TodoItem } from '@/shared/api/schemas';
 type PlanPart = Extract<Part, { type: 'plan' }>;
+type ReviewPart = Extract<Part, { type: 'review' }>;
 
 export function TodosCard({ items }: { items: TodoItem[] }) {
   return (
@@ -136,5 +137,64 @@ export function PlanCard({
         </div>
       ) : null}
     </section>
+  );
+}
+
+const REVIEW_NAME = { code: 'Code review', completion: 'Completion review' } as const;
+
+/** 一次 review subagent 调用：第几轮、审的是哪一版修订、结论与打回理由。 */
+export function ReviewCard({ review }: { review: ReviewPart }) {
+  const rejected = review.verdict === 'changes_requested';
+  const label =
+    review.state === 'running'
+      ? '审查中'
+      : review.state === 'error'
+        ? '没有结论'
+        : rejected
+          ? '打回'
+          : '通过';
+  return (
+    <div
+      data-testid="agent-review"
+      data-kind={review.kind}
+      data-verdict={review.verdict ?? review.state}
+      className="rounded-lg border border-border bg-card px-2.5 py-2 text-xs"
+    >
+      <div className="flex items-center gap-1.5">
+        {review.state === 'running' ? (
+          <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-hidden />
+        ) : review.state === 'error' || rejected ? (
+          <CircleAlert className="size-3.5 text-amber-600" aria-hidden />
+        ) : (
+          <ShieldCheck className="size-3.5 text-emerald-600" aria-hidden />
+        )}
+        <span className="font-medium">
+          {REVIEW_NAME[review.kind]} · 第 {review.round} 轮
+        </span>
+        <span
+          className={
+            rejected || review.state === 'error'
+              ? 'text-amber-700 dark:text-amber-400'
+              : 'text-muted-foreground'
+          }
+        >
+          {label}
+        </span>
+        <span className="ml-auto truncate font-mono text-[10px] text-muted-foreground/70">
+          {review.revision}
+        </span>
+      </div>
+      <div className="mt-1 text-[10.5px] text-muted-foreground">范围：{review.scope}</div>
+      {review.findings?.length ? (
+        <ul
+          aria-label="打回理由"
+          className="mt-1.5 list-disc space-y-0.5 pl-4 text-[11px] leading-5"
+        >
+          {review.findings.map((finding) => (
+            <li key={finding}>{finding}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   );
 }

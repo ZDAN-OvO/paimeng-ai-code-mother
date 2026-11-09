@@ -217,10 +217,12 @@ function checkEvidence() {
     bucket.push({ cells: cells(raw), line: i + 1 });
   });
 
-  // 21 条一条不能少
+  // 13 条与 mvp 2.1 的每一行一条不能少；2.1 的行数从 mvp 读，加了行这里就跟着要求
+  const supplement = supplementRows();
+  if (supplement === 0) fail(MVP, 1, 'mvp 第 2.1 节找不到验收表', 'evidence-row');
   const expected = [
     ...Array.from({ length: 13 }, (_, i) => String(i + 1)),
-    ...Array.from({ length: 8 }, (_, i) => `2.1.${i + 1}`),
+    ...Array.from({ length: supplement }, (_, i) => `2.1.${i + 1}`),
   ];
   const got = new Set(tables.contract.map((r) => r.cells[0]));
   for (const id of expected)
@@ -301,6 +303,23 @@ function checkEvidence() {
   }
 
   return stats;
+}
+
+/** mvp.md 第 2.1 节验收表的数据行数（不含表头与分隔行）。 */
+function supplementRows() {
+  const lines = read(MVP);
+  const start = lines.findIndex((l) => /^### 2\.1 /.test(l));
+  if (start < 0) return 0;
+  let rows = 0;
+  for (let i = start + 1; i < lines.length && !/^##/.test(lines[i]); i++) {
+    if (!lines[i].startsWith('|')) continue;
+    if (cells(lines[i]).every((c) => /^:?-{3,}:?$/.test(c))) {
+      rows -= 1; // 分隔行前面那一行是表头
+      continue;
+    }
+    rows += 1;
+  }
+  return Math.max(rows, 0);
 }
 
 function splitGlobs(raw) {

@@ -73,16 +73,33 @@
 
 每条事件是一行 `data: <json>`，`seq` 单调递增。客户端带 `since=<seq>` 重连时只补发更大的 `seq`；不带时从头补发本轮全部事件。
 
-| 事件           | 载荷                                                        | 含义                                                                       |
-| -------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `snapshot`     | `{ message: Message \| null }`                              | 连接建立或新一轮开始时，客户端用它替换当前生成中的消息                     |
-| `part-added`   | `{ messageId, part }`                                       | 追加一个片段（text / reasoning / tool / todos / plan / selection / image） |
-| `part-updated` | `{ messageId, partId, patch: { state?, output?, items? } }` | 工具状态与输出、Todo 进度                                                  |
-| `text-delta`   | `{ messageId, partId, delta }`                              | 文本增量                                                                   |
-| `finish`       | `{ messageId, status, summary, versionId }`                 | 本轮结束；随后客户端重取 `ChatBundle`                                      |
-| `error`        | `{ message }`                                               | 服务端失败；前端提示后可重试                                               |
+| 事件           | 载荷                                                                             | 含义                                                                                |
+| -------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `snapshot`     | `{ message: Message \| null }`                                                   | 连接建立或新一轮开始时，客户端用它替换当前生成中的消息                              |
+| `part-added`   | `{ messageId, part }`                                                            | 追加一个片段（text / reasoning / tool / todos / plan / selection / image / review） |
+| `part-updated` | `{ messageId, partId, patch: { state?, output?, items?, verdict?, findings? } }` | 工具状态与输出、Todo 进度、审查结论与打回理由                                       |
+| `text-delta`   | `{ messageId, partId, delta }`                                                   | 文本增量                                                                            |
+| `finish`       | `{ messageId, status, summary, versionId, completionReviewed }`                  | 本轮结束；随后客户端重取 `ChatBundle`                                               |
+| `preview`      | `{ site, files }`                                                                | 生成中的预览状态与源码树（mock 阶段用本地组件渲染）                                 |
+| `error`        | `{ message }`                                                                    | 服务端失败；前端提示后可重试                                                        |
 
 `status` 取值：`running`、`awaiting_approval`、`succeeded`、`stopped`、`failed`、`budget_exhausted`、`rejected`。
+
+### 审查片段与完成标记
+
+开发反馈循环的设计见 `architecture.md` 第 6.1 节。CI 是普通工具片段（`name: "run_checks"`，输入带 `revision` 与 `checks`）；两个 review subagent 的每次调用是一个 `review` 片段，不再另发 tool 片段。
+
+| 字段       | 取值                                 | 含义                                                                       |
+| ---------- | ------------------------------------ | -------------------------------------------------------------------------- |
+| `kind`     | `code` / `completion`                | code review 检查改动本身；completion review 交付前核对本轮目标             |
+| `round`    | 正整数                               | 按 `kind` 各自从 1 计数                                                    |
+| `revision` | 源码修订指纹                         | 被审的那一版；之后再改文件，结论不再适用                                   |
+| `scope`    | 文本                                 | 这次审查覆盖的范围，可以只是局部                                           |
+| `state`    | `running` / `done` / `error`         | `error` 表示没有结论，例如当前修订没有 CI 通过记录、审查没有开始，或被中断 |
+| `verdict`  | `passed` / `changes_requested`，可缺 | `state` 为 `done` 时才有                                                   |
+| `findings` | 文本数组，可缺                       | 打回理由或没有结论的原因                                                   |
+
+`completionReviewed` 同时出现在 `finish` 与 `Message` 上：本轮成功，且最后一版源码修订通过了 completion review 时为 `true`。成功但为 `false` 时界面标「未经完成审查」；旧消息没有这个字段时不标。宿主底线：当前修订没有 CI 通过记录时，`status` 不会是 `succeeded`。
 
 ## 版本
 

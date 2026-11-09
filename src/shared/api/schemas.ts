@@ -39,6 +39,13 @@ export type TodoItem = z.infer<typeof todoItemSchema>;
 export const planStatusSchema = z.enum(['pending', 'approved', 'changes_requested', 'rejected']);
 export type PlanStatus = z.infer<typeof planStatusSchema>;
 
+/** code：检查一次改动本身；completion：交付前核对本轮目标。见 architecture.md 第 6.1 节。 */
+export const reviewKindSchema = z.enum(['code', 'completion']);
+export type ReviewKind = z.infer<typeof reviewKindSchema>;
+
+export const reviewVerdictSchema = z.enum(['passed', 'changes_requested']);
+export type ReviewVerdict = z.infer<typeof reviewVerdictSchema>;
+
 /** 消息里的一个片段。`id` 让流式更新可以定位到具体片段。 */
 export const partSchema = z.discriminatedUnion('type', [
   z.object({ id: z.string(), type: z.literal('text'), text: z.string() }),
@@ -63,6 +70,22 @@ export const partSchema = z.discriminatedUnion('type', [
     status: planStatusSchema,
     feedback: z.string().optional(),
   }),
+  /**
+   * 一次 review subagent 调用。`round` 按 kind 各自从 1 计数；`revision` 是被审的源码修订。
+   * 运行中 `state` 为 running、没有 verdict；结束后 `state` 为 done 并带 verdict，
+   * 打回时 `findings` 是打回理由。subagent 自身失败时 `state` 为 error。
+   */
+  z.object({
+    id: z.string(),
+    type: z.literal('review'),
+    kind: reviewKindSchema,
+    round: z.number().int().positive(),
+    revision: z.string(),
+    scope: z.string(),
+    state: toolStateSchema,
+    verdict: reviewVerdictSchema.optional(),
+    findings: z.array(z.string()).optional(),
+  }),
 ]);
 export type Part = z.infer<typeof partSchema>;
 
@@ -75,6 +98,8 @@ export const messageSchema = z.object({
   versionId: z.string().optional(),
   streaming: z.boolean().optional(),
   status: runStatusSchema.optional(),
+  /** 本轮最后的源码修订是否通过了 completion review；成功但为 false 时界面标「未经完成审查」。 */
+  completionReviewed: z.boolean().optional(),
 });
 export type Message = z.infer<typeof messageSchema>;
 
@@ -441,6 +466,8 @@ export const sseEventSchema = z.discriminatedUnion('type', [
       state: toolStateSchema.optional(),
       output: z.string().optional(),
       items: z.array(todoItemSchema).optional(),
+      verdict: reviewVerdictSchema.optional(),
+      findings: z.array(z.string()).optional(),
     }),
   }),
   z.object({
@@ -457,6 +484,7 @@ export const sseEventSchema = z.discriminatedUnion('type', [
     status: runStatusSchema,
     summary: z.string(),
     versionId: z.string().nullable(),
+    completionReviewed: z.boolean(),
   }),
   z.object({
     seq: z.number().int(),
