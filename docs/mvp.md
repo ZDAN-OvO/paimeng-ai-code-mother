@@ -163,6 +163,8 @@ MVP 聚焦可演示的生成、修改、验证与发布主干，不复制 v0 的
 
 M2 的首批 Skill 是 `frontend-design`、`nextjs`、`shadcn`、`debug-and-verify`，分别覆盖视觉、框架、组件与诊断；M4 增加 `skill-creator`。这是交付安排，不表示技能已经实现。
 
+前端 mock 已走通的交互（第 4、5、6、7、9、10、13 条的界面，见 `docs/evidence/`）不计入交付，只证明契约形状与界面形态；每一条仍以里程碑里的真实实现演示为准。
+
 ### 6.1 MVP 后的迭代
 
 以下 AI 与 Agent Skill 明确要做，交付批次与具体兼容版本后续细化；继续使用同一套 description 路由、正文与参考文件按需加载。
@@ -205,3 +207,4 @@ M2 的首批 Skill 是 `frontend-design`、`nextjs`、`shadcn`、`debug-and-veri
 
 - 2026-11-06：初版，整合本轮架构讨论的全部结论。
 - 2026-11-07：同步两份规划 HTML：明确单主 Agent 反馈循环，补齐八项基础工具、Todo／Plan、验证与完成判定；最小 Skill 加载与四个核心 Skill 前移 M2，M4 完成管理与制作；安排 MVP 后的 AI 与 Agent Skill。版本维持原 Snapshot 决策，v0 与 GitHub 对齐仅后续评估，真实浏览器尚未确认。
+- 2026-11-08：核对本文件、`architecture.md`、`api.md` 与代码的一致性。改了三处：第 6 节注明前端 mock 已走通的交互不计入交付；里程碑与 mock 进度的关系写清楚；其余同步在 `architecture.md`（数据模型落到列上的三个概念、模块边界里的权威链、沙箱路径与证据目录）与 `api.md`（健康检查、契约与表结构的对照）。范围结论未改。

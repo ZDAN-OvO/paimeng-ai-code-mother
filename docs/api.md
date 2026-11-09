@@ -2,7 +2,7 @@
 
 前端只通过这里列出的 HTTP 接口取数与写入。当前实现是 mock：`src/app/api/**` 的 handler 调用 `src/mock/world.ts`，数据落盘在 `data/mock/state.json`。
 
-后端接手时逐个替换 handler 内部实现即可，前端调用点、路径、请求体、响应形状、SSE 事件名都不改。字段命名的权威来源是 `src/shared/api/schemas.ts`（zod），本文与它同步；命名对齐 `src/server/db/schema.ts`。
+后端接手时逐个替换 handler 内部实现即可，前端调用点、路径、请求体、响应形状、SSE 事件名都不改。字段命名的权威来源是 `src/shared/api/schemas.ts`（zod），本文与它同步。契约字段到数据库表的对应见下文「契约与表结构」：两者不一致时以契约为准，迁移按契约补齐。
 
 ## 约定
 
@@ -11,6 +11,27 @@
 - 时间一律 ISO 8601 字符串；`FileMap` 是 `Record<path, content>`。
 - 单用户本地优先：没有鉴权头，也不接受 `user_id` 入参。
 - 生成中的 assistant 消息由服务端持有；客户端通过 SSE 跟随后，在 `finish` 后重新 `GET /api/chats/:id` 取权威状态。
+
+### 契约与表结构
+
+迁移 `001_init.sql` 目前只建了表，字段还没对齐契约。实现时按下表补齐，不另建派生表。
+
+| 契约                                                                       | 落在哪                                  | 现状                                      |
+| -------------------------------------------------------------------------- | --------------------------------------- | ----------------------------------------- |
+| `ChatSummary.projectId` 可空，草稿为 `null`                                | `chat.project_id`                       | 迁移是 `not null`，需放行                 |
+| `ChatSummary.draft`                                                        | `chat.draft` jsonb                      | 迁移缺列                                  |
+| `ChatSummary.archivedAt`                                                   | `chat.archived_at`                      | 迁移缺列                                  |
+| `Project.prompt`、`Project.templateId`                                     | `project.prompt`、`project.template_id` | 迁移缺列                                  |
+| `Project.updatedAt`                                                        | `project.updated_at`                    | 迁移缺列                                  |
+| `Project.deployKey`、`Project.deploys`                                     | `deploy` 表聚合                         | 不落 `project` 表                         |
+| `Version.files`、`Version.site`、`changedFiles`                            | `version.snapshot_path` 指向的源码树    | 列表端点不返回整棵树                      |
+| `ChatSummary.streaming`、`activeVersionId`、`viewVersionId`、`pendingPlan` | 无列                                    | 由 message parts 与进程内状态推导，不入库 |
+
+## 健康检查
+
+| 方法  | 路径          | 请求 | 响应                                                                                   |
+| ----- | ------------- | ---- | -------------------------------------------------------------------------------------- |
+| `GET` | `/api/health` | —    | `{ ok, database }`；数据库可达返回 `200`，否则 `503` 且 `ok` 为 `false`（M0 退出条件） |
 
 ## 项目与目录
 
@@ -28,23 +49,23 @@
 
 ## 对话与生成
 
-| 方法    | 路径                                | 请求                                | 响应                                                                                             |
-| ------- | ----------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `GET`   | `/api/projects/:id/chats`           | —                                   | `{ chats: ChatSummary[] }`                                                                       |
-| `POST`  | `/api/projects/:id/chats`           | `{ modelId?, title? }`              | `ChatSummary`；起点版本复制项目当前源码树                                                        |
-| `POST`  | `/api/chats`                        | `{ prompt, templateId, modelId? }`  | `201 { chat, eventsUrl }`；建**草稿**并开始首轮，`chat.projectId` 为 `null`                      |
-| `GET`   | `/api/chats?archived=1`             | —                                   | `{ chats: ChatSummary[] }`；归档会话，按归档时间倒序                                             |
-| `GET`   | `/api/drafts`                       | —                                   | `{ chats: ChatSummary[] }`；还没有项目的会话（不含归档），按更新时间倒序                         |
-| `GET`   | `/api/chats/:id`                    | —                                   | `ChatBundle`：`{ project, chat, chats, messages, versions, skills }`；草稿的 `project` 为 `null` |
-| `POST`  | `/api/chats/:id/project`            | —                                   | `201 { project, chat }`；草稿转项目，会话与版本原地保留，**不部署**；已是项目返回 409            |
-| `PATCH` | `/api/chats/:id`                    | `{ modelId?, title? }`              | `ChatSummary`                                                                                    |
-| `POST`  | `/api/chats/:id/archive`            | —                                   | `ChatSummary`；归档不是删除，`archivedAt` 有值后从默认列表消失；生成中返回 409                   |
-| `POST`  | `/api/chats/:id/restore`            | —                                   | `ChatSummary`；取消归档，`archivedAt` 置空                                                       |
-| `POST`  | `/api/chats/:id/messages`           | `{ text, attachments, selection? }` | `202 { messageId, eventsUrl }`                                                                   |
-| `GET`   | `/api/chats/:id/events?since=<seq>` | —                                   | `text/event-stream`，见下节                                                                      |
-| `POST`  | `/api/chats/:id/stop`               | —                                   | `202`；本轮转为 `stopped`，已完成的改动保留为版本                                                |
-| `POST`  | `/api/chats/:id/plans/:messageId`   | `{ decision, feedback? }`           | `202 { messageId, eventsUrl }`；`changes_requested` 必带非空 `feedback`                          |
-| `GET`   | `/api/chats/:id/preview`            | —                                   | `{ chatId, versionId, site }`（mock 阶段用本地组件渲染；将来由 `/preview/:chatId` 反代取代）     |
+| 方法    | 路径                                | 请求                                | 响应                                                                                                                                                                              |
+| ------- | ----------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`   | `/api/projects/:id/chats`           | —                                   | `{ chats: ChatSummary[] }`                                                                                                                                                        |
+| `POST`  | `/api/projects/:id/chats`           | `{ modelId?, title? }`              | `ChatSummary`；起点版本复制项目当前源码树                                                                                                                                         |
+| `POST`  | `/api/chats`                        | `{ prompt, templateId, modelId? }`  | `201 { chat, eventsUrl }`；建**草稿**并开始首轮，`chat.projectId` 为 `null`                                                                                                       |
+| `GET`   | `/api/chats?archived=1`             | —                                   | `{ chats: ChatSummary[] }`；归档会话，按归档时间倒序。不带 `archived=1` 时返回空列表占位，前端不使用；默认列表由 `/api/drafts`、`/api/projects` 与 `/api/projects/:id/chats` 提供 |
+| `GET`   | `/api/drafts`                       | —                                   | `{ chats: ChatSummary[] }`；还没有项目的会话（不含归档），按更新时间倒序                                                                                                          |
+| `GET`   | `/api/chats/:id`                    | —                                   | `ChatBundle`：`{ project, chat, chats, messages, versions, skills }`；草稿的 `project` 为 `null`                                                                                  |
+| `POST`  | `/api/chats/:id/project`            | —                                   | `201 { project, chat }`；草稿转项目，会话与版本原地保留，**不部署**；已是项目返回 409                                                                                             |
+| `PATCH` | `/api/chats/:id`                    | `{ modelId?, title? }`              | `ChatSummary`                                                                                                                                                                     |
+| `POST`  | `/api/chats/:id/archive`            | —                                   | `ChatSummary`；归档不是删除，`archivedAt` 有值后从默认列表消失；生成中返回 409                                                                                                    |
+| `POST`  | `/api/chats/:id/restore`            | —                                   | `ChatSummary`；取消归档，`archivedAt` 置空                                                                                                                                        |
+| `POST`  | `/api/chats/:id/messages`           | `{ text, attachments, selection? }` | `202 { messageId, eventsUrl }`                                                                                                                                                    |
+| `GET`   | `/api/chats/:id/events?since=<seq>` | —                                   | `text/event-stream`，见下节                                                                                                                                                       |
+| `POST`  | `/api/chats/:id/stop`               | —                                   | `202`；本轮转为 `stopped`，已完成的改动保留为版本                                                                                                                                 |
+| `POST`  | `/api/chats/:id/plans/:messageId`   | `{ decision, feedback? }`           | `202 { messageId, eventsUrl }`；`changes_requested` 必带非空 `feedback`                                                                                                           |
+| `GET`   | `/api/chats/:id/preview`            | —                                   | `{ chatId, versionId, site }`（mock 阶段用本地组件渲染；将来由 `/preview/:chatId` 反代取代）                                                                                      |
 
 输入命中「先规划 / 先做计划 / 先出方案」时（agent 自己判断，不由用户开关指定），本轮只产出 plan 片段与 `awaiting_approval` 状态，不写文件。`attachments[].dataUrl` 是 `data:` URL；服务端落盘后成为 `image` 片段。
 
@@ -74,12 +95,12 @@
 
 ## 发布
 
-| 方法   | 路径                        | 请求            | 响应                                                                                          |
-| ------ | --------------------------- | --------------- | --------------------------------------------------------------------------------------------- |
-| `POST` | `/api/projects/:id/deploys` | `{ versionId }` | `201 { deploy, eventsUrl }`                                                                   |
-| `GET`  | `/api/deploys/:id/events`   | —               | `text/event-stream`：`{ type: "step", step, state }` … `{ type: "finish", deployKey, state }` |
-| `GET`  | `/api/projects/:id/deploys` | —               | `{ deploys: Deploy[] }`                                                                       |
-| `GET`  | `/api/deploys/:deployKey`   | —               | `{ project, deploy, version }`；发布页 `/deploys/<deployKey>` 用它                            |
+| 方法   | 路径                             | 请求            | 响应                                                                                          |
+| ------ | -------------------------------- | --------------- | --------------------------------------------------------------------------------------------- |
+| `POST` | `/api/projects/:id/deploys`      | `{ versionId }` | `201 { deploy, eventsUrl }`                                                                   |
+| `GET`  | `/api/deploys/:deployKey/events` | —               | `text/event-stream`：`{ type: "step", step, state }` … `{ type: "finish", deployKey, state }` |
+| `GET`  | `/api/projects/:id/deploys`      | —               | `{ deploys: Deploy[] }`                                                                       |
+| `GET`  | `/api/deploys/:deployKey`        | —               | `{ project, deploy, version }`；发布页 `/deploys/<deployKey>` 用它                            |
 
 发布地址按 Project 固定：第一次发布生成 `deployKey`，之后同一 Project 的再次发布复用同一个 key，指向新版本。
 

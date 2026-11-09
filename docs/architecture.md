@@ -21,14 +21,14 @@
 | 5   | 沙箱内实时预览                            | 保存即可见，刷新不丢                                     |
 | 6   | 多轮迭代                                  | 同一 Chat 连续修改，文件真实变化                         |
 | 7   | 版本、diff、回滚                          | 每条助手消息一个版本；可看 diff；回滚追加新版本          |
-| 8   | 发布                                      | 得到 `/deploys/<deployKey>` 可访问地址，回滚后可重新发布 |
+| 8   | 发布                                      | 得到 `/deploys/<deployKey>` 可访问地址；回滚后可重新发布 |
 | 9   | Design mode 元素选择                      | 点选预览元素，生成一句指向该组件的对话输入               |
 | 10  | 截图导入                                  | 上传截图，作为视觉参考进入本轮生成                       |
 | 11  | 模板                                      | 新建时可选内置起始模板                                   |
 | 12  | 浏览器与联网搜索                          | 抓取网页正文、调用可配置搜索 API                         |
 | 13  | 环境变量面板                              | 为 Project 配置环境变量，沙箱与发布实例都注入            |
 
-明确不做：多人协作与邀请、Figma 导入、Vercel 一键部署、GitHub PR 导出、数据连接向导、计费与额度、组件市场、移动端 App、公开模板画廊。
+明确不做：多人协作与邀请、Figma 导入、Vercel 一键部署、GitHub 同步及 PR 导出、数据连接向导、计费与额度、组件市场、移动端 App、公开模板画廊、用户发布模板、动态 ToolSearch、独立任务管理平台、通用制品平台、图片生成服务。这份清单以 `mvp.md` 第 3 节为准，两处应保持同一组条目。
 
 ## 3. 技术栈
 
@@ -64,15 +64,19 @@
 
 ## 5. 数据模型
 
-| 表                | 作用                                  | 关键列                                                       |
-| ----------------- | ------------------------------------- | ------------------------------------------------------------ |
-| `project`         | 一次产品，对应一个发布地址            | `id`、`user_id`、`name`、`env jsonb`                         |
-| `chat`            | 一条对话线，属于 Project              | `id`、`project_id`、`model_id`、`title`                      |
-| `message`         | 对话消息，AI SDK `UIMessage` 的 parts | `id`、`chat_id`、`seq`、`role`、`parts jsonb`                |
-| `version`         | 一条助手消息对应的源码快照            | `id`、`chat_id`、`message_id`、`seq`、`snapshot_path`        |
-| `skill`           | 技能索引，正文在磁盘                  | `id`、`owner_id`、`slug`、`description`、`source`、`trusted` |
-| `deploy`          | 一次发布                              | `id`、`project_id`、`version_id`、`deploy_key`、`state`      |
-| `sandbox_session` | 沙箱容器与工作区                      | `id`、`chat_id`、`container_id`、`volume`、`expires_at`      |
+| 表                | 作用                                  | 关键列                                                                        |
+| ----------------- | ------------------------------------- | ----------------------------------------------------------------------------- |
+| `project`         | 一次产品，对应一个发布地址            | `id`、`user_id`、`name`、`env jsonb`、`prompt`、`template_id`、`updated_at`   |
+| `chat`            | 一条对话线，属于 Project 或作为草稿   | `id`、`project_id`（可空）、`model_id`、`title`、`archived_at`、`draft jsonb` |
+| `message`         | 对话消息，AI SDK `UIMessage` 的 parts | `id`、`chat_id`、`seq`、`role`、`parts jsonb`                                 |
+| `version`         | 一条助手消息对应的源码快照            | `id`、`chat_id`、`message_id`、`seq`、`snapshot_path`                         |
+| `skill`           | 技能索引，正文在磁盘                  | `id`、`owner_id`、`slug`、`description`、`source`、`trusted`、`enabled`       |
+| `deploy`          | 一次发布                              | `id`、`project_id`、`version_id`、`deploy_key`、`state`、`artifact_path`      |
+| `sandbox_session` | 沙箱容器与工作区                      | `id`、`chat_id`、`container_id`、`volume`、`last_active_at`、`expires_at`     |
+
+三个概念落在列上，不另建表：**草稿**是 `project_id` 为空的 chat，转正只是给它填上 Project；**归档**是 `archived_at` 有值，归档的会话从默认列表消失但数据不动；**Project 的 `prompt` 与 `template_id`** 存 `project` 表，`deployKey` 与发布记录只由 `deploy` 行聚合，不落 `project` 表。
+
+上表是目标形状。当前迁移 `migrations/001_init.sql` 与它有四处差，实现前按目标补齐：`chat.project_id` 仍是 `not null`、`chat` 缺 `archived_at` 与 `draft`、`project` 缺 `prompt`、`template_id`、`updated_at`，另外三张表已建了 `skill.enabled`、`deploy.artifact_path`、`sandbox_session.last_active_at`（此处已补列）。
 
 内置模板与内置技能直接扫描 `templates/` 与 `skills/`，不建表。用户技能的正文与文件在 `data/users/<userId>/skills/<slug>/`，表里只存索引。
 
@@ -99,6 +103,8 @@
 ```
 
 业务逻辑只在 `src/server/**`；`src/app` 只做路由与渲染，不写领域规则。前端只经 `src/lib/api` 调 `/api/**`，契约见 [api.md](api.md)；`src/mock/**` 只服务当前的 mock 实现，后端接手时逐个替换 `src/app/api/**` 的 handler，前端调用点与状态形状不改。
+
+谁说了算：**范围**看 `mvp.md`，冲突时先改它的范围结论再同步这里；**结构与模块边界**看本文件；**前后端字段**看 `src/shared/api/schemas.ts` 与 `api.md`，契约优先，迁移按契约补齐。三份文件互相矛盾时，按这三条归位，而不是就地改对方。
 
 ### 6.1 单主 Agent 与反馈循环
 
@@ -199,7 +205,7 @@ skills/<slug>/
 
 ## 8. 沙箱与预览
 
-`sandbox/src/docker.ts` 实现 AI SDK 的 `SandboxSession`：`readTextFile`、`writeTextFile`、`listDirectory`、`stat`、`deleteFile`、`run`、`spawn`。
+`src/server/sandbox/docker.ts` 实现 AI SDK 的 `SandboxSession`：`readTextFile`、`writeTextFile`、`listDirectory`、`stat`、`deleteFile`、`run`、`spawn`。
 
 - 每个 Chat 一个容器，工作区是命名卷，挂在 `/workspace`。
 - 容器参数沿用旧库验证过的隔离：`--read-only`、`--cap-drop=ALL`、`--pids-limit`、`--memory`、`--cpus`、`--security-opt=no-new-privileges`。
@@ -235,7 +241,7 @@ skills/<slug>/
 7. Design mode 与截图导入（验收 9、10）。
 8. 搜索、模板、环境变量面板（验收 11、12、13）。
 
-每个 PR 附浏览器录屏（GIF）、数据库行与沙箱真实输出，证据放 `runtime/evidence/`。
+每个 PR 附浏览器录屏（GIF）、数据库行与沙箱真实输出，证据放 `docs/evidence/<slug>/`。
 
 ## 12. 未决与风险
 

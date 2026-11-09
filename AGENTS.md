@@ -21,6 +21,7 @@
 - 架构与验收契约只在 `docs/architecture.md`。决策的理由在 `docs/adr/`，不在别处复述。
 - 术语以 `GLOSSARY.md` 为准。
 - 不把代码能表达的东西写进文档；文档只解释为什么。
+- 文档与契约、验收入口、证据三者由 `npm run check:docs` 检查：路由与 13 条在两份文档里对齐，`docs/evidence/INDEX.md` 里每条承诺的证据不能过期。改完先跑它，红了不提交。
 
 ## Pull request evidence
 

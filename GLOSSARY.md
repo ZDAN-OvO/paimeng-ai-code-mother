@@ -23,7 +23,7 @@ _Avoid_：快照版本号、commit。
 **Snapshot**：Version 在磁盘上的源码树副本，保存在宿主机，不含 `node_modules` 与 `.next`。
 _Avoid_：备份、存档。
 
-**Template**：内置的起始项目，新建 Project 时可以选择。用户不能发布模板。
+**Template**：内置的起始项目，新建 Draft 时选择，转正时带入 Project。用户不能发布模板。
 _Avoid_：脚手架、starter。
 
 ## 生成与技能
