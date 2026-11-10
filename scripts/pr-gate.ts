@@ -21,6 +21,18 @@ function arg(name: string): string | undefined {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
+/**
+ * 区分“没有这个参数”和“给了参数但没有值”。
+ * `--repo ''` 与末尾单独的 `--repo` 都算后者，必须拒绝而不是悄悄回退默认值。
+ */
+function argExact(name: string): { present: boolean; value: string } {
+  const index = process.argv.indexOf(`--${name}`);
+  if (index < 0) return { present: false, value: '' };
+  const next = process.argv[index + 1];
+  const value = next === undefined || next.startsWith('--') ? '' : next;
+  return { present: true, value };
+}
+
 type Report<T> = { value: T | null; error?: string };
 
 function readJson<T>(label: string, file: string | undefined): Report<T> {
@@ -76,7 +88,8 @@ function githubSlug(url: string): string {
     pathname = parsed.pathname;
   }
 
-  if (host.toLowerCase() !== 'github.com') return '';
+  // DNS 允许主机名带结尾点，`github.com.` 与 `github.com` 是同一主机。
+  if (host.toLowerCase().replace(/\.$/, '') !== 'github.com') return '';
 
   const cleaned = pathname
     .replace(/^\/+/, '')
@@ -90,20 +103,27 @@ function githubSlug(url: string): string {
 type Target = { repo: string; branch: string; error?: string };
 
 /** 目标仓库与分支。任何一项定不下来就拒绝，不用默认值猜。 */
-function resolveTarget(repoArg?: string, branchArg?: string): Target {
+function resolveTarget(
+  repoArg: { present: boolean; value: string },
+  branchArg: { present: boolean; value: string },
+): Target {
   const errors: string[] = [];
 
   let repo = '';
-  if (repoArg) {
-    if (/^[^/\s]+\/[^/\s]+$/.test(repoArg)) repo = repoArg;
-    else errors.push(`--repo 需为 owner/name：${repoArg}`);
+  if (repoArg.present) {
+    if (!repoArg.value) errors.push('--repo 需要值（owner/name）');
+    else if (/^[^/\s]+\/[^/\s]+$/.test(repoArg.value)) repo = repoArg.value;
+    else errors.push(`--repo 需为 owner/name：${repoArg.value}`);
   } else {
     repo = githubSlug(git(['remote', 'get-url', 'origin']));
     if (!repo) errors.push('无法从 origin 解析 GitHub 仓库，请用 --repo owner/name');
   }
 
-  let branch = branchArg ?? '';
-  if (!branch) {
+  let branch = '';
+  if (branchArg.present) {
+    if (!branchArg.value) errors.push('--branch 需要值');
+    else branch = branchArg.value;
+  } else {
     const current = currentBranch();
     if (current && current !== 'HEAD') branch = current;
     else errors.push('游离 HEAD 无法确定分支，请用 --branch 指定');
@@ -115,9 +135,14 @@ function resolveTarget(repoArg?: string, branchArg?: string): Target {
 type RemoteHead = { sha: string; error?: string };
 
 /** GitHub 上该分支的实际头。查询失败不返回 SHA，让门禁拒绝。 */
+/** 分支按路径段编码，保留 `/` 分隔；否则 `#` 会被当成 URL fragment 截断。 */
+function encodeBranch(branch: string): string {
+  return branch.split('/').map(encodeURIComponent).join('/');
+}
+
 function remoteHead(repo: string, branch: string): RemoteHead {
   const gh = process.env.PR_GATE_GH || 'gh';
-  const refPath = `repos/${repo}/git/ref/heads/${branch}`;
+  const refPath = `repos/${repo}/git/ref/heads/${encodeBranch(branch)}`;
   try {
     const output = execFileSync(gh, ['api', refPath, '--jq', '.object.sha'], {
       encoding: 'utf8',
@@ -140,7 +165,7 @@ function remoteHead(repo: string, branch: string): RemoteHead {
 }
 
 const sha = arg('sha') ?? git(['rev-parse', 'HEAD']);
-const target = resolveTarget(arg('repo'), arg('branch'));
+const target = resolveTarget(argExact('repo'), argExact('branch'));
 const head = target.error
   ? { sha: '', error: target.error }
   : remoteHead(target.repo, target.branch);
