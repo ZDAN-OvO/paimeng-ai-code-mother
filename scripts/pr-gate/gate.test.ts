@@ -80,9 +80,16 @@ describe('evaluateGate', () => {
     expect(result.failures.join('\n')).toContain('code review');
   });
 
-  it('报告缺 reviewer 字段时拒绝', () => {
+  it('报告 reviewer 为空字符串时拒绝', () => {
     const nameless = { ...codePassed, reviewer: '' };
     const result = evaluateGate(input({ codeReview: nameless }));
+    expect(result.ok).toBe(false);
+    expect(result.failures.join('\n')).toContain('code review');
+  });
+
+  it('报告完全没有 reviewer 字段时拒绝', () => {
+    const { reviewer: _dropped, ...nameless } = codePassed;
+    const result = evaluateGate(input({ codeReview: nameless as ReviewReport }));
     expect(result.ok).toBe(false);
     expect(result.failures.join('\n')).toContain('code review');
   });

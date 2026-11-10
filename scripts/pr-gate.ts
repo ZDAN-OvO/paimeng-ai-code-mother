@@ -70,13 +70,17 @@ function upstreamTarget(): { remote: string; ref: string } | null {
   return remote && ref ? { remote, ref } : null;
 }
 
-/** 上游的远端实际头；没有 upstream 时用 origin/<当前分支>，再不行交给 --remote。 */
-function resolveRemote(): { sha: string; source: string } {
+/**
+ * 远端实际头。`unconfigured` 表示确实没有上游配置，只有这种情况才允许 `--remote` 兜底；
+ * 已配置但查不到（tracking ref 缺失、分支被删、远端不可达）一律拒绝，不回退。
+ */
+function resolveRemote(): { sha: string; source: string; unconfigured: boolean } {
   const upstream = upstreamTarget();
   if (upstream) {
     return {
       sha: remoteHead(upstream.remote, upstream.ref),
       source: `${upstream.remote} 的 ${upstream.ref}`,
+      unconfigured: false,
     };
   }
 
@@ -84,16 +88,16 @@ function resolveRemote(): { sha: string; source: string } {
   if (branch && branch !== 'HEAD') {
     const ref = `refs/heads/${branch}`;
     const sha = remoteHead('origin', ref);
-    if (sha) return { sha, source: `origin 的 ${ref}` };
+    if (sha) return { sha, source: `origin 的 ${ref}`, unconfigured: true };
   }
 
-  return { sha: '', source: '远端分支' };
+  return { sha: '', source: '远端分支', unconfigured: true };
 }
 
 const sha = arg('sha') ?? git(['rev-parse', 'HEAD']);
 const explicitRemote = arg('remote');
 const remote = resolveRemote();
-const remoteSha = remote.sha || explicitRemote || '';
+const remoteSha = remote.sha || (remote.unconfigured ? explicitRemote : '') || '';
 
 const ci = readJson<CiRecord>('CI', arg('ci'));
 const code = readJson<ReviewReport>('code review', arg('code-review'));
@@ -115,8 +119,12 @@ const failures = [ci.error, code.error, completion.error].filter(
 if (explicitRemote && remote.sha && explicitRemote !== remote.sha) {
   failures.push(`显式 --remote ${explicitRemote} 与${remote.source}的 ${remote.sha} 不一致`);
 }
-if (!remote.sha) {
-  failures.push(`查不到${remote.source}的实际头：分支不存在或未配置远端（可用 --remote 指定）`);
+if (!remoteSha) {
+  failures.push(
+    remote.unconfigured
+      ? `查不到${remote.source}的实际头；没有上游配置时可用 --remote 指定`
+      : `查不到${remote.source}的实际头，已配置的上游不因查询失败回退`,
+  );
 }
 
 const all = [...failures, ...result.failures];
