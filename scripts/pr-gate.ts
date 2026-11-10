@@ -76,7 +76,7 @@ function githubSlug(url: string): string {
     pathname = parsed.pathname;
   }
 
-  if (host !== 'github.com') return '';
+  if (host.toLowerCase() !== 'github.com') return '';
 
   const cleaned = pathname
     .replace(/^\/+/, '')

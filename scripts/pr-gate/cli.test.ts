@@ -251,14 +251,19 @@ describe('pr-gate 入口', () => {
     'https://github.com/example/repo.git/',
     'https://github.com/example/repo/',
     'git@github.com:example/repo.git',
+    'git@GitHub.com:example/repo.git',
     'ssh://git@github.com/example/repo.git',
-  ])('origin 形式可解析并放行：%s', (originUrl) => {
+  ])('origin 形式可解析且查询 example/repo：%s', (originUrl) => {
     const box = sandbox(uniqueName('slug'), { originUrl });
     const sha = box.sha();
     box.remoteAt(sha);
-    const result = box.run(args(sha, reports(box, sha)));
+    const log = path.join(box.dir, 'gh.log');
+    const result = box.run(args(sha, reports(box, sha)), { FAKE_GH_LOG: log });
     expect(result.code).toBe(0);
     expect(result.output).toContain('pr-gate: ok');
+    expect(execFileSync('cat', [log], { encoding: 'utf8' })).toContain(
+      'repos/example/repo/git/ref/heads/main',
+    );
   });
 
   it('gh 不可执行时拒绝，不当作放行', () => {
