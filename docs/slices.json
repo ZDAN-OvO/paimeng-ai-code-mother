@@ -1,0 +1,51 @@
+{
+  "version": 2,
+  "note": "切片状态清单，依据 local/plans/mvp-multi-agent-execution.md。状态只能凭证据推进：pr_open 需要 pr-gate 通过的记录，merged 以 GitHub 合入记录为准。candidate_sha 由运行产物记录，不写回本文件，避免提交包含自身 SHA。当前只登记 P0 与 P1 首片，远期只保留阶段目标。",
+  "stages": [
+    {
+      "id": "P1",
+      "goal": "生产骨架：一句话经真模型写入非 root Sandbox，独立来源预览，刷新保留，再改一轮"
+    },
+    {
+      "id": "M2",
+      "goal": "八项工具、修订绑定 CI、两个产品审查工具、最小 Skill 与首批四个 Skill、Todo/Plan 与权限控制"
+    },
+    { "id": "M3", "goal": "真实文件树、只读查看、diff、每条助手消息记录 Version、回滚追加新版本" },
+    { "id": "EVAL", "goal": "冻结指标与判定线，先 5 条试跑，README 声明映射证据" },
+    { "id": "M4-M7", "goal": "技能管理、发布、点选与截图、搜索/模板/环境变量" }
+  ],
+  "slices": [
+    {
+      "id": "P0",
+      "behavior": "开 PR 前，pr-gate 在 CI 未通过、缺审查报告、报告读不到、审查绑的 SHA 与候选提交不同这几种情况拒绝；全部一致才放行。CI 同时运行 check:docs",
+      "test": "scripts/pr-gate/gate.test.ts、scripts/pr-gate/cli.test.ts",
+      "status": "in_progress",
+      "owner": "supervisor",
+      "depends_on": [],
+      "base_sha": "a90d42f",
+      "pr": "",
+      "started_at": "2026-11-10T02:00:00Z",
+      "pr_opened_at": "",
+      "merged_at": "",
+      "review_rounds": 0,
+      "gate_rejections": 0,
+      "user_review_minutes": ""
+    },
+    {
+      "id": "P1a",
+      "behavior": "新建 Chat 的 Workspace 初始化后非 root 可写；同一 Chat 复用同一卷；重建不覆盖已有文件；工具执行上下文指向该 Chat",
+      "test": "tests/integration/sandbox-workspace.test.ts",
+      "status": "todo",
+      "owner": "",
+      "depends_on": ["P0"],
+      "base_sha": "",
+      "pr": "",
+      "started_at": "",
+      "pr_opened_at": "",
+      "merged_at": "",
+      "review_rounds": 0,
+      "gate_rejections": 0,
+      "user_review_minutes": ""
+    }
+  ]
+}

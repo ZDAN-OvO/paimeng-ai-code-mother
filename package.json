@@ -12,7 +12,8 @@
     "type-check": "tsc --noEmit",
     "test": "vitest run",
     "check:docs": "node scripts/check-docs.mjs",
-    "db:migrate": "tsx --env-file-if-exists=.env scripts/db/migrate.ts"
+    "db:migrate": "tsx --env-file-if-exists=.env scripts/db/migrate.ts",
+    "pr:gate": "tsx scripts/pr-gate.ts"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
