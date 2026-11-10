@@ -355,6 +355,61 @@ describe('pr-gate 入口', () => {
     expect(execFileSync('cat', [log], { encoding: 'utf8' })).toContain('repos/example/repo/');
   });
 
+  it('拒绝 --repo=other/name 这种等号写法，且不查询', () => {
+    const box = sandbox('equals-form');
+    const sha = box.sha();
+    box.remoteAt(sha);
+    const log = path.join(box.dir, 'gh.log');
+    const { ci, code, completion } = reports(box, sha);
+    const result = box.run(
+      ['--sha', sha, `--repo=example/repo`, '--ci', ci, '--code-review', code, '--completion-review', completion],
+      { FAKE_GH_LOG: log },
+    );
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('等号');
+    expect(existsSync(log)).toBe(false);
+  });
+
+  it('重复参数时拒绝，不静默采用第一个', () => {
+    const box = sandbox('duplicate-arg');
+    const sha = box.sha();
+    box.remoteAt(sha);
+    const result = box.run(args(sha, reports(box, sha), ['--repo', 'example/repo', '--repo', '']));
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('重复');
+  });
+
+  it('末尾单独 --sha 时拒绝，不回退 HEAD', () => {
+    const box = sandbox('bare-sha');
+    const sha = box.sha();
+    box.remoteAt(sha);
+    const result = box.run(args(sha, reports(box, sha), ['--sha']));
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('--sha');
+  });
+
+  it('--sha 为空字符串时拒绝', () => {
+    const box = sandbox('empty-sha');
+    const sha = box.sha();
+    box.remoteAt(sha);
+    const { ci, code, completion } = reports(box, sha);
+    const result = box.run(
+      ['--sha', '', '--ci', ci, '--code-review', code, '--completion-review', completion],
+      {},
+    );
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('--sha');
+  });
+
+  it('拒绝未知参数', () => {
+    const box = sandbox('unknown-arg');
+    const sha = box.sha();
+    box.remoteAt(sha);
+    const result = box.run(args(sha, reports(box, sha), ['--foo', 'bar']));
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('--foo');
+  });
+
   it('报告文件不存在时拒绝，并指出读不到哪个文件', () => {
     const box = sandbox('missing');
     const sha = box.sha();

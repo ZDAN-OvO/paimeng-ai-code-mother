@@ -16,21 +16,47 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { evaluateGate, type CiRecord, type ReviewReport } from './pr-gate/gate';
 
-function arg(name: string): string | undefined {
-  const index = process.argv.indexOf(`--${name}`);
-  return index >= 0 ? process.argv[index + 1] : undefined;
-}
+const FLAGS = new Set(['sha', 'ci', 'code-review', 'completion-review', 'repo', 'branch']);
 
 /**
- * 区分“没有这个参数”和“给了参数但没有值”。
- * `--repo ''` 与末尾单独的 `--repo` 都算后者，必须拒绝而不是悄悄回退默认值。
+ * 一次性解析所有参数。只接受 `--名字 值` 的分隔写法：
+ * - `--名字=值` 直接拒绝，避免一半代码认这种写法、一半不认；
+ * - 重复、未知、缺值（含末尾裸参数）都拒绝，不靠“取第一个出现的值”蒙混；
+ * - “没传”和“传了空值”必须分得开，否则显式空目标会悄悄回退默认值。
  */
-function argExact(name: string): { present: boolean; value: string } {
-  const index = process.argv.indexOf(`--${name}`);
-  if (index < 0) return { present: false, value: '' };
-  const next = process.argv[index + 1];
-  const value = next === undefined || next.startsWith('--') ? '' : next;
-  return { present: true, value };
+function parseArgs(argv: string[]): { values: Map<string, string>; error?: string } {
+  const values = new Map<string, string>();
+  const errors: string[] = [];
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (!token.startsWith('--')) {
+      errors.push(`无法识别的参数：${token}`);
+      continue;
+    }
+    const name = token.slice(2);
+    if (name.includes('=')) {
+      errors.push(`不支持等号写法 ${token}，请用 --${name.split('=')[0]} 值`);
+      continue;
+    }
+    if (!FLAGS.has(name)) {
+      errors.push(`未知参数：${token}`);
+      continue;
+    }
+    if (values.has(name)) {
+      errors.push(`参数重复：${token}`);
+      continue;
+    }
+    const next = argv[index + 1];
+    if (next === undefined || next.startsWith('--')) {
+      errors.push(`${token} 需要值`);
+      continue;
+    }
+    values.set(name, next);
+    index += 1;
+  }
+
+  return { values, ...(errors.length ? { error: errors.join('；') } : {}) };
 }
 
 type Report<T> = { value: T | null; error?: string };
@@ -134,12 +160,12 @@ function resolveTarget(
 
 type RemoteHead = { sha: string; error?: string };
 
-/** GitHub 上该分支的实际头。查询失败不返回 SHA，让门禁拒绝。 */
 /** 分支按路径段编码，保留 `/` 分隔；否则 `#` 会被当成 URL fragment 截断。 */
 function encodeBranch(branch: string): string {
   return branch.split('/').map(encodeURIComponent).join('/');
 }
 
+/** GitHub 上该分支的实际头。查询失败不返回 SHA，让门禁拒绝。 */
 function remoteHead(repo: string, branch: string): RemoteHead {
   const gh = process.env.PR_GATE_GH || 'gh';
   const refPath = `repos/${repo}/git/ref/heads/${encodeBranch(branch)}`;
@@ -164,15 +190,36 @@ function remoteHead(repo: string, branch: string): RemoteHead {
   }
 }
 
-const sha = arg('sha') ?? git(['rev-parse', 'HEAD']);
-const target = resolveTarget(argExact('repo'), argExact('branch'));
-const head = target.error
-  ? { sha: '', error: target.error }
-  : remoteHead(target.repo, target.branch);
+const parsed = parseArgs(process.argv.slice(2));
+const shaArg = parsed.values.get('sha');
 
-const ci = readJson<CiRecord>('CI', arg('ci'));
-const code = readJson<ReviewReport>('code review', arg('code-review'));
-const completion = readJson<ReviewReport>('completion review', arg('completion-review'));
+const failures: string[] = [];
+if (parsed.error) failures.push(parsed.error);
+if (shaArg === '') failures.push('--sha 需要值');
+
+const target = resolveTarget(
+  { present: parsed.values.has('repo'), value: parsed.values.get('repo') ?? '' },
+  { present: parsed.values.has('branch'), value: parsed.values.get('branch') ?? '' },
+);
+
+let head: RemoteHead = { sha: '' };
+if (parsed.error) {
+  // 参数本身不合法时不再查询，避免拿默认目标“碰巧”放行。
+} else if (target.error) {
+  failures.push(target.error);
+} else {
+  head = remoteHead(target.repo, target.branch);
+  if (head.error) failures.push(head.error);
+}
+
+const sha = shaArg || git(['rev-parse', 'HEAD']);
+
+const ci = readJson<CiRecord>('CI', parsed.values.get('ci'));
+const code = readJson<ReviewReport>('code review', parsed.values.get('code-review'));
+const completion = readJson<ReviewReport>(
+  'completion review',
+  parsed.values.get('completion-review'),
+);
 
 const result = evaluateGate({
   sha,
@@ -183,9 +230,10 @@ const result = evaluateGate({
   completionReview: completion.value,
 });
 
-const failures = [ci.error, code.error, completion.error, head.error].filter(
-  (failure): failure is string => !!failure,
-);
+for (const report of [ci, code, completion]) {
+  if (report.error) failures.push(report.error);
+}
+
 const all = [...failures, ...result.failures];
 
 if (all.length === 0) {
