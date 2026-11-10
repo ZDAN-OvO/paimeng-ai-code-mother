@@ -33,7 +33,7 @@
 - `npm run check:docs`：`证据：通过 1 · 过期 0 · 未检 22`，`docs check ok`。
 - `npm run format:check`：`All matched files use Prettier code style!`。
 - `npm run build`：Next 构建完成，退出 0。
-- 真实拒绝路径（不只看单测）：不传任何报告运行 `npm run pr:gate -- --remote <sha>` 得到 `pr-gate: 拒绝开 PR`，逐条列出缺少 CI 与两份报告。
+- 真实拒绝路径（不只看单测）：不传任何报告运行 `npm run pr:gate -- --remote origin --remote-ref refs/heads/main` 得到 `pr-gate: 拒绝开 PR`，逐条列出缺少 CI 与两份报告。
 
 ### 第一轮代码审查打回（2026-11-10）
 
@@ -72,7 +72,24 @@
 
 ### 第二轮附带的文案与回退问题（2026-11-10）
 
-审查还指出：没有上游配置时提示“可用 `--remote` 指定”，但实现无条件拒绝，等于该回退永远不生效。已改为只有**确实没有上游配置**（拿不到 `branch.<名字>.remote/merge`）时才接受 `--remote`；已配置但查不到时，即使给了 `--remote` 也拒绝。新增两个用例：游离 HEAD 用 `--remote` 放行、配置存在但查不到时给 `--remote` 仍拒绝。前者先红（`expected 1 to be 0`）后绿。另把“缺 reviewer 字段”拆成空字符串与真正缺键两个用例。
+审查还指出：没有上游配置时提示“可用 `--remote` 指定”，但实现无条件拒绝，等于该回退永远不生效。该轮改为只有拿不到 `branch.<名字>.remote/merge` 时才接受 `--remote`，已配置但查不到时即使给了也拒绝；另把“缺 reviewer 字段”拆成空字符串与真正缺键两个用例。
+
+### 第三轮代码审查打回（2026-11-10，用户授权第三次修复）
+
+第三轮判 `changes_requested`，两条 major 都属于“把远端核验交给调用者或本地引用”：
+
+| 问题                                                    | 后果                        | 修复                                                                                  |
+| ------------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------- |
+| 游离 HEAD 时 `--remote <SHA>` 的裸 SHA 不经查询即被接受 | 远端已推进仍可放行旧提交    | `--remote` 改为远端名，另加 `--remote-ref refs/heads/*`，仍然实际查询；只给一个即拒绝 |
+| 上游可指向 `remote="."` 或 `merge=refs/tags/*`          | 本地 ref/tag 冒充远端分支头 | 拒绝本地上游与非 `refs/heads/*` 的 ref                                                |
+
+复验日志：`repro-round3-findings-after-fix.log`（裸 SHA、远端已推进的游离 HEAD、`remote=.`、tag ref 全部拒绝）与 `repro-round3-control-pass.log`（正常配置、以及游离 HEAD 给出可查询远端分支时放行）。
+
+**先红后绿**：新增四条用例后 `Tests 4 failed | 11 passed`；实现后 `Tests 26 passed`。
+
+同时纠正上一节的表述：名为“已配置但查不到”的用例当时只删了本地 tracking ref，远端分支仍然存在、查询会成功，实际证明的是“SHA 不一致时拒绝”，不是“查询失败时拒绝”。现在换成远端分支确实不存在（配 `publish` 上未创建的 `release`），断言落在“已配置的上游不因查询失败回退”。
+
+计划措辞同步：`--remote <sha>` 的写法作废，改为 `--remote` 加 `--remote-ref`，本机私有总纲已更新。
 
 ### 门禁、审查与 PR
 

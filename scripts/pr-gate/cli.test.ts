@@ -188,23 +188,16 @@ describe('pr-gate 入口', () => {
     expect(result.output).toContain('pr-gate: ok');
   });
 
-  it('已配置 upstream 但本地 tracking ref 缺失时不回退到 origin', () => {
-    const box = sandbox('config-broken');
+  it('已配置的上游分支在远端不存在时拒绝，不回退到 origin', () => {
+    const box = sandbox('config-missing-branch');
     const sha = box.sha();
     const { ci, code, completion } = reports(box, sha);
-    // 另一个远端上放 B 并配成上游，再删掉本地 tracking ref，模拟 @{upstream} 解析失败。
     const pub = path.join(box.dir, 'pub.git');
-    git(box.dir, 'init', '--bare', '-q', '-b', 'release', pub);
+    git(box.dir, 'init', '--bare', '-q', '-b', 'main', pub);
     git(box.work, 'remote', 'add', 'publish', pub);
-    git(box.work, 'checkout', '-q', '-b', 'tmp');
-    writeFileSync(path.join(box.work, 'file.txt'), 'moved\n');
-    git(box.work, 'commit', '-q', '-am', 'moved');
-    git(box.work, 'push', '-q', 'publish', 'tmp:release');
-    git(box.work, 'checkout', '-q', 'main');
-    git(box.work, 'branch', '-q', '-D', 'tmp');
+    // 配置指向 publish 上并不存在的 release 分支：查询必然为空。
     git(box.work, 'config', 'branch.main.remote', 'publish');
     git(box.work, 'config', 'branch.main.merge', 'refs/heads/release');
-    git(box.work, 'update-ref', '-d', 'refs/remotes/publish/release');
     const result = box.run([
       '--sha',
       sha,
@@ -216,10 +209,51 @@ describe('pr-gate 入口', () => {
       completion,
     ]);
     expect(result.code).toBe(1);
-    expect(result.output).toContain('远端');
+    expect(result.output).toContain('已配置的上游不因查询失败回退');
   });
 
-  it('没有上游配置时可用 --remote 指定远端提交', () => {
+  it('上游指向本地仓库（remote 为 "."）时拒绝', () => {
+    const box = sandbox('local-upstream');
+    const sha = box.sha();
+    const { ci, code, completion } = reports(box, sha);
+    git(box.work, 'config', 'branch.main.remote', '.');
+    git(box.work, 'config', 'branch.main.merge', 'refs/heads/main');
+    const result = box.run([
+      '--sha',
+      sha,
+      '--ci',
+      ci,
+      '--code-review',
+      code,
+      '--completion-review',
+      completion,
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('本地');
+  });
+
+  it('上游 merge 不是 refs/heads/* 时拒绝', () => {
+    const box = sandbox('tag-upstream');
+    const sha = box.sha();
+    const { ci, code, completion } = reports(box, sha);
+    git(box.work, 'tag', '-a', '-m', 'tag', 'candidate');
+    git(box.work, 'config', 'branch.main.remote', 'origin');
+    git(box.work, 'config', 'branch.main.merge', 'refs/tags/candidate');
+    const result = box.run([
+      '--sha',
+      sha,
+      '--ci',
+      ci,
+      '--code-review',
+      code,
+      '--completion-review',
+      completion,
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('refs/heads/');
+  });
+
+  it('没有上游时可用 --remote 与 --remote-ref 指定远端分支', () => {
     const box = sandbox('detached');
     const sha = box.sha();
     const { ci, code, completion } = reports(box, sha);
@@ -229,7 +263,9 @@ describe('pr-gate 入口', () => {
       '--sha',
       sha,
       '--remote',
-      sha,
+      'origin',
+      '--remote-ref',
+      'refs/heads/main',
       '--ci',
       ci,
       '--code-review',
@@ -241,27 +277,19 @@ describe('pr-gate 入口', () => {
     expect(result.output).toContain('pr-gate: ok');
   });
 
-  it('已配置上游但查不到时，即使给了 --remote 也拒绝', () => {
-    const box = sandbox('config-broken-remote');
+  it('游离 HEAD 时远端已推进，给 --remote 与 --remote-ref 也拒绝', () => {
+    const box = sandbox('detached-stale');
     const sha = box.sha();
     const { ci, code, completion } = reports(box, sha);
-    const pub = path.join(box.dir, 'pub.git');
-    git(box.dir, 'init', '--bare', '-q', '-b', 'release', pub);
-    git(box.work, 'remote', 'add', 'publish', pub);
-    git(box.work, 'checkout', '-q', '-b', 'tmp');
-    writeFileSync(path.join(box.work, 'file.txt'), 'moved\n');
-    git(box.work, 'commit', '-q', '-am', 'moved');
-    git(box.work, 'push', '-q', 'publish', 'tmp:release');
-    git(box.work, 'checkout', '-q', 'main');
-    git(box.work, 'branch', '-q', '-D', 'tmp');
-    git(box.work, 'config', 'branch.main.remote', 'publish');
-    git(box.work, 'config', 'branch.main.merge', 'refs/heads/release');
-    git(box.work, 'update-ref', '-d', 'refs/remotes/publish/release');
+    git(box.work, 'checkout', '-q', '--detach');
+    box.advanceRemote();
     const result = box.run([
       '--sha',
       sha,
       '--remote',
-      sha,
+      'origin',
+      '--remote-ref',
+      'refs/heads/main',
       '--ci',
       ci,
       '--code-review',
@@ -271,17 +299,19 @@ describe('pr-gate 入口', () => {
     ]);
     expect(result.code).toBe(1);
     expect(result.output).toContain('远端');
+    expect(result.output).not.toContain('pr-gate: ok');
   });
 
-  it('显式 --remote 与远端实际头不一致时拒绝', () => {
-    const box = sandbox('explicit');
+  it('只给 --remote 不给 --remote-ref 时拒绝', () => {
+    const box = sandbox('half-remote');
     const sha = box.sha();
     const { ci, code, completion } = reports(box, sha);
+    git(box.work, 'checkout', '-q', '--detach');
     const result = box.run([
       '--sha',
       sha,
       '--remote',
-      'e'.repeat(40),
+      'origin',
       '--ci',
       ci,
       '--code-review',
@@ -290,7 +320,31 @@ describe('pr-gate 入口', () => {
       completion,
     ]);
     expect(result.code).toBe(1);
-    expect(result.output).toContain('--remote');
+    expect(result.output).toContain('--remote-ref');
+  });
+
+  it('--remote 指定的远端头与候选不同时拒绝', () => {
+    const box = sandbox('explicit');
+    const sha = box.sha();
+    const { ci, code, completion } = reports(box, sha);
+    git(box.work, 'checkout', '-q', '--detach');
+    box.advanceRemote();
+    const result = box.run([
+      '--sha',
+      sha,
+      '--remote',
+      'origin',
+      '--remote-ref',
+      'refs/heads/main',
+      '--ci',
+      ci,
+      '--code-review',
+      code,
+      '--completion-review',
+      completion,
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('远端');
   });
 
   it('报告文件不存在时拒绝，并指出读不到哪个文件', () => {
