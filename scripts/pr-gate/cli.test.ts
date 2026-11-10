@@ -35,6 +35,9 @@ cat "$FAKE_GH_SHA"
 );
 chmodSync(fakeGh, 0o755);
 
+let seq = 0;
+const uniqueName = (prefix: string) => `${prefix}-${++seq}`;
+
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=gate-test', '-c', 'user.email=gate@test', ...args], {
     cwd,
@@ -43,12 +46,15 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 /** 一个普通仓库；origin 指向 GitHub，但测试不会真的联网。 */
-function sandbox(name: string, { withOrigin = true } = {}) {
+function sandbox(
+  name: string,
+  { originUrl = 'https://github.com/example/repo.git' as string | null } = {},
+) {
   const dir = path.join(root, name);
   const work = path.join(dir, 'work');
   mkdirSync(work, { recursive: true });
   git(work, 'init', '-q', '-b', 'main');
-  if (withOrigin) git(work, 'remote', 'add', 'origin', 'https://github.com/example/repo.git');
+  if (originUrl) git(work, 'remote', 'add', 'origin', originUrl);
   writeFileSync(path.join(work, 'file.txt'), 'base\n');
   git(work, 'add', 'file.txt');
   git(work, 'commit', '-q', '-m', 'base');
@@ -173,7 +179,7 @@ describe('pr-gate 入口', () => {
   });
 
   it('仓库无法解析（没有 origin 也没给 --repo）时拒绝', () => {
-    const box = sandbox('no-origin', { withOrigin: false });
+    const box = sandbox('no-origin', { originUrl: null });
     const sha = box.sha();
     box.remoteAt(sha);
     const result = box.run(args(sha, reports(box, sha)));
@@ -224,6 +230,70 @@ describe('pr-gate 入口', () => {
     expect(result.code).toBe(0);
     const called = execFileSync('cat', [log], { encoding: 'utf8' });
     expect(called).toContain('repos/other/name/git/ref/heads/release');
+  });
+
+  it.each([
+    'https://notgithub.com/example/repo.git',
+    'https://enterprise.github.com/example/repo.git',
+    'file:///tmp/github.com/example/repo.git',
+    '/tmp/github.com/example/repo.git',
+  ])('origin 不是 github.com 时拒绝并要求 --repo：%s', (originUrl) => {
+    const box = sandbox(uniqueName('origin'), { originUrl });
+    const sha = box.sha();
+    box.remoteAt(sha);
+    const result = box.run(args(sha, reports(box, sha)));
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('--repo');
+    expect(result.output).not.toContain('pr-gate: ok');
+  });
+
+  it.each([
+    'https://github.com/example/repo.git/',
+    'https://github.com/example/repo/',
+    'git@github.com:example/repo.git',
+    'ssh://git@github.com/example/repo.git',
+  ])('origin 形式可解析并放行：%s', (originUrl) => {
+    const box = sandbox(uniqueName('slug'), { originUrl });
+    const sha = box.sha();
+    box.remoteAt(sha);
+    const result = box.run(args(sha, reports(box, sha)));
+    expect(result.code).toBe(0);
+    expect(result.output).toContain('pr-gate: ok');
+  });
+
+  it('gh 不可执行时拒绝，不当作放行', () => {
+    const box = sandbox('gh-missing');
+    const sha = box.sha();
+    box.remoteAt(sha);
+    const result = box.run(args(sha, reports(box, sha)), {
+      PR_GATE_GH: path.join(root, 'no-such-gh'),
+    });
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('拒绝开 PR');
+    expect(result.output).not.toContain('pr-gate: ok');
+  });
+
+  it('GitHub 返回的不是提交 SHA 时拒绝', () => {
+    const box = sandbox('bad-sha');
+    const sha = box.sha();
+    writeFileSync(path.join(box.dir, 'sha.txt'), 'main\n');
+    const result = box.run(args(sha, reports(box, sha)));
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('不是提交 SHA');
+  });
+
+  it('分支名含斜杠时按原样查询', () => {
+    const box = sandbox('slash-branch');
+    const sha = box.sha();
+    box.remoteAt(sha);
+    const log = path.join(box.dir, 'gh.log');
+    const result = box.run(args(sha, reports(box, sha), ['--branch', 'feat/nested/thing']), {
+      FAKE_GH_LOG: log,
+    });
+    expect(result.code).toBe(0);
+    expect(execFileSync('cat', [log], { encoding: 'utf8' })).toContain(
+      'repos/example/repo/git/ref/heads/feat/nested/thing',
+    );
   });
 
   it('报告文件不存在时拒绝，并指出读不到哪个文件', () => {

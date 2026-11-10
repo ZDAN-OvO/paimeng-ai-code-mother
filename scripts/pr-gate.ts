@@ -47,10 +47,44 @@ function currentBranch(): string {
   return git(['rev-parse', '--abbrev-ref', 'HEAD']);
 }
 
-/** 从 origin 的 URL 取 GitHub 仓库；只认 github.com，其他托管一律要求显式 --repo。 */
+/**
+ * 从 origin 的 URL 取 GitHub 仓库。主机必须正好是 github.com：
+ * `notgithub.com`、`enterprise.github.com`、本地路径都不是 GitHub，
+ * 猜成同名仓库会去查错目标，所以一律要求显式 `--repo`。
+ */
 function githubSlug(url: string): string {
-  const match = url.match(/github\.com[:/]+([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
-  return match ? `${match[1]}/${match[2]}` : '';
+  const raw = url.trim();
+  if (!raw) return '';
+
+  let host: string;
+  let pathname: string;
+
+  // git@github.com:owner/repo.git 这类 scp 风格地址，URL 构造器解析不了。
+  const scp = raw.match(/^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/);
+  if (scp && !raw.includes('://')) {
+    host = scp[1];
+    pathname = scp[2];
+  } else {
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      return '';
+    }
+    if (!['https:', 'http:', 'ssh:', 'git:'].includes(parsed.protocol)) return '';
+    host = parsed.hostname;
+    pathname = parsed.pathname;
+  }
+
+  if (host !== 'github.com') return '';
+
+  const cleaned = pathname
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+    .replace(/\.git$/, '');
+  const parts = cleaned.split('/');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return '';
+  return `${parts[0]}/${parts[1]}`;
 }
 
 type Target = { repo: string; branch: string; error?: string };
