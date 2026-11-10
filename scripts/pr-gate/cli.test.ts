@@ -1,90 +1,205 @@
 /**
- * pr-gate 入口的行为测试：用真实的命令行参数与报告文件跑一次，验证退出码与提示。
- * 判定逻辑的细节在 `gate.test.ts`；这里只保证入口没有把“缺输入”变成“通过”。
+ * pr-gate 入口的行为测试：在临时 Git 仓库里用真实参数跑 CLI，验证退出码与提示。
+ * 判定细节在 `gate.test.ts`；这里覆盖入口才会踩到的坑：
+ * 远端要查实际分支头（不是本地缓存的 upstream 引用），两份审查不能角色互换或缺输入。
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
-const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const repoRoot = process.cwd();
+const tsx = path.join(repoRoot, 'node_modules', '.bin', 'tsx');
+const gateEntry = path.join(repoRoot, 'scripts', 'pr-gate.ts');
 
-const dir = mkdtempSync(path.join(os.tmpdir(), 'pr-gate-'));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+const root = mkdtempSync(path.join(os.tmpdir(), 'pr-gate-'));
+afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-function report(name: string, value: unknown): string {
-  const file = path.join(dir, name);
-  writeFileSync(file, JSON.stringify(value));
-  return file;
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', ['-c', 'user.name=gate-test', '-c', 'user.email=gate@test', ...args], {
+    cwd,
+    encoding: 'utf8',
+  }).trim();
 }
 
-const ci = () => report('ci.json', { headSha: sha, conclusion: 'success' });
-const codeReview = () =>
-  report('code.json', { sha, reviewer: 'code', model: 'xhy-api/gpt-6.1-sol', verdict: 'passed' });
-const completionReview = () =>
-  report('completion.json', {
+/** 一个带本地 bare 远端的工作克隆；回到同步状态后可继续提交。 */
+function sandbox(name: string) {
+  const dir = path.join(root, name);
+  const remote = path.join(dir, 'remote.git');
+  const work = path.join(dir, 'work');
+  mkdirSync(work, { recursive: true });
+  git(dir, 'init', '--bare', '-q', '-b', 'main', remote);
+  git(dir, 'clone', '-q', remote, work);
+  writeFileSync(path.join(work, 'file.txt'), 'base\n');
+  git(work, 'add', 'file.txt');
+  git(work, 'commit', '-q', '-m', 'base');
+  git(work, 'push', '-q', '-u', 'origin', 'main');
+
+  return {
+    work,
+    sha: () => git(work, 'rev-parse', 'HEAD'),
+    advanceRemote() {
+      const other = `${work}-other`;
+      git(dir, 'clone', '-q', remote, other);
+      writeFileSync(path.join(other, 'file.txt'), 'moved\n');
+      git(other, 'add', 'file.txt');
+      git(other, 'commit', '-q', '-m', 'moved');
+      git(other, 'push', '-q', 'origin', 'main');
+      return git(other, 'rev-parse', 'HEAD');
+    },
+    report(name: string, value: unknown) {
+      const file = path.join(dir, name);
+      writeFileSync(file, JSON.stringify(value));
+      return file;
+    },
+    run(args: string[]) {
+      try {
+        const output = execFileSync(tsx, [gateEntry, ...args], {
+          cwd: work,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        return { code: 0, output };
+      } catch (error) {
+        const failed = error as { status?: number; stdout?: string; stderr?: string };
+        return { code: failed.status ?? 1, output: `${failed.stdout ?? ''}${failed.stderr ?? ''}` };
+      }
+    },
+  };
+}
+
+const reports = (box: ReturnType<typeof sandbox>, sha: string) => {
+  const ci = box.report('ci.json', { headSha: sha, conclusion: 'success' });
+  const code = box.report('code.json', {
+    sha,
+    reviewer: 'code',
+    model: 'xhy-api/gpt-6.1-sol',
+    verdict: 'passed',
+  });
+  const completion = box.report('completion.json', {
     sha,
     reviewer: 'completion',
     model: 'auto/glm-5.3-flash',
     verdict: 'passed',
   });
-
-/** 直接执行 CLI，返回退出码与合并后的输出。 */
-function run(args: string[]): { code: number; output: string } {
-  try {
-    const output = execFileSync(
-      process.execPath,
-      ['--import', 'tsx', 'scripts/pr-gate.ts', '--sha', sha, '--remote', sha, ...args],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-    return { code: 0, output };
-  } catch (error) {
-    const failed = error as { status?: number; stdout?: string; stderr?: string };
-    return { code: failed.status ?? 1, output: `${failed.stdout ?? ''}${failed.stderr ?? ''}` };
-  }
-}
+  return { ci, code, completion };
+};
 
 describe('pr-gate 入口', () => {
-  it('同一提交、CI 与两份审查都通过时放行', () => {
-    const result = run([
+  it('CI 与两份审查都指向候选提交、远端也是它时放行', () => {
+    const box = sandbox('pass');
+    const sha = box.sha();
+    const { ci, code, completion } = reports(box, sha);
+    const result = box.run([
+      '--sha',
+      sha,
       '--ci',
-      ci(),
+      ci,
       '--code-review',
-      codeReview(),
+      code,
       '--completion-review',
-      completionReview(),
+      completion,
     ]);
     expect(result.output).toContain('pr-gate: ok');
     expect(result.code).toBe(0);
   });
 
+  it('远端已推进但本地没 fetch 时拒绝，不拿缓存的 upstream 当远端', () => {
+    const box = sandbox('stale');
+    const sha = box.sha();
+    const { ci, code, completion } = reports(box, sha);
+    box.advanceRemote();
+    const result = box.run([
+      '--sha',
+      sha,
+      '--ci',
+      ci,
+      '--code-review',
+      code,
+      '--completion-review',
+      completion,
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('拒绝开 PR');
+    expect(result.output).toContain('远端');
+    expect(result.output).not.toContain('pr-gate: ok');
+  });
+
+  it('同一份 code review 报告同时当 completion review 时拒绝', () => {
+    const box = sandbox('roles');
+    const sha = box.sha();
+    const { ci, code } = reports(box, sha);
+    const result = box.run([
+      '--sha',
+      sha,
+      '--ci',
+      ci,
+      '--code-review',
+      code,
+      '--completion-review',
+      code,
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('completion review');
+    expect(result.output).not.toContain('pr-gate: ok');
+  });
+
+  it('显式 --remote 与远端实际头不一致时拒绝', () => {
+    const box = sandbox('explicit');
+    const sha = box.sha();
+    const { ci, code, completion } = reports(box, sha);
+    const result = box.run([
+      '--sha',
+      sha,
+      '--remote',
+      'e'.repeat(40),
+      '--ci',
+      ci,
+      '--code-review',
+      code,
+      '--completion-review',
+      completion,
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('--remote');
+  });
+
   it('报告文件不存在时拒绝，并指出读不到哪个文件', () => {
-    const missing = path.join(dir, 'missing.json');
-    const result = run([
+    const box = sandbox('missing');
+    const sha = box.sha();
+    const { code, completion } = reports(box, sha);
+    const missing = path.join(root, 'missing.json');
+    const result = box.run([
+      '--sha',
+      sha,
       '--ci',
       missing,
       '--code-review',
-      codeReview(),
+      code,
       '--completion-review',
-      completionReview(),
+      completion,
     ]);
     expect(result.code).toBe(1);
     expect(result.output).toContain('拒绝开 PR');
     expect(result.output).toContain(missing);
-    expect(result.output).not.toContain('pr-gate: ok');
   });
 
   it('报告文件内容不是合法 JSON 时拒绝，不放行也不静默当作缺失', () => {
-    const broken = path.join(dir, 'broken.json');
+    const box = sandbox('broken');
+    const sha = box.sha();
+    const { code, completion } = reports(box, sha);
+    const broken = box.report('broken.json', '');
     writeFileSync(broken, '{ not json');
-    const result = run([
+    const result = box.run([
+      '--sha',
+      sha,
       '--ci',
       broken,
       '--code-review',
-      codeReview(),
+      code,
       '--completion-review',
-      completionReview(),
+      completion,
     ]);
     expect(result.code).toBe(1);
     expect(result.output).toContain('拒绝开 PR');
@@ -92,7 +207,10 @@ describe('pr-gate 入口', () => {
   });
 
   it('缺 completion review 参数时拒绝', () => {
-    const result = run(['--ci', ci(), '--code-review', codeReview()]);
+    const box = sandbox('args');
+    const sha = box.sha();
+    const { ci, code } = reports(box, sha);
+    const result = box.run(['--sha', sha, '--ci', ci, '--code-review', code]);
     expect(result.code).toBe(1);
     expect(result.output).toContain('completion review');
   });

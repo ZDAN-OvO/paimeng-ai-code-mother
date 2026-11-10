@@ -3,9 +3,9 @@ import { evaluateGate, type GateInput, type ReviewReport } from './gate';
 
 const SHA = 'a'.repeat(40);
 
-const passed: ReviewReport = {
+const codePassed: ReviewReport = {
   sha: SHA,
-  reviewer: 'reviewer',
+  reviewer: 'code',
   model: 'xhy-api/gpt-6.1-sol',
   verdict: 'passed',
 };
@@ -23,7 +23,7 @@ function input(overrides: Partial<GateInput> = {}): GateInput {
     headSha: SHA,
     remoteSha: SHA,
     ci: { headSha: SHA, conclusion: 'success' },
-    codeReview: passed,
+    codeReview: codePassed,
     completionReview: completionPassed,
     ...overrides,
   };
@@ -55,15 +55,34 @@ describe('evaluateGate', () => {
   });
 
   it('review 被审的 SHA 与候选提交不同时拒绝', () => {
-    const stale: ReviewReport = { ...passed, sha: 'c'.repeat(40) };
+    const stale: ReviewReport = { ...codePassed, sha: 'c'.repeat(40) };
     const result = evaluateGate(input({ codeReview: stale }));
     expect(result.ok).toBe(false);
     expect(result.failures.join('\n')).toContain('code review');
   });
 
   it('review 结论为打回时拒绝', () => {
-    const rejected: ReviewReport = { ...passed, verdict: 'changes_requested' };
+    const rejected: ReviewReport = { ...codePassed, verdict: 'changes_requested' };
     const result = evaluateGate(input({ codeReview: rejected }));
+    expect(result.ok).toBe(false);
+    expect(result.failures.join('\n')).toContain('code review');
+  });
+
+  it('把 code review 报告放到 completion review 位置时拒绝', () => {
+    const result = evaluateGate(input({ completionReview: codePassed }));
+    expect(result.ok).toBe(false);
+    expect(result.failures.join('\n')).toContain('completion review');
+  });
+
+  it('把 completion review 报告放到 code review 位置时拒绝', () => {
+    const result = evaluateGate(input({ codeReview: completionPassed }));
+    expect(result.ok).toBe(false);
+    expect(result.failures.join('\n')).toContain('code review');
+  });
+
+  it('报告缺 reviewer 字段时拒绝', () => {
+    const nameless = { ...codePassed, reviewer: '' };
+    const result = evaluateGate(input({ codeReview: nameless }));
     expect(result.ok).toBe(false);
     expect(result.failures.join('\n')).toContain('code review');
   });

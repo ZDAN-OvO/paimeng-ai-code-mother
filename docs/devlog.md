@@ -35,9 +35,28 @@
 - `npm run build`：Next 构建完成，退出 0。
 - 真实拒绝路径（不只看单测）：不传任何报告运行 `npm run pr:gate -- --remote <sha>` 得到 `pr-gate: 拒绝开 PR`，逐条列出缺少 CI 与两份报告。
 
+### 第一轮代码审查打回（2026-11-10）
+
+候选提交 `c99984c` 的 CI 与本地检查都过了，但 code review 判 `changes_requested`，两条都会让门禁误放行：
+
+| 问题               | 复现                                                                                                       | 期望                                     |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| 两份审查不校验角色 | 同一份 `reviewer=code` 的报告同时传给 `--code-review` 和 `--completion-review`，输出 `pr-gate: ok`、exit 0 | 位置与角色必须匹配，角色缺失或不符即拒绝 |
+| 远端读的是本地缓存 | 审查克隆不 fetch、远端已推进到 B：`@{upstream}` 停在 A，`ls-remote` 是 B，门禁仍放行 A                     | 远端头必须向远端查询；查不到即拒绝       |
+
+复现原始输出在运行产物 `repro-role-confusion.log`、`repro-stale-upstream.log`（私有，不入库）。
+
+**修复**：`gate.ts` 的 `checkReview` 增加角色参数，`code`/`completion` 位置各自校验 `reviewer`；`pr-gate.ts` 用 `git ls-remote --heads <remote> <branch>` 解析上游实际头，无 upstream 时用 `origin/<当前分支>`，仍无则要求 `--remote`，且显式值与远端实际头不一致时拒绝。
+
+**先红后绿（本轮）**：
+
+- 红：新增角色与远端用例后 `vitest run scripts/pr-gate` → `Tests 6 failed | 11 passed`；失败项为角色互换两次、缺 reviewer 字段、远端已推进、同一份报告填两个位置、显式 `--remote` 不一致。
+- 绿：修复后 `Test Files 2 passed`、`Tests 17 passed (17)`。
+- 用 review 原来的两个场景复验：同一份 code 报告填两个位置 → `completion review 的 reviewer 是 code，应为 completion`、exit 1；远端已推进未 fetch → `远端分支是 d2f7b86…，不是候选提交 c28f612…`、exit 1。
+
 ### 门禁、审查与 PR
 
-（本节在 CI、两次审查和开 PR 后补：候选提交 SHA、CI 运行链接、两份报告与打回原因、实际耗时。）
+（本节在第二轮审查与开 PR 后补：候选提交 SHA、CI 运行链接、两份报告结论、实际耗时。）
 
 ### 偏离计划的地方
 

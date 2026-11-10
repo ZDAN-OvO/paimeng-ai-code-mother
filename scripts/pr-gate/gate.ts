@@ -7,6 +7,9 @@
 
 export type ReviewVerdict = 'passed' | 'changes_requested';
 
+/** 审查角色。两份报告不能互换，也不能拿同一份通过报告填两个位置。 */
+export type ReviewRole = 'code' | 'completion';
+
 /** 一份独立审查的报告。`sha` 是被审的候选提交，不是报告生成时的 HEAD。 */
 export type ReviewReport = {
   sha: string;
@@ -35,10 +38,19 @@ export type GateInput = {
 
 export type GateResult = { ok: boolean; failures: string[] };
 
-function checkReview(label: string, report: ReviewReport | null, sha: string, failures: string[]) {
+function checkReview(
+  role: ReviewRole,
+  label: string,
+  report: ReviewReport | null,
+  sha: string,
+  failures: string[],
+) {
   if (!report) {
     failures.push(`缺少 ${label} 报告`);
     return;
+  }
+  if (report.reviewer !== role) {
+    failures.push(`${label} 的 reviewer 是 ${report.reviewer || '(空)'}，应为 ${role}`);
   }
   if (report.sha !== sha) {
     failures.push(`${label} 审查的是 ${report.sha}，不是候选提交 ${sha}`);
@@ -63,8 +75,8 @@ export function evaluateGate(input: GateInput): GateResult {
     failures.push(`CI 跑在 ${ci.headSha}，不是候选提交 ${sha}`);
   }
 
-  checkReview('code review', codeReview, sha, failures);
-  checkReview('completion review', completionReview, sha, failures);
+  checkReview('code', 'code review', codeReview, sha, failures);
+  checkReview('completion', 'completion review', completionReview, sha, failures);
 
   if (headSha !== sha) failures.push(`本地 HEAD 是 ${headSha}，不是候选提交 ${sha}`);
   if (remoteSha !== sha) failures.push(`远端分支是 ${remoteSha}，不是候选提交 ${sha}`);
