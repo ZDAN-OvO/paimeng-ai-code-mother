@@ -24,19 +24,21 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 /** 一个带本地 bare 远端的工作克隆；回到同步状态后可继续提交。 */
-function sandbox(name: string) {
+function sandbox(name: string, remoteName = 'origin') {
   const dir = path.join(root, name);
   const remote = path.join(dir, 'remote.git');
   const work = path.join(dir, 'work');
   mkdirSync(work, { recursive: true });
   git(dir, 'init', '--bare', '-q', '-b', 'main', remote);
   git(dir, 'clone', '-q', remote, work);
+  if (remoteName !== 'origin') git(work, 'remote', 'rename', 'origin', remoteName);
   writeFileSync(path.join(work, 'file.txt'), 'base\n');
   git(work, 'add', 'file.txt');
   git(work, 'commit', '-q', '-m', 'base');
-  git(work, 'push', '-q', '-u', 'origin', 'main');
+  git(work, 'push', '-q', '-u', remoteName, 'main');
 
   return {
+    dir,
     work,
     sha: () => git(work, 'rev-parse', 'HEAD'),
     advanceRemote() {
@@ -143,6 +145,78 @@ describe('pr-gate 入口', () => {
     expect(result.code).toBe(1);
     expect(result.output).toContain('completion review');
     expect(result.output).not.toContain('pr-gate: ok');
+  });
+
+  it('远端存在 a/refs/heads/main 这类分支名时仍只认本分支', () => {
+    const box = sandbox('suffix');
+    const sha = box.sha();
+    const { ci, code, completion } = reports(box, sha);
+    // 干扰分支指向候选提交，远端 main 随后推进到别处，本地不 fetch。
+    git(box.work, 'branch', 'a/refs/heads/main');
+    git(box.work, 'push', '-q', 'origin', 'a/refs/heads/main');
+    box.advanceRemote();
+    const result = box.run([
+      '--sha',
+      sha,
+      '--ci',
+      ci,
+      '--code-review',
+      code,
+      '--completion-review',
+      completion,
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('远端');
+    expect(result.output).not.toContain('pr-gate: ok');
+  });
+
+  it('远端名含斜杠时按配置解析并放行', () => {
+    const box = sandbox('slash-remote', 'team/origin');
+    const sha = box.sha();
+    const { ci, code, completion } = reports(box, sha);
+    const result = box.run([
+      '--sha',
+      sha,
+      '--ci',
+      ci,
+      '--code-review',
+      code,
+      '--completion-review',
+      completion,
+    ]);
+    expect(result.code).toBe(0);
+    expect(result.output).toContain('pr-gate: ok');
+  });
+
+  it('已配置 upstream 但本地 tracking ref 缺失时不回退到 origin', () => {
+    const box = sandbox('config-broken');
+    const sha = box.sha();
+    const { ci, code, completion } = reports(box, sha);
+    // 另一个远端上放 B 并配成上游，再删掉本地 tracking ref，模拟 @{upstream} 解析失败。
+    const pub = path.join(box.dir, 'pub.git');
+    git(box.dir, 'init', '--bare', '-q', '-b', 'release', pub);
+    git(box.work, 'remote', 'add', 'publish', pub);
+    git(box.work, 'checkout', '-q', '-b', 'tmp');
+    writeFileSync(path.join(box.work, 'file.txt'), 'moved\n');
+    git(box.work, 'commit', '-q', '-am', 'moved');
+    git(box.work, 'push', '-q', 'publish', 'tmp:release');
+    git(box.work, 'checkout', '-q', 'main');
+    git(box.work, 'branch', '-q', '-D', 'tmp');
+    git(box.work, 'config', 'branch.main.remote', 'publish');
+    git(box.work, 'config', 'branch.main.merge', 'refs/heads/release');
+    git(box.work, 'update-ref', '-d', 'refs/remotes/publish/release');
+    const result = box.run([
+      '--sha',
+      sha,
+      '--ci',
+      ci,
+      '--code-review',
+      code,
+      '--completion-review',
+      completion,
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('远端');
   });
 
   it('显式 --remote 与远端实际头不一致时拒绝', () => {

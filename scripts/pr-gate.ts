@@ -41,27 +41,50 @@ function git(args: string[]): string {
   }
 }
 
-/** 远端分支的实际头。`origin/feat/x` → `git ls-remote --heads origin feat/x`。 */
-function remoteHead(ref: string): string {
-  const slash = ref.indexOf('/');
-  if (slash <= 0 || slash === ref.length - 1) return '';
-  const remote = ref.slice(0, slash);
-  const branch = ref.slice(slash + 1);
-  const output = git(['ls-remote', '--heads', remote, branch]);
-  const row = output.split('\n').find((line) => line.endsWith(`refs/heads/${branch}`));
-  return row ? row.split('\t')[0].trim() : '';
+function currentBranch(): string {
+  return git(['rev-parse', '--abbrev-ref', 'HEAD']);
 }
 
-/** 当前分支上游的远端实际头；没有 upstream 时用 origin/<当前分支>，再不行交给 --remote。 */
-function resolveRemote(): { sha: string; source: string } {
-  const upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']);
-  if (upstream) return { sha: remoteHead(upstream), source: `远端 ${upstream}` };
+/**
+ * 远端分支的实际头。按 ref 字段完全相等匹配，不做后缀比较：
+ * 名为 `a/refs/heads/main` 的分支会让后缀匹配把 `main` 认错。
+ */
+function remoteHead(remote: string, ref: string): string {
+  const output = git(['ls-remote', remote, ref]);
+  for (const line of output.split('\n')) {
+    const [sha, name] = line.split('\t');
+    if (name === ref) return sha.trim();
+  }
+  return '';
+}
 
-  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+/**
+ * 上游的远端与 ref。取 `git config branch.<名字>.remote/merge`，
+ * 不拆 `@{upstream}` 的显示串：远端名本身可以含斜杠（如 `team/origin`）。
+ */
+function upstreamTarget(): { remote: string; ref: string } | null {
+  const branch = currentBranch();
+  if (!branch || branch === 'HEAD') return null;
+  const remote = git(['config', '--get', `branch.${branch}.remote`]);
+  const ref = git(['config', '--get', `branch.${branch}.merge`]);
+  return remote && ref ? { remote, ref } : null;
+}
+
+/** 上游的远端实际头；没有 upstream 时用 origin/<当前分支>，再不行交给 --remote。 */
+function resolveRemote(): { sha: string; source: string } {
+  const upstream = upstreamTarget();
+  if (upstream) {
+    return {
+      sha: remoteHead(upstream.remote, upstream.ref),
+      source: `${upstream.remote} 的 ${upstream.ref}`,
+    };
+  }
+
+  const branch = currentBranch();
   if (branch && branch !== 'HEAD') {
-    const guess = `origin/${branch}`;
-    const sha = remoteHead(guess);
-    if (sha) return { sha, source: `远端 ${guess}` };
+    const ref = `refs/heads/${branch}`;
+    const sha = remoteHead('origin', ref);
+    if (sha) return { sha, source: `origin 的 ${ref}` };
   }
 
   return { sha: '', source: '远端分支' };

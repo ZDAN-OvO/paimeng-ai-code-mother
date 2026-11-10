@@ -54,9 +54,25 @@
 - 绿：修复后 `Test Files 2 passed`、`Tests 17 passed (17)`。
 - 用 review 原来的两个场景复验：同一份 code 报告填两个位置 → `completion review 的 reviewer 是 code，应为 completion`、exit 1；远端已推进未 fetch → `远端分支是 d2f7b86…，不是候选提交 c28f612…`、exit 1。
 
+### 第二轮代码审查打回（2026-11-10）
+
+候选 `f6b0dfb` 上，第二轮 code review 又找出三条与远端解析相关的问题，都是我第一版修复引入或没覆盖的：
+
+| 问题               | 复现                                                                                                                                                                     | 期望                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| 分支名可伪装成后缀 | 远端有分支 `a/refs/heads/main`：`endsWith('refs/heads/main')` 对它也为真，且字母序在 main 前，`find` 取到它，门禁把候选判成与远端一致                                    | 按 ref 字段完全相等匹配                        |
+| 远端名含斜杠解析错 | remote 名为 `team/origin` 时按第一个 `/` 拆成 remote=`team`，`ls-remote` 报仓库不存在，正常分支被误拒                                                                    | 从 `branch.<名字>.remote/merge` 取，不拆显示串 |
+| 解析失败当未配置   | 配了 `branch.main.remote=publish`、`merge=refs/heads/release`，但本地删掉 `refs/remotes/publish/release`：`@{upstream}` 报错被吞成空，回退查 `origin/main`，放行了旧提交 | 仅有配置缺失时才回退；已配置但查不到一律拒绝   |
+
+复现日志：`repro-branch-suffix-trap.log`、`repro-remote-name-with-slash.log`、`repro-upstream-fallback.log`（私有运行产物）。在被审候选 `f6b0dfb` 上，前两条分别是误放行与误拒，第三条是 `pr-gate: ok` 误放行。
+
+**修复**：`resolveRemote` 改为读 `git config branch.<当前分支>.remote` 与 `branch.<当前分支>.merge`，不解析 `@{upstream}` 的显示串；`remoteHead` 用 `git ls-remote <remote> <ref>` 后按 ref 字段完全相等匹配；只有配置缺失时才回退 `origin/<当前分支>`。
+
+**先红后绿（第二轮修复）**：新增三个用例后先红（`Tests 2 failed | 7 passed`，trap 分支与斜杠远端），实现后 **20 项全部通过**；第三条用例在旧实现上单独跑确认红（`expected +0 to be 1`），再在新实现上绿。三个场景也在临时仓库复验：trap 分支与配置缺失均拒绝、斜杠远端正常放行。
+
 ### 门禁、审查与 PR
 
-（本节在第二轮审查与开 PR 后补：候选提交 SHA、CI 运行链接、两份报告结论、实际耗时。）
+（本节在第三轮审查与开 PR 后补：候选提交 SHA、CI 运行链接、两份报告结论、实际耗时。）
 
 ### 偏离计划的地方
 
