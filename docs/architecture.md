@@ -34,37 +34,37 @@
 
 - Next.js（App Router）+ React + TypeScript，代码位于仓库根目录。
 - Tailwind CSS + shadcn/ui。Paimeng 工作台的布局与交互对齐 v0，视觉用 shadcn 默认；生成项目的视觉方向由需求与设计 Skill 决定，不强制套用工作台外观。
-- Vercel AI SDK 7，agent 用 `ToolLoopAgent`。
+- Vercel AI SDK 7，agent 用 `ToolLoopAgent`。首版接入以本地 spike 验证的 `ai@7.0.166`、`@ai-sdk/openai-compatible@3.0.87` 为起点，实施时锁定依赖并复验；正式项目尚未接入。
 - PostgreSQL + Drizzle ORM，迁移为编号 SQL。
 - Docker：开发沙箱与发布实例共用一套镜像与产物流程。
 
 ## 4. 关键决策
 
-| 编号 | 决策                                                                                                       | 理由                                                                  |
-| ---- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| D1   | 旧应用整体归档，新代码落在仓库根                                                                           | 旧架构被 pi-durable 的假设塑形，重构成本高于重建                      |
-| D2   | 零代码复用                                                                                                 | 旧 schema 压着计费与配额，带进来会把复刻拖成计费系统复刻              |
-| D3   | `ToolLoopAgent` 承载循环                                                                                   | 循环、多步、工具、流式都是 SDK 已有的能力                             |
-| D4   | 不做 durable execution                                                                                     | 中断即失败并重试；Workflow DevKit 是上一轮返工的来源                  |
-| D5   | 沙箱实现 SDK 的 `SandboxSession` 接口                                                                      | 沙箱直接接入 agent 工具上下文，不另造一层                             |
-| D6   | 每个 Chat 一个常驻容器                                                                                     | 文件系统按 Chat 持久；空闲 30 分钟回收，硬顶 24 小时                  |
-| D7   | 沙箱默认禁出站，只放行 npm registry                                                                        | 生成代码不可信；其他联网请求由宿主权限策略审批，加载 Skill 不自动放行 |
-| D8   | 预览用 `next dev` 加反向代理                                                                               | 迭代必须改完即见；`build` 的分钟级等待不可接受                        |
-| D9   | 版本是源码树快照                                                                                           | 文件级 diff 与回滚只需两棵树比对，不引入 git 推送语义                 |
-| D10  | 发布用通用 runner 镜像挂载产物                                                                             | 不为每个应用构建镜像，也不需要本地 registry                           |
-| D11  | 技能是带 frontmatter 的目录                                                                                | `SKILL.md`、`references/`、`scripts/`，与 Claude Code 同构            |
-| D12  | 技能路由由生成模型自己做                                                                                   | 描述进 system prompt，正文靠 `load_skill` 工具按需加载                |
-| D13  | 技能描述全量列出，不设上限                                                                                 | 一行一条，五十条约一千多 token                                        |
-| D14  | 用户技能落盘，脚本在沙箱内执行                                                                             | 正文由服务进程读，脚本只读挂载进沙箱，导入时显式信任                  |
-| D15  | 单用户本地优先                                                                                             | clone 下来就能跑；所有表带 `user_id`，多用户是后续 PR                 |
-| D16  | Project → Chat → Version 三层                                                                              | 区分产品、对话线与源码历史，发布挂在 Project 上                       |
-| D17  | 模型配置在 `config/providers.json`                                                                         | 密钥走环境变量，永不入库                                              |
-| D18  | 单实例部署                                                                                                 | 沙箱与预览代理都在同一进程拓扑内，横向扩展不在范围内                  |
-| D19  | 前端只经 `/api/**`，mock 由 route handler 承接（[ADR 0009](adr/0009-frontend-contract-and-mock-layer.md)） | 后端按前端契约实现，前端调用点不改                                    |
-| D20  | 宿主底线：CI 每轮必跑，没有通过记录不能标成功（[ADR 0010](adr/0010-host-ci-floor.md)）                     | review 交给 agent 判断，确定性检查不交                                |
-| D21  | Review 做成 subagent 工具，由主 agent 决定何时调用（[ADR 0013](adr/0013-review-as-subagent-tools.md)）     | 自评偏松；小改动不付两次审查成本                                      |
-| D22  | 评测基准靠预埋缺陷，不靠 LLM 判分（[ADR 0014](adr/0014-seeded-defects-as-ground-truth.md)）                | 防止调优收敛到两个模型互相认同                                        |
-| D23  | 只做离线调优，结果以 PR 交付（[ADR 0015](adr/0015-offline-tuning-only.md)）                                | 单用户本地优先，没有汇总的线上数据                                    |
+| 编号 | 决策                                                                                                       | 理由                                                       |
+| ---- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| D1   | 旧应用整体归档，新代码落在仓库根                                                                           | 旧架构被 pi-durable 的假设塑形，重构成本高于重建           |
+| D2   | 零代码复用                                                                                                 | 旧 schema 压着计费与配额，带进来会把复刻拖成计费系统复刻   |
+| D3   | `ToolLoopAgent` 承载循环                                                                                   | 循环、多步、工具、流式都是 SDK 已有的能力                  |
+| D4   | 不做 durable execution                                                                                     | 中断即失败并重试；Workflow DevKit 是上一轮返工的来源       |
+| D5   | 沙箱实现 SDK 的 `SandboxSession` 接口                                                                      | 沙箱直接接入 agent 工具上下文，不另造一层                  |
+| D6   | 每个 Chat 一个常驻容器                                                                                     | 文件系统按 Chat 持久；空闲 30 分钟回收，硬顶 24 小时       |
+| D7   | 沙箱默认拒绝直接出站，经受控代理按目标放行（[ADR 0016](adr/0016-controlled-sandbox-egress.md)）            | 安装依赖与外部 API 需要联网；生成代码不能自行扩大允许列表  |
+| D8   | 预览用 `next dev` 加反向代理                                                                               | 迭代必须改完即见；`build` 的分钟级等待不可接受             |
+| D9   | 版本是源码树快照                                                                                           | 文件级 diff 与回滚只需两棵树比对，不引入 git 推送语义      |
+| D10  | 发布用通用 runner 镜像挂载产物                                                                             | 不为每个应用构建镜像，也不需要本地 registry                |
+| D11  | 技能是带 frontmatter 的目录                                                                                | `SKILL.md`、`references/`、`scripts/`，与 Claude Code 同构 |
+| D12  | 技能路由由生成模型自己做                                                                                   | 描述进 system prompt，正文靠 `load_skill` 工具按需加载     |
+| D13  | 技能描述全量列出，不设上限                                                                                 | 一行一条，五十条约一千多 token                             |
+| D14  | 用户技能落盘，脚本在沙箱内执行                                                                             | 正文由服务进程读，脚本只读挂载进沙箱，导入时显式信任       |
+| D15  | 单用户本地优先                                                                                             | clone 下来就能跑；所有表带 `user_id`，多用户是后续 PR      |
+| D16  | Project → Chat → Version 三层                                                                              | 区分产品、对话线与源码历史，发布挂在 Project 上            |
+| D17  | 模型配置在 `config/providers.json`                                                                         | 密钥走环境变量，永不入库                                   |
+| D18  | 单实例部署                                                                                                 | 沙箱与预览代理都在同一进程拓扑内，横向扩展不在范围内       |
+| D19  | 前端只经 `/api/**`，mock 由 route handler 承接（[ADR 0009](adr/0009-frontend-contract-and-mock-layer.md)） | 后端按前端契约实现，前端调用点不改                         |
+| D20  | 宿主底线：CI 每轮必跑，没有通过记录不能标成功（[ADR 0010](adr/0010-host-ci-floor.md)）                     | review 交给 agent 判断，确定性检查不交                     |
+| D21  | Review 做成 subagent 工具，由主 agent 决定何时调用（[ADR 0013](adr/0013-review-as-subagent-tools.md)）     | 自评偏松；小改动不付两次审查成本                           |
+| D22  | 评测基准靠预埋缺陷，不靠 LLM 判分（[ADR 0014](adr/0014-seeded-defects-as-ground-truth.md)）                | 防止调优收敛到两个模型互相认同                             |
+| D23  | 只做离线调优，结果以 PR 交付（[ADR 0015](adr/0015-offline-tuning-only.md)）                                | 单用户本地优先，没有汇总的线上数据                         |
 
 ## 5. 数据模型
 
@@ -230,20 +230,44 @@ skills/<slug>/
 
 ## 8. 沙箱与预览
 
-`src/server/sandbox/docker.ts` 实现 AI SDK 的 `SandboxSession`：`readTextFile`、`writeTextFile`、`listDirectory`、`stat`、`deleteFile`、`run`、`spawn`。
+### 8.1 SDK 接口与执行边界
 
-- 每个 Chat 一个容器，工作区是命名卷，挂在 `/workspace`。
-- 容器参数沿用旧库验证过的隔离：`--read-only`、`--cap-drop=ALL`、`--pids-limit`、`--memory`、`--cpus`、`--security-opt=no-new-privileges`。
-- 网络默认 `--network=none`；安装依赖时临时接入受限网络，只允许 registry。
-- 预览：容器内 `next dev` 监听 3000，宿主机反向代理 `/preview/<chatId>/*`，并代理 HMR 的 WebSocket。
-- 生命周期：空闲 30 分钟回收；最后一次活动起 24 小时硬顶；回收后从快照恢复工作区。
+`src/server/sandbox/docker.ts` 的目标是实现 AI SDK 的 `Experimental_SandboxSession`（文中简称 `SandboxSession`），共 12 个成员：`description` 属性，以及 `readFile`、`readBinaryFile`、`readTextFile`、`writeFile`、`writeBinaryFile`、`writeTextFile`、`stat`、`listDirectory`、`deleteFile`、`run`、`spawn` 这 11 个方法。通过每次 `agent.stream` / `agent.generate` 调用的 `experimental_sandbox` 传入，工具从执行上下文取得；接口兼容不代表安全策略已实现。
+
+- 模型调用与 Docker 管理留在可信的 Paimeng 后端；生成代码的安装、构建与运行只在 Sandbox 中执行。Sandbox 不挂 Docker socket，不取得 Paimeng 模型网关密钥。
+- 每个 Chat 一个容器与独立 Workspace 卷，挂在 `/workspace`。新卷需先初始化所有权，再以非 root 用户运行；重建已有 Workspace 不得重新覆盖 Template。
+- 禁用 privileged，丢弃全部 capabilities，启用 `no-new-privileges`，保留默认 seccomp；宿主提供 AppArmor 时保留其默认约束。根文件系统只读，Workspace 和受限临时目录可写，并设置进程数、内存与 CPU 上限。普通 Docker 容器共享宿主内核，不等同于微虚拟机。
+- 文件工具在容器内校验规范化路径、符号链接及源/目标范围，并在覆盖前检查预期修订；不能把 SDK 接口、宿主字符串拼接或提示词当作路径隔离。通用命令仍受 Sandbox 的系统权限限制，文件工具的校验不能约束任意 Shell 程序。
+- `run` 的超时与 `spawn` 的终止、调用方取消都必须清理容器内的命令进程组；只结束宿主 `docker exec` 不算取消完成。空文件流、不存在、二进制、背压与中途取消分别验收。
+- 生命周期目标仍为空闲 30 分钟回收、最后一次活动起 24 小时硬顶；回收后从 Snapshot 恢复。进程重启后本轮标失败，不自动续跑。
+
+### 8.2 网络策略
+
+默认拒绝 Sandbox 直接出站，必要访问由宿主控制的代理和允许列表提供（[ADR 0016](adr/0016-controlled-sandbox-egress.md)）。策略绑定当前 Chat 的 Sandbox；Project 存在时可取其获准配置，Draft 使用默认策略。生成代码与 Skill 不能自行批准放行。
+
+- 首个实现先支持 npm registry；GitHub 下载与其他外部 API 按实际需求增加目标，不因安装依赖就开放整个公网。依赖访问 GitHub 不等于授权产品 GitHub 同步或远端写入。
+- 代理校验目标、解析后的地址与连接端口，默认拒绝宿主、私网、链路本地与其他 Chat；允许/拒绝和策略变更需可追溯，日志不保存凭据。允许 registry 不能替代依赖与安装脚本的信任判断。
+- **传输方案尚未选定**：`network=none` 加每 Chat Unix socket 中继已验证预览和临时 registry 通道；internal bridge 加宿主直连容器 IP 也已验证预览，减少中继管理，但仍可访问宿主桥接地址。`enable_icc=false` 只验证了同网络容器间阻断。
+- 在桥接方案中，阻止 Sandbox 主动访问宿主、允许预览回包且不影响其他项目的防火墙规则尚未实测，不能仅凭 `--internal` 宣称隔离完成。未经这项验证，不将桥接方案设为默认；无需宿主防火墙修改的禁网中继方案作为实施候选基线，仍需补权限与生命周期验收。
+
+### 8.3 预览与浏览器边界
+
+预览使用与工作台不同的来源，每个 Chat 分配独立预览 hostname；路径保留 `/preview/<chatId>/*`，由代理核对 hostname、Chat 和请求来源，并承接 HTTP 与 HMR WebSocket（[ADR 0017](adr/0017-preview-origin-isolation.md)）。单用户本地首版验证 `*.localhost`；远程域名、HTTPS 和 cookie 策略另行验收。
+
+- iframe 使用受限权限；浏览器允许预览自身正常运行，但不允许其读取工作台或其他 Chat。预览响应的 CSP、来源检查与工作台写接口的来源校验共同控制边界；Docker 网络策略不约束浏览器里的 JavaScript。
+- `next dev` 监听地址随传输方案选择。Template 由产品注入对应预览来源的 `allowedDevOrigins`，配置变化后重新检查 HMR，不能依赖 Next.js 对 localhost 的隐式信任。
+- 反向代理需要支持 WebSocket upgrade 的入口；本地 spike 使用独立 Node 代理，尚未验证普通 Next.js Route Handler 可以承担这一职责。
+
+本地 spike（2026-11-09–10）证明了这些候选连接方式可行，未完成现有 API/SSE、数据库与产品页面的端到端接入，也未完成完整接口语义与对抗验证；交付状态仍以[证据索引](evidence/INDEX.md)为准。
 
 ## 9. 发布
 
-1. 沙箱内 `next build`，产物在 `.next/standalone`。
+1. 先分配 `deployKey`，按最终 `/deploys/<deployKey>` 前缀在沙箱内执行生产构建，产物在 `.next/standalone`。Next.js 的 `basePath` 在构建时固定，不能直接复用按预览前缀构建的产物。
 2. 把 standalone、`public`、必要静态资源复制到 `data/deploys/<projectId>/<deployId>/`。
 3. 用通用 runner 镜像启动只读容器，环境变量取自 `project.env`。
 4. 网关按 `/deploys/<deployKey>` 反代到 runner 容器；回滚等于切换软链并重启容器。
+
+本地 spike 已验证最小 standalone 的页面、JS、图片与 API，但未验证最终发布前缀下的完整链路、缓存写入与切换。发布地址同源于工作台时，生成页面的脚本也会取得工作台来源权限；M5 开工前必须评审其来源隔离与原有地址契约的兼容方式，不能把只读 Runner 当作浏览器隔离。
 
 ## 10. 版本、diff 与回滚
 
@@ -319,13 +343,16 @@ skills/<slug>/
 7. Design mode 与截图导入（验收 9、10）。
 8. 搜索、模板、环境变量面板（验收 11、12、13）。
 
-每个 PR 附浏览器录屏（GIF）、数据库行与沙箱真实输出，证据放 `docs/evidence/<slug>/`。
+功能 PR 提供注明版本、操作步骤和预期结果的浏览器证据，并附相关数据库行与沙箱真实输出，证据放 `docs/evidence/<slug>/`。录屏须解释验证问题与观察结果，不能用无标注的页面变化代替验收；架构 spike 可用探针和日志表达结论。
 
 ## 13. 未决与风险
 
-- AI SDK 7 的 `experimental_sandbox` 接入点需要在第二个切片里实测确认：挂在 agent 设置上，还是挂在工具执行上下文里。
-- `next dev` 反向代理要处理绝对路径、HMR WebSocket 与子路径 basePath，先做 spike。
-- 预览与发布共用镜像，需要确认 standalone 产物在 runner 里对静态资源与 API route 都成立。
+- Sandbox 网络传输尚未定案：禁网中继已有可行性观测，桥接方案缺宿主隔离规则实测；不可用测试机当前监听配置代替产品保证。
+- `SandboxSession` 原型通过了类型检查与 19 项已列行为用例，但仍有类型断言、空文件流处理、流式读的内存使用、取消信号传递和命令终止竞态等缺口；生产实现须补语义与副作用验证，不能照搬原型或把现有通过数当成完整符合性证明。
+- 非 root 的 Workspace 初始化、路径与符号链接校验、过期修订拒绝，以及容器回收重建尚未完成；普通容器也不能提供微虚拟机级内核隔离。
+- 预览的独立来源方案仅在本机 Chrome 验证，仍需明确远程来源、cookie 与工作台写接口的保护，验收代理重连、并发与资源上限。
+- registry 只试装单包且禁安装脚本；GitHub、多域名下载、原生依赖、代理策略归属与访问记录尚未实现。
+- standalone 最小产物可运行；最终发布前缀、同源发布的浏览器风险、缓存目录写入和发布切换留待 M5 验证。
 - 快照体积随项目增长，需要保留策略（例如只保留最近 N 个版本）。
 - 真实浏览器自动验证尚未确认；当前验收 12 维持 HTTP 抓取与搜索。UI 交互与响应式需通过用户验收和 PR 浏览器证据核实，不能声称 Agent 已自动验证。
 - 取消、异常与预算耗尽时，未完成改动如何形成可恢复状态需明确；不得改变每条助手消息记录版本的既定规则来掩盖失败。
