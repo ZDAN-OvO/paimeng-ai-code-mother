@@ -6,7 +6,7 @@ import type { SiteState } from '@/shared/api/schemas';
 
 /**
  * 把站点按 1200px 的桌面宽度渲染，再等比缩到容器宽度。
- * 模板缩略图、项目卡片与发布页都用它，保证三处看到的是同一份站点。
+ * 模板缩略图与项目卡片共用同一份站点内容。
  */
 export function SiteThumb({
   site,

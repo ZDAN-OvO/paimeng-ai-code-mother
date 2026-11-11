@@ -48,6 +48,7 @@ import type {
 import { useVoiceInput } from '@/features/chat/use-voice';
 import { ModelSelect } from '@/features/home/model-select';
 import { PlanCard, ReviewCard, TodosCard } from '@/features/chat/flow-cards';
+import { Markdown } from './markdown';
 
 export type DesignSelection = DesignContext;
 
@@ -60,7 +61,7 @@ export function ChatPanel({
   templates,
   selection,
   onClearSelection,
-  onOpenVersion,
+  onOpenChangeSet,
   draft,
   onDraftChange,
   attachments,
@@ -69,16 +70,17 @@ export function ChatPanel({
   chat: ChatRecord;
   models: Model[];
   templates: Template[];
-  project: Project | null;
+  project: Project;
   selection: DesignSelection | null;
   onClearSelection: () => void;
-  onOpenVersion: (versionId: string) => void;
+  onOpenChangeSet: (changeSetId: string) => void;
   draft: string;
   onDraftChange: (value: string) => void;
   attachments: Attachment[];
   onAttachmentsChange: (next: Attachment[]) => void;
 }) {
-  const { sendMessage, stopGeneration, setModel } = useWorkspace();
+  const { state, sendMessage, stopGeneration, setModel } = useWorkspace();
+  const [submitting, setSubmitting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const { listening, toggle: toggleVoice } = useVoiceInput((text) => {
@@ -91,14 +93,27 @@ export function ChatPanel({
 
   const busy = chat.streaming;
   const awaiting = Boolean(chat.pendingPlan);
+  const siblingBusy = state.chats.find(
+    (item) => item.id !== chat.id && (item.streaming || item.pendingPlan),
+  );
 
-  function submit() {
+  async function submit() {
     const text = draft.trim();
-    if ((!text && attachments.length === 0) || busy || awaiting) return;
-    sendMessage(chat.id, text, attachments, { selection: selection ?? undefined });
-    onDraftChange('');
-    onAttachmentsChange([]);
-    onClearSelection();
+    if ((!text && attachments.length === 0) || busy || awaiting || submitting || siblingBusy)
+      return;
+    setSubmitting(true);
+    try {
+      const accepted = await sendMessage(chat.id, text, attachments, {
+        selection: selection ?? undefined,
+      });
+      if (accepted) {
+        onDraftChange('');
+        onAttachmentsChange([]);
+        onClearSelection();
+      }
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function onFile(files: FileList | null) {
@@ -122,29 +137,26 @@ export function ChatPanel({
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5">
-        {(project?.templateId ?? chat.draft?.templateId ?? 'auto') !== 'auto' ? (
+        {project.templateId !== 'auto' ? (
           <div
             data-testid="template-note"
             className="flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-[11.5px] text-muted-foreground"
           >
             <LayoutTemplate className="size-3.5 shrink-0" />
             从模板「
-            {(() => {
-              const templateId = project?.templateId ?? chat.draft?.templateId ?? '';
-              return templates.find((item) => item.id === templateId)?.name ?? templateId;
-            })()}
+            {templates.find((item) => item.id === project.templateId)?.name ?? project.templateId}
             」开始
           </div>
         ) : null}
         {chat.messages.length === 0 ? (
-          <EmptyChat project={project} />
+          <EmptyChat workspacePath={project.workspacePath} />
         ) : (
           chat.messages.map((message) => (
             <MessageRow
               key={message.id}
               message={message}
               chatId={chat.id}
-              onOpenVersion={onOpenVersion}
+              onOpenChangeSet={onOpenChangeSet}
               modelName={models.find((model) => model.id === chat.modelId)?.name ?? chat.modelId}
             />
           ))
@@ -153,6 +165,12 @@ export function ChatPanel({
       </div>
 
       <div className="border-t border-border bg-background px-3 pt-2.5 pb-3">
+        {siblingBusy ? (
+          <p role="status" className="mb-2 text-[11px] text-muted-foreground">
+            「{siblingBusy.title}」{siblingBusy.streaming ? '正在处理任务' : '正在等待方案审批'}，
+            处理完成后可在这里继续。你可以先写下需求。
+          </p>
+        ) : null}
         {selection ? (
           <div className="mb-2 flex items-center gap-2 rounded-md border border-dashed border-border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
             <MousePointerSquareDashed className="size-3.5" />
@@ -204,7 +222,7 @@ export function ChatPanel({
           <Textarea
             data-testid="chat-input"
             value={draft}
-            disabled={awaiting}
+            disabled={awaiting || submitting}
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
@@ -301,7 +319,12 @@ export function ChatPanel({
                   data-testid="chat-send"
                   className="size-7 rounded-full"
                   onClick={submit}
-                  disabled={awaiting || (!draft.trim() && attachments.length === 0)}
+                  disabled={
+                    awaiting ||
+                    submitting ||
+                    Boolean(siblingBusy) ||
+                    (!draft.trim() && attachments.length === 0)
+                  }
                 >
                   <ArrowUp className="size-3.5" />
                 </Button>
@@ -310,14 +333,14 @@ export function ChatPanel({
           </div>
         </div>
         <p className="mt-1.5 px-1 text-[10px] text-muted-foreground/70">
-          Enter 发送 · Shift+Enter 换行 · 每轮回复留下一个版本
+          Enter 发送 · Shift+Enter 换行 · 每轮改动都能查看 diff 并撤销
         </p>
       </div>
     </div>
   );
 }
 
-function EmptyChat({ project }: { project: Project | null }) {
+function EmptyChat({ workspacePath }: { workspacePath: string }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
       <div className="flex size-10 items-center justify-center rounded-full bg-muted">
@@ -325,22 +348,12 @@ function EmptyChat({ project }: { project: Project | null }) {
       </div>
       <p className="text-sm font-medium">新的对话</p>
       <p className="max-w-xs text-xs leading-5 text-muted-foreground">
-        这个对话还没有消息。描述你要做什么，第一条回复会生成新的版本。
+        这个对话还没有消息。描述你想改什么，助手会直接修改项目文件。
       </p>
-      <p className="mt-1 max-w-xs rounded-md bg-muted/50 px-3 py-2 text-left text-[11px] leading-5 text-muted-foreground">
-        {project ? (
-          <>
-            项目：{project.name}
-            <br />
-            新对话从项目当前的源码树开始，历史消息不会带过来。
-          </>
-        ) : (
-          <>
-            草稿：还没创建项目
-            <br />
-            满意后点右上角「创建项目」，这条会话和版本会原地转正。
-          </>
-        )}
+      <p className="mt-1 max-w-xs rounded-md bg-muted/50 px-3 py-2 text-left font-mono text-[11px] leading-5 break-all text-muted-foreground">
+        项目目录：{workspacePath}
+        <br />
+        <span className="font-sans">新对话从项目当前文件开始；历史消息不会带过来。</span>
       </p>
     </div>
   );
@@ -404,12 +417,12 @@ function duration(startIso: string, endIso: string | undefined, now: number): st
 function MessageRow({
   message,
   chatId,
-  onOpenVersion,
+  onOpenChangeSet,
   modelName,
 }: {
   message: Message;
   chatId: string;
-  onOpenVersion: (versionId: string) => void;
+  onOpenChangeSet: (changeSetId: string) => void;
   modelName: string;
 }) {
   const [toggled, setToggled] = useState<boolean | null>(null);
@@ -539,9 +552,7 @@ function MessageRow({
               ),
             )}
             {innerText ? (
-              <p className="text-[12.5px] leading-6 whitespace-pre-wrap text-muted-foreground">
-                {innerText}
-              </p>
+              <Markdown text={innerText} className="text-[12.5px] text-muted-foreground" />
             ) : null}
           </div>
         ) : null}
@@ -555,12 +566,12 @@ function MessageRow({
         {finalText ? (
           <div
             className={cn(
-              'mt-2 text-[13px] leading-6 whitespace-pre-wrap',
+              'mt-2 text-[13px] leading-6',
               streaming &&
                 'after:ml-0.5 after:inline-block after:h-3.5 after:w-1.5 after:animate-pulse after:bg-foreground/60 after:align-middle',
             )}
           >
-            {finalText}
+            <Markdown text={finalText} />
           </div>
         ) : null}
 
@@ -585,13 +596,13 @@ function MessageRow({
                 未经完成审查
               </span>
             ) : null}
-            {message.versionId ? (
+            {message.changeSetId ? (
               <button
                 type="button"
-                onClick={() => onOpenVersion(message.versionId as string)}
+                onClick={() => onOpenChangeSet(message.changeSetId as string)}
                 className="rounded border border-border bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
               >
-                查看版本
+                查看改动
               </button>
             ) : null}
           </div>

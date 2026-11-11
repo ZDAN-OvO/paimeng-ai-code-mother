@@ -16,22 +16,27 @@ import { nowIso } from '@/lib/time';
 import {
   canComplete,
   completionReviewed,
-  finishRound,
   isLargeChange,
   skillKey,
   sourceRevision,
+  type WorkspaceSnapshot,
 } from './flow';
 import { uid } from './ids';
 import { openRun, pushEvent, getRun, type EventRun } from './runs';
 import { buildSiteFiles } from './seed/files';
 import {
   ApiError,
-  filesOf,
+  assertProjectCanRun,
+  commitRound,
   findChat,
+  flush,
+  findProject,
   getBundle,
-  siteForChat,
+  siteForProject,
+  snapshotOf,
   updateChat,
   updateMessage,
+  updateProject,
 } from './world';
 
 type Scenario =
@@ -49,9 +54,16 @@ type Ctx = {
   /** 最近一次 completion review 通过时的源码修订。 */
   reviewed: string | null;
   rounds: Record<ReviewKind, number>;
+  /** 本轮开始时的项目文件与预览；收尾时用它与当前项目状态比对。 */
+  before: WorkspaceSnapshot;
 };
 
-function newCtx(run: EventRun<SseEvent>, chatId: string, messageId: string): Ctx {
+function newCtx(
+  run: EventRun<SseEvent>,
+  chatId: string,
+  messageId: string,
+  before: WorkspaceSnapshot,
+): Ctx {
   return {
     run,
     chatId,
@@ -59,6 +71,7 @@ function newCtx(run: EventRun<SseEvent>, chatId: string, messageId: string): Ctx
     evidence: null,
     reviewed: null,
     rounds: { code: 0, completion: 0 },
+    before,
   };
 }
 
@@ -96,15 +109,16 @@ function patchPart(
 }
 
 function currentFiles(chatId: string): FileMap {
-  return filesOf(findChat(chatId));
+  return findProject(findChat(chatId).projectId).files;
 }
 
+/** 工具写入直接改项目共享文件，预览、代码面板与撤销看到的是同一份内容。 */
 function setFiles(ctx: Ctx, files: FileMap) {
-  updateChat(ctx.chatId, (chat) => ({ ...chat, liveFiles: { ...files } }));
+  updateProject(findChat(ctx.chatId).projectId, (project) => ({ ...project, files }));
 }
 
 function setSite(ctx: Ctx, site: SiteState) {
-  updateChat(ctx.chatId, (chat) => ({ ...chat, liveSite: site }));
+  updateProject(findChat(ctx.chatId).projectId, (project) => ({ ...project, site }));
   emit(ctx, { type: 'preview', site, files: currentFiles(ctx.chatId) });
 }
 
@@ -134,6 +148,7 @@ function planRun(chatId: string): RunAccepted {
 
 export function sendMessage(chatId: string, input: SendMessageRequest): RunAccepted {
   const chat = findChat(chatId);
+  assertProjectCanRun(chat.projectId, chat.id);
   if (chat.streaming) throw new ApiError(409, '本轮还在生成，先停止或等它结束');
   if (chat.pendingPlan) throw new ApiError(409, '有方案在等审批，先批准、要求修改或拒绝');
   const parts: Part[] = [
@@ -194,20 +209,17 @@ export function proposePlan(
   }));
 
   const summary = '方案已提交，等待你批准、要求修改或拒绝。本轮没有修改项目文件。';
-  const chat = findChat(chatId);
-  const next = finishRound(
-    chat,
+  const snapshot = snapshotOf(findProject(findChat(chatId).projectId));
+  commitRound(chatId, {
     messageId,
-    'awaiting_approval',
+    status: 'awaiting_approval',
     summary,
-    siteForChat(chat, chat.versions.length),
-    uid('ver'),
-    nowIso(),
-  );
-  updateChat(chatId, () => next);
+    before: snapshot,
+    after: snapshot,
+  });
 
   const run = openRun<SseEvent>(`chat:${chatId}`, { chatId, messageId });
-  const ctx = newCtx(run, chatId, messageId);
+  const ctx = newCtx(run, chatId, messageId, snapshot);
   const message = findChat(chatId).messages.find((item) => item.id === messageId) ?? null;
   emit(ctx, { type: 'snapshot', message });
   emit(ctx, {
@@ -215,7 +227,7 @@ export function proposePlan(
     messageId,
     status: 'awaiting_approval',
     summary,
-    versionId: message?.versionId ?? null,
+    changeSetId: null,
     completionReviewed: false,
   });
   run.close();
@@ -266,7 +278,7 @@ export function decidePlan(
   }
 
   const run = openRun<SseEvent>(`chat:${chatId}`, { chatId, messageId });
-  const ctx = newCtx(run, chatId, messageId);
+  const ctx = newCtx(run, chatId, messageId, snapshotOf(findProject(findChat(chatId).projectId)));
   const message = findChat(chatId).messages.find((item) => item.id === messageId) ?? null;
   emit(ctx, { type: 'snapshot', message });
   emit(ctx, {
@@ -274,7 +286,7 @@ export function decidePlan(
     messageId,
     status: 'rejected',
     summary: '方案已拒绝，项目文件没有改动。',
-    versionId: message?.versionId ?? null,
+    changeSetId: null,
     completionReviewed: false,
   });
   run.close();
@@ -288,16 +300,18 @@ export function stopRun(chatId: string) {
 
 export function startRound(chatId: string, prompt: string): RunAccepted {
   const chat = findChat(chatId);
+  // 项目文件共享：其他对话在生成或等审批时不允许这里开始写入。
+  assertProjectCanRun(chat.projectId, chat.id);
   if (chat.streaming) throw new ApiError(409, '本轮还在生成，先停止或等它结束');
-  const previous = chat.versions.at(-1);
   const messageId = uid('msg');
   const createdAt = nowIso();
+  const before = snapshotOf(findProject(chat.projectId));
   updateChat(chatId, (current) => ({
     ...current,
     streaming: true,
     updatedAt: createdAt,
-    liveFiles: { ...(previous?.files ?? {}) },
-    liveSite: previous?.site,
+    // 落盘本轮起点：进程在写入后被中断时，重启仍能生成可撤销的改动记录。
+    activeRound: { messageId, before },
     messages: [
       ...current.messages,
       {
@@ -310,9 +324,11 @@ export function startRound(chatId: string, prompt: string): RunAccepted {
       },
     ],
   }));
+  // 回合起点先落盘，再做第一次写入：进程中断后才有依据生成可撤销记录。
+  flush();
 
   const run = openRun<SseEvent>(`chat:${chatId}`, { chatId, messageId });
-  const ctx = newCtx(run, chatId, messageId);
+  const ctx = newCtx(run, chatId, messageId, before);
   emit(ctx, {
     type: 'snapshot',
     message: findChat(chatId).messages.find((item) => item.id === messageId) ?? null,
@@ -326,26 +342,23 @@ export function startRound(chatId: string, prompt: string): RunAccepted {
 
 function finalize(ctx: Ctx, requested: RunStatus, requestedSummary: string) {
   const chat = findChat(ctx.chatId);
-  const files = filesOf(chat);
+  const project = findProject(chat.projectId);
+  const after: WorkspaceSnapshot = { files: project.files, site: project.site };
   // 宿主底线（ADR 0010）：当前修订没有 CI 通过记录，不能标成功。
-  const floorHeld = requested !== 'succeeded' || canComplete(files, ctx.evidence);
+  const floorHeld = requested !== 'succeeded' || canComplete(after.files, ctx.evidence);
   const status: RunStatus = floorHeld ? requested : 'failed';
   const summary = floorHeld
     ? requestedSummary
     : '当前修订没有 CI 通过记录，宿主拒绝标为成功；工作已保留，重新检查后再继续。';
-  const reviewed = completionReviewed(status, files, ctx.reviewed);
-  const previous = chat.versions.at(-1);
-  const next = finishRound(
-    chat,
-    ctx.messageId,
+  const reviewed = completionReviewed(status, after.files, ctx.reviewed);
+  const { changeSet } = commitRound(ctx.chatId, {
+    messageId: ctx.messageId,
     status,
     summary,
-    previous?.site ?? siteForChat(chat, chat.versions.length + 1),
-    uid('ver'),
-    nowIso(),
+    before: ctx.before,
+    after,
     reviewed,
-  );
-  updateChat(ctx.chatId, () => next);
+  });
   updateMessage(ctx.chatId, ctx.messageId, (message) => ({
     ...message,
     parts: [
@@ -358,7 +371,7 @@ function finalize(ctx: Ctx, requested: RunStatus, requestedSummary: string) {
     messageId: ctx.messageId,
     status,
     summary,
-    versionId: next.messages.find((item) => item.id === ctx.messageId)?.versionId ?? null,
+    changeSetId: changeSet?.id ?? null,
     completionReviewed: reviewed,
   });
   ctx.run.close();
@@ -368,11 +381,11 @@ function finalize(ctx: Ctx, requested: RunStatus, requestedSummary: string) {
 
 async function execute(ctx: Ctx, prompt: string) {
   const chat = findChat(ctx.chatId);
-  const previous = chat.versions.at(-1);
+  const project = findProject(chat.projectId);
   const scenario = scenarioFor(prompt);
   const iteration =
-    (previous && Object.keys(previous.files).length ? previous.site.iteration : 0) + 1;
-  const site = siteForChat(chat, iteration);
+    project.site && Object.keys(project.files).length ? project.site.iteration + 1 : 1;
+  const site = siteForProject(project, iteration);
   const lastUser = [...chat.messages].reverse().find((message) => message.role === 'user');
   const selection = lastUser?.parts.find((part) => part.type === 'selection');
   const quote = prompt.match(/[「“"]([^」”"]{2,18})[」”"]/)?.[1];
@@ -433,7 +446,7 @@ async function execute(ctx: Ctx, prompt: string) {
   }
 
   const stopped = () => {
-    finalize(ctx, 'stopped', '已停止。已完成的改动保留为版本；未完成的任务保持原进度。');
+    finalize(ctx, 'stopped', '已停止。已完成的改动保留在项目文件里；未完成的任务保持原进度。');
   };
 
   /** CI：类型检查、lint、构建、预览就绪。通过时把证据绑定到当前修订。 */
@@ -562,7 +575,7 @@ async function execute(ctx: Ctx, prompt: string) {
     finalize(
       ctx,
       'succeeded',
-      '调研完成，本轮没有改代码，仍追加一个源码快照版本。网页内容与引用是固定示例，不表示实际联网。',
+      '调研完成，本轮没有改代码，项目文件保持不变。网页内容与引用是固定示例，不表示实际联网。',
     );
     return;
   }
@@ -650,7 +663,7 @@ async function execute(ctx: Ctx, prompt: string) {
     progress(2);
   }
 
-  for (const path of changedPaths(previous?.files ?? {}, target)) {
+  for (const path of changedPaths(ctx.before.files, target)) {
     if (ctx.run.abort) return stopped();
     const exists = currentFiles(ctx.chatId)[path] !== undefined;
     const written = await tool(
@@ -720,14 +733,13 @@ async function execute(ctx: Ctx, prompt: string) {
   if (ctx.run.abort) return stopped();
 
   // mock 里主 agent 的判断：请求本身说是文案级小改时按小改动处理，即使模板重排碰到多个文件。
-  // 这正是「该审不审」可能发生的地方，评测用漏审率衡量（architecture.md 第 11 节）。
+  // 这正是「该审不审」可能发生的地方，后续评测用漏审率衡量。
   const smallAsk = /小改|文案|错别字|改成「/.test(prompt);
-  const large =
-    scenario === 'review' || (!smallAsk && isLargeChange(previous?.files ?? {}, target));
+  const large = scenario === 'review' || (!smallAsk && isLargeChange(ctx.before.files, target));
   if (large) {
     const pagePath =
       Object.keys(currentFiles(ctx.chatId)).find((name) => name.endsWith('page.tsx')) ?? firstPath;
-    const scope = `${changedPaths(previous?.files ?? {}, currentFiles(ctx.chatId)).length} 个改动文件`;
+    const scope = `${changedPaths(ctx.before.files, currentFiles(ctx.chatId)).length} 个改动文件`;
     if (scenario === 'review') {
       const first = await review('code', scope, [
         `${pagePath}：主按钮只有图标，没有可读名称（aria-label）。`,
@@ -764,13 +776,13 @@ async function execute(ctx: Ctx, prompt: string) {
     finalize(
       ctx,
       'succeeded',
-      '小改动，只跑了 CI，没有调用完成审查。改动已保留为版本，可以继续对话或查看版本差异。',
+      '小改动，只跑了 CI，没有调用完成审查。改动已保留，可以在改动记录里看 diff 或撤销。',
     );
     return;
   }
   finalize(
     ctx,
     'succeeded',
-    `本轮完成：CI 通过，code review ${ctx.rounds.code} 轮、completion review ${ctx.rounds.completion} 轮。保留 ${Object.keys(currentFiles(ctx.chatId)).length} 个文件的源码快照；工具输出与审查是固定演示。`,
+    `本轮完成：CI 通过，code review ${ctx.rounds.code} 轮、completion review ${ctx.rounds.completion} 轮。项目当前 ${Object.keys(currentFiles(ctx.chatId)).length} 个文件；工具输出与审查是固定演示。`,
   );
 }

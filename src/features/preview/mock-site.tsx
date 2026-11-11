@@ -1,7 +1,7 @@
 import type { SiteState } from '@/shared/api/schemas';
 
 /**
- * 预览里渲染的「生成结果」。真实产品里这里是沙箱 dev server 的反代页面；
+ * 预览里渲染的「生成结果」。真实预览将连接项目的本地开发服务器；
  * 预览用同一份 content 直接渲染，保证预览、代码面板与 diff 讲的是同一件事。
  * data-src / data-component 对应 React fiber 上的 _debugSource，供 Design mode 定位。
  */

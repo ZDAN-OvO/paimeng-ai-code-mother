@@ -2,25 +2,27 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   type ChatBundle,
+  type ChangeSet,
   type ChatRecord,
   type ChatSummary,
-  type Deploy,
   type EnvVar,
   type FileMap,
   type Message,
   type Project,
   type ProjectsResponse,
-  type PublishedResponse,
+  type RunStatus,
+  type Runtime,
   type SiteState,
   type Skill,
-  type Version,
   type WorldState,
   worldStateSchema,
 } from '@/shared/api/schemas';
 import { changedPaths } from '@/lib/diff';
+import { undoChangeSet as undoFiles } from '@/lib/change-set';
 import { nowIso } from '@/lib/time';
+import { parseSkillManifest } from '@/server/skills/manifest';
 import { uid } from './ids';
-import { finishRound, skillKey } from './flow';
+import { finishRound, skillKey, type WorkspaceSnapshot } from './flow';
 import { buildSite, deriveProjectName, resolveTemplate } from './site';
 import { buildSiteFiles } from './seed/files';
 import { TEMPLATES } from './seed/templates';
@@ -56,23 +58,92 @@ function seed(): WorldState {
   return { version: 1, projects, chats, skills };
 }
 
-/** 上一次进程死在生成中时，把那条消息收尾成 stopped，避免永久卡在 streaming。 */
+export function sampleRuntime(): Runtime {
+  return { state: 'stopped', port: null, url: null, logs: [], source: 'sample' };
+}
+
+/** 没有持久化回合起点的旧数据：只能收尾消息，无法生成撤销记录。 */
+function markInterrupted(chat: ChatRecord, messageId: string, now: string): ChatRecord {
+  return {
+    ...chat,
+    streaming: false,
+    updatedAt: now,
+    activeRound: null,
+    messages: chat.messages.map((message) =>
+      message.id !== messageId
+        ? message
+        : {
+            ...message,
+            streaming: false,
+            status: 'stopped',
+            completionReviewed: false,
+            finishedAt: now,
+            parts: message.parts.map((part) =>
+              part.type === 'tool' && part.state === 'running'
+                ? {
+                    ...part,
+                    state: 'error',
+                    output: '进程重启中断了本轮；已写入的项目文件保留。',
+                  }
+                : part.type === 'review' && part.state === 'running'
+                  ? {
+                      ...part,
+                      state: 'error',
+                      findings: ['进程重启中断了本轮，审查没有给出结论。'],
+                    }
+                  : part,
+            ),
+          },
+    ),
+  };
+}
+
+/**
+ * 上一次进程死在生成中时收尾：有持久化的回合起点，就用它和当前项目快照生成一条
+ * stopped 的改动记录（可 diff、可撤销）；没有改动或没有起点时只把消息收尾。
+ * 不自动续跑。
+ */
 function recoverInterrupted(world: WorldState) {
-  for (const chat of world.chats) {
+  const now = nowIso();
+  for (let index = 0; index < world.chats.length; index += 1) {
+    const chat = world.chats[index];
     const stuck = chat.messages.find(
       (message) => message.streaming || message.status === 'running',
     );
-    if (!stuck) continue;
-    const index = world.chats.findIndex((item) => item.id === chat.id);
-    world.chats[index] = finishRound(
-      chat,
-      stuck.id,
-      'stopped',
-      '进程重启中断了本轮；已完成的改动保留在版本里，可以重试。',
-      chat.versions.at(-1)?.site ?? buildSite('blank', '未命名项目', 1),
-      uid('ver'),
-      nowIso(),
-    );
+    if (!stuck) {
+      if (chat.activeRound) world.chats[index] = { ...chat, activeRound: null };
+      continue;
+    }
+    const projectIndex = world.projects.findIndex((item) => item.id === chat.projectId);
+    const project = projectIndex >= 0 ? world.projects[projectIndex] : null;
+    const start = chat.activeRound;
+    if (project && start && start.messageId === stuck.id && !stuck.changeSetId) {
+      const after: WorkspaceSnapshot = { files: project.files, site: project.site };
+      const { chat: nextChat, changeSet } = finishRound(
+        chat,
+        stuck.id,
+        'stopped',
+        '进程重启中断了本轮；已写入的项目文件保留，可以在改动记录里撤销。',
+        start.before,
+        after,
+        {
+          changeSetId: uid('cs'),
+          seq: project.changeSets.length + 1,
+          now,
+          reviewed: false,
+        },
+      );
+      world.chats[index] = { ...nextChat, activeRound: null };
+      if (changeSet) {
+        world.projects[projectIndex] = {
+          ...project,
+          changeSets: [...project.changeSets, changeSet],
+          updatedAt: now,
+        };
+      }
+    } else {
+      world.chats[index] = markInterrupted(chat, stuck.id, now);
+    }
   }
 }
 
@@ -144,24 +215,18 @@ export function summaryOf(chat: ChatRecord): ChatSummary {
     createdAt,
     updatedAt,
     streaming,
-    activeVersionId,
-    viewVersionId,
-    pendingPlan,
-    draft,
     archivedAt,
+    pendingPlan,
   } = chat;
   return {
     id,
-    projectId: projectId ?? null,
-    draft: draft ?? null,
+    projectId,
     title,
     modelId,
     createdAt,
     updatedAt,
     streaming,
     archivedAt: archivedAt ?? null,
-    activeVersionId,
-    viewVersionId,
     pendingPlan: pendingPlan ?? null,
   };
 }
@@ -217,7 +282,42 @@ export function findChatByProject(projectId: string): ChatRecord[] {
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-/** 归档列表：草稿与项目会话都在这里，按归档时间倒序。 */
+/** 项目里是否有正在生成或等审批的回合；共享文件下这些状态会挡住写文件的操作。 */
+function busyChat(projectId: string, kind: 'streaming' | 'pendingPlan', ignoreChatId?: string) {
+  return getState().chats.find(
+    (chat) => chat.projectId === projectId && chat.id !== ignoreChatId && chat[kind],
+  );
+}
+
+/** 同一项目的文件是共享的：别的对话在生成时不能开始新一轮，也不能撤销。 */
+export function assertProjectCanRun(projectId: string, ignoreChatId?: string) {
+  findProject(projectId);
+  const streaming = busyChat(projectId, 'streaming', ignoreChatId);
+  if (streaming) {
+    throw new ApiError(
+      409,
+      `项目里还有一轮正在生成（${streaming.title}），等它结束或先停止，再继续。`,
+    );
+  }
+  const waiting = busyChat(projectId, 'pendingPlan', ignoreChatId);
+  if (waiting) {
+    throw new ApiError(409, `项目里有对话正在等方案审批（${waiting.title}），先处理它再继续。`);
+  }
+}
+
+/** 撤销与删除会整体改写项目文件，只在项目完全空闲时允许。 */
+export function assertProjectIdle(projectId: string, action: string) {
+  findProject(projectId);
+  const streaming = busyChat(projectId, 'streaming');
+  if (streaming) {
+    throw new ApiError(
+      409,
+      `项目里还有一轮正在生成（${streaming.title}），先停止或等它结束再${action}。`,
+    );
+  }
+}
+
+/** 归档列表：按归档时间倒序。 */
 export function listArchivedChats(): ChatSummary[] {
   return getState()
     .chats.filter((chat) => chat.archivedAt)
@@ -227,7 +327,7 @@ export function listArchivedChats(): ChatSummary[] {
 
 export function archiveChat(chatId: string): ChatSummary {
   const chat = findChat(chatId);
-  if (chat.projectId && chat.streaming) throw new ApiError(409, '本轮还在生成，先停止再归档');
+  if (chat.streaming) throw new ApiError(409, '本轮还在生成，先停止再归档');
   const next = updateChat(chatId, (current) => ({
     ...current,
     archivedAt: current.archivedAt ?? nowIso(),
@@ -245,162 +345,106 @@ export function restoreChat(chatId: string): ChatSummary {
   return summaryOf(next);
 }
 
-/** 草稿：还没决定变成项目的会话。 */
-export function listDrafts(): ChatSummary[] {
-  return getState()
-    .chats.filter((chat) => !chat.projectId && !chat.archivedAt)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .map(summaryOf);
-}
-
 export function listProjects(): ProjectsResponse['projects'] {
   const world = getState();
   return world.projects
     .map((project) => {
       const chats = world.chats.filter((chat) => chat.projectId === project.id);
-      const versions = chats.flatMap((chat) => chat.versions);
-      const latest = versions.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
       const lastChat = [...chats].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
       return {
-        ...project,
+        id: project.id,
+        name: project.name,
+        description: project.description,
+        templateId: project.templateId,
+        workspacePath: project.workspacePath,
+        workspaceState: project.workspaceState,
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
         chatCount: chats.length,
-        versionCount: versions.length,
+        changeCount: project.changeSets.length,
         lastChatId: lastChat?.id ?? null,
-        thumb: latest?.site ?? null,
+        thumb: project.site,
       };
     })
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-function templateVersion(
-  chatId: string,
-  templateId: string,
-  brand: string,
-  createdAt: string,
-): Version {
-  const site = buildSite(templateId, brand, 1);
-  const files = buildSiteFiles(site);
-  return {
-    id: uid('ver'),
-    chatId,
-    messageId: null,
-    seq: 1,
-    label: 'v1',
-    summary: `模板「${TEMPLATES.find((item) => item.id === templateId)?.name ?? templateId}」的初始版本`,
-    createdAt,
-    files,
-    site,
-    changedFiles: changedPaths({}, files),
-  };
+function baseNameOf(workspacePath: string): string {
+  const parts = workspacePath.replace(/[\\/]+$/, '').split(/[\\/]/);
+  return parts.at(-1) || '未命名项目';
 }
 
-/** 草稿：首页一句话或模板卡先落一条会话，等用户决定要不要变成项目。 */
-export function createDraft(input: {
+/** 新建项目：路径只做记录；首版不会真的创建目录，界面会标成示例项目。 */
+export function createProject(input: {
+  workspacePath: string;
+  name?: string;
   prompt: string;
   templateId: string;
   modelId?: string;
-}): ChatSummary {
+}): { project: Project; chat: ChatRecord } {
   const world = getState();
+  const now = nowIso();
   const chatId = uid('chat');
-  const createdAt = nowIso();
-  const templateId = resolveTemplate(input.templateId, input.prompt);
-  const chat: ChatRecord = {
-    id: chatId,
-    projectId: null,
-    draft: { prompt: input.prompt, templateId },
-    title: deriveProjectName(input.prompt),
-    modelId: input.modelId || MODEL_FALLBACK,
-    createdAt,
-    updatedAt: createdAt,
-    streaming: false,
-    archivedAt: null,
-    activeVersionId: null,
-    viewVersionId: null,
-    pendingPlan: null,
-    messages: [],
-    versions: [],
-  };
-  if (input.templateId !== 'auto') {
-    const version = templateVersion(chatId, templateId, chat.title, createdAt);
-    chat.versions = [version];
-    chat.activeVersionId = version.id;
-    chat.viewVersionId = version.id;
-  }
-  world.chats = [chat, ...world.chats];
-  touch();
-  return summaryOf(chat);
-}
+  const name =
+    input.name?.trim() ||
+    (input.prompt ? deriveProjectName(input.prompt) : '') ||
+    baseNameOf(input.workspacePath);
+  // 没明确选模板时保留 auto：模板入口只在用户真的选了模板时出现。
+  const templateId =
+    input.templateId === 'auto' ? 'auto' : resolveTemplate(input.templateId, input.prompt || name);
 
-/** 草稿转项目：建 Project 并把这条会话接管过去，不部署。 */
-export function promoteChat(chatId: string): { project: Project; chat: ChatSummary } {
-  const chat = findChat(chatId);
-  if (chat.projectId) throw new ApiError(409, '这个对话已经是项目的一部分');
-  const createdAt = nowIso();
   const project: Project = {
     id: uid('proj'),
-    name: chat.title,
-    prompt: chat.draft?.prompt ?? chat.title,
-    templateId: chat.draft?.templateId ?? 'auto',
-    createdAt,
-    updatedAt: createdAt,
-    env: [],
-    deployKey: null,
-    deploys: [],
-  };
-  getState().projects = [project, ...getState().projects];
-  const next = updateChat(chatId, (current) => ({
-    ...current,
-    projectId: project.id,
-    draft: null,
-    updatedAt: createdAt,
-  }));
-  touch();
-  return { project, chat: summaryOf(next) };
-}
-
-export function createProject(input: { prompt: string; templateId: string; modelId?: string }): {
-  project: Project;
-  chat: ChatRecord;
-} {
-  const world = getState();
-  const projectId = uid('proj');
-  const chatId = uid('chat');
-  const name = deriveProjectName(input.prompt);
-  const templateId = resolveTemplate(input.templateId, input.prompt);
-  const createdAt = nowIso();
-  const project: Project = {
-    id: projectId,
     name,
-    prompt: input.prompt,
+    description: input.prompt || input.workspacePath,
     templateId,
-    createdAt,
-    updatedAt: createdAt,
+    createdAt: now,
+    updatedAt: now,
     env: [],
-    deployKey: null,
-    deploys: [],
+    workspacePath: input.workspacePath,
+    workspaceState: 'sample',
+    files: {},
+    site: null,
+    changeSets: [],
+    runtime: sampleRuntime(),
   };
+
   const chat: ChatRecord = {
     id: chatId,
-    projectId,
-    draft: null,
+    projectId: project.id,
     title: name,
     modelId: input.modelId || MODEL_FALLBACK,
-    createdAt,
-    updatedAt: createdAt,
+    createdAt: now,
+    updatedAt: now,
     streaming: false,
     archivedAt: null,
-    activeVersionId: null,
-    viewVersionId: null,
     pendingPlan: null,
     messages: [],
-    versions: [],
   };
-  // 明确选了模板：先把模板产物落成 v1，用户进对话页时右栏就有东西可看。
+
+  // 明确选了模板：先把模板产物落成一条改动记录，进对话页右栏就有东西可看。
   if (input.templateId !== 'auto') {
-    const version = templateVersion(chatId, templateId, name, createdAt);
-    chat.versions = [version];
-    chat.activeVersionId = version.id;
-    chat.viewVersionId = version.id;
+    const site = buildSite(templateId, name, 1);
+    const files = buildSiteFiles(site);
+    const templateName = TEMPLATES.find((item) => item.id === templateId)?.name ?? templateId;
+    project.files = files;
+    project.site = site;
+    project.changeSets = [
+      {
+        id: uid('cs'),
+        seq: 1,
+        chatId,
+        messageId: null,
+        summary: `模板「${templateName}」的初始文件`,
+        createdAt: now,
+        status: 'applied',
+        changedFiles: changedPaths({}, files),
+        before: {},
+        after: files,
+        siteBefore: null,
+        siteAfter: site,
+      },
+    ];
   }
 
   world.projects = [project, ...world.projects];
@@ -409,12 +453,17 @@ export function createProject(input: { prompt: string; templateId: string; model
   return { project, chat };
 }
 
+/** 打开已有目录：真实读写本地目录不在这一版的范围，明确拒绝而不是假装连上。 */
+export function openProject(): never {
+  throw new ApiError(501, '尚不能打开本地目录；可以先体验示例项目。');
+}
+
 export function renameProject(projectId: string, name: string): Project {
   return updateProject(projectId, (project) => ({ ...project, name, updatedAt: nowIso() }));
 }
 
 export function deleteProject(projectId: string) {
-  findProject(projectId);
+  assertProjectIdle(projectId, '删除项目');
   const world = getState();
   world.projects = world.projects.filter((item) => item.id !== projectId);
   world.chats = world.chats.filter((chat) => chat.projectId !== projectId);
@@ -432,40 +481,18 @@ export function createChat(
 ): ChatSummary {
   const project = findProject(projectId);
   const siblings = findChatByProject(projectId);
-  const latest = siblings
-    .flatMap((chat) => chat.versions)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  const chatId = uid('chat');
-  const createdAt = nowIso();
-  const baseline: Version | null = latest
-    ? {
-        id: uid('ver'),
-        seq: 1,
-        chatId,
-        messageId: null,
-        label: 'v1 · 起点',
-        summary: '新对话从项目当前源码树开始，历史消息不会带过来。',
-        createdAt,
-        files: latest.files,
-        site: latest.site,
-        changedFiles: [],
-      }
-    : null;
+  const now = nowIso();
   const chat: ChatRecord = {
-    id: chatId,
+    id: uid('chat'),
     projectId,
-    draft: null,
     title: input.title?.trim() || `${project.name} · 新对话`,
     modelId: input.modelId || siblings[0]?.modelId || MODEL_FALLBACK,
-    createdAt,
-    updatedAt: createdAt,
+    createdAt: now,
+    updatedAt: now,
     streaming: false,
     archivedAt: null,
     pendingPlan: null,
     messages: [],
-    versions: baseline ? [baseline] : [],
-    activeVersionId: baseline?.id ?? null,
-    viewVersionId: baseline?.id ?? null,
   };
   const world = getState();
   world.chats = [chat, ...world.chats];
@@ -488,169 +515,97 @@ export function patchChat(
 
 export function getBundle(chatId: string): ChatBundle {
   const chat = findChat(chatId);
-  const project = chat.projectId ? findProject(chat.projectId) : null;
   return {
-    project,
+    project: findProject(chat.projectId),
     chat: summaryOf(chat),
-    chats: chat.projectId ? findChatByProject(chat.projectId).map(summaryOf) : [],
+    chats: findChatByProject(chat.projectId).map(summaryOf),
     messages: chat.messages,
-    versions: chat.versions,
     skills: getState().skills,
     models: MODELS,
   };
 }
 
-export function listVersions(chatId: string): Version[] {
-  return findChat(chatId).versions;
+/** 当前项目文件：撤销与 diff 都以它为磁盘真相。 */
+export function filesOf(project: Project): FileMap {
+  return project.files;
 }
 
-export function findVersion(chatId: string, versionId: string): Version {
-  const version = findChat(chatId).versions.find((item) => item.id === versionId);
-  if (!version) throw new ApiError(404, `找不到版本 ${versionId}`);
-  return version;
-}
-
-export function versionFiles(chatId: string, versionId: string) {
-  const version = findVersion(chatId, versionId);
-  return { versionId, files: version.files, site: version.site };
-}
-
-export function versionDiff(chatId: string, versionId: string) {
+/**
+ * 一轮结束时收尾：收尾消息、把项目文件的变化记成一条改动记录。
+ * before/after 由调用方在回合开始与结束时捕获；没有动文件的轮次不产生记录。
+ */
+export function commitRound(
+  chatId: string,
+  input: {
+    messageId: string;
+    status: RunStatus;
+    summary: string;
+    before: WorkspaceSnapshot;
+    after: WorkspaceSnapshot;
+    reviewed?: boolean;
+  },
+): { chat: ChatRecord; changeSet: ChangeSet | null } {
   const chat = findChat(chatId);
-  const index = chat.versions.findIndex((item) => item.id === versionId);
-  if (index < 0) throw new ApiError(404, `找不到版本 ${versionId}`);
-  const after = chat.versions[index];
-  const before = index > 0 ? chat.versions[index - 1] : null;
-  const files = changedPaths(before?.files ?? {}, after.files).map((filePath) => {
-    const beforeText = before?.files[filePath] ?? '';
-    const afterText = after.files[filePath] ?? '';
-    const beforeLines = beforeText ? beforeText.split('\n') : [];
-    const afterLines = afterText ? afterText.split('\n') : [];
-    return {
-      path: filePath,
-      status: beforeText && afterText ? 'modified' : afterText ? 'added' : 'removed',
-      added: Math.max(0, afterLines.length - beforeLines.length) || afterLines.length,
-      removed: Math.max(0, beforeLines.length - afterLines.length),
-      before: beforeText,
-      after: afterText,
-    } as const;
-  });
-  return { versionId, files };
+  const project = findProject(chat.projectId);
+  const now = nowIso();
+  const { chat: nextChat, changeSet } = finishRound(
+    chat,
+    input.messageId,
+    input.status,
+    input.summary,
+    input.before,
+    input.after,
+    {
+      changeSetId: uid('cs'),
+      seq: project.changeSets.length + 1,
+      now,
+      reviewed: input.reviewed,
+    },
+  );
+  if (changeSet) {
+    updateProject(project.id, (current) => ({
+      ...current,
+      files: input.after.files,
+      site: input.after.site,
+      changeSets: [...current.changeSets, changeSet],
+      updatedAt: now,
+    }));
+  }
+  // 回合结束（无论成功、失败还是中断）都不再保留起点。
+  const settled: ChatRecord = { ...nextChat, activeRound: null };
+  updateChat(chatId, () => settled);
+  return { chat: settled, changeSet };
 }
 
-export function previewOf(chatId: string) {
-  const chat = findChat(chatId);
-  const version = chat.viewVersionId
-    ? chat.versions.find((item) => item.id === chat.viewVersionId)
-    : chat.versions.at(-1);
-  return {
-    chatId,
-    versionId: version?.id ?? null,
-    site: chat.liveSite ?? version?.site ?? null,
-  };
-}
-
-export function rollbackTo(chatId: string, versionId: string): Version {
-  const chat = findChat(chatId);
-  if (chat.streaming || chat.pendingPlan) throw new ApiError(409, '本轮还没结束，先停止再回滚');
-  const target = chat.versions.find((item) => item.id === versionId);
-  if (!target) throw new ApiError(404, `找不到版本 ${versionId}`);
-  const active = chat.versions.at(-1);
-  const seq = chat.versions.length + 1;
-  const newId = uid('ver');
-  const createdAt = nowIso();
-  const version: Version = {
-    id: newId,
-    seq,
-    chatId,
-    messageId: uid('msg'),
-    label: `v${seq} · 回滚到 v${target.seq}`,
-    summary: `工作区已恢复成 v${target.seq} 的源码树，并追加为 v${seq}。历史保持线性，随时可以再滚回来。`,
-    createdAt,
-    files: target.files,
-    site: target.site,
-    changedFiles: changedPaths(active?.files ?? {}, target.files),
-    restoredFrom: target.seq,
-  };
-  updateChat(chatId, (current) => ({
-    ...current,
-    updatedAt: createdAt,
-    versions: [...current.versions, version],
-    activeVersionId: newId,
-    viewVersionId: newId,
-    messages: [
-      ...current.messages,
-      {
-        id: version.messageId as string,
-        role: 'assistant',
-        parts: [
-          {
-            id: uid('part'),
-            type: 'text',
-            text: `已把工作区回滚到 v${target.seq}，并追加为新版本 v${seq}。预览已经切到旧源码树，改过的文件也可以在 diff 里对比。`,
-          },
-        ],
-        createdAt,
-        finishedAt: createdAt,
-        versionId: newId,
-        status: 'succeeded',
-      },
-    ],
-  }));
-  return version;
-}
-
-export function recordDeploy(projectId: string, versionId: string): Deploy {
+/**
+ * 撤销一条改动记录：写回 before 文件与预览。
+ * 这一轮之后任何文件又被改过（后续对话或外部编辑器）都拒绝，不盲覆盖。
+ */
+export function undoChangeSet(
+  projectId: string,
+  changeSetId: string,
+): { project: Project; changeSet: ChangeSet } {
+  assertProjectIdle(projectId, '撤销改动');
   const project = findProject(projectId);
-  const version = getState()
-    .chats.filter((chat) => chat.projectId === projectId)
-    .flatMap((chat) => chat.versions)
-    .find((item) => item.id === versionId);
-  if (!version) throw new ApiError(404, `找不到版本 ${versionId}`);
-  const deployKey = project.deployKey ?? uid('site').replace('_', '-');
-  const deploy: Deploy = {
-    id: uid('deploy'),
-    deployKey,
-    versionId,
-    versionSeq: version.seq,
-    state: 'building',
-    createdAt: nowIso(),
-  };
-  updateProject(projectId, (current) => ({
+  const changeSet = project.changeSets.find((item) => item.id === changeSetId);
+  if (!changeSet) throw new ApiError(404, `找不到改动记录 ${changeSetId}`);
+  const outcome = undoFiles(project.files, changeSet);
+  if (!outcome.ok) {
+    if (outcome.reason === 'already-undone') throw new ApiError(409, '这条改动已经撤销过了');
+    throw new ApiError(
+      409,
+      `这些文件在这一轮之后又被改过，撤销会覆盖它们：${outcome.conflicts.join('、')}。请先处理这些文件。`,
+    );
+  }
+  const nextChangeSet: ChangeSet = { ...changeSet, status: 'undone' };
+  const next = updateProject(projectId, (current) => ({
     ...current,
-    deployKey,
-    deploys: [deploy, ...current.deploys.filter((item) => item.versionId !== versionId)],
+    files: outcome.files,
+    site: changeSet.siteBefore,
+    changeSets: current.changeSets.map((item) => (item.id === changeSetId ? nextChangeSet : item)),
     updatedAt: nowIso(),
   }));
-  return deploy;
-}
-
-export function finishDeploy(deployId: string, state: 'ready' | 'failed') {
-  const world = getState();
-  for (const project of world.projects) {
-    const index = project.deploys.findIndex((item) => item.id === deployId);
-    if (index < 0) continue;
-    project.deploys[index] = { ...project.deploys[index], state };
-    touch();
-    return project.deploys[index];
-  }
-  throw new ApiError(404, `找不到发布 ${deployId}`);
-}
-
-export function listDeploys(projectId: string): Deploy[] {
-  return findProject(projectId).deploys;
-}
-
-export function publishedByKey(deployKey: string): PublishedResponse {
-  const world = getState();
-  const project = world.projects.find((item) => item.deployKey === deployKey);
-  const deploy = project?.deploys.find((item) => item.deployKey === deployKey);
-  if (!project || !deploy) throw new ApiError(404, '这个发布地址没有可访问的版本');
-  const version = world.chats
-    .flatMap((chat) => chat.versions)
-    .find((item) => item.id === deploy.versionId);
-  if (!version) throw new ApiError(404, '这个发布地址没有可访问的版本');
-  return { project, deploy, version };
+  return { project: next, changeSet: nextChangeSet };
 }
 
 export function listSkills(): Skill[] {
@@ -687,21 +642,25 @@ export function importSkill(input: {
 }): Skill {
   const manifest = input.files.find((file) => file.path === 'SKILL.md');
   if (!manifest) throw new ApiError(400, '导入的技能必须包含根目录 SKILL.md');
-  const slug = input.slug?.trim() || manifest.content.match(/^name:\s*(.+)$/m)?.[1]?.trim() || '';
+  let metadata: ReturnType<typeof parseSkillManifest>;
+  try {
+    metadata = parseSkillManifest(manifest.content, input.slug?.trim());
+  } catch (error) {
+    throw new ApiError(400, error instanceof Error ? error.message : '技能元信息不合法');
+  }
+  const slug = input.slug?.trim() || metadata.name;
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
     throw new ApiError(400, 'slug 仅使用小写字母、数字和单个连字符');
   }
   const existing = getState().skills.find((item) => item.source === 'user' && item.slug === slug);
   if (existing) throw new ApiError(409, `用户技能里已存在 ${slug}`);
-  const description =
-    input.description?.trim() ||
-    manifest.content.match(/^description:\s*(.+)$/m)?.[1]?.trim() ||
-    slug;
+  const description = input.description?.trim() || metadata.description;
   const skill: Skill = {
     slug,
     name: slug,
     description,
     source: 'user',
+    disableModelInvocation: metadata.disableModelInvocation,
     trusted: input.trusted,
     enabled: input.trusted,
     files: input.files.map((file) => file.path),
@@ -727,20 +686,13 @@ export function findModel(modelId: string | undefined) {
 /* ------------------------------------------------------------------ 工具 */
 
 export function siteForProject(project: Project, iteration: number): SiteState {
-  return buildSite(resolveTemplate(project.templateId, project.prompt), project.name, iteration);
-}
-
-/** 草稿还没有项目，站点按草稿自己的描述与模板生成。 */
-export function siteForChat(chat: ChatRecord, iteration: number): SiteState {
-  if (chat.projectId) return siteForProject(findProject(chat.projectId), iteration);
-  const prompt = chat.draft?.prompt ?? chat.title;
   return buildSite(
-    resolveTemplate(chat.draft?.templateId ?? 'auto', prompt),
-    chat.title,
+    resolveTemplate(project.templateId, project.description),
+    project.name,
     iteration,
   );
 }
 
-export function filesOf(chat: ChatRecord): FileMap {
-  return chat.liveFiles ?? chat.versions.at(-1)?.files ?? {};
+export function snapshotOf(project: Project): WorkspaceSnapshot {
+  return { files: project.files, site: project.site };
 }

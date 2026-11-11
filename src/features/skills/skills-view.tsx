@@ -35,7 +35,9 @@ import type {
   Skill,
   SkillDraftResponse,
   SkillsResponse,
+  SkillCatalog,
 } from '@/shared/api/schemas';
+import { LocalSkills } from './local-skills';
 import { WEEKLY_SKILL_CONTENT, WEEKLY_SKILL_DESCRIPTION } from '@/mock/seed/skill-draft';
 
 const SAMPLE_IMPORT_CONTENTS: Record<string, string> = {
@@ -62,11 +64,14 @@ export default function SkillsPage() {
 export function SkillsView({
   mode = 'page',
   onOpenChat,
+  projectId,
 }: {
   mode?: 'page' | 'panel';
   onOpenChat?: (chatId: string) => void;
+  projectId?: string;
 }) {
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [catalog, setCatalog] = useState<SkillCatalog | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [chatId, setChatId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,10 +81,13 @@ export function SkillsView({
   const load = useCallback(async () => {
     try {
       const [skillList, projectList] = await Promise.all([
-        api.get<SkillsResponse>('/api/skills'),
+        api.get<SkillsResponse>(
+          projectId ? `/api/skills?projectId=${encodeURIComponent(projectId)}` : '/api/skills',
+        ),
         api.get<ProjectsResponse>('/api/projects'),
       ]);
       setSkills(skillList.skills);
+      setCatalog(skillList.catalog ?? null);
       setChatId(projectList.projects.find((item) => item.lastChatId)?.lastChatId ?? null);
       setError(null);
     } catch (cause) {
@@ -87,7 +95,7 @@ export function SkillsView({
     } finally {
       setHydrated(true);
     }
-  }, []);
+  }, [projectId]);
 
   useEffect(() => {
     // 挂载时取一次技能列表；之后由各操作自行刷新。
@@ -200,11 +208,11 @@ export function SkillsView({
         <p className="mt-1.5 max-w-2xl text-[12.5px] leading-6 text-muted-foreground">
           技能是一个带 frontmatter 的目录：
           <code className="rounded bg-muted px-1">SKILL.md</code> 、可选的 references 与
-          scripts。技能文件与开关保存在服务端；脚本不在浏览器执行，也不会自动获得额外权限。
+          scripts。本地技能按需读取正文与参考文件；读取脚本不会执行它，也不会获得额外权限。
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-3 text-[11.5px] leading-5 text-muted-foreground">
           <p>
-            启用技能后，在 Chat 的下一轮输入它的 slug（如 frontend-design），即可看到{' '}
+            下方示例技能可在 Chat 中体验：启用后输入它的 slug（如 frontend-design），查看{' '}
             <code className="rounded bg-muted px-1">load_skill</code> 加载过程。
             启用但未信任的技能，其脚本请求会显示拒绝状态。
           </p>
@@ -230,6 +238,8 @@ export function SkillsView({
 
         {error ? <p className="mt-3 text-[11.5px] text-red-600">{error}</p> : null}
 
+        {catalog ? <LocalSkills catalog={catalog} projectId={projectId} /> : null}
+
         <div className="mt-5 grid gap-2 sm:grid-cols-3">
           {[
             { label: '已启用', value: `${enabled} / ${skills.length}` },
@@ -245,7 +255,7 @@ export function SkillsView({
 
         <section className="mt-8">
           <div className="flex items-center gap-2">
-            <h2 className="text-[13px] font-semibold text-foreground">内置技能</h2>
+            <h2 className="text-[13px] font-semibold text-foreground">内置示例技能</h2>
             <span className="text-[10.5px] text-muted-foreground/70">只读，随仓库发布</span>
           </div>
           <div className="mt-2 overflow-hidden rounded-lg border border-border bg-card">
@@ -265,7 +275,7 @@ export function SkillsView({
 
         <section className="mt-8">
           <div className="flex items-center gap-2">
-            <h2 className="text-[13px] font-semibold text-foreground">用户技能</h2>
+            <h2 className="text-[13px] font-semibold text-foreground">用户示例技能</h2>
             <span className="text-[10.5px] text-muted-foreground/70">保存在服务端的用户技能里</span>
           </div>
           <div className="mt-2 overflow-hidden rounded-lg border border-border bg-card">
@@ -417,7 +427,7 @@ function SkillRow({
             <div className="mt-1.5 space-y-1 rounded border border-border/60 bg-muted/40 p-2">
               <div className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
                 <FolderOpen className="size-3" />
-                {skill.source === 'builtin' ? '内置示例' : '浏览器本地'} · {skill.slug}/
+                {skill.source === 'builtin' ? '内置示例' : '用户示例'} · {skill.slug}/
               </div>
               {skill.files.map((file) => (
                 <div
@@ -765,7 +775,7 @@ function SkillCreatorDialog({
             帮我制作技能
           </DialogTitle>
           <DialogDescription className="text-xs">
-            草稿由后端返回的固定示例生成，不调用模型；确认后再保存为你的技能。
+            这里提供示例草稿，查看并确认内容后，再保存为你的技能。
           </DialogDescription>
         </DialogHeader>
 

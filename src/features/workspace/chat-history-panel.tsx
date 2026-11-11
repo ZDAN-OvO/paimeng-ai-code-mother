@@ -148,7 +148,7 @@ export function ChatHistoryPanel({
           </div>
         ) : total === 0 ? (
           <p className="text-[12px] text-muted-foreground">
-            {projectFilter ? '这个项目还没有会话。' : '还没有会话，先在首页描述你要做什么。'}
+            {projectFilter ? '这个项目还没有会话。' : '还没有会话，先新建或打开项目。'}
           </p>
         ) : (
           <div className="mx-auto max-w-3xl space-y-5">

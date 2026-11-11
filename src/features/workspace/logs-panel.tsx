@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ScrollText } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatTime } from '@/lib/time';
-import type { ChatRecord, Version } from '@/shared/api/schemas';
+import type { Project } from '@/shared/api/schemas';
 
 type Line = { at: string; kind: 'cmd' | 'out' | 'ok' | 'warn'; text: string };
 
@@ -14,16 +14,16 @@ function stamp(iso: string, offsetMs: number): string {
   return new Date(base + offsetMs + 8 * 3600_000).toISOString().slice(11, 19);
 }
 
-/** 由版本快照推导出来的构建与运行日志，不连真实沙箱。 */
-function buildLines(version: Version | undefined, streaming: boolean): Line[] {
-  if (!version) {
+/** 由项目当前文件与最近一条改动记录推导出的示例构建日志；没有运行本地进程。 */
+function buildLines(project: Project, streaming: boolean): Line[] {
+  const latest = project.changeSets.at(-1);
+  const files = Object.keys(project.files).length;
+  if (!latest || files === 0) {
     return streaming
-      ? [{ at: '--:--:--', kind: 'out', text: '沙箱启动中，等待第一个文件写入…' }]
-      : [{ at: '--:--:--', kind: 'warn', text: '这个对话还没有构建记录。' }];
+      ? [{ at: '--:--:--', kind: 'out', text: '正在等待第一个文件写入项目…' }]
+      : [{ at: '--:--:--', kind: 'warn', text: '这个项目还没有构建记录。' }];
   }
-  const files = Object.keys(version.files).length;
-  const changed = version.changedFiles.length;
-  const at = (offset: number) => stamp(version.createdAt, offset);
+  const at = (offset: number) => stamp(latest.createdAt, offset);
   return [
     { at: at(0), kind: 'cmd', text: '$ npm run build' },
     { at: at(240), kind: 'out', text: '▲ Next.js 16.4.5' },
@@ -33,23 +33,25 @@ function buildLines(version: Version | undefined, streaming: boolean): Line[] {
       kind: 'ok',
       text: `✓ Compiled successfully in ${(0.8 + files * 0.05).toFixed(1)}s`,
     },
-    { at: at(1240), kind: 'out', text: '  Route (app)                     Size' },
     { at: at(1320), kind: 'out', text: '  ○ /                            1.2 kB' },
-    { at: at(1500), kind: 'ok', text: '✓ Generating static pages (3/3)' },
     {
       at: at(1820),
       kind: 'ok',
-      text: `✓ 构建完成 · ${changed} 个文件有变化 · 产物 ${(files * 1.7).toFixed(1)} kB`,
+      text: `✓ 构建完成 · 最近一轮改动 ${latest.changedFiles.length} 个文件`,
     },
-    { at: at(1900), kind: 'cmd', text: '$ next start -p 3000' },
-    { at: at(2100), kind: 'ok', text: `✓ Ready in 620ms · ${formatTime(version.createdAt)}` },
+    {
+      at: at(2100),
+      kind: 'out',
+      text: `本地服务未启动；日志停在 ${formatTime(latest.createdAt)} 的示例输出。`,
+    },
   ];
 }
 
-export function LogsPanel({ chat, version }: { chat: ChatRecord; version?: Version }) {
-  const lines = buildLines(version, chat.streaming);
+export function LogsPanel({ project, streaming }: { project: Project; streaming: boolean }) {
+  const lines = buildLines(project, streaming);
   const boxRef = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
+  const latest = project.changeSets.at(-1);
 
   useEffect(() => {
     if (!follow) return;
@@ -62,7 +64,7 @@ export function LogsPanel({ chat, version }: { chat: ChatRecord; version?: Versi
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         <ScrollText className="size-3.5 text-muted-foreground" />
         <span className="text-[12px] font-medium">构建与运行日志</span>
-        <span className="text-[10.5px] text-muted-foreground">脚本生成 · 不连真实沙箱</span>
+        <span className="text-[10.5px] text-muted-foreground">示例输出 · 本地进程未接入</span>
         <label className="ml-auto flex items-center gap-1 text-[10.5px] text-muted-foreground">
           <input
             type="checkbox"
@@ -93,20 +95,20 @@ export function LogsPanel({ chat, version }: { chat: ChatRecord; version?: Versi
             </span>
           </div>
         ))}
-        {chat.streaming ? (
+        {streaming ? (
           <div className="flex gap-2 text-amber-700 dark:text-amber-400">
             <span className="text-muted-foreground/50">--:--:--</span>
             <span>
-              正在写入文件
+              正在写入项目文件
               <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-current align-middle" />
             </span>
           </div>
         ) : null}
       </div>
       <div className="flex items-center gap-2 border-t border-border px-3 py-1.5 text-[10.5px] text-muted-foreground">
-        <span className="size-1.5 rounded-full bg-emerald-500" />
-        next dev · :3000
-        <span className="ml-auto">{version ? `对应 ${version.label}` : '暂无版本'}</span>
+        <span className="size-1.5 rounded-full bg-muted-foreground/40" />
+        本地服务未启动
+        <span className="ml-auto">{latest ? `对应改动 #${latest.seq}` : '暂无改动记录'}</span>
       </div>
     </div>
   );

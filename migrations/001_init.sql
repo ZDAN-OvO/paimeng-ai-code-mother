@@ -1,67 +1,59 @@
 create table project (
-  id text primary key,
-  user_id text not null,
+  id text primary key not null,
   name text not null,
-  env jsonb not null default '{}'::jsonb,
-  created_at timestamptz not null default now()
+  description text not null default '',
+  template_id text not null default 'auto',
+  workspace_path text not null unique,
+  env text not null default '[]',
+  created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 create table chat (
-  id text primary key,
-  project_id text not null references project (id) on delete cascade,
+  id text primary key not null,
+  project_id text not null references project(id) on delete cascade,
   title text not null,
   model_id text not null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  archived_at text,
+  created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 create table message (
-  id text primary key,
-  chat_id text not null references chat (id) on delete cascade,
+  id text primary key not null,
+  chat_id text not null references chat(id) on delete cascade,
   seq integer not null,
   role text not null,
-  parts jsonb not null,
-  created_at timestamptz not null default now()
+  parts text not null,
+  status text,
+  completion_reviewed integer,
+  created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  finished_at text
 );
-create unique index message_chat_seq on message (chat_id, seq);
+create unique index message_chat_seq on message(chat_id, seq);
 
-create table version (
-  id text primary key,
-  chat_id text not null references chat (id) on delete cascade,
-  message_id text not null,
+create table change_set (
+  id text primary key not null,
+  project_id text not null references project(id) on delete cascade,
+  chat_id text not null references chat(id) on delete cascade,
+  message_id text references message(id) on delete set null,
   seq integer not null,
-  snapshot_path text not null,
-  created_at timestamptz not null default now()
+  summary text not null,
+  status text not null default 'applied',
+  changed_files text not null,
+  before_files text not null,
+  after_files text not null,
+  created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
-create unique index version_chat_seq on version (chat_id, seq);
+create unique index change_set_project_seq on change_set(project_id, seq);
 
 create table skill (
-  id text primary key,
-  owner_id text,
+  id text primary key not null,
   slug text not null,
   description text not null,
   source text not null,
-  trusted boolean not null default false,
-  enabled boolean not null default true,
-  created_at timestamptz not null default now()
+  trusted integer not null default 0,
+  enabled integer not null default 1,
+  created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
-create unique index skill_owner_slug on skill (owner_id, slug);
-
-create table deploy (
-  id text primary key,
-  project_id text not null references project (id) on delete cascade,
-  version_id text not null,
-  deploy_key text not null unique,
-  state text not null,
-  artifact_path text,
-  created_at timestamptz not null default now()
-);
-
-create table sandbox_session (
-  id text primary key,
-  chat_id text not null unique references chat (id) on delete cascade,
-  container_id text not null,
-  volume text not null,
-  last_active_at timestamptz not null default now(),
-  expires_at timestamptz not null
-);
+create unique index skill_source_slug on skill(source, slug);

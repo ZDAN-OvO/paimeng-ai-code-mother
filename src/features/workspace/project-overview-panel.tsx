@@ -2,16 +2,14 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Archive,
   ChevronRight,
-  ExternalLink,
+  FolderClosed,
   KeyRound,
   Loader2,
   MessageSquare,
   MoreHorizontal,
   Pencil,
   Plus,
-  Rocket,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -24,13 +22,12 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { api, ApiRequestError } from '@/lib/api/client';
 import { formatTime } from '@/lib/time';
-import { cn } from '@/lib/utils';
 import type { ChatSummary, ProjectsResponse } from '@/shared/api/schemas';
 
 type ProjectRow = ProjectsResponse['projects'][number];
 const RECENT_LIMIT = 5;
 
-/** 项目概览：部署现状 + 最近对话 + 项目级操作，不换路由。 */
+/** 项目概览：目录、最近改动与对话、项目级操作，不换路由。 */
 export function ProjectOverviewPanel({
   projectId,
   onOpenChat,
@@ -100,8 +97,6 @@ export function ProjectOverviewPanel({
     );
   }
 
-  const deploy = [...project.deploys].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-muted/30">
       <div className="border-b border-border bg-card px-6 py-4">
@@ -127,6 +122,11 @@ export function ProjectOverviewPanel({
           ) : (
             <h1 className="text-[15px] font-semibold tracking-tight">{project.name}</h1>
           )}
+          {project.workspaceState === 'sample' ? (
+            <span className="rounded border border-amber-300 bg-amber-50 px-1 py-px text-[9.5px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+              示例项目
+            </span>
+          ) : null}
           <div className="ml-auto flex items-center gap-1.5">
             <Button
               variant="outline"
@@ -165,19 +165,6 @@ export function ProjectOverviewPanel({
                   <KeyRound className="size-3.5" />
                   环境变量
                 </DropdownMenuItem>
-                {project.deployKey ? (
-                  <DropdownMenuItem className="gap-2 text-[12.5px]" asChild>
-                    <a href={`/deploys/${project.deployKey}`} target="_blank" rel="noreferrer">
-                      <ExternalLink className="size-3.5" />
-                      打开已发布地址
-                    </a>
-                  </DropdownMenuItem>
-                ) : (
-                  <DropdownMenuItem className="gap-2 text-[12.5px]" disabled>
-                    <ExternalLink className="size-3.5" />
-                    还没有发布地址
-                  </DropdownMenuItem>
-                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -186,78 +173,30 @@ export function ProjectOverviewPanel({
 
       <div className="mx-auto w-full max-w-3xl space-y-6 px-6 py-5">
         <section>
-          <h2 className="text-[12.5px] font-medium">部署</h2>
-          {deploy ? (
-            <div
-              data-testid="deploy-card"
-              className="mt-2 rounded-xl border border-border bg-card p-4"
-            >
-              <div className="flex flex-wrap items-center gap-2">
-                <span
-                  className={cn(
-                    'size-1.5 rounded-full',
-                    deploy.state === 'ready'
-                      ? 'bg-emerald-500'
-                      : deploy.state === 'building'
-                        ? 'bg-amber-500'
-                        : 'bg-red-500',
-                  )}
-                />
-                <span className="text-[13px] font-medium">
-                  {deploy.state === 'ready'
-                    ? '已上线'
-                    : deploy.state === 'building'
-                      ? '构建中'
-                      : '构建失败'}
-                </span>
-                <span className="rounded border border-border px-1.5 py-px font-mono text-[11px] text-muted-foreground">
-                  {deploy.deployKey}
-                </span>
-                <span className="text-[11.5px] text-muted-foreground">
-                  v{deploy.versionSeq} · {formatTime(deploy.createdAt)}
-                </span>
-                {project.deployKey ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="ml-auto h-7 gap-1 px-2 text-[11.5px]"
-                    asChild
-                  >
-                    <a href={`/deploys/${project.deployKey}`} target="_blank" rel="noreferrer">
-                      <ExternalLink className="size-3" />
-                      打开地址
-                    </a>
-                  </Button>
-                ) : null}
-              </div>
-              <p className="mt-2 text-[11.5px] leading-5 text-muted-foreground">
-                地址按项目固定：回滚产生新版本后重新发布，同一个地址会切到新版本。
-              </p>
+          <h2 className="text-[12.5px] font-medium">项目目录</h2>
+          <div
+            data-testid="project-workspace-card"
+            className="mt-2 rounded-xl border border-border bg-card p-4"
+          >
+            <div className="flex items-center gap-2">
+              <FolderClosed className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
+                {project.workspacePath}
+              </span>
             </div>
-          ) : (
-            <div
-              data-testid="deploy-card-empty"
-              className="mt-2 rounded-xl border border-dashed border-border bg-card/60 px-4 py-6 text-center"
-            >
-              <p className="text-[12.5px] font-medium">还没有发布过</p>
-              <p className="mt-1 text-[11.5px] leading-5 text-muted-foreground">
-                进任意一条对话点右上「发布」，这里会显示地址、版本与状态。
-              </p>
-              <Button
-                size="sm"
-                variant="outline"
-                className="mt-3 h-7 gap-1 px-2 text-[11.5px]"
-                disabled={chats.length === 0}
-                onClick={() => {
-                  const latest = chats[0];
-                  if (latest) onOpenChat(latest.id);
-                }}
-              >
-                <Rocket className="size-3" />
-                去对话里发布
-              </Button>
+            <p className="mt-2 text-[11.5px] leading-5 text-muted-foreground">
+              {project.workspaceState === 'sample'
+                ? '示例项目：路径只做记录，尚未连接真实目录。连接后助手会直接读写这个目录。'
+                : '助手读写这个目录里的项目文件；外部编辑器的改动会在下次读取时体现。'}
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-border/70 pt-2 text-[11px] text-muted-foreground">
+              <span>{project.chatCount} 个对话</span>
+              <span>·</span>
+              <span>{project.changeCount} 条改动记录</span>
+              <span>·</span>
+              <span>{formatTime(project.updatedAt)}</span>
             </div>
-          )}
+          </div>
         </section>
 
         <section>
@@ -308,8 +247,8 @@ export function ProjectOverviewPanel({
         </section>
 
         <section className="rounded-lg border border-dashed border-border px-4 py-3 text-[11px] leading-5 text-muted-foreground">
-          <Archive className="mr-1 inline size-3 align-[-2px]" />
-          归档的对话不会出现在这里；在「对话 → 归档」里可以找回。
+          归档的对话不会出现在这里；在「对话 →
+          归档」里可以找回。改动记录与撤销在对话右侧的「改动记录」面板里。
         </section>
       </div>
     </div>

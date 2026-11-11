@@ -1,169 +1,192 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  ArrowUp,
-  Coffee,
-  Layers,
-  Mic,
+  ArrowRight,
+  FolderClosed,
+  FolderOpen,
+  Loader2,
   MoreHorizontal,
-  Palette,
-  RefreshCw,
-  Rocket,
+  Plus,
   Sparkles,
-  Table2,
-  Terminal,
   Trash2,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { PaimengMark } from '@/components/brand/paimeng-mark';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
 import { api, ApiRequestError } from '@/lib/api/client';
 import { formatTime } from '@/lib/time';
+import { useStoredValue, writeStored } from '@/lib/storage';
+import { useIsMobile } from '@/lib/media';
 import { cn } from '@/lib/utils';
 import type {
-  CreateDraftResponse,
-  GalleryTemplate,
-  Model,
-  ModelsResponse,
+  ArchivedChatsResponse,
+  CreateProjectResponse,
   ProjectsResponse,
-  Template,
-  TemplatesResponse,
 } from '@/shared/api/schemas';
-import { useVoiceInput } from '@/features/chat/use-voice';
-import { ModelSelect } from '@/features/home/model-select';
-import { TemplateGallery } from '@/features/home/template-gallery';
+import { AppSidebar } from '@/features/workspace/app-sidebar';
+import { ChatHistoryPanel } from '@/features/workspace/chat-history-panel';
+import { ProjectOverviewPanel } from '@/features/workspace/project-overview-panel';
+import { ProjectsPanel } from '@/features/workspace/projects-panel';
+import { TemplatesPanel } from '@/features/workspace/templates-panel';
+import { SkillsView } from '@/features/skills/skills-view';
 import { SiteThumb } from '@/features/preview/site-thumb';
 import { ThemeToggle } from '@/features/theme/theme-toggle';
+import type { WorkspaceView } from '@/features/workspace/types';
 
 type ProjectRow = ProjectsResponse['projects'][number];
 
-const SUGGESTION_ICONS = [Coffee, Terminal, Palette, Table2];
-const SUGGESTION_LABELS = ['咖啡馆官网', '开发者工具落地页', '设计师作品集', '团队周报面板'];
-const PROMPT_SUGGESTIONS = [
-  '做一个山间咖啡馆的官网，要有菜单、豆子介绍和门店信息',
-  '做一个开发者工具的落地页，讲清三个核心能力和定价',
-  '做一个设计师作品集，只放四个精选项目',
-  '做一个团队周报面板，能按成员筛选',
-];
-
+/**
+ * 工作区空态：没有打开的对话时，这里负责新建/打开项目与最近项目。
+ * 侧栏「项目 / 对话 / 技能 / 模板」在同一外壳里切换，不再有独立的展示首页。
+ */
 export default function HomeView() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [prompt, setPrompt] = useState(() => searchParams.get('draft') ?? '');
-  const [templateId, setTemplateId] = useState('auto');
-  const [modelId, setModelId] = useState('');
-  const [offset, setOffset] = useState(0);
+  const [view, setView] = useState<WorkspaceView>('home');
+  const [projectView, setProjectView] = useState<string | null>(null);
+  const [chatFilter, setChatFilter] = useState<{ id: string; name: string } | null>(null);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
-  const [templates, setTemplates] = useState<Template[]>([]);
-  const [gallery, setGallery] = useState<GalleryTemplate[]>([]);
-  const [models, setModels] = useState<Model[]>([]);
-  const [creating, setCreating] = useState(false);
-  const [startingTemplate, setStartingTemplate] = useState<string | null>(null);
+  const [archived, setArchived] = useState<ArchivedChatsResponse['chats']>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const templatesRef = useRef<HTMLDivElement>(null);
+  const [dialog, setDialog] = useState<'new' | 'open' | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState('');
+  const [workspacePath, setWorkspacePath] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
-  const { listening, toggle: toggleVoice } = useVoiceInput((text) => {
-    setPrompt((current) => (current.trim() ? `${current.replace(/\s+$/, '')} ${text}` : text));
-    textareaRef.current?.focus();
-  });
+  const storedCollapsed = useStoredValue('paimeng.sidebar', 'open') === 'closed';
+  const isMobile = useIsMobile();
+  const [mobileExpanded, setMobileExpanded] = useState(false);
+  const collapsed = isMobile ? !mobileExpanded : storedCollapsed;
 
-  const loadProjects = useCallback(async () => {
-    const data = await api.get<ProjectsResponse>('/api/projects');
-    setProjects(data.projects);
+  const load = useCallback(async () => {
+    try {
+      const [projectList, archivedList] = await Promise.all([
+        api.get<ProjectsResponse>('/api/projects'),
+        api.get<ArchivedChatsResponse>('/api/chats?archived=1'),
+      ]);
+      setProjects(projectList.projects);
+      setArchived(archivedList.chats);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof ApiRequestError ? cause.message : '项目列表加载失败');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const [projectList, catalog, modelList] = await Promise.all([
-          api.get<ProjectsResponse>('/api/projects'),
-          api.get<TemplatesResponse>('/api/templates'),
-          api.get<ModelsResponse>('/api/models'),
-        ]);
-        if (cancelled) return;
-        setProjects(projectList.projects);
-        setTemplates(catalog.templates);
-        setGallery(catalog.gallery);
-        setModels(modelList.models);
-        setModelId((current) => current || modelList.models[0]?.id || '');
-      } catch (cause) {
-        if (cancelled) return;
-        setError(cause instanceof ApiRequestError ? cause.message : '目录加载失败，请刷新重试');
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    // 挂载时取一次项目列表；新建、删除、恢复后各自刷新。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (searchParams.get('new') === '1') openNewProject();
+    // 只在进入带 ?new=1 的地址时打开一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const templateName = templates.find((item) => item.id === templateId)?.name;
-  const suggestions = PROMPT_SUGGESTIONS.map((_, index) => {
-    const source = (index + offset) % PROMPT_SUGGESTIONS.length;
-    return {
-      text: PROMPT_SUGGESTIONS[source],
-      label: SUGGESTION_LABELS[source],
-      icon: SUGGESTION_ICONS[source],
-    };
-  });
-
-  // 首页只负责开一条草稿对话；要不要变成项目由用户在对话页决定。
-  async function startDraft(from: { text: string; template: string }) {
-    const created = await api.post<CreateDraftResponse>('/api/chats', {
-      prompt: from.text,
-      templateId: from.template,
-      modelId,
-    });
-    router.push(`/chat/${created.chat.id}`);
+  function returnHome() {
+    setView('home');
+    setProjectView(null);
+    setChatFilter(null);
+    setMobileExpanded(false);
   }
 
-  async function submit() {
-    const text = prompt.trim();
-    if (!text || creating || !modelId) {
-      textareaRef.current?.focus();
-      return;
-    }
-    setCreating(true);
-    setError(null);
+  function openNewProject() {
+    setMobileExpanded(false);
+    setDialogError(null);
+    setName('');
+    setWorkspacePath('');
+    setPrompt('');
+    setDialog('new');
+  }
+
+  function openExisting() {
+    setMobileExpanded(false);
+    setDialogError(null);
+    setWorkspacePath('');
+    setDialog('open');
+  }
+
+  function openProject(projectId: string) {
+    setView('projects');
+    setProjectView(projectId);
+  }
+
+  function openChat(chatId: string) {
+    router.push(`/chat/${chatId}`);
+  }
+
+  function resolveWorkspacePath(): string {
+    const typed = workspacePath.trim();
+    if (typed) return typed;
+    const folder = name.trim() || 'example-site';
+    return `~/Projects/${folder}`;
+  }
+
+  async function submitNew() {
+    if (busy) return;
+    setBusy(true);
+    setDialogError(null);
     try {
-      await startDraft({ text, template: templateId });
+      const created = await api.post<CreateProjectResponse>('/api/projects', {
+        workspacePath: resolveWorkspacePath(),
+        name: name.trim() || undefined,
+        prompt: prompt.trim(),
+      });
+      setDialog(null);
+      await load();
+      toast.success('已新建示例项目', {
+        description: '目录路径先记下来；现在还不能读写真实目录。',
+      });
+      router.push(`/chat/${created.chat.id}`);
     } catch (cause) {
-      setError(cause instanceof ApiRequestError ? cause.message : '创建项目失败，请重试');
-      setCreating(false);
+      setDialogError(cause instanceof ApiRequestError ? cause.message : '新建项目失败，请重试');
+      setBusy(false);
     }
   }
 
-  async function startFromTemplate(entry: GalleryTemplate) {
-    if (startingTemplate || creating) return;
-    if (!modelId) {
-      toast.info('模型还在加载，稍等一下再点');
-      return;
-    }
-    setError(null);
-    setStartingTemplate(entry.id);
+  async function submitOpen() {
+    if (busy) return;
+    const path = workspacePath.trim();
+    if (!path) return;
+    setBusy(true);
+    setDialogError(null);
     try {
-      await startDraft({ text: entry.prompt, template: entry.templateId });
+      await api.post('/api/projects/open', { workspacePath: path });
     } catch (cause) {
-      setError(cause instanceof ApiRequestError ? cause.message : '创建项目失败，请重试');
-      setStartingTemplate(null);
+      setDialogError(cause instanceof ApiRequestError ? cause.message : '打开目录失败，请稍后再试');
+    } finally {
+      setBusy(false);
     }
   }
 
   async function removeProject(project: ProjectRow) {
     try {
       await api.delete(`/api/projects/${project.id}`);
-      await loadProjects();
+      await load();
+      if (projectView === project.id) setProjectView(null);
       toast.success(`已删除项目「${project.name}」`);
     } catch (cause) {
       setError(cause instanceof ApiRequestError ? cause.message : '删除项目失败');
@@ -171,277 +194,407 @@ export default function HomeView() {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col bg-background text-foreground">
-      <header className="sticky top-0 z-20 border-b border-border/80 bg-background/85 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-6xl items-center gap-3 px-5">
-          <Link href="/" className="flex items-center gap-2">
-            <PaimengMark size={26} className="shrink-0" />
-            <span className="text-[13.5px] font-semibold tracking-tight">Paimeng</span>
-          </Link>
-          <nav className="ml-4 hidden items-center gap-4 text-[12.5px] text-muted-foreground sm:flex">
-            <span className="text-foreground">项目</span>
-            <Link href="/skills" className="transition-colors hover:text-foreground">
-              技能
-            </Link>
+    <div className="flex h-dvh overflow-hidden bg-background text-foreground">
+      <AppSidebar
+        collapsed={collapsed}
+        onToggleCollapsed={() =>
+          isMobile
+            ? setMobileExpanded((value) => !value)
+            : writeStored('paimeng.sidebar', storedCollapsed ? 'open' : 'closed')
+        }
+        overlay={isMobile}
+        onHome={returnHome}
+        project={null}
+        chat={null}
+        projects={projects}
+        chats={[]}
+        view={view}
+        onViewChange={(next) => {
+          setView(next);
+          setMobileExpanded(false);
+          setProjectView(null);
+          if (next !== 'chats') setChatFilter(null);
+        }}
+        onSelectChat={openChat}
+        onNewChat={openNewProject}
+        onNewProject={openNewProject}
+        onOpenProject={openProject}
+        onRenameChat={() => {}}
+        onArchiveChat={() => {}}
+      />
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-4">
+          <span className="text-[13px] font-medium">本地工作区</span>
+          <span className="hidden text-[11px] text-muted-foreground sm:inline">
+            项目在你的本地目录里，助手负责改代码、装依赖、检查与运行
+          </span>
+          <div className="ml-auto flex items-center gap-1.5">
+            <ThemeToggle />
             <button
               type="button"
-              onClick={() =>
-                document.getElementById('templates')?.scrollIntoView({ behavior: 'smooth' })
-              }
-              className="transition-colors hover:text-foreground"
+              onClick={returnHome}
+              className="flex size-6 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground"
+              title="回到工作区"
             >
-              模板
-            </button>
-          </nav>
-          <div className="ml-auto flex items-center gap-2">
-            <span className="hidden text-[11px] text-muted-foreground md:inline">
-              本地 · 单用户
-            </span>
-            <ThemeToggle />
-            <span className="flex size-7 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground">
               本
-            </span>
+            </button>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <main className="mx-auto w-full max-w-6xl flex-1 px-5 pb-24">
-        <section className="flex flex-col items-center pt-16 pb-4 text-center sm:pt-24">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-[11px] text-muted-foreground">
-            <Sparkles className="size-3 text-amber-600" />
-            生成完整 Next.js 项目 · 沙箱预览 · 版本回滚
-          </span>
-          <h1 className="mt-6 text-[34px] leading-tight font-semibold tracking-tight sm:text-[44px]">
-            想做点什么？
-          </h1>
-          <p className="mt-3 max-w-md text-[13px] leading-6 text-muted-foreground">
-            一句话描述你要的应用，拿到一个能跑、能改、能发布的版本。
-          </p>
-
-          <div className="mt-8 w-full max-w-2xl text-left">
-            <div className="rounded-2xl border border-border bg-card p-2 shadow-sm transition-colors focus-within:border-foreground/30">
-              <Textarea
-                ref={textareaRef}
-                data-testid="prompt-input"
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault();
-                    void submit();
+        <div className="flex min-h-0 flex-1 flex-col">
+          {view === 'home' ? (
+            <HomeEmptyState
+              projects={projects}
+              loading={loading}
+              error={error}
+              onNew={openNewProject}
+              onOpen={openExisting}
+              onOpenProject={openProject}
+              onRemove={removeProject}
+              onShowTemplates={() => setView('templates')}
+            />
+          ) : view === 'projects' ? (
+            projectView ? (
+              <ProjectOverviewPanel
+                projectId={projectView}
+                onOpenChat={openChat}
+                onOpenChatList={() => {
+                  const overview = projects.find((item) => item.id === projectView);
+                  setChatFilter(overview ? { id: overview.id, name: overview.name } : null);
+                  setView('chats');
+                }}
+                onRename={async (next) => {
+                  try {
+                    await api.patch(`/api/projects/${projectView}`, { name: next });
+                    await load();
+                    toast.success('项目已重命名');
+                  } catch (cause) {
+                    toast.error(cause instanceof Error ? cause.message : '重命名失败');
                   }
                 }}
-                placeholder="例如：做一个山间咖啡馆的官网，要有菜单、招牌豆子和门店信息，风格温暖一点。"
-                className="min-h-28 resize-none border-0 bg-transparent px-3 py-3 text-[13.5px] leading-6 shadow-none focus-visible:ring-0 dark:bg-transparent"
-              />
-              <div className="mt-1 flex items-center gap-1.5 px-1 pb-1">
-                <div className="rounded-md">
-                  <ModelSelect models={models} value={modelId} onChange={setModelId} compact />
-                </div>
-                {templateId !== 'auto' && templateName ? (
-                  <button
-                    type="button"
-                    onClick={() => setTemplateId('auto')}
-                    className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[10.5px] text-muted-foreground hover:text-foreground"
-                    title="清除已选模板"
-                  >
-                    <Layers className="size-3" />
-                    {templateName}
-                  </button>
-                ) : null}
-                <span className="ml-1 hidden text-[10.5px] text-muted-foreground/70 sm:inline">
-                  Enter 生成 · Shift + Enter 换行
-                </span>
-                <div className="ml-auto flex items-center gap-1">
-                  <button
-                    type="button"
-                    data-testid="voice-input"
-                    onClick={toggleVoice}
-                    title="语音输入"
-                    className={cn(
-                      'flex size-8 items-center justify-center rounded-full transition-colors',
-                      listening
-                        ? 'bg-red-50 text-red-600 dark:bg-red-950/50 dark:text-red-400'
-                        : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                    )}
-                  >
-                    <Mic className={cn('size-4', listening && 'animate-pulse')} />
-                  </button>
-                  <Button
-                    data-testid="prompt-submit"
-                    size="icon"
-                    className="size-8 rounded-full"
-                    onClick={() => void submit()}
-                    disabled={!prompt.trim() || creating}
-                    title="生成"
-                  >
-                    <ArrowUp className="size-4" />
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              {suggestions.map((suggestion) => {
-                const Icon = suggestion.icon;
-                return (
-                  <button
-                    key={suggestion.text}
-                    type="button"
-                    onClick={() => {
-                      setPrompt(suggestion.text);
-                      textareaRef.current?.focus();
-                    }}
-                    className="flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
-                  >
-                    <Icon className="size-3" />
-                    {suggestion.label}
-                  </button>
-                );
-              })}
-              <button
-                type="button"
-                onClick={() => setOffset((value) => value + 1)}
-                title="换一组提示"
-                className="flex size-6 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors hover:text-foreground"
-              >
-                <RefreshCw className="size-3" />
-              </button>
-            </div>
-            {error ? <p className="mt-2 text-[11.5px] text-red-600">{error}</p> : null}
-          </div>
-        </section>
-
-        <div ref={templatesRef}>
-          <TemplateGallery
-            entries={gallery}
-            busy={Boolean(startingTemplate)}
-            onUse={(entry) => void startFromTemplate(entry)}
-          />
-        </div>
-
-        <section className="pt-14">
-          <div className="flex items-baseline gap-2">
-            <h2 className="text-[15px] font-semibold tracking-tight">最近项目</h2>
-            <span className="text-[11px] text-muted-foreground">
-              {projects.length} 个 · 一个项目一个发布地址
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                window.setTimeout(() => textareaRef.current?.focus(), 300);
-              }}
-              className="ml-auto text-[11px] text-muted-foreground hover:text-foreground"
-            >
-              从一句话开始 ↑
-            </button>
-          </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {projects.map((project) => (
-              <ProjectCard
-                key={project.id}
-                project={project}
-                onOpen={() => {
-                  if (project.lastChatId) router.push(`/chat/${project.lastChatId}`);
+                onOpenSettings={(chatId) => openChat(chatId)}
+                onNewChat={async () => {
+                  try {
+                    const created = await api.post<{ id: string }>(
+                      `/api/projects/${projectView}/chats`,
+                      {},
+                    );
+                    openChat(created.id);
+                  } catch (cause) {
+                    toast.error(cause instanceof Error ? cause.message : '新建对话失败');
+                  }
                 }}
-                onDelete={() => void removeProject(project)}
               />
-            ))}
-          </div>
-        </section>
-      </main>
-
-      <footer className="border-t border-border/80">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-5 py-4 text-[10.5px] text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <PaimengMark size={14} />
-            Paimeng v0
-          </span>
-          <span>·</span>
-          <span>开源 · 自托管 · 单用户</span>
-          <Link href="/skills" className="ml-auto hover:text-foreground">
-            技能
-          </Link>
+            ) : (
+              <ProjectsPanel currentProjectId="" onOpenProject={openProject} />
+            )
+          ) : view === 'chats' ? (
+            <ChatHistoryPanel
+              currentChatId=""
+              archived={archived}
+              projectFilter={chatFilter}
+              onOpenChat={openChat}
+              onClearFilter={() => setChatFilter(null)}
+              onRestore={async (chatId) => {
+                try {
+                  await api.post(`/api/chats/${chatId}/restore`, {});
+                  await load();
+                  toast.success('已恢复到列表');
+                } catch (cause) {
+                  toast.error(cause instanceof Error ? cause.message : '恢复失败');
+                }
+              }}
+            />
+          ) : view === 'skills' ? (
+            <SkillsView mode="panel" onOpenChat={openChat} />
+          ) : (
+            <TemplatesPanel
+              onOpenChat={openChat}
+              onCreated={() => {
+                void load();
+              }}
+            />
+          )}
         </div>
-      </footer>
+      </div>
+
+      <Dialog
+        open={dialog !== null}
+        onOpenChange={(open) => {
+          if (!open) setDialog(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{dialog === 'open' ? '打开已有目录' : '新建项目'}</DialogTitle>
+            <DialogDescription>
+              {dialog === 'open'
+                ? '项目对应一个真实的本地目录；现在还不能打开本地目录，可以先体验示例项目。'
+                : '项目会对应一个本地目录。这里先建一个示例项目，目录内容不会真的写入磁盘。'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            {dialog === 'new' ? (
+              <>
+                <label className="block space-y-1">
+                  <span className="text-[11.5px] text-muted-foreground">项目名称（可选）</span>
+                  <Input
+                    autoFocus
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    placeholder="山间咖啡馆官网"
+                    className="h-9 text-[12.5px]"
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-[11.5px] text-muted-foreground">项目目录</span>
+                  <Input
+                    value={workspacePath}
+                    onChange={(event) => setWorkspacePath(event.target.value)}
+                    placeholder={name.trim() ? `~/Projects/${name.trim()}` : '~/Projects/my-site'}
+                    className="h-9 font-mono text-[12px]"
+                  />
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-[11.5px] text-muted-foreground">
+                    想做什么（可选，作为第一条对话的起点）
+                  </span>
+                  <Input
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    placeholder="做一个山间咖啡馆的官网，风格温暖一点"
+                    className="h-9 text-[12.5px]"
+                  />
+                </label>
+              </>
+            ) : (
+              <label className="block space-y-1">
+                <span className="text-[11.5px] text-muted-foreground">目录路径</span>
+                <Input
+                  autoFocus
+                  value={workspacePath}
+                  onChange={(event) => setWorkspacePath(event.target.value)}
+                  placeholder="~/Projects/existing-site"
+                  className="h-9 font-mono text-[12px]"
+                />
+              </label>
+            )}
+
+            {dialogError ? (
+              <p
+                data-testid="dialog-error"
+                className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11.5px] leading-5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
+              >
+                {dialogError}
+              </p>
+            ) : null}
+
+            {dialog === 'open' ? (
+              <p className="rounded-md border border-dashed border-border px-2.5 py-2 text-[11px] leading-5 text-muted-foreground">
+                现在还不能打开本地目录；可以先从模板或「新建项目」体验示例项目。
+              </p>
+            ) : null}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setDialog(null)}>
+              取消
+            </Button>
+            {dialog === 'new' ? (
+              <Button size="sm" data-testid="create-project" disabled={busy} onClick={submitNew}>
+                {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                新建示例项目
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                data-testid="open-project"
+                disabled={busy || !workspacePath.trim()}
+                onClick={submitOpen}
+              >
+                {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                打开目录
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function ProjectCard({
-  project,
+function HomeEmptyState({
+  projects,
+  loading,
+  error,
+  onNew,
   onOpen,
-  onDelete,
+  onOpenProject,
+  onRemove,
+  onShowTemplates,
 }: {
-  project: ProjectRow;
+  projects: ProjectRow[];
+  loading: boolean;
+  error: string | null;
+  onNew: () => void;
   onOpen: () => void;
-  onDelete: () => void;
+  onOpenProject: (projectId: string) => void;
+  onRemove: (project: ProjectRow) => void;
+  onShowTemplates: () => void;
 }) {
-  const deploy = project.deploys[0];
+  const recent = projects.slice(0, 3);
 
   return (
-    <div className="group relative flex h-[92px] overflow-hidden rounded-xl border border-border bg-card transition-shadow hover:shadow-sm">
-      <button
-        type="button"
-        onClick={onOpen}
-        className="block h-full w-32 shrink-0 overflow-hidden border-r border-border bg-[#faf7f2]"
-      >
-        {project.thumb ? (
-          <SiteThumb site={project.thumb} className="h-full w-full" designWidth={460} />
-        ) : (
-          <span className="flex h-full items-center justify-center text-[10px] text-stone-400">
-            无预览
+    <div className="min-h-0 flex-1 overflow-y-auto bg-muted/20">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-5 py-10 sm:px-8 sm:py-14">
+        <section className="text-center">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-[11px] text-muted-foreground">
+            <Sparkles className="size-3 text-amber-600" />
+            本地项目 · 对话改代码 · 改动可撤销
           </span>
-        )}
-      </button>
-      <div className="flex min-w-0 flex-1 flex-col justify-center px-3 py-2">
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            data-testid={`project-${project.id}`}
-            onClick={onOpen}
-            className="truncate text-[12.5px] font-medium hover:underline"
-          >
-            {project.name}
-          </button>
-          {deploy ? (
-            <span className="shrink-0 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
-              v{deploy.versionSeq} 已发布
-            </span>
-          ) : null}
-        </div>
-        <div className="mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-          <span>{project.chatCount} 个对话</span>
-          <span>·</span>
-          <span>{project.versionCount} 个版本</span>
-          <span>·</span>
-          <span>{formatTime(project.updatedAt)}</span>
-        </div>
-      </div>
-      <DropdownMenu>
-        <DropdownMenuTrigger className="mr-1 self-start rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-muted">
-          <MoreHorizontal className="size-3.5" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-40">
-          <DropdownMenuItem onClick={onOpen} className="text-[12.5px]">
-            打开项目
-          </DropdownMenuItem>
-          {project.deployKey ? (
-            <DropdownMenuItem
-              onClick={() => window.open(`/deploys/${project.deployKey}`, '_blank')}
-              className="gap-1.5 text-[12.5px]"
+          <h1 className="mt-5 text-[26px] leading-tight font-semibold tracking-tight sm:text-[32px]">
+            从本地项目开始
+          </h1>
+          <p className="mx-auto mt-3 max-w-md text-[12.5px] leading-6 text-muted-foreground">
+            新建一个项目，或打开已有的本地目录。用一句话说明要改什么，助手直接修改项目文件；每一轮改动都能查看
+            diff 并撤销。
+          </p>
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+            <Button data-testid="new-project" size="sm" className="h-8 gap-1.5" onClick={onNew}>
+              <Plus className="size-3.5" />
+              新建项目
+            </Button>
+            <Button
+              data-testid="open-folder"
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5"
+              onClick={onOpen}
             >
-              <Rocket className="size-3.5" />
-              打开发布地址
-            </DropdownMenuItem>
-          ) : null}
-          <DropdownMenuItem onClick={onDelete} className="gap-1.5 text-[12.5px] text-red-600">
-            <Trash2 className="size-3.5" />
-            删除项目
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+              <FolderOpen className="size-3.5" />
+              打开已有目录
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 gap-1.5 text-muted-foreground"
+              onClick={onShowTemplates}
+            >
+              从模板开始
+              <ArrowRight className="size-3.5" />
+            </Button>
+          </div>
+          <p className="mt-3 text-[10.5px] text-muted-foreground/80">
+            示例项目不会读写真实目录；尚不能打开本地目录，可以先体验示例项目。
+          </p>
+        </section>
+
+        <section>
+          <div className="flex items-baseline gap-2">
+            <h2 className="text-[13px] font-semibold tracking-tight">最近项目</h2>
+            <span className="text-[11px] text-muted-foreground">
+              {loading ? '正在读取…' : `${projects.length} 个`}
+            </span>
+            <Link
+              href="/?new=1"
+              className="ml-auto text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={(event) => {
+                event.preventDefault();
+                onNew();
+              }}
+            >
+              新建项目 ↑
+            </Link>
+          </div>
+
+          {error ? <p className="mt-3 text-[11.5px] text-red-600">{error}</p> : null}
+          {loading ? (
+            <p className="mt-3 flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              正在读取项目…
+            </p>
+          ) : recent.length === 0 ? (
+            <div
+              data-testid="empty-projects"
+              className="mt-3 rounded-xl border border-dashed border-border bg-card/60 px-4 py-8 text-center"
+            >
+              <p className="text-[12.5px] font-medium">还没有项目</p>
+              <p className="mt-1 text-[11.5px] leading-5 text-muted-foreground">
+                新建一个示例项目，或从模板开始；尚不能打开本地目录。
+              </p>
+            </div>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {recent.map((project) => (
+                <div
+                  key={project.id}
+                  className="group flex items-center gap-3 rounded-xl border border-border bg-card p-2 transition-shadow hover:shadow-sm"
+                >
+                  <button
+                    type="button"
+                    onClick={() => onOpenProject(project.id)}
+                    className="h-14 w-20 shrink-0 overflow-hidden rounded-md border border-border bg-[#faf7f2]"
+                    title="打开项目"
+                  >
+                    {project.thumb ? (
+                      <SiteThumb site={project.thumb} className="h-full w-full" designWidth={320} />
+                    ) : (
+                      <span className="flex h-full items-center justify-center text-[9.5px] text-stone-400">
+                        无预览
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid={`recent-${project.id}`}
+                    onClick={() => onOpenProject(project.id)}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="truncate text-[12.5px] font-medium">{project.name}</span>
+                      {project.workspaceState === 'sample' ? (
+                        <span className="shrink-0 rounded border border-amber-300 bg-amber-50 px-1 py-px text-[9px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+                          示例
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="mt-0.5 flex items-center gap-1 truncate font-mono text-[10px] text-muted-foreground">
+                      <FolderClosed className="size-2.5 shrink-0" />
+                      <span className="truncate">{project.workspacePath}</span>
+                    </span>
+                    <span className="mt-0.5 block text-[10px] text-muted-foreground/80">
+                      {project.chatCount} 个对话 · {project.changeCount} 条改动记录 ·{' '}
+                      {formatTime(project.updatedAt)}
+                    </span>
+                  </button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger className="rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100">
+                      <MoreHorizontal className="size-3.5" />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-40">
+                      <DropdownMenuItem
+                        className="text-[12.5px]"
+                        onClick={() => onOpenProject(project.id)}
+                      >
+                        打开项目
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className={cn('gap-1.5 text-[12.5px] text-red-600')}
+                        onClick={() => onRemove(project)}
+                      >
+                        <Trash2 className="size-3.5" />
+                        删除项目
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   );
 }

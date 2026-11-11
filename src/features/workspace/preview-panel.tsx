@@ -14,7 +14,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import { MockSite } from '@/features/preview/mock-site';
-import type { SiteState, Version } from '@/shared/api/schemas';
+import type { Runtime, SiteState } from '@/shared/api/schemas';
 import type { DesignSelection } from '@/features/chat/chat-panel';
 
 type Device = 'desktop' | 'tablet' | 'mobile';
@@ -28,19 +28,19 @@ const DEVICE_WIDTH: Record<Device, string> = {
 const DEVICE_ICON = { desktop: Monitor, tablet: Tablet, mobile: Smartphone };
 
 export function PreviewPanel({
-  version,
-  liveSite,
-  chatId,
-  sandboxState,
+  site,
+  workspacePath,
+  runtime,
+  streaming,
   designMode,
   onToggleDesign,
   onSelectElement,
   selection,
 }: {
-  version?: Version;
-  liveSite?: SiteState;
-  chatId: string;
-  sandboxState: 'running' | 'starting' | 'stopped';
+  site: SiteState | null;
+  workspacePath: string;
+  runtime: Runtime;
+  streaming: boolean;
   designMode: boolean;
   onToggleDesign: () => void;
   onSelectElement: (selection: DesignSelection) => void;
@@ -64,8 +64,6 @@ export function PreviewPanel({
   }
 
   const [selectedRect, setSelectedRect] = useState<DOMRect | null>(null);
-  const site = liveSite ?? version?.site;
-  const isLive = Boolean(liveSite);
 
   useEffect(() => {
     if (!selection || !stageRef.current) {
@@ -75,7 +73,7 @@ export function PreviewPanel({
     const selector = `[data-component="${selection.component}"][data-label="${CSS.escape(selection.label)}"]`;
     const el = stageRef.current.querySelector<HTMLElement>(selector);
     setSelectedRect(el ? relativeRect(el) : null);
-  }, [selection, version?.id, device, refreshKey, liveSite?.iteration]);
+  }, [selection, device, refreshKey, site?.iteration]);
 
   function reload() {
     setRefreshing(true);
@@ -111,7 +109,7 @@ export function PreviewPanel({
         <div className="mx-1 flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1">
           <Lock className="size-3 shrink-0 text-muted-foreground/70" />
           <span className="truncate font-mono text-[11px] text-muted-foreground">
-            preview.local/preview/{chatId}
+            {runtime.source === 'local' && runtime.url ? runtime.url : '本地预览 · 示例数据'}
           </span>
           <button
             type="button"
@@ -149,10 +147,12 @@ export function PreviewPanel({
           <PopoverContent align="end" className="w-72 text-xs leading-5">
             <p className="font-medium">预览地址</p>
             <p className="mt-1 font-mono text-[11px] break-all text-muted-foreground">
-              127.0.0.1:3000/preview/{chatId}
+              {workspacePath}
             </p>
             <p className="mt-2 text-muted-foreground">
-              预览由版本快照渲染；接上沙箱后这里会在新标签打开 next dev 并代理 HMR WebSocket。
+              {runtime.source === 'local' && runtime.url
+                ? '打开项目本地服务里的页面。'
+                : '预览用示例页面渲染项目当前文件；这里还不会打开真实端口。'}
             </p>
           </PopoverContent>
         </Popover>
@@ -249,9 +249,9 @@ export function PreviewPanel({
                 <div className="flex size-10 items-center justify-center rounded-full bg-muted">
                   <Loader2 className="size-4 text-muted-foreground" />
                 </div>
-                <p className="text-sm">这个对话还没有可预览的版本</p>
+                <p className="text-sm">这个项目还没有可预览的页面</p>
                 <p className="max-w-xs text-xs leading-5 text-muted-foreground">
-                  发送第一条消息后，沙箱会写入文件并启动 next dev，预览会出现在这里。
+                  在对话里描述你要的页面，助手写入项目文件后，预览会出现在这里。
                 </p>
               </div>
             )}
@@ -263,28 +263,32 @@ export function PreviewPanel({
         <span
           className={cn(
             'inline-flex items-center gap-1 rounded-full px-1.5 py-0.5',
-            sandboxState === 'running'
+            runtime.state === 'running'
               ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
-              : 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300',
+              : 'bg-muted text-muted-foreground',
           )}
         >
           <span
             className={cn(
               'size-1.5 rounded-full',
-              sandboxState === 'running' ? 'bg-emerald-500' : 'bg-amber-500',
+              runtime.state === 'running' ? 'bg-emerald-500' : 'bg-muted-foreground/40',
             )}
           />
-          沙箱{' '}
-          {sandboxState === 'running'
-            ? '运行中'
-            : sandboxState === 'starting'
-              ? '启动中'
-              : '已停止'}
+          {runtime.state === 'running'
+            ? '本地服务运行中'
+            : runtime.state === 'starting'
+              ? '本地服务启动中'
+              : runtime.state === 'failed'
+                ? '本地服务启动失败'
+                : '本地服务未启动'}
         </span>
-        <span>next dev · :3000</span>
+        <span className="hidden sm:inline">
+          {runtime.source === 'sample'
+            ? '示例预览 · 未连接本地进程'
+            : (runtime.url ?? workspacePath)}
+        </span>
         <span className="ml-auto">
-          {isLive ? '生成中 · 预览随写入刷新' : version ? `正在查看 ${version.label}` : '无版本'}
-          {selection && designMode ? ' · 已选中元素' : ''}
+          {streaming ? '生成中 · 预览随写入刷新' : selection && designMode ? '已选中元素' : ''}
         </span>
       </div>
     </div>

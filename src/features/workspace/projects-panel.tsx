@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Loader2, Plus, Rocket } from 'lucide-react';
+import { FolderClosed, Loader2, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { api, ApiRequestError } from '@/lib/api/client';
 import { formatTime } from '@/lib/time';
@@ -48,11 +48,11 @@ export function ProjectsPanel({
         <div className="min-w-0">
           <h2 className="text-[13.5px] font-semibold tracking-tight">项目</h2>
           <p className="mt-0.5 text-[11.5px] text-muted-foreground">
-            {loading ? '正在读取项目…' : `${projects.length} 个项目，一个项目一个发布地址。`}
+            {loading ? '正在读取项目…' : `${projects.length} 个项目，每个对应一个本地目录。`}
           </p>
         </div>
         <Button size="sm" className="ml-auto h-7 gap-1 px-2.5 text-[11.5px]" asChild>
-          <Link href="/">
+          <Link href="/?new=1">
             <Plus className="size-3.5" />
             新建项目
           </Link>
@@ -69,55 +69,55 @@ export function ProjectsPanel({
           <p className="text-[12px] text-red-600">{error}</p>
         ) : (
           <div className="mx-auto grid max-w-4xl gap-3 sm:grid-cols-2">
-            {projects.map((project) => {
-              const deployed = project.deploys.find((deploy) => deploy.state === 'ready');
-              return (
-                <button
-                  key={project.id}
-                  type="button"
-                  data-testid={`project-${project.id}`}
-                  onClick={() => onOpenProject(project.id)}
-                  className={cn(
-                    'group overflow-hidden rounded-xl border bg-card text-left transition-all hover:-translate-y-0.5 hover:border-foreground/20 hover:shadow-md',
-                    project.id === currentProjectId ? 'border-foreground/25' : 'border-border',
-                  )}
-                >
-                  <div className="relative aspect-[16/9] overflow-hidden border-b border-border bg-[#faf7f2]">
-                    {project.thumb ? (
-                      <SiteThumb
-                        site={project.thumb}
-                        className="absolute inset-0"
-                        designWidth={900}
-                      />
-                    ) : (
-                      <div className="flex h-full items-center justify-center text-[11px] text-muted-foreground">
-                        还没有版本
-                      </div>
-                    )}
-                  </div>
-                  <div className="px-3 py-2.5">
-                    <div className="flex items-center gap-2">
-                      <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">
-                        {project.name}
-                      </span>
-                      {deployed ? (
-                        <span className="flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9.5px] text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
-                          <Rocket className="size-2.5" />
-                          {deployed.deployKey}
-                        </span>
-                      ) : null}
+            {projects.map((project) => (
+              <button
+                key={project.id}
+                type="button"
+                data-testid={`project-${project.id}`}
+                onClick={() => onOpenProject(project.id)}
+                className={cn(
+                  'group overflow-hidden rounded-xl border bg-card text-left transition-all hover:-translate-y-0.5 hover:border-foreground/20 hover:shadow-md',
+                  project.id === currentProjectId ? 'border-foreground/25' : 'border-border',
+                )}
+              >
+                <div className="relative aspect-[16/9] overflow-hidden border-b border-border bg-[#faf7f2]">
+                  {project.thumb ? (
+                    <SiteThumb
+                      site={project.thumb}
+                      className="absolute inset-0"
+                      designWidth={900}
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-[11px] text-muted-foreground">
+                      还没有可预览的页面
                     </div>
-                    <p className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground">
-                      {project.prompt}
-                    </p>
-                    <p className="mt-1 text-[10.5px] text-muted-foreground/80">
-                      {project.chatCount} 个会话 · {project.versionCount} 个版本 ·{' '}
-                      {formatTime(project.updatedAt)}
-                    </p>
+                  )}
+                </div>
+                <div className="px-3 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">
+                      {project.name}
+                    </span>
+                    {project.workspaceState === 'sample' ? (
+                      <span className="shrink-0 rounded border border-amber-300 bg-amber-50 px-1 py-px text-[9px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+                        示例
+                      </span>
+                    ) : null}
                   </div>
-                </button>
-              );
-            })}
+                  <p className="mt-0.5 flex items-center gap-1 truncate font-mono text-[10.5px] text-muted-foreground">
+                    <FolderClosed className="size-3 shrink-0" />
+                    <span className="truncate">{project.workspacePath}</span>
+                  </p>
+                  <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+                    {project.description}
+                  </p>
+                  <p className="mt-1 text-[10.5px] text-muted-foreground/80">
+                    {project.chatCount} 个对话 · {project.changeCount} 条改动记录 ·{' '}
+                    {formatTime(project.updatedAt)}
+                  </p>
+                </div>
+              </button>
+            ))}
           </div>
         )}
       </div>

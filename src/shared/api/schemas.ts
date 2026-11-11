@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 /**
  * 前后端契约的唯一来源。`docs/api.md` 是同一份内容的可读版本。
- * 字段命名对齐 src/server/db/schema.ts；类型一律由 z.infer 推出，不在别处手抄。
+ * 类型一律由 z.infer 推出，持久层按协议适配。
  */
 
 export const fileMapSchema = z.record(z.string(), z.string());
@@ -39,7 +39,7 @@ export type TodoItem = z.infer<typeof todoItemSchema>;
 export const planStatusSchema = z.enum(['pending', 'approved', 'changes_requested', 'rejected']);
 export type PlanStatus = z.infer<typeof planStatusSchema>;
 
-/** code：检查一次改动本身；completion：交付前核对本轮目标。见 architecture.md 第 6.1 节。 */
+/** code：检查一次改动本身；completion：交付前核对本轮目标。 */
 export const reviewKindSchema = z.enum(['code', 'completion']);
 export type ReviewKind = z.infer<typeof reviewKindSchema>;
 
@@ -95,7 +95,8 @@ export const messageSchema = z.object({
   parts: z.array(partSchema),
   createdAt: z.string(),
   finishedAt: z.string().optional(),
-  versionId: z.string().optional(),
+  /** 这一轮留下的改动记录；没有改动文件时为空。 */
+  changeSetId: z.string().optional(),
   streaming: z.boolean().optional(),
   status: runStatusSchema.optional(),
   /** 本轮最后的源码修订是否通过了 completion review；成功但为 false 时界面标「未经完成审查」。 */
@@ -124,30 +125,43 @@ export const siteStateSchema = z.object({
 });
 export type SiteState = z.infer<typeof siteStateSchema>;
 
-export const versionSchema = z.object({
+export const changeSetStatusSchema = z.enum(['applied', 'undone']);
+export type ChangeSetStatus = z.infer<typeof changeSetStatusSchema>;
+
+/**
+ * 一轮对话对项目文件做的一次改动。`before` / `after` 是撤销与 diff 的唯一依据：
+ * 撤销时把 `before` 写回，比较当前文件与 `after` 判断有没有后续编辑。
+ */
+export const changeSetSchema = z.object({
   id: z.string(),
+  seq: z.number().int().positive(),
   chatId: z.string(),
   messageId: z.string().nullable(),
-  seq: z.number().int().positive(),
-  label: z.string(),
   summary: z.string(),
   createdAt: z.string(),
-  files: fileMapSchema,
-  site: siteStateSchema,
+  /** applied：改动仍在当前文件里；undone：已经撤销。 */
+  status: changeSetStatusSchema,
   changedFiles: z.array(z.string()),
-  restoredFrom: z.number().int().positive().optional(),
+  before: fileMapSchema,
+  after: fileMapSchema,
+  siteBefore: siteStateSchema.nullable(),
+  siteAfter: siteStateSchema.nullable(),
 });
-export type Version = z.infer<typeof versionSchema>;
+export type ChangeSet = z.infer<typeof changeSetSchema>;
 
-export const deploySchema = z.object({
-  id: z.string(),
-  deployKey: z.string(),
-  versionId: z.string(),
-  versionSeq: z.number().int().nonnegative(),
-  state: z.enum(['building', 'ready', 'failed']),
-  createdAt: z.string(),
+/** 项目目录里由助手管理的本地进程。首版 `source` 恒为 sample，没有真的启动。 */
+export const runtimeSchema = z.object({
+  state: z.enum(['stopped', 'starting', 'running', 'failed']),
+  port: z.number().int().nullable(),
+  url: z.string().nullable(),
+  logs: z.array(z.string()),
+  source: z.enum(['sample', 'local']),
 });
-export type Deploy = z.infer<typeof deploySchema>;
+export type Runtime = z.infer<typeof runtimeSchema>;
+
+/** sample：示例项目，没有连接真实磁盘目录；linked：已连接本地目录。 */
+export const workspaceStateSchema = z.enum(['sample', 'linked']);
+export type WorkspaceState = z.infer<typeof workspaceStateSchema>;
 
 export const envVarSchema = z.object({
   key: z.string(),
@@ -159,23 +173,27 @@ export type EnvVar = z.infer<typeof envVarSchema>;
 export const projectSchema = z.object({
   id: z.string(),
   name: z.string(),
-  prompt: z.string(),
+  description: z.string(),
   templateId: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
   env: z.array(envVarSchema),
-  deployKey: z.string().nullable(),
-  deploys: z.array(deploySchema),
+  /** 项目对应的本地目录；首版示例项目还没有真正读写这里。 */
+  workspacePath: z.string(),
+  workspaceState: workspaceStateSchema,
+  /** 项目共享态：当前文件与预览以它为准，不再按对话或历史版本切换。 */
+  files: fileMapSchema,
+  site: siteStateSchema.nullable(),
+  changeSets: z.array(changeSetSchema),
+  runtime: runtimeSchema,
 });
 export type Project = z.infer<typeof projectSchema>;
 
-/** 列表与导航用的对话线摘要；消息与版本走各自的端点。 */
+/** 列表与导航用的对话线摘要；消息走单独的端点。 */
 export const chatSummarySchema = z.object({
   id: z.string(),
-  /** 草稿没有项目：`null` 表示这条会话还没决定要不要变成项目。 */
-  projectId: z.string().nullable(),
-  /** 只有草稿带这段：转成项目时用它填 Project 的描述与模板。 */
-  draft: z.object({ prompt: z.string(), templateId: z.string() }).nullable().default(null),
+  /** 对话必须属于某个项目；没有「草稿会话」这一层。 */
+  projectId: z.string(),
   title: z.string(),
   modelId: z.string(),
   createdAt: z.string(),
@@ -183,19 +201,25 @@ export const chatSummarySchema = z.object({
   streaming: z.boolean(),
   /** 归档时间；有值就不出现在默认列表里，只出现在「归档」列表。 */
   archivedAt: z.string().nullable().default(null),
-  activeVersionId: z.string().nullable(),
-  viewVersionId: z.string().nullable(),
   pendingPlan: z.object({ messageId: z.string(), revision: z.number().int() }).nullable(),
 });
 export type ChatSummary = z.infer<typeof chatSummarySchema>;
 
-/** 服务端存储形状：消息与版本内联在对话线里。仅 mock 世界与持久化文件使用。 */
+/**
+ * 进行中回合的起点：本轮第一条消息与改动前的项目快照。
+ * 落盘后进程重启时用它把已经写入的文件收尾成一条可撤销的改动记录。
+ */
+export const roundStartSchema = z.object({
+  messageId: z.string(),
+  before: z.object({ files: fileMapSchema, site: siteStateSchema.nullable() }),
+});
+export type RoundStart = z.infer<typeof roundStartSchema>;
+
+/** 服务端存储形状：消息内联在对话线里。仅 mock 世界与持久化文件使用。 */
 export const chatRecordSchema = chatSummarySchema.extend({
   messages: z.array(messageSchema),
-  versions: z.array(versionSchema),
-  /** 生成中的工作区：预览面板在工具写入时跟随变化，结束后清空。 */
-  liveFiles: fileMapSchema.optional(),
-  liveSite: siteStateSchema.optional(),
+  /** 只剩进行中的回合有值；收尾时清空，不参与前端列表。 */
+  activeRound: roundStartSchema.nullable().optional(),
 });
 export type ChatRecord = z.infer<typeof chatRecordSchema>;
 
@@ -204,6 +228,7 @@ export const skillSchema = z.object({
   name: z.string(),
   description: z.string(),
   source: z.enum(['builtin', 'user']),
+  disableModelInvocation: z.boolean().optional(),
   trusted: z.boolean(),
   enabled: z.boolean(),
   files: z.array(z.string()),
@@ -253,7 +278,11 @@ export type WorldState = z.infer<typeof worldStateSchema>;
 /* ---------------------------------------------------------------- 请求体 */
 
 export const createProjectRequestSchema = z.object({
-  prompt: z.string().min(1),
+  /** 项目对应的本地目录。首版示例项目会原样记下路径，但不会真的读写磁盘。 */
+  workspacePath: z.string().min(1),
+  /** 不填时按描述或目录名推一个。 */
+  name: z.string().optional(),
+  prompt: z.string().default(''),
   templateId: z.string().default('auto'),
   modelId: z.string().optional(),
 });
@@ -264,6 +293,9 @@ export const createProjectResponseSchema = z.object({
   chat: chatSummarySchema,
 });
 export type CreateProjectResponse = z.infer<typeof createProjectResponseSchema>;
+
+export const openProjectRequestSchema = z.object({ workspacePath: z.string().min(1) });
+export type OpenProjectRequest = z.infer<typeof openProjectRequestSchema>;
 
 export const patchProjectRequestSchema = z.object({ name: z.string().min(1) });
 export type PatchProjectRequest = z.infer<typeof patchProjectRequestSchema>;
@@ -277,32 +309,8 @@ export const createChatRequestSchema = z.object({
 });
 export type CreateChatRequest = z.infer<typeof createChatRequestSchema>;
 
-/** 首页一句话 / 模板卡：先建草稿并立刻跑首轮，等用户决定要不要变成项目。 */
-export const createDraftRequestSchema = z.object({
-  prompt: z.string().min(1),
-  templateId: z.string().default('auto'),
-  modelId: z.string().optional(),
-});
-export type CreateDraftRequest = z.infer<typeof createDraftRequestSchema>;
-
-export const createDraftResponseSchema = z.object({
-  chat: chatSummarySchema,
-  eventsUrl: z.string(),
-});
-export type CreateDraftResponse = z.infer<typeof createDraftResponseSchema>;
-
-/** 草稿转项目：创建 Project，把这条会话接管过去，不做部署。 */
-export const promoteDraftResponseSchema = z.object({
-  project: projectSchema,
-  chat: chatSummarySchema,
-});
-export type PromoteDraftResponse = z.infer<typeof promoteDraftResponseSchema>;
-
 export const archivedChatsResponseSchema = z.object({ chats: z.array(chatSummarySchema) });
 export type ArchivedChatsResponse = z.infer<typeof archivedChatsResponseSchema>;
-
-export const draftsResponseSchema = z.object({ chats: z.array(chatSummarySchema) });
-export type DraftsResponse = z.infer<typeof draftsResponseSchema>;
 
 export const patchChatRequestSchema = z.object({
   modelId: z.string().optional(),
@@ -330,26 +338,32 @@ export const planDecisionSchema = z.object({
 export type PlanDecision = z.infer<typeof planDecisionSchema>;
 
 export const chatBundleSchema = z.object({
-  project: projectSchema.nullable(),
+  project: projectSchema,
   chat: chatSummarySchema,
   chats: z.array(chatSummarySchema),
   messages: z.array(messageSchema),
-  versions: z.array(versionSchema),
   skills: z.array(skillSchema),
   models: z.array(modelSchema),
 });
 export type ChatBundle = z.infer<typeof chatBundleSchema>;
 
-export const projectsResponseSchema = z.object({
-  projects: z.array(
-    projectSchema.extend({
-      chatCount: z.number().int(),
-      versionCount: z.number().int(),
-      lastChatId: z.string().nullable(),
-      thumb: siteStateSchema.nullable(),
-    }),
-  ),
+export const projectSummarySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  templateId: z.string(),
+  workspacePath: z.string(),
+  workspaceState: workspaceStateSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  chatCount: z.number().int(),
+  changeCount: z.number().int(),
+  lastChatId: z.string().nullable(),
+  thumb: siteStateSchema.nullable(),
 });
+export type ProjectSummary = z.infer<typeof projectSummarySchema>;
+
+export const projectsResponseSchema = z.object({ projects: z.array(projectSummarySchema) });
 export type ProjectsResponse = z.infer<typeof projectsResponseSchema>;
 
 export const templatesResponseSchema = z.object({
@@ -361,59 +375,39 @@ export type TemplatesResponse = z.infer<typeof templatesResponseSchema>;
 export const modelsResponseSchema = z.object({ models: z.array(modelSchema) });
 export type ModelsResponse = z.infer<typeof modelsResponseSchema>;
 
-export const versionsResponseSchema = z.object({ versions: z.array(versionSchema) });
-export type VersionsResponse = z.infer<typeof versionsResponseSchema>;
-
-export const versionFilesResponseSchema = z.object({
-  versionId: z.string(),
-  files: fileMapSchema,
-  site: siteStateSchema,
-});
-export type VersionFilesResponse = z.infer<typeof versionFilesResponseSchema>;
-
-export const diffFileSchema = z.object({
-  path: z.string(),
-  status: z.enum(['added', 'modified', 'removed']),
-  added: z.number().int(),
-  removed: z.number().int(),
-  before: z.string(),
-  after: z.string(),
-});
-export type DiffFile = z.infer<typeof diffFileSchema>;
-
-export const versionDiffResponseSchema = z.object({
-  versionId: z.string(),
-  files: z.array(diffFileSchema),
-});
-export type VersionDiffResponse = z.infer<typeof versionDiffResponseSchema>;
-
-export const previewResponseSchema = z.object({
-  chatId: z.string(),
-  versionId: z.string().nullable(),
-  site: siteStateSchema.nullable(),
-});
-export type PreviewResponse = z.infer<typeof previewResponseSchema>;
-
-export const deployRequestSchema = z.object({ versionId: z.string() });
-export type DeployRequest = z.infer<typeof deployRequestSchema>;
-
-export const deployResponseSchema = z.object({
-  deploy: deploySchema,
-  eventsUrl: z.string(),
-});
-export type DeployResponse = z.infer<typeof deployResponseSchema>;
-
-export const deploysResponseSchema = z.object({ deploys: z.array(deploySchema) });
-export type DeploysResponse = z.infer<typeof deploysResponseSchema>;
-
-export const publishedResponseSchema = z.object({
+export const undoChangeSetResponseSchema = z.object({
   project: projectSchema,
-  deploy: deploySchema,
-  version: versionSchema,
+  changeSet: changeSetSchema,
 });
-export type PublishedResponse = z.infer<typeof publishedResponseSchema>;
+export type UndoChangeSetResponse = z.infer<typeof undoChangeSetResponseSchema>;
 
-export const skillsResponseSchema = z.object({ skills: z.array(skillSchema) });
+export const localSkillSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  source: z.enum(['user', 'project']),
+  filePath: z.string(),
+  baseDir: z.string(),
+  disableModelInvocation: z.boolean(),
+});
+export type LocalSkill = z.infer<typeof localSkillSchema>;
+
+export const skillCatalogSchema = z.object({
+  skills: z.array(localSkillSchema),
+  directories: z.object({ user: z.string(), project: z.string().nullable() }),
+  diagnostics: z.array(
+    z.object({
+      kind: z.enum(['invalid', 'collision', 'io']),
+      path: z.string(),
+      message: z.string(),
+    }),
+  ),
+});
+export type SkillCatalog = z.infer<typeof skillCatalogSchema>;
+
+export const skillsResponseSchema = z.object({
+  skills: z.array(skillSchema),
+  catalog: skillCatalogSchema.optional(),
+});
 export type SkillsResponse = z.infer<typeof skillsResponseSchema>;
 
 export const skillPatchSchema = z.object({
@@ -483,7 +477,7 @@ export const sseEventSchema = z.discriminatedUnion('type', [
     messageId: z.string(),
     status: runStatusSchema,
     summary: z.string(),
-    versionId: z.string().nullable(),
+    changeSetId: z.string().nullable(),
     completionReviewed: z.boolean(),
   }),
   z.object({
@@ -495,17 +489,3 @@ export const sseEventSchema = z.discriminatedUnion('type', [
   z.object({ seq: z.number().int(), type: z.literal('error'), message: z.string() }),
 ]);
 export type SseEvent = z.infer<typeof sseEventSchema>;
-
-export const deployEventSchema = z.discriminatedUnion('type', [
-  z.object({
-    type: z.literal('step'),
-    step: z.string(),
-    state: z.enum(['running', 'done', 'error']),
-  }),
-  z.object({
-    type: z.literal('finish'),
-    deployKey: z.string().nullable(),
-    state: z.enum(['ready', 'failed']),
-  }),
-]);
-export type DeployEvent = z.infer<typeof deployEventSchema>;

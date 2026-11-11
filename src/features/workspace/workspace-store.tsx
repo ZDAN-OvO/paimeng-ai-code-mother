@@ -12,26 +12,24 @@ import {
 } from 'react';
 import { useRouter } from 'next/navigation';
 import type {
+  ArchivedChatsResponse,
   ChatBundle,
   ChatRecord,
   ChatSummary,
-  DeployRequest,
-  DeployResponse,
   DesignContext,
   EnvVar,
   Message,
   Model,
   Part,
-  PromoteDraftResponse,
-  ArchivedChatsResponse,
-  DraftsResponse,
-  Template,
-  TemplatesResponse,
   Project,
+  ProjectSummary,
   ProjectsResponse,
   RunAccepted,
   Skill,
   SseEvent,
+  Template,
+  TemplatesResponse,
+  UndoChangeSetResponse,
 } from '@/shared/api/schemas';
 import { api, ApiRequestError, streamEvents } from '@/lib/api/client';
 
@@ -39,19 +37,20 @@ export type ImageAttachment = { url: string; name: string };
 
 export type RunOptions = { selection?: DesignContext };
 
+export type WorkspaceState = {
+  /** 当前项目：当前文件、预览、改动记录都以它为准。 */
+  project: Project | null;
+  projects: ProjectSummary[];
+  /** 当前项目下的对话，包含正在打开的这一条。 */
+  chats: ChatRecord[];
+  archived: ChatSummary[];
+  skills: Skill[];
+  models: Model[];
+  templates: Template[];
+};
+
 export type WorkspaceStore = {
-  /** 兼容工作区组件的读取形状：当前项目、当前对话、同项目其他对话。 */
-  state: {
-    projects: Project[];
-    chats: ChatRecord[];
-    /** 还没决定变成项目的会话。 */
-    drafts: ChatSummary[];
-    /** 归档的会话：不出现在默认列表里，只在这里。 */
-    archived: ChatSummary[];
-    skills: Skill[];
-    models: Model[];
-    templates: Template[];
-  };
+  state: WorkspaceState;
   hydrated: boolean;
   error: string | null;
   clearError: () => void;
@@ -61,7 +60,7 @@ export type WorkspaceStore = {
     text: string,
     images?: ImageAttachment[],
     options?: RunOptions,
-  ) => void;
+  ) => Promise<boolean>;
   stopGeneration: (chatId: string) => void;
   resolvePlan: (
     chatId: string,
@@ -70,38 +69,34 @@ export type WorkspaceStore = {
     decision: 'approved' | 'changes_requested' | 'rejected',
     feedback?: string,
   ) => void;
-  rollbackTo: (chatId: string, versionId: string) => void;
-  setViewVersion: (chatId: string, versionId: string) => void;
+  undoChangeSet: (projectId: string, changeSetId: string) => Promise<void>;
   setModel: (chatId: string, modelId: string) => void;
   createChat: (projectId: string) => void;
-  promoteDraft: (chatId: string) => Promise<void>;
   renameChat: (chatId: string, title: string) => Promise<void>;
   archiveChat: (chatId: string) => Promise<void>;
   restoreChat: (chatId: string) => Promise<void>;
   renameProject: (projectId: string, name: string) => void;
   deleteProject: (projectId: string) => void;
   setEnv: (projectId: string, env: EnvVar[]) => void;
-  recordDeploy: (projectId: string, versionId: string) => Promise<DeployResponse>;
 };
 
 const WorkspaceContext = createContext<WorkspaceStore | null>(null);
-
-/** 草稿的 chats 是空列表，但当前会话本身一定要在里面，否则工作区找不到它。 */
-function withCurrentChat(list: ChatSummary[], chat: ChatRecord | null): ChatRecord[] {
-  const chats = list.map((summary) =>
-    chat && summary.id === chat.id ? chat : emptyRecord(summary),
-  );
-  if (chat && !chats.some((item) => item.id === chat.id)) chats.unshift(chat);
-  return chats;
-}
 
 function emptyRecord(summary: ChatSummary): ChatRecord {
   return {
     ...summary,
     pendingPlan: summary.pendingPlan ?? null,
     messages: [],
-    versions: [],
   };
+}
+
+/** 当前对话一定在列表里，否则工作区找不到它。 */
+function withCurrentChat(list: ChatSummary[], chat: ChatRecord | null): ChatRecord[] {
+  const chats = list.map((summary) =>
+    chat && summary.id === chat.id ? chat : emptyRecord(summary),
+  );
+  if (chat && !chats.some((item) => item.id === chat.id)) chats.unshift(chat);
+  return chats;
 }
 
 function applyEventToMessage(message: Message, event: SseEvent): Message {
@@ -133,6 +128,7 @@ function applyEventToMessage(message: Message, event: SseEvent): Message {
       streaming: false,
       status: event.status,
       completionReviewed: event.completionReviewed,
+      changeSetId: event.changeSetId ?? undefined,
     };
   }
   return message;
@@ -146,8 +142,7 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
   const [skills, setSkills] = useState<Skill[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [drafts, setDrafts] = useState<ChatSummary[]>([]);
-  const [projectList, setProjectList] = useState<Project[]>([]);
+  const [projectList, setProjectList] = useState<ProjectSummary[]>([]);
   const [archived, setArchived] = useState<ChatSummary[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -162,24 +157,20 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
       ...bundle.chat,
       pendingPlan: bundle.chat.pendingPlan ?? null,
       messages: bundle.messages,
-      versions: bundle.versions,
     });
   }, []);
 
   const refresh = useCallback(
     async (target = chatId) => {
       try {
-        const [bundle, draftList, allProjects, archivedList] = await Promise.all([
+        const [bundle, allProjects, archivedList] = await Promise.all([
           api.get<ChatBundle>(`/api/chats/${target}`),
-          api.get<DraftsResponse>('/api/drafts'),
           api.get<ProjectsResponse>('/api/projects'),
           api.get<ArchivedChatsResponse>('/api/chats?archived=1'),
         ]);
         applyBundle(bundle);
-        setDrafts(draftList.chats);
         setProjectList(allProjects.projects);
         setArchived(archivedList.chats);
-        setError(null);
       } catch (cause) {
         if (cause instanceof ApiRequestError) setError(cause.message);
       } finally {
@@ -215,8 +206,9 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
               return;
             }
             if (event.type === 'preview') {
-              setChat((current) =>
-                current ? { ...current, liveSite: event.site, liveFiles: event.files } : current,
+              // 工具写入直接改项目共享文件；代码面板与预览跟着同一份内容走。
+              setProject((current) =>
+                current ? { ...current, files: event.files, site: event.site } : current,
               );
               return;
             }
@@ -231,8 +223,6 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
                   ? {
                       ...current,
                       streaming: false,
-                      liveFiles: undefined,
-                      liveSite: undefined,
                       messages: current.messages.map((item) =>
                         item.id === event.messageId ? applyEventToMessage(item, event) : item,
                       ),
@@ -271,21 +261,19 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
     let cancelled = false;
     void (async () => {
       try {
-        const [bundle, catalog, draftList, allProjects, archivedList] = await Promise.all([
+        const [bundle, catalog, allProjects, archivedList] = await Promise.all([
           api.get<ChatBundle>(`/api/chats/${chatId}`),
           api.get<TemplatesResponse>('/api/templates'),
-          api.get<DraftsResponse>('/api/drafts'),
           api.get<ProjectsResponse>('/api/projects'),
           api.get<ArchivedChatsResponse>('/api/chats?archived=1'),
         ]);
         if (cancelled) return;
         applyBundle(bundle);
         setTemplates(catalog.templates);
-        setDrafts(draftList.chats);
         setProjectList(allProjects.projects);
         setArchived(archivedList.chats);
         setHydrated(true);
-        // 首页建项目会立刻开始第一轮；进入工作区时要接上这条事件流。
+        // 上一轮还没结束时进入工作区：接上这条事件流，预览继续跟着写。
         if (bundle.chat.streaming) void follow(chatId);
       } catch (cause) {
         if (cancelled) return;
@@ -299,14 +287,24 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
     };
   }, [applyBundle, chatId, follow]);
 
+  // 空闲对话也同步项目，才能发现其他窗口后来启动的任务；本对话运行时由 SSE 更新。
+  useEffect(() => {
+    if (!hydrated || chat?.streaming) return;
+    const timer = window.setInterval(() => void refresh(), 1000);
+    return () => window.clearInterval(timer);
+  }, [refresh, hydrated, chat?.streaming]);
+
   const startRound = useCallback(
-    async (run: Promise<RunAccepted>, target: string) => {
+    async (run: Promise<RunAccepted>, target: string): Promise<boolean> => {
+      setError(null);
       try {
         await run;
-        await follow(target);
+        void follow(target);
+        return true;
       } catch (cause) {
-        setError(cause instanceof ApiRequestError ? cause.message : '请求失败');
         await refresh(target);
+        setError(cause instanceof ApiRequestError ? cause.message : '请求失败');
+        return false;
       }
     },
     [follow, refresh],
@@ -314,7 +312,7 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
 
   const sendMessage = useCallback(
     (target: string, text: string, images: ImageAttachment[] = [], options: RunOptions = {}) => {
-      void startRound(
+      return startRound(
         api.post<RunAccepted>(`/api/chats/${target}/messages`, {
           text,
           attachments: images.map((image) => ({ name: image.name, dataUrl: image.url })),
@@ -346,22 +344,11 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
     void api.post(`/api/chats/${target}/stop`).catch(() => {});
   }, []);
 
-  const rollbackTo = useCallback(
-    (target: string, versionId: string) => {
-      void api
-        .post(`/api/chats/${target}/versions/${versionId}/rollback`)
-        .then(() => refresh(target))
-        .catch((cause: unknown) =>
-          setError(cause instanceof ApiRequestError ? cause.message : '回滚失败'),
-        );
-    },
-    [refresh],
-  );
-
-  const setViewVersion = useCallback((target: string, versionId: string) => {
-    setChat((current) =>
-      current && current.id === target ? { ...current, viewVersionId: versionId } : current,
+  const undoChangeSet = useCallback(async (projectId: string, changeSetId: string) => {
+    const result = await api.post<UndoChangeSetResponse>(
+      `/api/projects/${projectId}/changesets/${changeSetId}/undo`,
     );
+    setProject(result.project);
   }, []);
 
   const setModel = useCallback((target: string, modelId: string) => {
@@ -388,7 +375,12 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
   const renameProject = useCallback((projectId: string, name: string) => {
     void api
       .patch<Project>(`/api/projects/${projectId}`, { name })
-      .then((next) => setProject(next))
+      .then((next) => {
+        setProject((current) => (current?.id === next.id ? next : current));
+        setProjectList((current) =>
+          current.map((item) => (item.id === next.id ? { ...item, name: next.name } : item)),
+        );
+      })
       .catch((cause: unknown) =>
         setError(cause instanceof ApiRequestError ? cause.message : '重命名失败'),
       );
@@ -409,30 +401,17 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
   const setEnv = useCallback((projectId: string, env: EnvVar[]) => {
     void api
       .put<Project>(`/api/projects/${projectId}/env`, { env })
-      .then((next) => setProject(next))
+      .then((next) => setProject((current) => (current?.id === next.id ? next : current)))
       .catch((cause: unknown) =>
         setError(cause instanceof ApiRequestError ? cause.message : '保存环境变量失败'),
       );
   }, []);
 
-  const recordDeploy = useCallback(async (projectId: string, versionId: string) => {
-    const body: DeployRequest = { versionId };
-    const result = await api.post<DeployResponse>(`/api/projects/${projectId}/deploys`, body);
-    const next = await api.get<Project>(`/api/projects/${projectId}`);
-    setProject(next);
-    return result;
-  }, []);
-
-  const loadDrafts = useCallback(async () => {
-    const [draftsData, archivedData] = await Promise.all([
-      api.get<DraftsResponse>('/api/drafts'),
-      api.get<ArchivedChatsResponse>('/api/chats?archived=1'),
-    ]);
-    setDrafts(draftsData.chats);
+  const loadArchived = useCallback(async () => {
+    const archivedData = await api.get<ArchivedChatsResponse>('/api/chats?archived=1');
     setArchived(archivedData.chats);
   }, []);
 
-  /** 改名：草稿与项目会话共用 PATCH。 */
   const renameChat = useCallback(
     async (target: string, title: string) => {
       await api.patch(`/api/chats/${target}`, { title });
@@ -445,48 +424,52 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
   const archiveChat = useCallback(
     async (target: string) => {
       await api.post(`/api/chats/${target}/archive`, {});
-      await loadDrafts();
+      await loadArchived();
       if (target !== chatId) return;
-      // 归档的正好是当前会话：优先跳到同项目里另一条，其次草稿，都没有才回首页。
-      const siblings = chatList.filter((item) => item.id !== target);
-      const next = siblings[0]?.id ?? drafts.find((item) => item.id !== target)?.id ?? null;
+      // 归档的正好是当前会话：优先跳到同项目里另一条，没有就回工作区空态。
+      const next = chatList.find((item) => item.id !== target)?.id ?? null;
       router.push(next ? `/chat/${next}` : '/');
     },
-    [chatId, chatList, drafts, loadDrafts, router],
+    [chatId, chatList, loadArchived, router],
   );
 
   const restoreChat = useCallback(
     async (target: string) => {
       await api.post(`/api/chats/${target}/restore`, {});
-      await loadDrafts();
+      await loadArchived();
     },
-    [loadDrafts],
+    [loadArchived],
   );
 
-  /** 草稿转项目：同一个会话就地转正，不复制、不部署。 */
-  const promoteDraft = useCallback(
-    async (target: string) => {
-      await api.post<PromoteDraftResponse>(`/api/chats/${target}/project`, {});
-      await refresh(target);
-      await loadDrafts();
-    },
-    [refresh, loadDrafts],
-  );
-
-  const state = useMemo(
+  const state = useMemo<WorkspaceState>(
     () => ({
-      // 侧栏要列出全部项目，草稿态也一样；当前项目以 bundle 里的最新值为准。
+      project,
       projects: project
-        ? [project, ...projectList.filter((item) => item.id !== project.id)]
+        ? [
+            ...projectList.filter((item) => item.id !== project.id),
+            {
+              id: project.id,
+              name: project.name,
+              description: project.description,
+              templateId: project.templateId,
+              workspacePath: project.workspacePath,
+              workspaceState: project.workspaceState,
+              createdAt: project.createdAt,
+              updatedAt: project.updatedAt,
+              chatCount: chatList.length,
+              changeCount: project.changeSets.length,
+              lastChatId: chat?.id ?? null,
+              thumb: project.site,
+            },
+          ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
         : projectList,
       chats: withCurrentChat(chatList, chat),
-      drafts,
       archived,
       skills,
       models,
       templates,
     }),
-    [archived, chat, chatList, drafts, models, project, projectList, skills, templates],
+    [archived, chat, chatList, models, project, projectList, skills, templates],
   );
 
   const value = useMemo<WorkspaceStore>(
@@ -499,18 +482,15 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
       sendMessage,
       stopGeneration,
       resolvePlan,
-      rollbackTo,
-      setViewVersion,
+      undoChangeSet,
       setModel,
       createChat,
-      promoteDraft,
       renameChat,
       archiveChat,
       restoreChat,
       renameProject,
       deleteProject,
       setEnv,
-      recordDeploy,
     }),
     [
       state,
@@ -520,18 +500,15 @@ export function WorkspaceProvider({ chatId, children }: { chatId: string; childr
       sendMessage,
       stopGeneration,
       resolvePlan,
-      rollbackTo,
-      setViewVersion,
+      undoChangeSet,
       setModel,
       createChat,
-      promoteDraft,
       renameChat,
       archiveChat,
       restoreChat,
       renameProject,
       deleteProject,
       setEnv,
-      recordDeploy,
     ],
   );
 

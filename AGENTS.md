@@ -1,24 +1,16 @@
 # paimeng-ai-code-mother
 
-开源版 v0：一句话生成完整的 Next.js 应用，沙箱预览，对话迭代，发布。
+面向个人的本地 Web 开发助手。本地服务 + 浏览器工作区，项目对应用户的真实目录。
 
-## Layering
+## 开发依据
 
-```
-/
-├── AGENTS.md          # this file: repo navigation and collaboration rules
-├── PRODUCT.md         # product scope, users, constraints
-├── GLOSSARY.md        # domain terms; `_Avoid_` lines list the synonyms not to use
-├── docs/              # architecture.md and adr/
-├── archive/           # old implementations, read-only reference; never current truth
-└── src/, skills/, templates/, config/, migrations/   # the product, once it lands
-```
+- 先阅读受影响的 `src/` 页面、状态与调用链，前端交互是产品迭代的第一指导。
+- 产品与 API 说明只维护 [docs/api.md](docs/api.md)。接口字段以 `src/shared/api/schemas.ts` 为准；改接口时同步调用方和这份文档。
+- 依赖以 `package.json` 和锁文件为准；选定后直接接入，不另写选型、架构、术语或里程碑文档。
+- 决策历史保留在 `docs/adr/`；旧条目的适用性待用户逐项确认，不能直接当作当前实现要求。
+- 模板、技能是保留的扩展；模型配置界面延后。演示数据不代表真实文件、命令或模型已接通。
+- `archive/` 只读参考，不参与构建，不被新代码导入。
 
-新代码直接位于仓库根。`archive/` 里的任何东西都不参与构建、不被新代码导入。
+## 验证
 
-## Source of truth
-
-- 架构与验收契约只在 `docs/architecture.md`。决策的理由在 `docs/adr/`，不在别处复述。
-- 术语以 `GLOSSARY.md` 为准。
-- 不把代码能表达的东西写进文档；文档只解释为什么。
-- 文档与契约、验收入口、证据三者由 `npm run check:docs` 检查：路由与 13 条在两份文档里对齐，`docs/evidence/INDEX.md` 里每条承诺的证据不能过期。改完先跑它，红了不提交。
+改完运行相关测试、类型检查与 lint；接口改动核对 API 说明与 handler，页面改动用浏览器检查。报告实际验证结果与尚未接通的能力。

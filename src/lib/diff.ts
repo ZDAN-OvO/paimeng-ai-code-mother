@@ -1,3 +1,4 @@
+import { diffArrays } from 'diff';
 import type { FileMap } from '@/shared/api/schemas';
 
 export type DiffLine = {
@@ -7,45 +8,23 @@ export type DiffLine = {
   newNo?: number;
 };
 
-/** 行级 LCS diff。生成的文件都很小，O(n·m) 足够。 */
+/** 按现有行语义比较：保留空行、末尾换行与两侧行号。 */
 export function diffLines(before: string, after: string): DiffLine[] {
-  const a = before.length ? before.split('\n') : [];
-  const b = after.length ? after.split('\n') : [];
-  const dp: number[][] = Array.from({ length: a.length + 1 }, () =>
-    new Array(b.length + 1).fill(0),
+  const changes = diffArrays(
+    before.length ? before.split('\n') : [],
+    after.length ? after.split('\n') : [],
   );
-
-  for (let i = a.length - 1; i >= 0; i -= 1) {
-    for (let j = b.length - 1; j >= 0; j -= 1) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const lines: DiffLine[] = [];
+  let oldNo = 1;
+  let newNo = 1;
+  for (const change of changes) {
+    for (const text of change.value) {
+      if (change.removed) lines.push({ type: 'del', text, oldNo: oldNo++ });
+      else if (change.added) lines.push({ type: 'add', text, newNo: newNo++ });
+      else lines.push({ type: 'same', text, oldNo: oldNo++, newNo: newNo++ });
     }
   }
-
-  const out: DiffLine[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) {
-      out.push({ type: 'same', text: a[i], oldNo: i + 1, newNo: j + 1 });
-      i += 1;
-      j += 1;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      out.push({ type: 'del', text: a[i], oldNo: i + 1 });
-      i += 1;
-    } else {
-      out.push({ type: 'add', text: b[j], newNo: j + 1 });
-      j += 1;
-    }
-  }
-  while (i < a.length) {
-    out.push({ type: 'del', text: a[i], oldNo: i + 1 });
-    i += 1;
-  }
-  while (j < b.length) {
-    out.push({ type: 'add', text: b[j], newNo: j + 1 });
-    j += 1;
-  }
-  return out;
+  return lines;
 }
 
 export function diffStats(lines: DiffLine[]) {

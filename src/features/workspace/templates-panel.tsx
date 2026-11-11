@@ -5,17 +5,20 @@ import { Loader2 } from 'lucide-react';
 import { api, ApiRequestError } from '@/lib/api/client';
 import { TemplateGallery } from '@/features/home/template-gallery';
 import type {
-  CreateDraftResponse,
+  CreateProjectResponse,
   GalleryTemplate,
-  Model,
-  ModelsResponse,
   TemplatesResponse,
 } from '@/shared/api/schemas';
 
-/** 「模板」入口：模板画廊直接在中栏打开，选一个就建项目进对话。 */
-export function TemplatesPanel({ onOpenChat }: { onOpenChat: (chatId: string) => void }) {
+/** 「模板」入口：模板画廊直接在中栏打开，选一个就建示例项目进对话。 */
+export function TemplatesPanel({
+  onOpenChat,
+  onCreated,
+}: {
+  onOpenChat: (chatId: string) => void;
+  onCreated?: () => void;
+}) {
   const [gallery, setGallery] = useState<GalleryTemplate[]>([]);
-  const [models, setModels] = useState<Model[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -24,13 +27,9 @@ export function TemplatesPanel({ onOpenChat }: { onOpenChat: (chatId: string) =>
     let cancelled = false;
     void (async () => {
       try {
-        const [catalog, modelList] = await Promise.all([
-          api.get<TemplatesResponse>('/api/templates'),
-          api.get<ModelsResponse>('/api/models'),
-        ]);
+        const catalog = await api.get<TemplatesResponse>('/api/templates');
         if (cancelled) return;
         setGallery(catalog.gallery);
-        setModels(modelList.models);
       } catch (cause) {
         if (cancelled) return;
         setError(cause instanceof ApiRequestError ? cause.message : '模板加载失败');
@@ -48,11 +47,12 @@ export function TemplatesPanel({ onOpenChat }: { onOpenChat: (chatId: string) =>
     setError(null);
     setBusyId(entry.id);
     try {
-      const created = await api.post<CreateDraftResponse>('/api/chats', {
+      const created = await api.post<CreateProjectResponse>('/api/projects', {
         prompt: entry.prompt,
         templateId: entry.templateId,
-        modelId: models[0]?.id,
+        workspacePath: `~/Projects/${entry.id}`,
       });
+      onCreated?.();
       onOpenChat(created.chat.id);
     } catch (cause) {
       setError(cause instanceof ApiRequestError ? cause.message : '创建项目失败，请重试');
@@ -65,7 +65,7 @@ export function TemplatesPanel({ onOpenChat }: { onOpenChat: (chatId: string) =>
       <div className="border-b border-border bg-card px-5 py-3">
         <h2 className="text-[13.5px] font-semibold tracking-tight">模板</h2>
         <p className="mt-0.5 text-[11.5px] text-muted-foreground">
-          选一个模板就等于把它的描述发出去：直接建项目，进对话页继续改。
+          选一个模板就新建一个示例项目，进对话页继续改；模板只是起点，不限制后面怎么改。
         </p>
       </div>
 

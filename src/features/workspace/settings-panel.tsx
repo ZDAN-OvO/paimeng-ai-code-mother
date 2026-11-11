@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Check, Copy, Link2, Settings2 } from 'lucide-react';
+import { Check, Copy, FolderClosed, Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,9 +15,8 @@ export function SettingsPanel({ project }: { project: Project }) {
   const [copied, setCopied] = useState(false);
   const dirty = name.trim() !== project.name && name.trim().length > 0;
 
-  function copyKey() {
-    if (!project.deployKey) return;
-    void navigator.clipboard.writeText(project.deployKey).then(() => {
+  function copyPath() {
+    void navigator.clipboard.writeText(project.workspacePath).then(() => {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     });
@@ -28,7 +27,7 @@ export function SettingsPanel({ project }: { project: Project }) {
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         <Settings2 className="size-3.5 text-muted-foreground" />
         <span className="text-[12px] font-medium">项目设置</span>
-        <span className="text-[10.5px] text-muted-foreground">名称、地址与环境变量</span>
+        <span className="text-[10.5px] text-muted-foreground">名称、目录与环境变量</span>
       </div>
 
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-3">
@@ -54,37 +53,34 @@ export function SettingsPanel({ project }: { project: Project }) {
               保存
             </Button>
           </div>
-          <p className="text-[10.5px] text-muted-foreground">
-            改名只影响侧栏与标题，发布地址不变。
-          </p>
+          <p className="text-[10.5px] text-muted-foreground">改名只影响侧栏与标题。</p>
         </section>
 
         <section className="space-y-2">
-          <div className="text-[11px] font-medium">发布地址</div>
-          {project.deployKey ? (
-            <div className="flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1.5">
-              <Link2 className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
-                /deploys/{project.deployKey}
-              </span>
-              <button
-                type="button"
-                onClick={copyKey}
-                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                title="复制地址"
-              >
-                {copied ? (
-                  <Check className="size-3.5 text-emerald-600" />
-                ) : (
-                  <Copy className="size-3.5" />
-                )}
-              </button>
-            </div>
-          ) : (
-            <p className="rounded-md border border-dashed border-border px-2 py-2 text-[10.5px] text-muted-foreground">
-              还没有发布过。发一次之后，这里会出现固定地址。
-            </p>
-          )}
+          <div className="text-[11px] font-medium">项目目录</div>
+          <div className="flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1.5">
+            <FolderClosed className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+              {project.workspacePath}
+            </span>
+            <button
+              type="button"
+              onClick={copyPath}
+              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              title="复制目录"
+            >
+              {copied ? (
+                <Check className="size-3.5 text-emerald-600" />
+              ) : (
+                <Copy className="size-3.5" />
+              )}
+            </button>
+          </div>
+          <p className="text-[10.5px] leading-5 text-muted-foreground">
+            {project.workspaceState === 'sample'
+              ? '示例项目：路径只做记录，尚未连接真实目录。连接后会直接读写这里。'
+              : '助手读写这个目录里的项目文件；外部编辑器改动会体现在下次读取中。'}
+          </p>
         </section>
 
         <section className="border-t border-border pt-4">

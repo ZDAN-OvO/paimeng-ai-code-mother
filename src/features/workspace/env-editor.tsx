@@ -11,7 +11,7 @@ import type { EnvVar, Project } from '@/shared/api/schemas';
 
 type Draft = EnvVar & { id: string };
 
-/** 环境变量编辑器。打开时重新挂载，草稿从当前 Project 初始化，不用 effect 同步 props。 */
+/** 环境变量编辑器。打开时重新挂载，行数据从当前 Project 初始化，不用 effect 同步 props。 */
 export function EnvEditor({ project }: { project: Project }) {
   const { setEnv } = useWorkspace();
   const [rows, setRows] = useState<Draft[]>(() =>
@@ -28,7 +28,7 @@ export function EnvEditor({ project }: { project: Project }) {
       .map((row) => ({ key: row.key.trim(), value: row.value, secret: row.secret }));
     setEnv(project.id, cleaned);
     toast.success('环境变量已保存', {
-      description: '沙箱会重启一次，发布实例在下次发布时注入。',
+      description: '记在项目设置里；本地服务接入后启动时读取。',
     });
   }
 
@@ -126,15 +126,15 @@ export function EnvEditor({ project }: { project: Project }) {
           <RotateCcw className="size-3.5" />
           生效规则
         </div>
-        <p>保存后沙箱容器会重启一次，正在生成的任务会中断。</p>
-        <p>发布实例在构建时读取同一份变量；改完变量需要重新发布。</p>
+        <p>变量记在项目设置里，不会写进项目源码。</p>
+        <p>本地服务接入后，启动时读取同一份变量。</p>
         <p>密钥勾选后，界面上只显示掩码，接口返回也不会带明文。</p>
       </div>
 
       <div className="flex items-center justify-between gap-2 pt-1">
-        <span className="text-[10px] text-muted-foreground">只存在本地，不写进源码树</span>
+        <span className="text-[10px] text-muted-foreground">只存在本地，不写进项目文件</span>
         <Button size="sm" data-testid="env-save" onClick={save} disabled={invalid}>
-          保存并重启沙箱
+          保存
         </Button>
       </div>
     </div>

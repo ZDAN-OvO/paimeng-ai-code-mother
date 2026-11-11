@@ -7,9 +7,12 @@ out/
 next-env.d.ts
 *.tsbuildinfo
 
-# runtime data: sandboxes, snapshots, deploys, evidence
+# local runtime data
 runtime/
 data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 
 # env
 .env

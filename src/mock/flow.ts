@@ -1,10 +1,10 @@
 import type {
+  ChangeSet,
   ChatRecord,
   FileMap,
   RunStatus,
   SiteState,
   Skill,
-  Version,
 } from '@/shared/api/schemas';
 import { changedPaths } from '@/lib/diff';
 
@@ -37,63 +37,72 @@ export function completionReviewed(status: RunStatus, files: FileMap, reviewed: 
   return status === 'succeeded' && reviewed !== null && reviewed === sourceRevision(files);
 }
 
+export type WorkspaceSnapshot = { files: FileMap; site: SiteState | null };
+
 /**
- * 一轮结束时收尾：把工作区落成一个版本（计划、调研、中途停止也各自留版本），
- * 并把仍在 running 的工具标成中断。
+ * 一轮结束时收尾：把这一轮的工具状态收尾，并把项目文件的变化记成一条改动记录。
+ * 计划、调研、没有动文件的轮次不产生记录；记录里的 before/after 之后用于 diff 与安全撤销。
  */
 export function finishRound(
   chat: ChatRecord,
   messageId: string,
   status: RunStatus,
   summary: string,
-  fallbackSite: SiteState,
-  id: string,
-  now: string,
-  reviewed = false,
-): ChatRecord {
+  before: WorkspaceSnapshot,
+  after: WorkspaceSnapshot,
+  meta: { changeSetId: string; seq: number; now: string; reviewed?: boolean },
+): { chat: ChatRecord; changeSet: ChangeSet | null } {
   const message = chat.messages.find((item) => item.id === messageId);
-  if (!message || message.versionId) return chat;
-  const previous = chat.versions.at(-1);
-  const files = { ...(chat.liveFiles ?? previous?.files ?? {}) };
-  const version: Version = {
-    id,
-    chatId: chat.id,
-    messageId,
-    seq: chat.versions.length + 1,
-    label: `v${chat.versions.length + 1}`,
-    summary,
-    createdAt: now,
-    files,
-    site: chat.liveSite ?? previous?.site ?? fallbackSite,
-    changedFiles: changedPaths(previous?.files ?? {}, files),
-  };
+  if (!message || message.changeSetId) return { chat, changeSet: null };
+
+  const changedFiles = changedPaths(before.files, after.files);
+  const changeSet: ChangeSet | null =
+    changedFiles.length === 0
+      ? null
+      : {
+          id: meta.changeSetId,
+          seq: meta.seq,
+          chatId: chat.id,
+          messageId,
+          summary,
+          createdAt: meta.now,
+          status: 'applied',
+          changedFiles,
+          before: before.files,
+          after: after.files,
+          siteBefore: before.site,
+          siteAfter: after.site,
+        };
+
   return {
-    ...chat,
-    streaming: false,
-    updatedAt: now,
-    liveFiles: undefined,
-    liveSite: undefined,
-    versions: [...chat.versions, version],
-    activeVersionId: id,
-    viewVersionId: id,
-    messages: chat.messages.map((item) =>
-      item.id !== messageId
-        ? item
-        : {
-            ...item,
-            streaming: false,
-            status,
-            completionReviewed: reviewed,
-            finishedAt: now,
-            versionId: id,
-            parts: item.parts.map((part) =>
-              part.type === 'tool' && part.state === 'running'
-                ? { ...part, state: 'error', output: '本轮已中断；已完成的改动保留在版本里。' }
-                : part.type === 'review' && part.state === 'running'
-                  ? { ...part, state: 'error', findings: ['本轮已中断，审查没有给出结论。'] }
-                  : part,
-            ),
-          },
-    ),
+    chat: {
+      ...chat,
+      streaming: false,
+      updatedAt: meta.now,
+      messages: chat.messages.map((item) =>
+        item.id !== messageId
+          ? item
+          : {
+              ...item,
+              streaming: false,
+              status,
+              completionReviewed: meta.reviewed ?? false,
+              finishedAt: meta.now,
+              changeSetId: changeSet?.id,
+              parts: item.parts.map((part) =>
+                part.type === 'tool' && part.state === 'running'
+                  ? {
+                      ...part,
+                      state: 'error',
+                      output: '本轮已中断；已完成的改动保留在项目文件里。',
+                    }
+                  : part.type === 'review' && part.state === 'running'
+                    ? { ...part, state: 'error', findings: ['本轮已中断，审查没有给出结论。'] }
+                    : part,
+              ),
+            },
+      ),
+    },
+    changeSet,
   };
 }

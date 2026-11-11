@@ -1,4 +1,5 @@
 import type {
+  ChangeSet,
   ChatRecord,
   FileMap,
   Message,
@@ -6,12 +7,12 @@ import type {
   Project,
   SiteState,
   Skill,
-  Version,
 } from '@/shared/api/schemas';
 import { buildSite } from '@/mock/site';
 import { buildSiteFiles } from '@/mock/seed/files';
 import { SKILLS_SEED } from '@/mock/seed/skills';
 import { bytesOf } from '@/lib/format';
+import { changedPaths } from '@/lib/diff';
 import { uid } from '@/mock/ids';
 import { addSeconds } from '@/lib/time';
 
@@ -22,7 +23,7 @@ function withPartIds(parts: DraftPart[]): Part[] {
   return parts.map((part) => ({ ...part, id: part.id ?? uid('part') })) as Part[];
 }
 
-function toolsForVersion(site: SiteState, files: FileMap, round: number): Part[] {
+function toolsForRound(site: SiteState, files: FileMap, round: number): Part[] {
   const writePaths = Object.keys(files).filter((path) => path !== 'package.json');
   const parts: DraftPart[] = [
     {
@@ -75,98 +76,123 @@ const SUMMARIES = [
   '主视觉换成深色版，标题和副标题重新写了一遍，并补了一段客户评价。',
 ];
 
-function seedChatBundle(options: {
+type Round = { user: string; at: string };
+
+function seedProject(options: {
+  projectId: string;
   chatId: string;
-  /** null 表示草稿：还没决定要不要变成项目。 */
-  projectId: string | null;
-  draftPrompt?: string;
-  title: string;
-  modelId: string;
+  name: string;
+  description: string;
+  workspacePath: string;
   templateId: string;
   brand: string;
-  rounds: { user: string; at: string }[];
+  modelId: string;
   baseAt: string;
-}): { chat: ChatRecord; versions: Version[] } {
-  const versions: Version[] = [];
+  updatedAt: string;
+  env?: Project['env'];
+  rounds: Round[];
+}): { project: Project; chat: ChatRecord } {
   const messages: Message[] = [];
-  let previousFiles: FileMap = {};
+  const changeSets: ChangeSet[] = [];
+  let previous: { files: FileMap; site: SiteState | null } = { files: {}, site: null };
+  let current = previous;
 
   options.rounds.forEach((round, index) => {
     const iteration = index + 1;
     const site = buildSite(options.templateId, options.brand, iteration);
     const files = buildSiteFiles(site);
-    const changedFiles = Object.keys(files).filter((path) => files[path] !== previousFiles[path]);
-    previousFiles = files;
-
+    const changeSetId = `${options.chatId}_cs${iteration}`;
     const userMessage: Message = {
       id: `${options.chatId}_u${iteration}`,
       role: 'user',
       parts: [{ id: `${options.chatId}_u${iteration}_p`, type: 'text', text: round.user }],
       createdAt: round.at,
     };
-    const versionId = `${options.chatId}_v${iteration}`;
-    const parts = toolsForVersion(site, files, iteration);
+    const parts = toolsForRound(site, files, iteration);
     const textPart = parts[parts.length - 1];
     if (textPart.type === 'text') {
       textPart.text = SUMMARIES[Math.min(index, SUMMARIES.length - 1)];
     }
+    const summary = SUMMARIES[Math.min(index, SUMMARIES.length - 1)];
     const assistantMessage: Message = {
       id: `${options.chatId}_a${iteration}`,
       role: 'assistant',
       parts,
       createdAt: round.at,
       finishedAt: addSeconds(round.at, 46 + index * 31),
-      versionId,
+      changeSetId,
+      status: 'succeeded',
+      completionReviewed: true,
     };
 
-    versions.push({
-      id: versionId,
+    const previousFiles = previous.files;
+    const changedFiles = changedPaths(previousFiles, files);
+    changeSets.push({
+      id: changeSetId,
       seq: iteration,
       chatId: options.chatId,
       messageId: assistantMessage.id,
-      label: `v${iteration}`,
-      summary: SUMMARIES[Math.min(index, SUMMARIES.length - 1)],
+      summary,
       createdAt: round.at,
-      files,
-      site,
+      status: 'applied',
       changedFiles,
+      before: previousFiles,
+      after: files,
+      siteBefore: previous.site,
+      siteAfter: site,
     });
     messages.push(userMessage, assistantMessage);
+    previous = { files, site };
+    current = previous;
   });
 
-  const last = versions[versions.length - 1];
   return {
     chat: {
       id: options.chatId,
       projectId: options.projectId,
-      draft: options.projectId
-        ? null
-        : { prompt: options.draftPrompt ?? options.title, templateId: options.templateId },
-      title: options.title,
+      title: options.name,
       modelId: options.modelId,
       createdAt: options.baseAt,
-      updatedAt: last.createdAt,
-      messages,
-      versions,
-      activeVersionId: last.id,
-      viewVersionId: last.id,
+      updatedAt: options.updatedAt,
       streaming: false,
       archivedAt: null,
       pendingPlan: null,
+      messages,
     },
-    versions,
+    project: {
+      id: options.projectId,
+      name: options.name,
+      description: options.description,
+      templateId: options.templateId,
+      createdAt: options.baseAt,
+      updatedAt: options.updatedAt,
+      env: options.env ?? [],
+      workspacePath: options.workspacePath,
+      workspaceState: 'sample',
+      files: current.files,
+      site: current.site,
+      changeSets,
+      runtime: { state: 'stopped', port: null, url: null, logs: [], source: 'sample' },
+    },
   };
 }
 
 export function seedProjects(): { projects: Project[]; chats: ChatRecord[]; skills: Skill[] } {
-  const cafe = seedChatBundle({
-    chatId: 'chat_cafe',
+  const cafe = seedProject({
     projectId: 'proj_cafe',
-    title: '山间咖啡馆官网',
-    modelId: 'anthropic/claude-sonnet-4.5',
+    chatId: 'chat_cafe',
+    name: '山间咖啡',
+    description: '做一个山间咖啡馆的官网：要有品牌介绍、招牌豆子、菜单和门店信息，风格温暖一点。',
+    workspacePath: '~/Projects/cafe-site',
     templateId: 'coffee',
     brand: '山间咖啡',
-    baseAt: '2026-11-06T09:00:00+08:00',
+    modelId: 'anthropic/claude-sonnet-4.5',
+    baseAt: '2026-11-06T08:58:00+08:00',
+    updatedAt: '2026-11-06T09:14:00+08:00',
+    env: [
+      { key: 'NEXT_PUBLIC_SHOP_ID', value: 'shop_2041', secret: false },
+      { key: 'RESEND_API_KEY', value: 're_9f2c_••••••', secret: true },
+    ],
     rounds: [
       {
         user: '做一个山间咖啡馆的官网：要有品牌介绍、招牌豆子、菜单和门店信息，风格温暖一点。',
@@ -180,14 +206,17 @@ export function seedProjects(): { projects: Project[]; chats: ChatRecord[]; skil
     ],
   });
 
-  const portfolio = seedChatBundle({
-    chatId: 'chat_portfolio',
+  const portfolio = seedProject({
     projectId: 'proj_portfolio',
-    title: '个人作品集',
-    modelId: 'openai/gpt-5.2',
+    chatId: 'chat_portfolio',
+    name: '林迟 · 作品集',
+    description: '做一个设计师的个人作品集：自我介绍、精选项目、联系方式，排版克制一点。',
+    workspacePath: '~/Projects/linchi-portfolio',
     templateId: 'portfolio',
     brand: '林迟',
-    baseAt: '2026-11-05T15:40:00+08:00',
+    modelId: 'openai/gpt-5.2',
+    baseAt: '2026-11-05T15:38:00+08:00',
+    updatedAt: '2026-11-06T08:33:00+08:00',
     rounds: [
       {
         user: '做一个设计师的个人作品集：自我介绍、精选项目、联系方式，排版克制一点。',
@@ -197,14 +226,17 @@ export function seedProjects(): { projects: Project[]; chats: ChatRecord[]; skil
     ],
   });
 
-  const weekly = seedChatBundle({
-    chatId: 'chat_weekly',
+  const weekly = seedProject({
     projectId: 'proj_weekly',
-    title: '团队周报面板',
-    modelId: 'local/qwen3-coder-30b',
+    chatId: 'chat_weekly',
+    name: '周报面板',
+    description: '做一个团队周报面板，能按成员筛选，先只做静态页面。',
+    workspacePath: '~/Projects/weekly-board',
     templateId: 'blank',
     brand: '周报面板',
-    baseAt: '2026-11-06T07:50:00+08:00',
+    modelId: 'local/qwen3-coder-30b',
+    baseAt: '2026-11-06T07:48:00+08:00',
+    updatedAt: '2026-11-06T07:56:00+08:00',
     rounds: [
       {
         user: '做一个团队周报面板，能按成员筛选，先只做静态页面。',
@@ -213,91 +245,9 @@ export function seedProjects(): { projects: Project[]; chats: ChatRecord[]; skil
     ],
   });
 
-  const projects: Project[] = [
-    {
-      id: 'proj_cafe',
-      name: '山间咖啡',
-      prompt: '做一个山间咖啡馆的官网：要有品牌介绍、招牌豆子、菜单和门店信息，风格温暖一点。',
-      templateId: 'coffee',
-      createdAt: '2026-11-06T08:58:00+08:00',
-      updatedAt: '2026-11-06T09:14:00+08:00',
-      env: [
-        { key: 'NEXT_PUBLIC_SHOP_ID', value: 'shop_2041', secret: false },
-        { key: 'RESEND_API_KEY', value: 're_9f2c_••••••', secret: true },
-      ],
-      deployKey: 'cafe-8f2a',
-      deploys: [
-        {
-          id: 'deploy_cafe_1',
-          deployKey: 'cafe-8f2a',
-          versionId: cafe.versions[2].id,
-          versionSeq: 3,
-          state: 'ready',
-          createdAt: '2026-11-06T09:15:00+08:00',
-        },
-      ],
-    },
-    {
-      id: 'proj_portfolio',
-      name: '林迟 · 作品集',
-      prompt: '做一个设计师的个人作品集：自我介绍、精选项目、联系方式，排版克制一点。',
-      templateId: 'portfolio',
-      createdAt: '2026-11-05T15:38:00+08:00',
-      updatedAt: '2026-11-06T08:33:00+08:00',
-      env: [],
-      deployKey: null,
-      deploys: [],
-    },
-    {
-      id: 'proj_weekly',
-      name: '周报面板',
-      prompt: '做一个团队周报面板，能按成员筛选，先只做静态页面。',
-      templateId: 'blank',
-      createdAt: '2026-11-06T07:48:00+08:00',
-      updatedAt: '2026-11-06T07:56:00+08:00',
-      env: [],
-      deployKey: null,
-      deploys: [],
-    },
-  ];
-
-  const pointerDraft = seedChatBundle({
-    chatId: 'chat_draft_pointer',
-    projectId: null,
-    draftPrompt: '做一个指针 AI 落地页：一句话讲清它替谁省了什么时间。',
-    title: '指针 AI 落地页',
-    modelId: 'anthropic/claude-sonnet-4.5',
-    templateId: 'saas',
-    brand: '指针 AI',
-    baseAt: '2026-11-07T20:10:00+08:00',
-    rounds: [
-      {
-        user: '做一个指针 AI 落地页：一句话讲清它替谁省了什么时间。',
-        at: '2026-11-07T20:11:00+08:00',
-      },
-    ],
-  });
-
-  const pricingDraft = seedChatBundle({
-    chatId: 'chat_draft_pricing',
-    projectId: null,
-    draftPrompt: '咖啡订阅定价页，三档月付，把运费和取消规则写清楚。',
-    title: '咖啡订阅定价页',
-    modelId: 'openai/gpt-5.2',
-    templateId: 'coffee',
-    brand: '山间咖啡',
-    baseAt: '2026-11-07T18:40:00+08:00',
-    rounds: [
-      {
-        user: '咖啡订阅定价页，三档月付，把运费和取消规则写清楚。',
-        at: '2026-11-07T18:41:00+08:00',
-      },
-    ],
-  });
-
   return {
-    projects,
-    chats: [cafe.chat, portfolio.chat, weekly.chat, pointerDraft.chat, pricingDraft.chat],
+    projects: [cafe.project, portfolio.project, weekly.project],
+    chats: [cafe.chat, portfolio.chat, weekly.chat],
     skills: SKILLS_SEED.map((skill) => ({ ...skill })),
   };
 }

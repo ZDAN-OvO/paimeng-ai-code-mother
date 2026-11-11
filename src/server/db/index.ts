@@ -1,27 +1,18 @@
-import { Pool } from 'pg';
-import { drizzle } from 'drizzle-orm/node-postgres';
+import type Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { openDatabase } from './connection';
 import * as schema from './schema';
 
-function connectionString(): string {
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error('DATABASE_URL 未设置，复制 .env.example 为 .env 后再启动');
-  return url;
-}
-
-const globalForDb = globalThis as unknown as { paimengPool?: Pool };
-
-export function pool(): Pool {
-  globalForDb.paimengPool ??= new Pool({ connectionString: connectionString(), max: 10 });
-  return globalForDb.paimengPool;
-}
+const shared = globalThis as typeof globalThis & { paimengSqlite?: Database.Database };
 
 export function db() {
-  return drizzle(pool(), { schema });
+  shared.paimengSqlite ??= openDatabase();
+  return drizzle(shared.paimengSqlite, { schema });
 }
 
 export async function ping(): Promise<boolean> {
   try {
-    await pool().query('select 1');
+    db().get('select 1');
     return true;
   } catch {
     return false;

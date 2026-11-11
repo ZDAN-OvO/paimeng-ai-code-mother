@@ -1,6 +1,7 @@
 'use client';
 
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import type { ThemedToken } from 'shiki';
 import {
   ChevronDown,
   ChevronRight,
@@ -119,56 +120,80 @@ export function FileTree({
   return <div className="space-y-0.5">{renderNodes(tree, 0)}</div>;
 }
 
-const TOKEN =
-  /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`)|\b(import|from|export|default|function|return|const|let|var|type|interface|as|new|if|else|for|while|await|async|class|extends|true|false|null|undefined)\b|(\b\d+(?:\.\d+)?\b)|(<\/?[A-Za-z][\w.:-]*)/g;
-
-/** 够用的语法着色：注释、字符串、关键字、数字、JSX 标签。 */
-export function highlight(code: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  let last = 0;
-  let key = 0;
-  let match: RegExpExecArray | null = TOKEN.exec(code);
-  while (match) {
-    if (match.index > last) nodes.push(code.slice(last, match.index));
-    const [text, comment, string, keyword, number, tag] = match;
-    const className = comment
-      ? 'text-muted-foreground/70 dark:text-muted-foreground/60'
-      : string
-        ? 'text-emerald-700 dark:text-emerald-400'
-        : keyword
-          ? 'text-violet-700 dark:text-violet-400'
-          : number
-            ? 'text-amber-700 dark:text-amber-400'
-            : tag
-              ? 'text-sky-700 dark:text-sky-400'
-              : '';
-    nodes.push(
-      <span key={`t${key}`} className={className}>
-        {text}
-      </span>,
-    );
-    key += 1;
-    last = match.index + text.length;
-    match = TOKEN.exec(code);
-  }
-  if (last < code.length) nodes.push(code.slice(last));
-  return nodes;
-}
-
-export function CodeView({ code, className }: { code: string; className?: string }) {
-  const lines = useMemo(() => code.replace(/\n$/, '').split('\n'), [code]);
-  const highlighted = useMemo(() => highlight(code.replace(/\n$/, '')), [code]);
+export function CodeView({
+  code,
+  filename = '',
+  className,
+}: {
+  code: string;
+  filename?: string;
+  className?: string;
+}) {
+  const visibleCode = code.replace(/\n$/, '');
+  const lines = useMemo(() => visibleCode.split('\n'), [visibleCode]);
+  const [highlighted, setHighlighted] = useState<{
+    code: string;
+    filename: string;
+    tokens: ThemedToken[][];
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    // 避免大文件高亮占用界面；源码仍可完整查看和复制。
+    if (visibleCode.length <= 200000) {
+      void import('./syntax')
+        .then(async ({ highlightCode, languageForFile }) => {
+          const tokens = await highlightCode(visibleCode, languageForFile(filename));
+          if (!cancelled) setHighlighted({ code: visibleCode, filename, tokens });
+        })
+        .catch(() => {
+          /* 语法资源加载失败时继续显示纯文本。 */
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [visibleCode, filename]);
+  const tokens =
+    highlighted?.code === visibleCode && highlighted.filename === filename
+      ? highlighted.tokens
+      : null;
   return (
-    <div className={cn('overflow-auto bg-card font-mono text-[12.5px] leading-5', className)}>
+    <div
+      className={cn('overflow-auto bg-card font-mono text-[12.5px] leading-5', className)}
+      data-testid="code-view"
+      data-highlighted={Boolean(tokens)}
+    >
       <div className="flex min-w-max">
-        <div className="sticky left-0 w-11 shrink-0 select-none border-r border-border/60 bg-muted/50 py-3 text-right">
+        <div
+          className="sticky left-0 w-11 shrink-0 select-none border-r border-border/60 bg-muted/50 py-3 text-right"
+          aria-hidden="true"
+        >
           {lines.map((_, index) => (
             <div key={index} className="pr-2 text-muted-foreground/70">
               {index + 1}
             </div>
           ))}
         </div>
-        <pre className="min-w-0 py-3 pl-3 pr-6 whitespace-pre text-foreground">{highlighted}</pre>
+        <pre className="min-w-0 py-3 pl-3 pr-6 whitespace-pre text-foreground">
+          <code>
+            {tokens
+              ? tokens.map((line, index) => (
+                  <span key={index}>
+                    {line.map((token, number) => (
+                      <span
+                        className="code-token"
+                        key={number}
+                        style={token.htmlStyle as CSSProperties}
+                      >
+                        {token.content}
+                      </span>
+                    ))}
+                    {index < tokens.length - 1 ? '\n' : ''}
+                  </span>
+                ))
+              : visibleCode}
+          </code>
+        </pre>
       </div>
     </div>
   );
