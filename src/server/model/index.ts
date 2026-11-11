@@ -3,8 +3,9 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 /** 仅在服务端解析模型配置；密钥不进入项目、浏览器或 API 响应。 */
 export function createConfiguredModel(
   environment: Record<string, string | undefined> = process.env,
+  requestedModelId?: string,
 ) {
-  const modelId = environment.AI_MODEL?.trim();
+  const modelId = requestedModelId?.trim() || environment.AI_MODEL?.trim();
   if (!modelId) throw new Error('AI_MODEL 未设置，请在本地环境配置模型名称');
   const provider = createOpenAICompatible({
     name: 'configured',

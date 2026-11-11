@@ -1,139 +1,137 @@
 # 产品与 API
 
-Paimeng 是个人本地 Web 开发助手。用户新建或打开真实目录，通过对话让助手修改代码、安装项目依赖、运行检查、启动应用并修复错误；首版聚焦 Next.js / React，以本地可用为交付终点。本地服务提供 API，浏览器提供工作区。
+派蒙是个人本地 Web 开发助手。用户在浏览器里打开一个已存在的本地目录，通过对话让 Agent 读取、修改和运行项目内的文件与命令。项目文件以磁盘为准，对话、运行记录和改动记录保存在本地 SQLite；不会复制一份项目源码到数据库。
 
-前端交互是迭代的第一指导；字段以 [schemas.ts](../src/shared/api/schemas.ts) 为准，依赖以根包清单和锁文件为准。历史决策保留在 [adr/](adr/)，旧条目的适用性待逐项确认。
+前端交互是产品迭代的第一指导；字段以 [schemas.ts](../src/shared/api/schemas.ts) 为准，依赖以根包清单和锁文件为准。历史决策保留在 [adr/](adr/)。
 
 ## 产品边界
 
-- `/` 直接进入工作区，未打开项目时提供新建、打开文件夹和最近打开；取消独立展示首页、草稿转正和内置发布。
-- Project 对应本地目录，多个 Chat 共用当前文件；其他编辑器可以直接修改，查看历史改动不改变当前工作区。
-- 每轮保留改动与 diff；撤销前检查当前文件，遇到后续修改返回冲突，保护用户的工作。
-- 项目内常规读写、项目依赖安装、检查，以及助手管理的项目进程可自动执行；项目外修改、全局安装、删除整个项目、Git 提交和推送单独确认。
-- 本地命令使用系统用户权限。工作目录不构成操作系统隔离；不再实现沙箱运行或托管发布设施。
-- 模板与技能保留。模板是扩展，不阻塞本地开发主线；用户模型配置需要支持，配置界面与多服务管理延后，模型入口已支持本地环境变量，工作区对话仍是示例。
-- 模型凭据留在助手本地，不发给浏览器、不写入用户源码、不继承给项目进程。工作台默认只监听回环地址。
-
-## 当前实现
-
-当前 HTTP handler 主要调用 `src/mock/`，状态保存在 `data/mock/state.json`。示例对话、工具、检查和预览用于验证界面；真实磁盘目录、项目进程和模型调用尚未接通。下文只描述现有接口，不表示这些真实能力已经完成。
-
-Project 的 `workspacePath` 表达目录位置，`workspaceState` 区分 `sample` 与 `linked`；当前只产生 `sample`。`Project.files`、`site`、`changeSets` 和 `runtime` 是项目共享状态，Chat 只保存任务对话。`ChangeSet.before/after` 用于 diff 和冲突检测，历史记录不能切换当前文件或预览。
+- 首页用于打开本地目录、继续最近项目和查看模板画廊。打开目录不创建或复制目录，也不要求目录里已有 `package.json`。
+- 一个项目对应一个真实目录，可以有多个对话。同一对话同时只能跑一轮；同一项目的不同对话可以并行。
+- Agent 可以使用 `read`、`write`、`edit`、`grep`、`find`、`ls` 和 `bash`。文件工具只作用于项目目录；Bash 在项目目录执行，并剔除宿主模型凭据等密钥环境变量。
+- 覆盖已有文件前必须先读取。读取后文件被外部修改时，本次写入被拒绝，工具把冲突和最近写入来源返回给模型，模型重新读取后可以继续合并。
+- `sudo`、全局安装、`git commit/push`、明显指向项目外的 `rm/mv` 会让该次工具调用暂停等待用户批准。关键词规则不是操作系统隔离，Bash 仍使用当前系统用户权限。
+- 每轮按运行回合记录文件改动和 Diff。改动可以按文件恢复；恢复不检查当前文件是否等于改后内容，会直接覆盖到该 Diff 的改前状态。首版没有整轮撤销、单次工具撤销或逐段撤销。
+- 项目内快照使用 `data/` 下独立的 Git 对象库，不触碰用户仓库的索引、分支和工作树。被 `.gitignore` 和固定依赖目录忽略的内容不进入文件树、Diff 或撤销。
+- 删除项目只删除派蒙自己的项目记录、对话、改动记录、快照和命令输出，不删除磁盘目录。运行中或等待批准的对话会拒绝删除。
+- 模板保留为扩展入口；本片不启动示例项目。技能页只发现并查看用户级和项目级磁盘技能，不把技能注入 Agent。应用启动和预览、Plan、独立 review subagent、后台任务和模型配置界面延后。
 
 ## 约定
 
-- JSON 接口失败返回 `{ error: string }`，状态码区分 `400` 入参、`403` 权限、`404` 不存在、`409` 冲突、`500` 异常、`501` 尚未实现。
-- 字段与 SSE 事件以共享 Zod schema 为准；时间为 ISO 8601，`FileMap` 为路径到文本内容的映射。
-- 前端只经 `src/lib/api` 请求 `/api/**`；生成结束后重新读取服务端状态。
-- 移除项目记录不等于删除磁盘目录；删除整个目录需要独立确认与能力实现。
+- 失败返回 `{ error: string }`。`400` 入参或路径不合法，`403` 越界或权限拒绝，`404` 不存在，`409` 状态冲突，`500` 未预期错误。
+- 时间为 ISO 8601。项目文件内容不放在项目列表响应里，只在请求具体文件时读取。
+- 前端只通过 `src/lib/api/client.ts` 请求 `/api/**`。SSE 每条消息是一行 `data: <json>`。
+- 所有事件都带单调递增的 `seq` 和 `runId`。`GET /api/chats/:id/events?since=<seq>` 先返回权威 `snapshot`，再推送之后的增量；终态且没有内存事件时从 SQLite 返回终态快照并结束。
+- `FileWindow.binary=true` 时不返回文本内容。默认最多 2000 行或 50 KiB，`nextOffset` 用于继续读取。
 
-## 项目与扩展目录
+## 项目与文件
 
-| 方法     | 路径                    | 请求                                                       | 响应与行为                                                                                      |
-| -------- | ----------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `GET`    | `/api/projects`         | —                                                          | `{ projects: ProjectSummary[] }`，包括目录、对话数、改动数、最近对话与缩略图                    |
-| `POST`   | `/api/projects`         | `{ workspacePath, name?, prompt?, templateId?, modelId? }` | `201 { project, chat }`；当前只创建示例项目和空对话，不创建磁盘目录                             |
-| `POST`   | `/api/projects/open`    | `{ workspacePath }`                                        | 当前返回 `501`，明确没有连接真实目录，不创建伪连接                                              |
-| `PATCH`  | `/api/projects/:id`     | `{ name }`                                                 | `Project`                                                                                       |
-| `DELETE` | `/api/projects/:id`     | —                                                          | `204`，只移除项目与对话记录，不触碰磁盘目录                                                     |
-| `PUT`    | `/api/projects/:id/env` | `{ env: { key, value, secret }[] }`                        | `Project`，覆盖示例环境变量列表；尚不注入真实进程                                               |
-| `GET`    | `/api/templates`        | —                                                          | `{ templates: Template[], gallery: GalleryTemplate[] }`，模板扩展保留                           |
-| `GET`    | `/api/models`           | —                                                          | `{ models: Model[] }`，当前是示例清单，无配置表单或真实连接                                     |
-| `GET`    | `/api/health`           | —                                                          | `{ ok, database }`；检查 SQLite 文件能否连接及查询，失败返回 `503`，不表示业务 API 已迁入数据库 |
+| 方法     | 路径                           | 请求                    | 响应与行为                                                                                             |
+| -------- | ------------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------------ |
+| `GET`    | `/api/projects`                | —                       | `{ projects: ProjectSummary[] }`；最近打开、目录、对话数、改动数和最近对话                             |
+| `POST`   | `/api/projects/open`           | `{ workspacePath }`     | `201 { project, chats }`；路径必须绝对、存在且是目录；同一真实路径（含软链）复用已有项目并返回入口对话 |
+| `GET`    | `/api/projects/:id`            | —                       | `ProjectDetail`：`{ project, chats, changeSets, nextCursor }`                                          |
+| `PATCH`  | `/api/projects/:id`            | `{ name }`              | `Project`                                                                                              |
+| `DELETE` | `/api/projects/:id`            | —                       | `204`；只删派蒙记录和 `data/` 下项目数据，不触碰用户目录；有运行中/待批准轮次返回 `409`                |
+| `GET`    | `/api/projects/:id/file`       | `?path=&offset=&limit=` | `FileWindow`；按需读取项目内文本文件，越界路径拒绝                                                     |
+| `GET`    | `/api/projects/:id/changesets` | `?cursor=&limit=`       | `{ changeSets: ChangeSet[], nextCursor }`                                                              |
 
-`templateId` 缺省为 `auto`，`prompt` 缺省为空。示例项目的路径不代表目录已经存在或获得文件访问权。
+打开目录会拒绝根目录、用户家目录、派蒙安装目录，以及项目目录之外的路径。项目目录之后被移走或失去权限时，读取返回具体错误，不重建目录、不切换到其他目录。列表与索引默认忽略 `.git`、`node_modules`、`.next`、`dist`、`build`、`coverage` 和 `.gitignore` 命中的内容，并返回截断标志；已知路径仍可显式读取，因此索引过滤不是访问边界。
 
-## 对话与生成
+## 对话与运行
 
-| 方法    | 路径                                | 请求                                | 响应与行为                                                         |
-| ------- | ----------------------------------- | ----------------------------------- | ------------------------------------------------------------------ |
-| `GET`   | `/api/projects/:id/chats`           | —                                   | `{ chats: ChatSummary[] }`                                         |
-| `POST`  | `/api/projects/:id/chats`           | `{ modelId?, title? }`              | `201 ChatSummary`；新对话继续使用同一项目的当前文件                |
-| `GET`   | `/api/chats?archived=1`             | —                                   | `{ chats: ChatSummary[] }`；不带归档参数时返回空列表               |
-| `GET`   | `/api/chats/:id`                    | —                                   | `ChatBundle`：`{ project, chat, chats, messages, skills, models }` |
-| `PATCH` | `/api/chats/:id`                    | `{ modelId?, title? }`              | `ChatSummary`                                                      |
-| `POST`  | `/api/chats/:id/archive`            | —                                   | `ChatSummary`，生成中返回 `409`                                    |
-| `POST`  | `/api/chats/:id/restore`            | —                                   | `ChatSummary`                                                      |
-| `POST`  | `/api/chats/:id/messages`           | `{ text, attachments, selection? }` | `202 { messageId, eventsUrl }`                                     |
-| `GET`   | `/api/chats/:id/events?since=<seq>` | —                                   | SSE；先给当前消息快照，再推送之后的增量                            |
-| `POST`  | `/api/chats/:id/stop`               | —                                   | `202 { ok: true }`，停止示例回合，保留已经产生的改动               |
-| `POST`  | `/api/chats/:id/plans/:messageId`   | `{ decision, feedback? }`           | `202 { messageId, eventsUrl }`；要求修改时必须带反馈               |
+| 方法    | 路径                                               | 请求                                     | 响应与行为                                                                    |
+| ------- | -------------------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------- |
+| `GET`   | `/api/projects/:id/chats`                          | —                                        | `{ chats: ChatSummary[] }`                                                    |
+| `POST`  | `/api/projects/:id/chats`                          | `{ modelId?, title? }`                   | `201 ChatSummary`                                                             |
+| `GET`   | `/api/chats`                                       | `?archived=1`                            | `{ chats: ChatSummary[] }`                                                    |
+| `GET`   | `/api/chats/:id`                                   | —                                        | `ChatBundle`：`{ project, chat, chats, messages, skills, models }`            |
+| `PATCH` | `/api/chats/:id`                                   | `{ modelId?, title? }`                   | `ChatSummary`                                                                 |
+| `POST`  | `/api/chats/:id/archive`                           | —                                        | `ChatSummary`；运行中返回 `409`                                               |
+| `POST`  | `/api/chats/:id/restore`                           | —                                        | `ChatSummary`                                                                 |
+| `POST`  | `/api/chats/:id/messages`                          | `{ text }`                               | `202 { runId, messageId, eventsUrl }`；同一对话已有运行或待批准轮次返回 `409` |
+| `GET`   | `/api/chats/:id/events`                            | `?since=<seq>`                           | SSE；`snapshot` + 增量事件                                                    |
+| `POST`  | `/api/chats/:id/stop`                              | —                                        | `202 { ok: true }`；幂等；终止模型请求和 Bash，等待已写文件收尾               |
+| `POST`  | `/api/chats/:id/runs/:runId/approvals/:approvalId` | `{ decision: "approved" \| "rejected" }` | `{ ok: true, approval }`；只允许 pending 改变，重复/过期返回 `409`            |
 
-`attachments` 为 `{ name, dataUrl }[]`。`decision` 为 `approved`、`changes_requested` 或 `rejected`。计划审批、Todo 与审查卡片沿用现有交互；它们的演示不代表真实工具已经执行。
+运行状态为 `running`、`awaiting_approval`、`succeeded`、`stopped`、`failed`。停止原因为 `user_stop` 或 `service_restart`。服务重启后遗留的运行会被标记 `stopped/service_restart`，已落盘的 Bash 改动按快照补记，无法确认写入者的改动标为 `uncertain`；不会自动续跑、重放工具或恢复旧审批。正常结束但仍有待执行工具时，状态是 `succeeded`，界面只显示本轮已结束。
 
-### SSE
+Agent 不设整轮步数、总时长或重复失败预算；模型调用不启用宿主自动重试。工具错误、单条 Bash 超时、审批拒绝和文件版本冲突作为工具结果返回给模型继续。停止、崩溃、致命模型/数据库错误会结束当前轮，并保留已经写入的文件供 Diff 恢复。
 
-每条消息是一行 `data: <json>`，带单调递增的 `seq`。连接先返回权威消息快照；快照已包含的文字和片段不重复追加。
+### SSE 事件
 
-| 事件           | 载荷                                                              |
-| -------------- | ----------------------------------------------------------------- |
-| `snapshot`     | `{ message: Message \| null }`                                    |
-| `part-added`   | `{ messageId, part }`                                             |
-| `part-updated` | `{ messageId, partId, patch }`                                    |
-| `text-delta`   | `{ messageId, partId, delta }`                                    |
-| `preview`      | `{ site, files }`，示例回合中的当前预览与文件                     |
-| `finish`       | `{ messageId, status, summary, changeSetId, completionReviewed }` |
-| `error`        | `{ message }`                                                     |
+| 事件            | 载荷                                                                                    |
+| --------------- | --------------------------------------------------------------------------------------- |
+| `snapshot`      | `{ message: Message \| null, run: { id, status, messageId } \| null }`                  |
+| `part-added`    | `{ messageId, part }`                                                                   |
+| `part-updated`  | `{ messageId, partId, patch }`；patch 可含 `state`、`output`、`error`、`approvalStatus` |
+| `text-delta`    | `{ messageId, partId, delta }`                                                          |
+| `files-changed` | `{ changeSetId, paths }`                                                                |
+| `finish`        | `{ messageId, status, stopReason, summary, changeSetId, error }`                        |
+| `error`         | `{ message }`                                                                           |
 
-`status` 为 `running`、`awaiting_approval`、`succeeded`、`stopped`、`failed`、`budget_exhausted` 或 `rejected`。工具、Todo、Plan、图片、元素选择和 review 都是结构化 Message parts。审查结论绑定源码修订，`completionReviewed` 只描述该轮最终修订；检查结果失效后不能复用旧通过记录。
+消息片段只有 `text`、`tool` 和 `approval`。工具片段包含名称、输入、状态、输出或错误；审批片段包含固定命令、工作目录、原因和状态。连接中断后前端从最后 `seq` 重连；快照是权威状态，避免重复文本。
 
-## 改动与撤销
+## 改动与恢复
 
-| 方法   | 路径                                             | 请求 | 响应与行为                                                             |
-| ------ | ------------------------------------------------ | ---- | ---------------------------------------------------------------------- |
-| `POST` | `/api/projects/:id/changesets/:changeSetId/undo` | —    | `{ project, changeSet }`；已撤销、有后续冲突或项目正在生成时返回 `409` |
+| 方法   | 路径                                             | 请求       | 响应与行为                                               |
+| ------ | ------------------------------------------------ | ---------- | -------------------------------------------------------- |
+| `GET`  | `/api/projects/:id/changesets/:changeSetId/file` | `?path=`   | `{ changeSet, file, before, after }`；文本 Diff 按需读取 |
+| `POST` | `/api/projects/:id/changesets/:changeSetId/undo` | `{ path }` | `{ changeSet, file }`；只恢复所选文件                    |
 
-改动记录在 `Project.changeSets` 中。撤销只处理本轮涉及的文件：当前内容仍等于记录的 `after` 时恢复 `before`；有冲突则整次拒绝，不覆盖部分文件。不相关文件保留。当前逻辑验证的是示例文件状态，真实磁盘撤销尚未接通。
+`ChangeFile` 记录路径、新增/修改/删除、来源（`tool`、`bash`、`user_undo`、`mixed`）、归属（`exact` 或 `uncertain`）、撤销状态、增删行数和二进制标记。ChangeSet 状态由文件状态推导为 `applied`、`partially_undone` 或 `undone`。
 
-## 本地文件与命令工具
+撤销先阻止同项目新的写入，终止并收尾正在运行的 Bash，再恢复所选文件。新增文件的撤销是删除，删除文件的撤销是恢复，空文件和缺失文件区分处理。撤销成功后会使其他运行对该文件的旧观察失效，并通知相关 Agent 重新读取、不要自动重做被撤销的改动；被终止的 Bash 把 `user_undo` 作为工具错误返回，所在轮次继续。撤销优先只保证本次恢复先完成，不是永久文件锁。
 
-保留专用的读取、写入、精确编辑、路径查找、内容搜索、移动和删除工具；Bash 用于安装项目依赖、运行检查和启动项目。工具范围以当前 Project 的真实目录为准，覆盖前核对文件修订，检测外部编辑器的后续修改。Plan 期间由宿主收起写类工具和通用命令。
+## Agent 工具、审批与快照
 
-文件读写与进程执行优先使用 Node 原生 `fs`、`child_process`，暂不引入额外文件或进程封装库。路径检查和工具授权不构成操作系统隔离。以上为已确认的执行约定，真实项目文件与命令工具尚未接入工作区；[ADR 0012](adr/0012-dedicated-file-tools-over-bash.md) 保留历史记录，其旧 Chat 沙箱范围由当前 Project 目录约定替代。
+| 工具    | 行为                                                                                               |
+| ------- | -------------------------------------------------------------------------------------------------- |
+| `read`  | 1 起算的行号、offset/limit、最多 2000 行或 50 KiB、截断和续读提示；流式读取                        |
+| `write` | 创建或覆盖；自动建父目录；覆盖前必须已读；新文件不覆盖已存在文件；原子提交                         |
+| `edit`  | 多个 `{ oldText, newText }` 对同一原文定位，必须唯一且互不重叠；保留 BOM、未改行和原换行风格       |
+| `grep`  | 固定参数调用打包的 ripgrep，不经 shell、不读取用户 rg 配置；默认最多 100 条                        |
+| `find`  | 项目相对路径 glob，最多 1000 条                                                                    |
+| `ls`    | 项目内目录列表，最多 500 条                                                                        |
+| `bash`  | `bash -c`，cwd 为项目目录，默认 120 秒、最大 600 秒；全量输出落盘，模型只接收尾部 2000 行或 50 KiB |
 
-## Agent 与审查
+路径解析对已有目标使用 `realpath`，新路径校验最近存在父目录；拒绝 `..`、越界绝对路径和越界软链。观察状态按运行隔离，记录 `dev/ino/size/mtimeNs/ctimeNs`，写前在文件级临界区复核。工具只能协调派蒙自身操作，不能阻止外部编辑器并发写入。
 
-Plan 由同一个主 Agent 完成：进入时宿主只开放读取、搜索和技能读取；提交方案后等待用户批准、要求修改或拒绝，批准后由原 Agent 继续执行。批准只对该版方案有效，方案改变需重新审批。Todo 表达执行进度，不能代替检查结果；不增加独立 Planner subagent。真实执行器尚未接入，当前审批界面仍由 mock 驱动；原始决定见 [ADR 0011](adr/0011-plan-mode-as-approval-gate.md)。
+Bash 超时或停止时先向进程组发 `SIGTERM`，3 秒后 `SIGKILL`，并处理管道后代。等待批准时停止按钮有效；批准只执行保存的那条命令一次，参数改变需要重新批准；拒绝不执行命令。审批记录在 SQLite，重启后不会执行旧审批。
 
-主 Agent 使用 `ToolLoopAgent` 执行任务。code review 和 completion review 各是一个独立的只读 subagent：分别使用自己的模型、指令与上下文，经 `request_code_review`、`request_completion_review` 工具供主 Agent 调用。code review 检查改动本身，completion review 核对本轮目标；只读取相关文件、diff、当前修订的检查结果和用户目标，不继承主 Agent 的推理过程，不修改项目或扩大权限。
+每条 Bash 在该命令前后各做一次独立快照，只扫描未忽略内容。文件工具精确记录改动；Bash 快照发现的变化统一按 `uncertain` 处理，因为快照不能证明写入者，界面不能把外部编辑精确归因给某个 Agent。
 
-小改动可以只做确定性检查；大改动在检查通过后调用 code review，交付前调用 completion review。每次子审查的轮次、范围、修订及结论记录在 review 片段中。两者不是固定的一对一流水线。检查结果绑定当前文件修订，无有效通过记录时宿主拒绝成功状态；未经完成审查的成功轮次保留可见标记。
+## 模型与健康检查
 
-这是已确认的执行定义；当前 UI 和 mock 只演示审查片段，真实主 Agent 与两个 subagent 尚未接入工作区。原始决定见 [ADR 0010](adr/0010-host-ci-floor.md) 和 [ADR 0013](adr/0013-review-as-subagent-tools.md)。
+| 方法  | 路径          | 响应与行为                                                                                            |
+| ----- | ------------- | ----------------------------------------------------------------------------------------------------- |
+| `GET` | `/api/models` | `{ models: Model[] }`；只返回环境变量实际配置的模型标识和可用状态，不含凭据                           |
+| `GET` | `/api/health` | `{ ok, node, git, bash, ripgrep, database, problems }`；缺少 Node/Git/Bash 或数据库不可用时返回 `503` |
 
-离线评测集、评测指标和夜间自动调优产出 PR 延后交付，保留为后续方向；不作为首版本地开发闭环的前置条件。日常测试、确定性检查和两个审查 subagent 继续保留。[ADR 0014](adr/0014-seeded-defects-as-ground-truth.md) 与 [ADR 0015](adr/0015-offline-tuning-only.md) 保留历史记录。
+模型通过 `AI_MODEL`、`AI_BASE_URL`、`AI_API_KEY` 配置，使用 AI SDK `ToolLoopAgent` 和 OpenAI-compatible provider。模型配置界面延后；没有配置时发送消息返回 `400`。
 
-## 技能
+## 技能与模板
 
-技能采用 Pi 的按需加载方式：发现阶段只索引 `SKILL.md` 的名称、描述和位置；主模型按任务读取正文，引用文件相对技能目录解析，`references/` 与 `scripts/` 需要时再读取。读取脚本不等于授权执行。用户级目录为 `~/.paimeng/skills/<name>/SKILL.md`，所有项目共享；项目级目录为 `<用户项目>/.paimeng/skills/<name>/SKILL.md`。先发现用户级、再发现项目级，同名保留先发现的一份并返回冲突提示；不静默覆盖。技能目录可以分组嵌套，遇到 `SKILL.md` 后把该目录视为一个技能，不继续扫描其参考目录。`disable-model-invocation: true` 的技能不进入自动选择提示，仍可按名称显式读取。
+| 方法  | 路径                               | 请求 | 响应与行为                                                      |
+| ----- | ---------------------------------- | ---- | --------------------------------------------------------------- |
+| `GET` | `/api/skills?projectId=<id>`       | —    | `SkillCatalog`：技能列表、用户级/项目级目录和诊断信息           |
+| `GET` | `/api/skills/:name?projectId=<id>` | —    | `SkillDetail`：技能信息和技能目录内文本文件内容；越界返回 `403` |
+| `GET` | `/api/templates`                   | —    | `{ templates, gallery }`；展示模板画廊，不创建示例项目          |
 
-本地技能发现及只读文件接口已接入。列表只返回名称、描述和路径，正文按请求读取；参考文件与脚本文本只能从该技能目录内读取。当前未连接真实目录的示例项目不会触发项目级扫描，用户级扫描正常工作；现有导入、开关和制作操作仍作用于示例技能，不写入用户技能目录。`load_skill`、`read_skill_file` 已提供 AI SDK 只读工具入口，等待真实主 Agent 接入。
-
-| 方法     | 路径                                                         | 请求                                                           | 响应与行为                                                                                                         |
-| -------- | ------------------------------------------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `GET`    | `/api/skills?projectId=<id>`                                 | —                                                              | `{ skills: Skill[], catalog: { skills: LocalSkill[], directories, diagnostics } }`；不传项目时只发现用户级技能     |
-| `GET`    | `/api/skills/:slug/files?projectId=<id>&path=<relativePath>` | —                                                              | `{ name, path, content }`；这里只读取本地技能，slug 为技能名，path 默认 `SKILL.md`；越界返回 `403`，过大返回 `413` |
-| `PATCH`  | `/api/skills/:slug`                                          | `{ enabled?, trusted? }`                                       | `Skill`；撤销信任同时停用                                                                                          |
-| `POST`   | `/api/skills/import`                                         | `{ files: { path, content }[], trusted, slug?, description? }` | `201 Skill`；必须含根 `SKILL.md`                                                                                   |
-| `POST`   | `/api/skills/draft`                                          | `{ prompt }`                                                   | `{ slug, files, manifest }`，只生成技能草稿内容                                                                    |
-| `DELETE` | `/api/skills/:slug`                                          | —                                                              | `204`，内置技能返回 `403`                                                                                          |
-
-`slug` 的 API 标识区分 `builtin:` 与 `user:` 来源。技能草稿保留；它与已移除的项目草稿不是同一概念。
+技能只发现 `~/.paimeng/skills/<name>/SKILL.md` 和 `<项目>/.paimeng/skills/<name>/SKILL.md` 两级目录，同名以先发现者为准并返回诊断。导入、启用、信任、删除和技能草稿接口已下线；技能不会自动注入 Agent。
 
 ## 页面
 
-| 路径             | 页面                                                                   |
-| ---------------- | ---------------------------------------------------------------------- |
-| `/`              | 工作区空态：打开、新建、最近项目；同一外壳可查看项目、对话、技能与模板 |
-| `/chat/<chatId>` | 项目工作区：对话、当前预览、当前文件、改动、运行日志与项目设置         |
-| `/skills`        | 技能管理入口                                                           |
+| 路径             | 页面                                                                |
+| ---------------- | ------------------------------------------------------------------- |
+| `/`              | 打开本地目录、最近项目、模板画廊；未打开项目时为空态                |
+| `/chat/<chatId>` | 工作区：对话、项目文件、改动 Diff、审批卡片和停止；预览显示尚未启动 |
+| `/skills`        | 用户级和项目级磁盘技能列表与正文查看                                |
 
-## 已接入的基础依赖
+## 已接入依赖
 
-使用 AI SDK `ToolLoopAgent` 与 OpenAI-compatible provider；服务端模型入口读取 `AI_MODEL`、`AI_BASE_URL` 和 `AI_API_KEY`，配置表单延后。兼容接口通过本地测试服务验证，未调用收费模型，也未把工作区示例切成真实 Agent。
-
-助手回复使用 `react-markdown` + `remark-gfm`，支持表格、任务列表和代码块；用户消息保持纯文本，不渲染回复中的原始 HTML。只读代码面板使用 Shiki，按需加载语言与明暗主题，语法资源未就绪或文件过大时显示纯文本，不影响源码查看与复制。
-
-文件行差异使用 `diff` 库，保留改动面板的增删行、行号和空行语义；它只负责比较，不负责文件撤销或冲突处理。
-
-存储使用 Drizzle + better-sqlite3，`DATABASE_PATH` 缺省为 `data/paimeng.sqlite`。运行 `npm run db:migrate` 初始化表，可重复执行；迁移内容变动会被校验和拒绝。健康检查只证明数据库可连接和查询，项目/对话等接口仍使用 mock 存储。SQLite 表已去除发布、沙箱和旧版本预设；Git 版本能力另行接入。中断后保留工作、用户重试，不做自动续跑。
+- Next.js 16、React 19、AI SDK 7、`@ai-sdk/openai-compatible`、Zod 4。
+- Drizzle + better-sqlite3；`DATABASE_PATH` 缺省为 `data/paimeng.sqlite`。运行 `npm run db:migrate` 建表，可重复执行；已应用迁移的校验和变化会被拒绝。
+- `diff` 计算行差异；Shiki 按需高亮代码；`react-markdown` + `remark-gfm` 渲染助手回复，用户消息保持纯文本。
+- `@vscode/ripgrep`（固定版本）提供打包的搜索二进制。
+- 项目快照和 Bash 前后比较需要本机 Git；缺少 Git 时健康检查报告问题并拒绝需要快照的操作。

@@ -1,107 +1,202 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { Check, Copy, FolderClosed, Lock } from 'lucide-react';
-import { toast } from 'sonner';
-import { CodeView, FileTree } from '@/lib/code';
-import type { FileMap } from '@/shared/api/schemas';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertCircle, FileWarning, Loader2, RefreshCw } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { FileTree, CodeView } from '@/lib/code';
+import { api } from '@/lib/api/client';
+import { errorMessage } from '@/lib/errors';
+import type { FileIndex, FileWindow } from '@/shared/api/schemas';
+import { fileWindowSchema } from '@/shared/api/schemas';
+import { cn } from '@/lib/utils';
 
-/** 项目当前文件（只读）：与预览、改动记录看的是同一份共享文件。 */
+const PAGE_LINES = 400;
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export function CodePanel({
-  files,
-  workspacePath,
-  streaming,
-  selectedPath,
-  onSelectPath,
+  projectId,
+  fileIndex,
+  filesVersion,
 }: {
-  files: FileMap;
-  workspacePath: string;
-  streaming: boolean;
-  selectedPath: string;
-  onSelectPath: (path: string) => void;
+  projectId: string;
+  fileIndex: FileIndex;
+  filesVersion: number;
 }) {
-  const [copied, setCopied] = useState(false);
-  const code = files[selectedPath] ?? '';
-  const paths = useMemo(() => Object.keys(files).sort(), [files]);
+  const [selected, setSelected] = useState('');
+  const [file, setFile] = useState<FileWindow | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const requestRef = useRef(0);
+
+  const loadFile = useCallback(
+    async (path: string, offset: number, append: boolean) => {
+      if (!path) return;
+      const requestId = requestRef.current + 1;
+      requestRef.current = requestId;
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      setLoading(true);
+      setError(null);
+      if (!append) {
+        setFile(null);
+        setSelected(path);
+      }
+      try {
+        const url = `/api/projects/${projectId}/file?path=${encodeURIComponent(path)}&offset=${offset}&limit=${PAGE_LINES}`;
+        const next = await api.get<FileWindow>(url, fileWindowSchema, {
+          signal: controller.signal,
+        });
+        if (requestRef.current !== requestId) return;
+        setFile((current) => {
+          if (!append || !current) return next;
+          const separator = current.content.endsWith('\n') || !current.content ? '' : '\n';
+          return {
+            ...next,
+            offset: current.offset,
+            content: current.content + separator + next.content,
+          };
+        });
+      } catch (cause) {
+        if (controller.signal.aborted || requestRef.current !== requestId) return;
+        setError(errorMessage(cause));
+        if (!append) setFile(null);
+      } finally {
+        if (requestRef.current === requestId) setLoading(false);
+      }
+    },
+    [projectId],
+  );
 
   useEffect(() => {
-    if (!files[selectedPath] && paths.length) {
-      onSelectPath(paths[0]);
-    }
-  }, [files, onSelectPath, paths, selectedPath]);
+    if (!selected) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadFile(selected, 1, false);
+  }, [selected, filesVersion, loadFile]);
 
-  function copy() {
-    if (!code) return;
-    void navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      toast.success('已复制文件内容');
-      window.setTimeout(() => setCopied(false), 1500);
-    });
-  }
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-card">
-      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-        <span className="text-[12px] font-medium">当前文件</span>
-        <span className="flex min-w-0 items-center gap-1 font-mono text-[10.5px] text-muted-foreground">
-          <FolderClosed className="size-3 shrink-0" />
-          <span className="truncate">{workspacePath}</span>
-        </span>
-        {streaming ? (
-          <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[9.5px] text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
-            正在写入
-          </span>
-        ) : null}
-        <span className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground">
-          <Lock className="size-2.5" />
-          只读
-        </span>
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <div>
+          <p className="text-xs font-semibold">项目文件</p>
+          <p className="text-[10px] text-muted-foreground">
+            {fileIndex.paths.length} 个路径
+            {fileIndex.truncated ? ` · 仅显示前 ${fileIndex.limit} 个路径` : ''}
+          </p>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7"
+          title="刷新当前文件"
+          onClick={() => selected && void loadFile(selected, 1, false)}
+          disabled={!selected || loading}
+        >
+          <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
+        </Button>
       </div>
 
-      <div className="flex min-h-0 flex-1">
-        <div className="flex w-44 shrink-0 flex-col border-r border-border bg-muted/30">
-          <div className="flex items-center justify-between px-2.5 py-1.5 text-[10px] text-muted-foreground">
-            <span>项目文件</span>
-            <span>{paths.length} 个</span>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-3">
-            <FileTree files={files} selected={selectedPath} onSelect={onSelectPath} />
-          </div>
-        </div>
+      <div className="max-h-[38%] min-h-24 shrink-0 overflow-y-auto border-b border-border p-2">
+        {fileIndex.paths.length === 0 ? (
+          <p className="px-2 py-3 text-[11px] leading-5 text-muted-foreground">
+            这个目录里还没有可显示的文件。
+          </p>
+        ) : (
+          <FileTree
+            paths={fileIndex.paths}
+            selected={selected}
+            onSelect={(path) => setSelected(path)}
+          />
+        )}
+      </div>
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
-            <span className="truncate font-mono text-[11px] text-foreground/90">
-              {selectedPath}
-            </span>
-            <button
-              type="button"
-              onClick={copy}
-              className="ml-auto rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-              title="复制文件内容"
-            >
-              {copied ? (
-                <Check className="size-3.5 text-emerald-600" />
-              ) : (
-                <Copy className="size-3.5" />
-              )}
-            </button>
+      <div className="min-h-0 flex-1">
+        {!selected ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+            <FileWarning className="size-5 text-muted-foreground/70" />
+            <p className="text-xs font-medium">选择一个文件查看内容</p>
+            <p className="text-[11px] leading-5 text-muted-foreground">
+              文件只在点击时读取，不会一次加载整个项目。
+            </p>
           </div>
-          {code ? (
-            <CodeView code={code} filename={selectedPath} className="min-h-0 flex-1" />
-          ) : (
-            <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
-              <p className="text-[12px]">
-                {streaming ? '正在写入第一个文件…' : '这个项目还没有可查看的文件'}
-              </p>
-              <p className="max-w-xs text-[11px] leading-5 text-muted-foreground">
-                {streaming
-                  ? '文件树会在每次写入之后逐个出现，和项目目录里的内容保持一致。'
-                  : '在左侧对话里描述你要改什么，助手写入文件后会出现在这里。'}
-              </p>
+        ) : loading && !file ? (
+          <div className="flex items-center gap-2 px-4 py-3 text-[11px] text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" />
+            正在读取 {selected}…
+          </div>
+        ) : error ? (
+          <div className="m-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-[11px] leading-5 text-destructive">
+            <div className="flex items-center gap-1.5 font-medium">
+              <AlertCircle className="size-3.5" />
+              读取失败
             </div>
-          )}
-        </div>
+            <p className="mt-1 break-words">{error}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2 h-7 text-[11px]"
+              onClick={() => void loadFile(selected, 1, false)}
+            >
+              重试
+            </Button>
+          </div>
+        ) : file ? (
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px]">{file.path}</span>
+              <span className="shrink-0 text-[10px] text-muted-foreground">
+                {file.binary ? formatBytes(file.size) : `${file.totalLines} 行`}
+              </span>
+              {loading ? <Loader2 className="size-3 animate-spin text-muted-foreground" /> : null}
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              {file.binary ? (
+                <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+                  <FileWarning className="size-5 text-muted-foreground/70" />
+                  <p className="text-xs font-medium">二进制文件，大小 {formatBytes(file.size)}</p>
+                  <p className="text-[11px] text-muted-foreground">不显示文件内容。</p>
+                </div>
+              ) : file.content ? (
+                <CodeView
+                  code={file.content}
+                  filename={file.path}
+                  startLine={file.offset}
+                  className="h-full"
+                />
+              ) : (
+                <p className="px-4 py-3 text-[11px] text-muted-foreground">文件为空。</p>
+              )}
+            </div>
+            {!file.binary && (file.truncated || file.nextOffset !== null) ? (
+              <div className="flex items-center gap-2 border-t border-border px-3 py-2">
+                <span className="min-w-0 flex-1 text-[10px] text-muted-foreground">
+                  已读取前{' '}
+                  {file.nextOffset !== null ? file.nextOffset - file.offset : file.totalLines}{' '}
+                  行，共 {file.totalLines} 行
+                </span>
+                {file.nextOffset !== null ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-[11px]"
+                    disabled={loading}
+                    onClick={() => void loadFile(file.path, file.nextOffset ?? 0, true)}
+                  >
+                    {loading ? '读取中…' : '继续读取'}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );

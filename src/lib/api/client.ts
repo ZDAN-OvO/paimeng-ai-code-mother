@@ -35,33 +35,39 @@ async function request<T>(path: string, init?: RequestInit, schema?: ZodType<T>)
 }
 
 export const api = {
-  get: <T>(path: string, schema?: ZodType<T>) => request<T>(path, { method: 'GET' }, schema),
-  post: <T>(path: string, body?: unknown) =>
-    request<T>(path, {
-      method: 'POST',
-      body: body === undefined ? undefined : JSON.stringify(body),
-    }),
-  patch: <T>(path: string, body: unknown) =>
-    request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
-  put: <T>(path: string, body: unknown) =>
-    request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
-  delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  get: <T>(path: string, schema?: ZodType<T>, init?: RequestInit) =>
+    request<T>(path, { ...init, method: 'GET' }, schema),
+  post: <T>(path: string, body?: unknown, schema?: ZodType<T>) =>
+    request<T>(
+      path,
+      {
+        method: 'POST',
+        body: body === undefined ? undefined : JSON.stringify(body),
+      },
+      schema,
+    ),
+  patch: <T>(path: string, body: unknown, schema?: ZodType<T>) =>
+    request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }, schema),
+  put: <T>(path: string, body: unknown, schema?: ZodType<T>) =>
+    request<T>(path, { method: 'PUT', body: JSON.stringify(body) }, schema),
+  delete: <T>(path: string, schema?: ZodType<T>) => request<T>(path, { method: 'DELETE' }, schema),
 };
 
-/** SSE 增量解析：TCP 分片可能把一条事件切成两段，这里按空行边界缓冲。 */
+/** SSE 增量解析：按空行切分事件，支持注释心跳、跨分片和多行 data。 */
 export function createSseParser<T>(onEvent: (event: T) => void) {
   let buffer = '';
   return (chunk: string) => {
-    buffer += chunk;
+    buffer = (buffer + chunk).replace(/\r\n/g, '\n');
     let boundary = buffer.indexOf('\n\n');
     while (boundary >= 0) {
       const block = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
-      for (const line of block.split('\n')) {
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (payload) onEvent(JSON.parse(payload) as T);
-      }
+      const data = block
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).replace(/^ /, ''))
+        .join('\n');
+      if (data.trim()) onEvent(JSON.parse(data) as T);
       boundary = buffer.indexOf('\n\n');
     }
   };

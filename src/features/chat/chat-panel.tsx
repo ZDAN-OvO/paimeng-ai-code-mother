@@ -2,708 +2,502 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
+  AlertCircle,
   ArrowUp,
-  Brain,
   Check,
   ChevronDown,
-  CircleAlert,
-  FilePlus2,
-  FolderTree,
-  Globe,
-  ImageIcon,
-  ImagePlus,
-  LayoutTemplate,
+  CircleStop,
+  Clock3,
+  Code2,
   Loader2,
-  Mic,
-  MousePointerSquareDashed,
-  Paperclip,
-  Search,
-  Sparkles,
-  Square,
-  Terminal,
+  ShieldAlert,
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { cn } from '@/lib/utils';
-import { SAMPLE_SCREENSHOT } from '@/mock/seed/screenshot';
-import { formatTime } from '@/lib/time';
-import { useWorkspace } from '@/features/workspace/workspace-store';
-import type {
-  ChatRecord,
-  DesignContext,
-  Message,
-  Model,
-  Part,
-  Project,
-  Template,
-} from '@/shared/api/schemas';
-import { useVoiceInput } from '@/features/chat/use-voice';
+import { Markdown } from '@/features/chat/markdown';
 import { ModelSelect } from '@/features/home/model-select';
-import { PlanCard, ReviewCard, TodosCard } from '@/features/chat/flow-cards';
-import { Markdown } from './markdown';
+import { useWorkspace } from '@/features/workspace/workspace-store';
+import { cn } from '@/lib/utils';
+import { formatTime } from '@/lib/time';
+import type { ApprovalStatus, Message, Part, RunStatus } from '@/shared/api/schemas';
 
-export type DesignSelection = DesignContext;
+const TOOL_LABEL: Record<string, string> = {
+  read: '读取文件',
+  write: '写入文件',
+  edit: '编辑文件',
+  grep: '搜索内容',
+  find: '查找文件',
+  ls: '列出目录',
+  bash: '运行命令',
+};
 
-export type Attachment = { url: string; name: string };
+function runStatusText(status: RunStatus, stopReason?: string, error?: string): string {
+  if (status === 'running') return '正在执行';
+  if (status === 'awaiting_approval') return '等待命令批准';
+  if (status === 'succeeded') return '本轮已结束';
+  if (status === 'failed') return error ? `失败：${error}` : '失败';
+  if (stopReason === 'user_stop') return '已停止（用户停止）';
+  if (stopReason === 'service_restart') return '已停止（服务重启）';
+  return stopReason ? `已停止（${stopReason}）` : '已停止';
+}
 
-export function ChatPanel({
-  chat,
-  project,
-  models,
-  templates,
-  selection,
-  onClearSelection,
-  onOpenChangeSet,
-  draft,
-  onDraftChange,
-  attachments,
-  onAttachmentsChange,
+function statusStyle(status: RunStatus): string {
+  if (status === 'running') return 'border-emerald-500/40 text-emerald-600';
+  if (status === 'awaiting_approval') return 'border-amber-500/40 text-amber-600';
+  if (status === 'failed') return 'border-destructive/40 text-destructive';
+  return 'border-border text-muted-foreground';
+}
+
+function ToolPart({ part }: { part: Extract<Part, { type: 'tool' }> }) {
+  const [open, setOpen] = useState(false);
+  const label = TOOL_LABEL[part.name];
+  const stateLabel =
+    part.state === 'running'
+      ? '运行中'
+      : part.state === 'awaiting_approval'
+        ? '待批准'
+        : part.state === 'error'
+          ? '出错'
+          : '已完成';
+  const hasDetails = Object.keys(part.input).length > 0 || part.output || part.error;
+
+  return (
+    <div className="rounded-lg border border-border bg-card/60">
+      <button
+        type="button"
+        onClick={() => hasDetails && setOpen((value) => !value)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left"
+      >
+        <Code2 className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-xs">
+          <span className="font-medium">{label ?? part.name}</span>
+          {label ? (
+            <span className="ml-1.5 font-mono text-[10px] text-muted-foreground">{part.name}</span>
+          ) : null}
+        </span>
+        <span
+          className={cn(
+            'flex shrink-0 items-center gap-1 text-[10px]',
+            part.state === 'error' && 'text-destructive',
+            part.state === 'running' && 'text-emerald-600',
+            part.state === 'awaiting_approval' && 'text-amber-600',
+            part.state === 'done' && 'text-muted-foreground',
+          )}
+        >
+          {part.state === 'running' ? <Loader2 className="size-3 animate-spin" /> : null}
+          {stateLabel}
+        </span>
+        {hasDetails ? (
+          <ChevronDown
+            className={cn(
+              'size-3.5 shrink-0 text-muted-foreground transition-transform',
+              open && 'rotate-180',
+            )}
+          />
+        ) : null}
+      </button>
+      {open ? (
+        <div className="space-y-2 border-t border-border px-3 py-2">
+          <div>
+            <p className="mb-1 text-[10px] font-medium text-muted-foreground">输入</p>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/40 p-2 font-mono text-[10px] leading-4">
+              {JSON.stringify(part.input, null, 2)}
+            </pre>
+          </div>
+          {part.output ? (
+            <div>
+              <p className="mb-1 text-[10px] font-medium text-muted-foreground">输出</p>
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/40 p-2 font-mono text-[10px] leading-4">
+                {part.output}
+              </pre>
+            </div>
+          ) : null}
+          {part.error ? (
+            <div>
+              <p className="mb-1 text-[10px] font-medium text-destructive">错误</p>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded border border-destructive/20 bg-destructive/5 p-2 font-mono text-[10px] leading-4 text-destructive">
+                {part.error}
+              </pre>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const APPROVAL_LABEL: Record<ApprovalStatus, string> = {
+  pending: '等待批准',
+  approved: '已批准',
+  rejected: '已拒绝',
+  expired: '已失效',
+};
+
+function ApprovalPart({
+  part,
+  onDecide,
 }: {
-  chat: ChatRecord;
-  models: Model[];
-  templates: Template[];
-  project: Project;
-  selection: DesignSelection | null;
-  onClearSelection: () => void;
-  onOpenChangeSet: (changeSetId: string) => void;
-  draft: string;
-  onDraftChange: (value: string) => void;
-  attachments: Attachment[];
-  onAttachmentsChange: (next: Attachment[]) => void;
+  part: Extract<Part, { type: 'approval' }>;
+  onDecide: (approvalId: string, decision: 'approved' | 'rejected') => Promise<void>;
 }) {
-  const { state, sendMessage, stopGeneration, setModel } = useWorkspace();
-  const [submitting, setSubmitting] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const { listening, toggle: toggleVoice } = useVoiceInput((text) => {
-    onDraftChange(draft.trim() ? `${draft.replace(/\s+$/, '')} ${text}` : `${text}`);
-  });
+  const [deciding, setDeciding] = useState<'approved' | 'rejected' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const pending = part.status === 'pending';
+
+  async function decide(decision: 'approved' | 'rejected') {
+    if (!pending || deciding) return;
+    setDeciding(decision);
+    setError(null);
+    try {
+      await onDecide(part.approvalId, decision);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '提交批准结果失败，请重试。');
+    } finally {
+      setDeciding(null);
+    }
+  }
+
+  return (
+    <div
+      className={cn(
+        'rounded-lg border p-3',
+        pending ? 'border-amber-500/40 bg-amber-500/5' : 'border-border bg-card/60',
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <ShieldAlert
+          className={cn('size-4 shrink-0', pending ? 'text-amber-600' : 'text-muted-foreground')}
+        />
+        <p className="min-w-0 flex-1 text-xs font-medium">命令需要确认</p>
+        <Badge
+          variant="outline"
+          className={cn(
+            'h-5 text-[10px]',
+            part.status === 'approved' && 'border-emerald-500/40 text-emerald-600',
+            part.status === 'rejected' && 'border-destructive/40 text-destructive',
+            pending && 'border-amber-500/40 text-amber-700 dark:text-amber-400',
+          )}
+        >
+          {APPROVAL_LABEL[part.status]}
+        </Badge>
+      </div>
+      <div className="mt-2 space-y-1.5">
+        <pre className="overflow-x-auto rounded bg-muted/50 p-2 font-mono text-[11px] leading-5">
+          {part.command}
+        </pre>
+        <p className="break-all font-mono text-[10px] text-muted-foreground">目录：{part.cwd}</p>
+        {part.reason ? (
+          <p className="break-words text-[11px] leading-5 text-muted-foreground">{part.reason}</p>
+        ) : null}
+        <p className="break-words text-[10px] leading-5 text-muted-foreground">
+          关键词规则只是操作提醒，不是隔离边界；批准前请自行确认命令内容。
+        </p>
+      </div>
+      {error ? <p className="mt-2 break-words text-[10px] text-destructive">{error}</p> : null}
+      {pending ? (
+        <div className="mt-2 flex gap-2">
+          <Button
+            size="sm"
+            className="h-7 gap-1 text-[11px]"
+            disabled={deciding !== null}
+            onClick={() => void decide('approved')}
+          >
+            {deciding === 'approved' ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <Check className="size-3" />
+            )}
+            批准并运行
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1 text-[11px]"
+            disabled={deciding !== null}
+            onClick={() => void decide('rejected')}
+          >
+            {deciding === 'rejected' ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <X className="size-3" />
+            )}
+            拒绝
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AssistantMessage({
+  message,
+  run,
+  summary,
+  decidingApproval,
+  onDecideApproval,
+  onShowChanges,
+}: {
+  message: Message;
+  run: { id: string; status: RunStatus; messageId: string } | null;
+  summary?: string;
+  decidingApproval: string | null;
+  onDecideApproval: (approvalId: string, decision: 'approved' | 'rejected') => Promise<void>;
+  onShowChanges: () => void;
+}) {
+  const liveStatus = run?.messageId === message.id ? run.status : undefined;
+  const status = liveStatus ?? message.status ?? (message.streaming ? 'running' : undefined);
+  const statusText = status ? runStatusText(status, message.stopReason, message.error) : null;
+  const hasText = message.parts.some((part) => part.type === 'text' && part.text.trim());
+
+  return (
+    <div className="group min-w-0">
+      <div className="mb-1.5 flex items-center gap-2">
+        <span className="text-[11px] font-medium text-muted-foreground">助手</span>
+        <span className="text-[10px] text-muted-foreground/70">
+          {formatTime(message.createdAt)}
+        </span>
+      </div>
+      <div className="space-y-2.5">
+        {message.parts.map((part) => {
+          if (part.type === 'text') {
+            if (!part.text) return null;
+            return <Markdown key={part.id} text={part.text} />;
+          }
+          if (part.type === 'tool') return <ToolPart key={part.id} part={part} />;
+          return (
+            <ApprovalPart
+              key={part.id}
+              part={part}
+              onDecide={async (approvalId, decision) => {
+                if (decidingApproval) return;
+                await onDecideApproval(approvalId, decision);
+              }}
+            />
+          );
+        })}
+        {!hasText && message.parts.every((part) => part.type === 'text') && status === 'running' ? (
+          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <Loader2 className="size-3 animate-spin" />
+            正在思考…
+          </div>
+        ) : null}
+      </div>
+      {summary ? (
+        <p className="mt-2 rounded-md bg-muted/40 px-2.5 py-1.5 text-[11px] leading-5 text-muted-foreground">
+          {summary}
+        </p>
+      ) : null}
+      {statusText ? (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <Badge
+            variant="outline"
+            className={cn('h-5 gap-1 text-[10px]', statusStyle(status ?? 'succeeded'))}
+          >
+            {status === 'running' ? <Loader2 className="size-3 animate-spin" /> : null}
+            {status === 'awaiting_approval' ? <Clock3 className="size-3" /> : null}
+            {status === 'failed' ? <AlertCircle className="size-3" /> : null}
+            {statusText}
+          </Badge>
+          {message.changeSetId ? (
+            <button
+              type="button"
+              onClick={onShowChanges}
+              className="text-[10px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              查看本轮改动
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function ChatPanel({ onShowChanges }: { onShowChanges: () => void }) {
+  const {
+    bundle,
+    messages,
+    models,
+    run,
+    summaries,
+    error,
+    stopping,
+    sendMessage,
+    stopRun,
+    decideApproval,
+    setModel,
+  } = useWorkspace();
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [decidingApproval, setDecidingApproval] = useState<string | null>(null);
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+
+  const configuredModels = models.filter((model) => model.configured);
+  const busy =
+    run?.status === 'running' ||
+    run?.status === 'awaiting_approval' ||
+    bundle?.chat.streaming === true ||
+    bundle?.chat.pendingApproval === true;
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [chat.messages]);
-
-  const busy = chat.streaming;
-  const awaiting = Boolean(chat.pendingPlan);
-  const siblingBusy = state.chats.find(
-    (item) => item.id !== chat.id && (item.streaming || item.pendingPlan),
-  );
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    scroller.scrollTop = scroller.scrollHeight;
+  }, [messages, run]);
 
   async function submit() {
     const text = draft.trim();
-    if ((!text && attachments.length === 0) || busy || awaiting || submitting || siblingBusy)
-      return;
-    setSubmitting(true);
+    if (!text || sending || busy) return;
+    setSending(true);
+    const ok = await sendMessage(text);
+    setSending(false);
+    if (ok) setDraft('');
+  }
+
+  async function decide(approvalId: string, decision: 'approved' | 'rejected') {
+    setDecidingApproval(approvalId);
     try {
-      const accepted = await sendMessage(chat.id, text, attachments, {
-        selection: selection ?? undefined,
-      });
-      if (accepted) {
-        onDraftChange('');
-        onAttachmentsChange([]);
-        onClearSelection();
-      }
+      await decideApproval(approvalId, decision);
     } finally {
-      setSubmitting(false);
+      setDecidingApproval(null);
     }
   }
 
-  function onFile(files: FileList | null) {
-    if (!files) return;
-    Array.from(files)
-      .slice(0, 3)
-      .forEach((file) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          if (typeof reader.result === 'string') {
-            onAttachmentsChange([
-              ...attachments,
-              { url: reader.result as string, name: file.name },
-            ]);
-          }
-        };
-        reader.readAsDataURL(file);
-      });
-  }
-
-  return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5">
-        {project.templateId !== 'auto' ? (
-          <div
-            data-testid="template-note"
-            className="flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-[11.5px] text-muted-foreground"
-          >
-            <LayoutTemplate className="size-3.5 shrink-0" />
-            从模板「
-            {templates.find((item) => item.id === project.templateId)?.name ?? project.templateId}
-            」开始
-          </div>
-        ) : null}
-        {chat.messages.length === 0 ? (
-          <EmptyChat workspacePath={project.workspacePath} />
-        ) : (
-          chat.messages.map((message) => (
-            <MessageRow
-              key={message.id}
-              message={message}
-              chatId={chat.id}
-              onOpenChangeSet={onOpenChangeSet}
-              modelName={models.find((model) => model.id === chat.modelId)?.name ?? chat.modelId}
-            />
-          ))
-        )}
-        <div ref={bottomRef} />
-      </div>
-
-      <div className="border-t border-border bg-background px-3 pt-2.5 pb-3">
-        {siblingBusy ? (
-          <p role="status" className="mb-2 text-[11px] text-muted-foreground">
-            「{siblingBusy.title}」{siblingBusy.streaming ? '正在处理任务' : '正在等待方案审批'}，
-            处理完成后可在这里继续。你可以先写下需求。
-          </p>
-        ) : null}
-        {selection ? (
-          <div className="mb-2 flex items-center gap-2 rounded-md border border-dashed border-border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
-            <MousePointerSquareDashed className="size-3.5" />
-            <span className="truncate">
-              已选中 <span className="font-medium text-foreground">{selection.label}</span>
-              <span className="ml-1 font-mono text-[11px]">{selection.src}</span>
-            </span>
-            <button
-              type="button"
-              onClick={onClearSelection}
-              className="ml-auto rounded p-0.5 hover:bg-muted hover:text-foreground"
-            >
-              <X className="size-3.5" />
-            </button>
-          </div>
-        ) : null}
-
-        {attachments.length > 0 ? (
-          <div className="mb-2 flex flex-wrap gap-2">
-            {attachments.map((attachment) => (
-              <div
-                key={attachment.name + attachment.url.slice(-12)}
-                className="group relative overflow-hidden rounded-md border border-border"
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={attachment.url}
-                  alt={attachment.name}
-                  className="h-14 w-20 object-cover"
-                />
-                <span className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-1 py-0.5 text-[9px] text-white">
-                  {attachment.name}
-                </span>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onAttachmentsChange(attachments.filter((item) => item.url !== attachment.url))
-                  }
-                  className="absolute top-0.5 right-0.5 rounded bg-black/60 p-0.5 text-white opacity-0 transition-opacity group-hover:opacity-100"
-                >
-                  <X className="size-3" />
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        <div className="rounded-xl border border-border bg-card px-2.5 pt-2 pb-1.5 transition-colors focus-within:border-foreground/30">
-          <Textarea
-            data-testid="chat-input"
-            value={draft}
-            disabled={awaiting || submitting}
-            onChange={(event) => onDraftChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                submit();
-              }
-            }}
-            placeholder={
-              awaiting
-                ? '请先审阅上方计划，再继续实施'
-                : selection
-                  ? '描述这个区块要改成什么样'
-                  : '描述你想改的地方，Enter 发送'
-            }
-            className="min-h-12 resize-none border-0 bg-transparent px-0.5 py-1 text-[13px] leading-6 shadow-none focus-visible:ring-0 dark:bg-transparent"
-          />
-          <div className="mt-1 flex items-center gap-1">
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              multiple
-              className="hidden"
-              onChange={(event) => {
-                onFile(event.target.files);
-                event.target.value = '';
-              }}
-            />
-            <DropdownMenu>
-              <DropdownMenuTrigger className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground">
-                <Paperclip className="size-3.5" />
-                截图
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-52">
-                <DropdownMenuLabel className="text-xs text-muted-foreground">
-                  截图作为本轮视觉参考
-                </DropdownMenuLabel>
-                <DropdownMenuItem
-                  onClick={() => fileRef.current?.click()}
-                  className="gap-2 text-sm"
-                >
-                  <ImagePlus className="size-4 text-muted-foreground" />
-                  上传截图
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() =>
-                    onAttachmentsChange([
-                      ...attachments,
-                      { url: SAMPLE_SCREENSHOT, name: '参考截图.svg' },
-                    ])
-                  }
-                  className="gap-2 text-sm"
-                >
-                  <ImagePlus className="size-4 text-muted-foreground" />
-                  用一张示例截图
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-
-            <ModelSelect
-              models={models}
-              value={chat.modelId}
-              onChange={(modelId) => setModel(chat.id, modelId)}
-              compact
-            />
-
-            <span className="ml-auto flex items-center gap-1">
-              <button
-                type="button"
-                onClick={toggleVoice}
-                title="语音输入"
-                className={cn(
-                  'flex size-7 items-center justify-center rounded-md transition-colors',
-                  listening
-                    ? 'bg-red-50 text-red-600 dark:bg-red-950/50 dark:text-red-400'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                )}
-              >
-                <Mic className={cn('size-3.5', listening && 'animate-pulse')} />
-              </button>
-              {busy ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => stopGeneration(chat.id)}
-                  className="h-7 gap-1 px-2 text-[11px]"
-                >
-                  <Square className="size-3 fill-current" />
-                  停止
-                </Button>
-              ) : (
-                <Button
-                  size="icon"
-                  data-testid="chat-send"
-                  className="size-7 rounded-full"
-                  onClick={submit}
-                  disabled={
-                    awaiting ||
-                    submitting ||
-                    Boolean(siblingBusy) ||
-                    (!draft.trim() && attachments.length === 0)
-                  }
-                >
-                  <ArrowUp className="size-3.5" />
-                </Button>
-              )}
-            </span>
-          </div>
-        </div>
-        <p className="mt-1.5 px-1 text-[10px] text-muted-foreground/70">
-          Enter 发送 · Shift+Enter 换行 · 每轮改动都能查看 diff 并撤销
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function EmptyChat({ workspacePath }: { workspacePath: string }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-      <div className="flex size-10 items-center justify-center rounded-full bg-muted">
-        <Sparkles className="size-5 text-muted-foreground" />
-      </div>
-      <p className="text-sm font-medium">新的对话</p>
-      <p className="max-w-xs text-xs leading-5 text-muted-foreground">
-        这个对话还没有消息。描述你想改什么，助手会直接修改项目文件。
-      </p>
-      <p className="mt-1 max-w-xs rounded-md bg-muted/50 px-3 py-2 text-left font-mono text-[11px] leading-5 break-all text-muted-foreground">
-        项目目录：{workspacePath}
-        <br />
-        <span className="font-sans">新对话从项目当前文件开始；历史消息不会带过来。</span>
-      </p>
-    </div>
-  );
-}
-
-type ToolPart = Extract<Part, { type: 'tool' }>;
-type ReviewPart = Extract<Part, { type: 'review' }>;
-type Block = { kind: 'tools'; tools: ToolPart[] } | { kind: 'review'; review: ReviewPart };
-
-function splitParts(message: Message) {
-  // 连续的工具调用合成一组；review 卡片插在它发生的位置，让「打回 → 修复 → 再审」按顺序读。
-  const blocks: Block[] = [];
-  let reasoning = '';
-  const texts: string[] = [];
-  for (const part of message.parts) {
-    if (part.type === 'tool') {
-      const last = blocks.at(-1);
-      if (last?.kind === 'tools') last.tools.push(part);
-      else blocks.push({ kind: 'tools', tools: [part] });
-      continue;
-    }
-    if (part.type === 'review') blocks.push({ kind: 'review', review: part });
-    if (part.type === 'reasoning') reasoning += part.text;
-    if (part.type === 'text') texts.push(part.text);
-  }
-  const reviews = blocks.flatMap((block) => (block.kind === 'review' ? [block.review] : []));
-  // 最后一段文字是这轮的回答，留着；前面的文字属于过程，收进折叠体。
-  const finalText = texts.at(-1) ?? '';
-  const innerText = texts.slice(0, -1).join('\n\n').trim();
-  return {
-    blocks,
-    tools: blocks.flatMap((block) => (block.kind === 'tools' ? block.tools : [])),
-    reviews,
-    rejections: reviews.filter((item) => item.verdict === 'changes_requested').length,
-    reasoning,
-    finalText,
-    innerText,
-  };
-}
-
-function useNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [active]);
-  return now;
-}
-
-function duration(startIso: string, endIso: string | undefined, now: number): string | null {
-  const start = Date.parse(startIso);
-  if (Number.isNaN(start)) return null;
-  const end = endIso ? Date.parse(endIso) : now;
-  if (Number.isNaN(end) || end < start) return null;
-  const seconds = Math.round((end - start) / 1000);
-  if (seconds < 60) return `${Math.max(seconds, 1)} 秒`;
-  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
-}
-
-function MessageRow({
-  message,
-  chatId,
-  onOpenChangeSet,
-  modelName,
-}: {
-  message: Message;
-  chatId: string;
-  onOpenChangeSet: (changeSetId: string) => void;
-  modelName: string;
-}) {
-  const [toggled, setToggled] = useState<boolean | null>(null);
-  const now = useNow(Boolean(message.streaming));
-  const { blocks, tools, reviews, rejections, reasoning, finalText, innerText } =
-    splitParts(message);
-  const streaming = Boolean(message.streaming);
-  // 生成中默认展开；结束后自动收起。用户点过就按用户的来。
-  const open = toggled ?? streaming;
-  const status = message.status ?? (streaming ? 'running' : 'succeeded');
-  const statusLabel = {
-    running: '正在生成',
-    awaiting_approval: '等待审阅',
-    succeeded: '已完成',
-    stopped: '已停止',
-    failed: '检查失败',
-    budget_exhausted: '达到本轮执行上限',
-    rejected: '已拒绝',
-  }[status];
-  const successful = status === 'succeeded';
-  const steps = tools.length + reviews.length + (reasoning ? 1 : 0);
-  // 成功但最后一版没经过 completion review；旧消息没有这个字段时不标。
-  const unreviewed = successful && message.completionReviewed === false;
-  const took = message.finishedAt
-    ? duration(message.createdAt, message.finishedAt, now)
-    : streaming
-      ? duration(message.createdAt, undefined, now)
-      : null;
-
-  if (message.role === 'user') {
-    const images = message.parts.filter((part) => part.type === 'image');
-    const body = message.parts.find((part) => part.type === 'text');
+  if (!bundle) {
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[88%] space-y-2">
-          {images.length > 0 ? (
-            <div className="flex flex-wrap justify-end gap-2">
-              {images.map((part, index) =>
-                part.type === 'image' ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    key={index}
-                    src={part.url}
-                    alt={part.name}
-                    className="h-20 w-28 rounded-md border border-border object-cover"
-                  />
-                ) : null,
-              )}
-            </div>
-          ) : null}
-          {message.parts.map((part, index) =>
-            part.type === 'selection' ? (
-              <div
-                key={index}
-                className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[10px] text-muted-foreground"
-              >
-                <MousePointerSquareDashed className="size-3" />
-                {part.selection.component}
-                <span className="font-mono">{part.selection.src}</span>
-              </div>
-            ) : null,
-          )}
-          {body && body.type === 'text' ? (
-            <div className="rounded-2xl bg-muted px-3.5 py-2.5 text-[13px] leading-6 whitespace-pre-wrap">
-              {body.text}
-            </div>
-          ) : null}
-        </div>
+      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+        正在打开对话…
       </div>
     );
   }
 
   return (
-    <div className="min-w-0">
-      <div className="min-w-0">
-        {steps > 0 || message.status ? (
-          <button
-            type="button"
-            data-testid={streaming ? 'fold-streaming' : 'fold-done'}
-            onClick={() => setToggled(!open)}
-            className={cn(
-              'group flex items-center gap-1.5 rounded-md border border-transparent px-1 py-0.5 text-[11px] transition-colors hover:border-border hover:bg-muted/50',
-              streaming ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground',
-            )}
-          >
-            {streaming ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : successful ? (
-              <Check className="size-3 text-emerald-600" />
-            ) : (
-              <CircleAlert className="size-3 text-amber-600" />
-            )}
-            <span className="font-medium">
-              {statusLabel} · {steps} 步
-            </span>
-            {reviews.length ? (
-              <span className="text-muted-foreground/70">
-                · 审查 {reviews.length} 次{rejections ? ` · 打回 ${rejections} 次` : ''}
-              </span>
-            ) : null}
-            {took ? <span className="text-muted-foreground/70">· {took}</span> : null}
-            <ChevronDown
-              className={cn(
-                'size-3 text-muted-foreground/60 transition-transform',
-                open && 'rotate-180',
-              )}
-            />
-          </button>
-        ) : null}
-
-        {open ? (
-          <div data-testid="fold-body" className="mt-2 space-y-2 border-l border-border pl-2.5">
-            {reasoning ? (
-              <div className="flex gap-1.5 text-[11.5px] leading-5 text-muted-foreground">
-                <Brain className="mt-0.5 size-3.5 shrink-0" />
-                <p className="whitespace-pre-wrap">{reasoning}</p>
-              </div>
-            ) : null}
-            {message.parts.map((part, index) =>
-              part.type === 'todos' ? <TodosCard key={index} items={part.items} /> : null,
-            )}
-            {blocks.map((block, index) =>
-              block.kind === 'tools' ? (
-                <ToolGroup key={index} tools={block.tools} />
-              ) : (
-                <ReviewCard key={block.review.id} review={block.review} />
-              ),
-            )}
-            {innerText ? (
-              <Markdown text={innerText} className="text-[12.5px] text-muted-foreground" />
-            ) : null}
-          </div>
-        ) : null}
-
-        {/* 方案卡带按钮，收起后点不到，所以始终在外面。 */}
-        {message.parts.map((part, index) =>
-          part.type === 'plan' ? (
-            <PlanCard key={index} chatId={chatId} messageId={message.id} plan={part} />
-          ) : null,
-        )}
-        {finalText ? (
-          <div
-            className={cn(
-              'mt-2 text-[13px] leading-6',
-              streaming &&
-                'after:ml-0.5 after:inline-block after:h-3.5 after:w-1.5 after:animate-pulse after:bg-foreground/60 after:align-middle',
-            )}
-          >
-            <Markdown text={finalText} />
-          </div>
-        ) : null}
-
-        {streaming && !finalText && steps === 0 ? (
-          <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <Loader2 className="size-3 animate-spin" />
-            正在准备这一轮…
-          </div>
-        ) : null}
-
-        {!streaming ? (
-          <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground/80">
-            <span>{formatTime(message.createdAt)}</span>
-            <span>·</span>
-            <span>{modelName}</span>
-            {unreviewed ? (
-              <span
-                data-testid="unreviewed-badge"
-                title="本轮只跑了 CI，主 agent 没有调用完成审查"
-                className="rounded border border-amber-300/70 px-1.5 py-0.5 text-amber-700 dark:border-amber-700/60 dark:text-amber-400"
-              >
-                未经完成审查
-              </span>
-            ) : null}
-            {message.changeSetId ? (
-              <button
-                type="button"
-                onClick={() => onOpenChangeSet(message.changeSetId as string)}
-                className="rounded border border-border bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
-              >
-                查看改动
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-const TOOL_META: Record<
-  string,
-  { icon: typeof Terminal; label: (input: Record<string, unknown>) => string }
-> = {
-  write_file: {
-    icon: FilePlus2,
-    label: (input) => `写入 ${String(input.path ?? '')}`,
-  },
-  list_files: { icon: FolderTree, label: () => '列出工作区文件' },
-  run_command: { icon: Terminal, label: (input) => `运行 ${String(input.command ?? '')}` },
-  web_search: { icon: Search, label: (input) => `搜索「${String(input.query ?? '')}」` },
-  search_web: { icon: Search, label: (input) => `搜索「${String(input.query ?? '')}」` },
-  fetch_url: { icon: Globe, label: (input) => `抓取 ${String(input.url ?? '')}` },
-  read_file: { icon: FilePlus2, label: (input) => `读取 ${String(input.path ?? '')}` },
-  edit_file: { icon: FilePlus2, label: (input) => `编辑 ${String(input.path ?? '')}` },
-  glob_files: { icon: FolderTree, label: (input) => `查找 ${String(input.pattern ?? '')}` },
-  grep_files: { icon: Search, label: (input) => `搜索代码 ${String(input.query ?? '')}` },
-  move_file: {
-    icon: FilePlus2,
-    label: (input) => `${input.operation === 'copy' ? '复制' : '移动'} ${String(input.from ?? '')}`,
-  },
-  delete_file: { icon: FilePlus2, label: (input) => `删除 ${String(input.path ?? '')}` },
-  read_skill_file: { icon: Sparkles, label: (input) => `读取技能参考 ${String(input.path ?? '')}` },
-  run_checks: { icon: Check, label: (input) => `CI 检查修订 ${String(input.revision ?? '')}` },
-  load_skill: { icon: Sparkles, label: (input) => `加载技能 ${String(input.skill ?? '')}` },
-  read_attachment: {
-    icon: ImageIcon,
-    label: (input) => `读取截图 ${String(input.name ?? '')}`,
-  },
-};
-
-function ToolGroup({ tools }: { tools: Extract<Part, { type: 'tool' }>[] }) {
-  const [open, setOpen] = useState<string | null>(null);
-  const running = tools.some((tool) => tool.state === 'running');
-  const failed = tools.some((tool) => tool.state === 'error');
-  return (
-    <div className="overflow-hidden rounded-lg border border-border bg-card">
-      <div className="flex items-center gap-1.5 border-b border-border/70 bg-muted/40 px-2.5 py-1.5 text-[10.5px] text-muted-foreground">
-        {running ? (
-          <Loader2 className="size-3 animate-spin" />
-        ) : failed ? (
-          <CircleAlert className="size-3 text-amber-600" />
-        ) : (
-          <Check className="size-3 text-emerald-600" />
-        )}
-        工具调用 · {tools.length} 步
-      </div>
-      <div className="divide-y divide-border/60">
-        {tools.map((tool) => {
-          const meta = TOOL_META[tool.name] ?? { icon: Terminal, label: () => tool.name };
-          const Icon = meta.icon;
-          const expanded = open === tool.id;
-          return (
-            <div key={tool.id}>
-              <button
-                type="button"
-                onClick={() => setOpen(expanded ? null : tool.id)}
-                className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left hover:bg-muted/40"
-              >
-                <Icon className="size-3.5 shrink-0 text-muted-foreground/70" />
-                <span className="truncate font-mono text-[11px]">{meta.label(tool.input)}</span>
-                <span className="ml-auto shrink-0">
-                  {tool.state === 'running' ? (
-                    <Loader2 className="size-3 animate-spin text-muted-foreground" />
-                  ) : tool.state === 'error' ? (
-                    <CircleAlert className="size-3 text-red-500" />
-                  ) : (
-                    <Check className="size-3 text-emerald-600" />
-                  )}
-                </span>
-                <ChevronDown
-                  className={cn(
-                    'size-3 shrink-0 text-muted-foreground/50 transition-transform',
-                    expanded && 'rotate-180',
-                  )}
-                />
-              </button>
-              {expanded ? (
-                <div className="space-y-1.5 border-t border-border/60 bg-muted/30 px-2.5 py-2">
-                  <div className="font-mono text-[10px] leading-4 break-all text-muted-foreground">
-                    输入 {JSON.stringify(tool.input)}
-                  </div>
-                  {tool.output ? (
-                    <pre className="max-h-32 overflow-auto rounded bg-card p-1.5 font-mono text-[10px] leading-4 whitespace-pre-wrap text-muted-foreground">
-                      {tool.output}
-                    </pre>
-                  ) : null}
-                </div>
-              ) : null}
+    <div className="flex h-full min-h-0 flex-col">
+      <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-3xl space-y-5 px-3 py-4 sm:px-5">
+          {messages.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+              <p className="text-sm font-medium">开始处理 {bundle.project.name}</p>
+              <p className="max-w-sm text-[11px] leading-5 text-muted-foreground">
+                说明你想改什么、查什么或运行什么。助手会读取项目文件，并在需要时请求运行命令的批准。
+              </p>
             </div>
-          );
-        })}
+          ) : (
+            messages.map((message) =>
+              message.role === 'user' ? (
+                <div key={message.id} className="flex justify-end">
+                  <div className="max-w-[88%] rounded-2xl rounded-br-md bg-foreground px-3.5 py-2 text-[13px] leading-6 text-background">
+                    <p className="whitespace-pre-wrap break-words">
+                      {message.parts
+                        .filter(
+                          (part): part is Extract<Part, { type: 'text' }> => part.type === 'text',
+                        )
+                        .map((part) => part.text)
+                        .join('')}
+                    </p>
+                    <p className="mt-1 text-right text-[9px] opacity-60">
+                      {formatTime(message.createdAt)}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <AssistantMessage
+                  key={message.id}
+                  message={message}
+                  run={run}
+                  summary={summaries[message.id]}
+                  decidingApproval={decidingApproval}
+                  onDecideApproval={decide}
+                  onShowChanges={onShowChanges}
+                />
+              ),
+            )
+          )}
+        </div>
+      </div>
+
+      <div className="shrink-0 border-t border-border bg-background px-3 pb-3 pt-2 sm:px-5">
+        <div className="mx-auto w-full max-w-3xl">
+          {configuredModels.length === 0 ? (
+            <div className="mb-2 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-5 text-amber-800 dark:text-amber-300">
+              <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+              <p>
+                尚未配置模型。请在项目根目录的 <span className="font-mono">.env</span> 中设置{' '}
+                <span className="font-mono">AI_BASE_URL</span>、
+                <span className="font-mono">AI_MODEL</span> 和{' '}
+                <span className="font-mono">AI_API_KEY</span>，然后重启服务。
+              </p>
+            </div>
+          ) : null}
+          {error ? (
+            <div className="mb-2 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-[11px] leading-5 text-destructive">
+              <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+              <p className="break-words">{error}</p>
+            </div>
+          ) : null}
+          <div className="rounded-xl border border-border bg-card focus-within:border-foreground/30">
+            <Textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  void submit();
+                }
+              }}
+              placeholder={
+                busy ? '本轮结束后可以继续发送…' : '描述要完成的事，Enter 发送，Shift+Enter 换行'
+              }
+              disabled={sending || busy}
+              rows={3}
+              className="min-h-16 resize-none border-0 bg-transparent text-[13px] shadow-none focus-visible:ring-0"
+            />
+            <div className="flex items-center gap-1.5 border-t border-border/70 px-2 py-1.5">
+              <ModelSelect
+                models={models}
+                value={bundle.chat.modelId}
+                onChange={(modelId) => void setModel(modelId)}
+                disabled={busy}
+                compact
+              />
+              <span className="ml-auto text-[10px] text-muted-foreground">
+                {busy ? '助手正在处理这一轮' : '助手会按需读取项目文件'}
+              </span>
+              {busy ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1 text-[11px]"
+                  disabled={stopping}
+                  onClick={() => void stopRun()}
+                >
+                  {stopping ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <CircleStop className="size-3" />
+                  )}
+                  {stopping ? '正在停止…' : '停止'}
+                </Button>
+              ) : (
+                <Button
+                  size="icon"
+                  className="size-7 rounded-full"
+                  disabled={!draft.trim() || sending}
+                  onClick={() => void submit()}
+                  title="发送"
+                >
+                  {sending ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <ArrowUp className="size-3.5" />
+                  )}
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

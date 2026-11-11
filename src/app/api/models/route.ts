@@ -1,6 +1,9 @@
-import { json, withErrors } from '@/mock/http';
-import { MODELS } from '@/mock/seed/models';
+import { modelsResponseSchema } from '@/shared/api/schemas';
+import { json, withErrors } from '@/server/http';
+import { configuredModels } from '@/server/projects';
 
 export const dynamic = 'force-dynamic';
 
-export const GET = withErrors(async () => json({ models: MODELS }));
+export const GET = withErrors(async () => {
+  return json(modelsResponseSchema.parse({ models: configuredModels() }));
+});

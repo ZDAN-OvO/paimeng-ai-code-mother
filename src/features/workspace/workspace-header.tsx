@@ -1,20 +1,29 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import {
+  Check,
   ChevronDown,
-  FileDiff,
-  FolderClosed,
-  KeyRound,
-  Loader2,
-  Monitor,
+  CircleAlert,
+  FolderGit2,
+  Home,
+  Menu,
+  MessageSquarePlus,
   Pencil,
-  Plus,
-  ScrollText,
-  SquareCode,
-  X,
+  RefreshCw,
 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,291 +33,223 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
-import { formatTime } from '@/lib/time';
-import type { RailPanel } from './types';
-import type { ChatRecord, Project } from '@/shared/api/schemas';
-import { ThemeToggle } from '@/features/theme/theme-toggle';
+import type { ChatSummary, Project } from '@/shared/api/schemas';
+
+export type RailPanel = 'changes' | 'files' | 'preview';
 
 export const RAIL_LABEL: Record<RailPanel, string> = {
+  changes: '改动',
+  files: '文件',
   preview: '预览',
-  code: '当前文件',
-  changes: '改动记录',
-  logs: '日志',
-  settings: '设置',
 };
 
 export function WorkspaceHeader({
   project,
-  chats,
   chat,
+  chats,
   panel,
   onPanelChange,
-  onSelectChat,
+  onMenu,
   onNewChat,
-  onRename,
+  onRenameProject,
+  onSelectChat,
+  onRefresh,
+  connection,
 }: {
   project: Project;
-  chats: ChatRecord[];
-  chat: ChatRecord;
+  chat: ChatSummary;
+  chats: ChatSummary[];
   panel: RailPanel;
   onPanelChange: (panel: RailPanel) => void;
-  onSelectChat: (chatId: string) => void;
+  onMenu: () => void;
   onNewChat: () => void;
-  onRename: (name: string) => void;
+  onRenameProject: (name: string) => Promise<void>;
+  onSelectChat: (chatId: string) => void;
+  onRefresh: () => void;
+  connection: 'idle' | 'connecting' | 'live' | 'reconnecting';
 }) {
-  const router = useRouter();
-  const [editing, setEditing] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
   const [name, setName] = useState(project.name);
-  const extra = panel === 'preview' || panel === 'code' ? null : panel;
+  const [saving, setSaving] = useState(false);
 
-  function commit() {
-    const next = name.trim();
-    if (next) onRename(next);
-    setEditing(false);
+  async function saveName() {
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    try {
+      await onRenameProject(name);
+      setRenameOpen(false);
+    } finally {
+      setSaving(false);
+    }
   }
 
+  const connectionLabel = {
+    idle: null,
+    connecting: '正在连接事件流',
+    live: '事件流已连接',
+    reconnecting: '事件流重连中',
+  }[connection];
+
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-3">
-      {editing ? (
-        <input
-          autoFocus
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') commit();
-            if (event.key === 'Escape') {
-              setName(project.name);
-              setEditing(false);
-            }
-          }}
-          className="w-40 rounded border border-border px-2 py-1 text-[13px] outline-none focus:border-foreground/40"
-        />
-      ) : (
-        <button
-          type="button"
-          onClick={() => {
-            setName(project.name);
-            setEditing(true);
-          }}
-          className="group flex min-w-0 items-center gap-1.5 rounded px-1 py-1 text-[13px] font-medium hover:bg-muted"
-          title="重命名项目"
-        >
-          <span className="max-w-36 truncate">{project.name}</span>
-          <Pencil className="size-3 shrink-0 text-muted-foreground/50 group-hover:text-muted-foreground" />
-        </button>
-      )}
-      <span
-        data-testid="workspace-path"
-        title={`目录：${project.workspacePath}${
-          project.workspaceState === 'sample' ? '（示例项目，未连接真实目录）' : ''
-        }`}
-        className="hidden max-w-52 items-center gap-1 rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground md:flex"
+    <header className="flex min-h-14 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-background px-2.5 py-1.5 sm:flex-nowrap sm:px-3">
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-8 lg:hidden"
+        onClick={onMenu}
+        title="导航"
       >
-        <FolderClosed className="size-3 shrink-0" />
-        <span className="truncate">{project.workspacePath}</span>
-      </span>
-      {project.workspaceState === 'sample' ? (
-        <span
-          data-testid="sample-project-badge"
-          className="hidden rounded border border-amber-300 bg-amber-50 px-1 py-px text-[9.5px] text-amber-800 sm:inline dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300"
-        >
-          示例项目
-        </span>
-      ) : null}
+        <Menu className="size-4" />
+      </Button>
+      <Button variant="ghost" size="icon" className="size-8" asChild title="首页">
+        <Link href="/">
+          <Home className="size-4" />
+        </Link>
+      </Button>
 
-      <span className="text-muted-foreground/40">/</span>
-
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          data-testid="chat-switcher"
-          className="hidden max-w-48 items-center gap-1.5 rounded px-1.5 py-1 text-[12.5px] text-muted-foreground hover:bg-muted hover:text-foreground sm:flex"
-        >
-          <span className="truncate">{chat.title}</span>
-          <ChevronDown className="size-3.5 shrink-0 opacity-60" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-72">
-          <DropdownMenuLabel className="text-xs text-muted-foreground">
-            这个项目的对话（{chats.length}）
-          </DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          {chats.map((item) => (
-            <DropdownMenuItem
-              key={item.id}
-              onClick={() => onSelectChat(item.id)}
-              className="flex flex-col items-start gap-0.5 py-2"
-            >
-              <span className="text-[13px]">{item.title}</span>
-              <span className="text-[10.5px] text-muted-foreground">
-                {item.messages.length} 条消息 · {formatTime(item.updatedAt)}
-              </span>
-            </DropdownMenuItem>
-          ))}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onNewChat} className="gap-2 text-[13px]">
-            <Plus className="size-3.5" />
-            新建对话
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-
-      {chat.streaming ? (
-        <span className="flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-          <Loader2 className="size-2.5 animate-spin" />
-          生成中
-        </span>
-      ) : null}
-
-      <div className="ml-auto flex items-center gap-1.5">
-        <div className="flex items-center gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5">
-          <RailTab
-            testId="rail-preview"
-            active={panel === 'preview'}
-            icon={Monitor}
-            label="预览"
-            onClick={() => onPanelChange('preview')}
-          />
-          <RailTab
-            testId="rail-code"
-            active={panel === 'code'}
-            icon={SquareCode}
-            label="当前文件"
-            onClick={() => onPanelChange('code')}
-          />
-          {extra ? (
-            <span className="flex items-center gap-1 rounded-md bg-foreground px-2 py-1 text-[11px] text-background">
-              {RAIL_LABEL[extra]}
-              <button
-                type="button"
-                onClick={() => onPanelChange('preview')}
-                className="rounded p-0.5 hover:bg-background/20"
-                title="回到预览"
-              >
-                <X className="size-2.5" />
-              </button>
-            </span>
-          ) : null}
-        </div>
-
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            data-testid="rail-menu"
-            className="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title="更多面板"
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              setName(project.name);
+              setRenameOpen(true);
+            }}
+            className="group flex min-w-0 items-center gap-1 rounded px-0.5 text-sm font-semibold hover:text-foreground"
+            title="重命名项目"
           >
-            <Plus className="size-3.5" />
+            <span className="truncate">{project.name}</span>
+            <Pencil className="size-3 shrink-0 text-muted-foreground/50 group-hover:text-muted-foreground" />
+          </button>
+          <Badge variant="outline" className="hidden text-[10px] sm:inline-flex">
+            {project.chatCount} 对话
+          </Badge>
+          <Badge variant="outline" className="hidden text-[10px] md:inline-flex">
+            {project.changeCount} 处改动
+          </Badge>
+        </div>
+        <div className="flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground">
+          <FolderGit2 className="size-3 shrink-0" />
+          <span className="truncate font-mono">{project.workspacePath}</span>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1">
+        <DropdownMenu>
+          <DropdownMenuTrigger className="flex max-w-[42vw] items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1.5 text-xs hover:border-foreground/30 sm:max-w-56">
+            <span className="truncate">{chat.title}</span>
+            {chat.pendingApproval ? (
+              <span className="size-1.5 shrink-0 rounded-full bg-amber-500" title="等待命令批准" />
+            ) : chat.streaming ? (
+              <span
+                className="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
+                title="正在执行"
+              />
+            ) : null}
+            <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuLabel className="text-[10.5px] text-muted-foreground">
-              右栏一次只显示一个面板
+          <DropdownMenuContent align="end" className="w-64">
+            <DropdownMenuLabel className="text-[11px] text-muted-foreground">
+              切换对话
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <PanelMenuItem
-              testId="menu-preview"
-              icon={Monitor}
-              label="预览"
-              active={panel === 'preview'}
-              onClick={() => onPanelChange('preview')}
-            />
-            <PanelMenuItem
-              testId="menu-code"
-              icon={SquareCode}
-              label="当前文件"
-              active={panel === 'code'}
-              onClick={() => onPanelChange('code')}
-            />
-            <PanelMenuItem
-              testId="menu-changes"
-              icon={FileDiff}
-              label="改动记录"
-              active={panel === 'changes'}
-              onClick={() => onPanelChange('changes')}
-            />
-            <PanelMenuItem
-              testId="menu-logs"
-              icon={ScrollText}
-              label="日志"
-              active={panel === 'logs'}
-              onClick={() => onPanelChange('logs')}
-            />
-            <PanelMenuItem
-              testId="menu-settings"
-              icon={KeyRound}
-              label="项目设置与环境变量"
-              active={panel === 'settings'}
-              onClick={() => onPanelChange('settings')}
-            />
+            {chats.map((item) => (
+              <DropdownMenuItem
+                key={item.id}
+                onClick={() => onSelectChat(item.id)}
+                className="flex items-center gap-2 text-xs"
+              >
+                <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                {item.id === chat.id ? <Check className="size-3.5 text-emerald-600" /> : null}
+                {item.pendingApproval ? (
+                  <span className="text-[10px] text-amber-600">待批准</span>
+                ) : item.streaming ? (
+                  <span className="text-[10px] text-emerald-600">执行中</span>
+                ) : null}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onNewChat} className="gap-2 text-xs">
+              <MessageSquarePlus className="size-3.5" />
+              新建对话
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <ThemeToggle />
-
-        <button
-          type="button"
-          onClick={() => router.push('/')}
-          className="ml-0.5 flex size-6 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground"
-          title="回到工作区"
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          onClick={onRefresh}
+          title="刷新项目与变更"
         >
-          本
-        </button>
+          <RefreshCw className="size-3.5" />
+        </Button>
       </div>
+
+      <div className="flex w-full items-center gap-1 border-t border-border/60 pt-1 sm:w-auto sm:border-0 sm:pt-0">
+        <div className="flex rounded-md border border-border bg-muted/30 p-0.5">
+          {(Object.keys(RAIL_LABEL) as RailPanel[]).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => onPanelChange(item)}
+              className={cn(
+                'rounded px-2.5 py-1 text-[11px] font-medium transition-colors',
+                panel === item
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {RAIL_LABEL[item]}
+            </button>
+          ))}
+        </div>
+        {connectionLabel ? (
+          <span
+            className={cn(
+              'ml-auto flex items-center gap-1 text-[10px] text-muted-foreground sm:ml-1',
+              connection === 'reconnecting' && 'text-amber-600',
+            )}
+            title={connectionLabel}
+          >
+            {connection === 'reconnecting' ? (
+              <CircleAlert className="size-3" />
+            ) : (
+              <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" />
+            )}
+            <span className="hidden md:inline">{connectionLabel}</span>
+          </span>
+        ) : null}
+      </div>
+
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>重命名项目</DialogTitle>
+            <DialogDescription>只改变显示名称，不会重命名磁盘目录。</DialogDescription>
+          </DialogHeader>
+          <Input
+            autoFocus
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                void saveName();
+              }
+            }}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenameOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={() => void saveName()} disabled={!name.trim() || saving}>
+              {saving ? '保存中…' : '保存'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </header>
-  );
-}
-
-function RailTab({
-  active,
-  icon: Icon,
-  label,
-  onClick,
-  testId,
-}: {
-  active: boolean;
-  icon: typeof Monitor;
-  label: string;
-  onClick: () => void;
-  testId: string;
-}) {
-  return (
-    <button
-      type="button"
-      data-testid={testId}
-      onClick={onClick}
-      className={cn(
-        'flex items-center gap-1 rounded-md px-2 py-1 text-[11px] transition-colors',
-        active
-          ? 'bg-card font-medium text-foreground shadow-sm'
-          : 'text-muted-foreground hover:text-foreground',
-      )}
-    >
-      <Icon className="size-3" />
-      {label}
-    </button>
-  );
-}
-
-function PanelMenuItem({
-  icon: Icon,
-  label,
-  active,
-  onClick,
-  testId,
-}: {
-  icon: typeof Monitor;
-  label: string;
-  active: boolean;
-  onClick: () => void;
-  testId: string;
-}) {
-  return (
-    <DropdownMenuItem
-      data-testid={testId}
-      onClick={onClick}
-      className={cn('gap-2 text-[12.5px]', active && 'bg-muted')}
-    >
-      <Icon className="size-3.5 text-muted-foreground" />
-      {label}
-      {active ? <span className="ml-auto text-[10px] text-muted-foreground">当前</span> : null}
-    </DropdownMenuItem>
   );
 }

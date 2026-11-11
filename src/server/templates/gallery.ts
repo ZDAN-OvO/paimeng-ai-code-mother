@@ -1,0 +1,76 @@
+import type { GalleryTemplate, SiteState } from '@/shared/api/schemas';
+import { buildSite } from './site';
+
+const GALLERY: Omit<GalleryTemplate, 'site'>[] = [
+  {
+    id: 'gallery-coffee',
+    templateId: 'coffee',
+    name: '山间咖啡',
+    blurb: '单一产区咖啡品牌：主视觉、豆单、门店与订阅说明。',
+    look: 'landing',
+    uses: 1284,
+    brand: '山间咖啡',
+    iteration: 1,
+    prompt: '做一个山间咖啡馆的官网：要有品牌介绍、招牌豆子、菜单和门店信息，风格温暖一点。',
+  },
+  {
+    id: 'gallery-devtool',
+    templateId: 'saas',
+    name: '开发者工具',
+    blurb: 'SaaS 落地页：导航、三个能力点、定价表与试用入口。',
+    look: 'landing',
+    uses: 962,
+    brand: '栈桥',
+    iteration: 2,
+    prompt: '做一个开发者工具的落地页：说明它是做什么的、三个核心能力、定价和试用入口。',
+  },
+  {
+    id: 'gallery-portfolio',
+    templateId: 'portfolio',
+    name: '设计师作品集',
+    blurb: '克制的个人站：一句自我介绍、精选项目、联系方式。',
+    look: 'landing',
+    uses: 517,
+    brand: '林迟',
+    iteration: 1,
+    prompt: '做一个设计师的个人作品集：自我介绍、精选项目、联系方式，排版克制一点。',
+  },
+  {
+    id: 'gallery-studio',
+    templateId: 'portfolio',
+    name: '摄影工作室',
+    blurb: '深色主视觉的品牌站，适合影像、展览与工作室。',
+    look: 'landing',
+    uses: 403,
+    brand: '沈默摄影',
+    iteration: 3,
+    prompt: '做一个摄影工作室的官网：深色主视觉、作品列表和预约联系方式。',
+  },
+  {
+    id: 'gallery-weekly',
+    templateId: 'blank',
+    name: '团队周报',
+    blurb: '内部工具：按成员筛选的周报列表，先跑通信息结构。',
+    look: 'app',
+    uses: 318,
+    brand: '周报',
+    iteration: 2,
+    prompt: '做一个团队周报面板，能按成员筛选，先只做静态页面。',
+  },
+  {
+    id: 'gallery-dashboard',
+    templateId: 'blank',
+    name: '数据看板',
+    blurb: '深色数据界面：指标、明细与操作入口，适合后台首页。',
+    look: 'dashboard',
+    uses: 176,
+    brand: '看板',
+    iteration: 3,
+    prompt: '做一个数据看板：顶部三个指标、中间明细列表、右侧筛选。',
+  },
+];
+
+export const TEMPLATE_GALLERY: (GalleryTemplate & { site: SiteState })[] = GALLERY.map((item) => ({
+  ...item,
+  site: buildSite(item.templateId, item.brand, item.iteration),
+}));

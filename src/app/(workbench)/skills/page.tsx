@@ -1,5 +1,10 @@
-import SkillsView from '@/features/skills/skills-view';
+import { Suspense } from 'react';
+import { SkillsView } from '@/features/skills/skills-view';
 
 export default function SkillsPage() {
-  return <SkillsView />;
+  return (
+    <Suspense fallback={null}>
+      <SkillsView />
+    </Suspense>
+  );
 }

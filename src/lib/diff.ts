@@ -1,5 +1,6 @@
 import { diffArrays } from 'diff';
-import type { FileMap } from '@/shared/api/schemas';
+
+type FileMap = Record<string, string>;
 
 export type DiffLine = {
   type: 'add' | 'del' | 'same';

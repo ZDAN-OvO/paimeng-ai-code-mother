@@ -1,12 +1,15 @@
-import { json, withErrors } from '@/mock/http';
-import { archiveChat } from '@/mock/world';
+import { chatSummarySchema } from '@/shared/api/schemas';
+import { json, withErrors } from '@/server/http';
+import { getChatRow, toChatSummary } from '@/server/projects';
+import { sqlite } from '@/server/db';
 
 export const dynamic = 'force-dynamic';
+type Params = { params: Promise<{ id: string }> };
 
-/** 归档不是删除：归档后不出现在默认列表，之后可以 restore。 */
-export const POST = withErrors(
-  async (_request: Request, { params }: { params: Promise<{ id: string }> }) => {
-    const { id } = await params;
-    return json(archiveChat(id));
-  },
-);
+export const POST = withErrors(async (_request: Request, { params }: Params) => {
+  const { id } = await params;
+  getChatRow(id);
+  const now = Date.now();
+  sqlite().prepare('update chat set archived_at = ?, updated_at = ? where id = ?').run(now, now, id);
+  return json(chatSummarySchema.parse(toChatSummary(getChatRow(id))));
+});

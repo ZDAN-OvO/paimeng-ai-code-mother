@@ -1,484 +1,401 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import {
-  ChevronDown,
-  ChevronRight,
-  FolderClosed,
-  FolderOpen,
-  LayoutGrid,
-  LayoutTemplate,
-  MessageSquare,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Plus,
-  Search,
-  Sparkles,
-  MoreHorizontal,
-  Pencil,
   Archive,
+  ArrowUpRight,
+  ChevronDown,
+  FolderOpen,
+  MessageSquarePlus,
+  Pencil,
+  RotateCcw,
+  Search,
+  Settings2,
+  Sparkles,
+  SquareArrowOutUpRight,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import type { ChatRecord, Project, ProjectSummary } from '@/shared/api/schemas';
-import type { WorkspaceView } from './types';
+import { cn } from '@/lib/utils';
+import { formatTime } from '@/lib/time';
+import type { ChatSummary, ProjectSummary } from '@/shared/api/schemas';
 
 export function AppSidebar({
-  collapsed,
-  width,
-  onToggleCollapsed,
-  onHome,
-  overlay = false,
-  project,
-  chat,
+  currentProjectId,
+  currentChatId,
   projects,
   chats,
-  view,
-  onViewChange,
-  onSelectChat,
+  archived,
+  onHome,
   onNewChat,
   onNewProject,
   onOpenProject,
   onRenameChat,
   onArchiveChat,
+  onRestoreChat,
+  onOpenSkills,
 }: {
-  collapsed: boolean;
-  width?: number;
-  onToggleCollapsed: () => void;
-  onHome: () => void;
-  overlay?: boolean;
-  project: Project | null;
-  /** 工作区空态没有当前对话。 */
-  chat: ChatRecord | null;
+  currentProjectId: string | null;
+  currentChatId: string | null;
   projects: ProjectSummary[];
-  chats: ChatRecord[];
-  view: WorkspaceView;
-  onViewChange: (view: WorkspaceView) => void;
-  onSelectChat: (chatId: string) => void;
+  chats: ChatSummary[];
+  archived: ChatSummary[];
+  onHome: () => void;
   onNewChat: () => void;
   onNewProject: () => void;
-  onOpenProject: (projectId: string) => void;
-  onRenameChat: (chatId: string, title: string) => void;
+  onOpenProject: (project: ProjectSummary) => void;
+  onRenameChat: (chatId: string, title: string) => Promise<void>;
   onArchiveChat: (chatId: string) => void;
+  onRestoreChat: (chatId: string) => void;
+  onOpenSkills: () => void;
 }) {
   const [query, setQuery] = useState('');
-  const [expanded, setExpanded] = useState<Record<string, boolean>>(
-    project ? { [project.id]: true } : {},
-  );
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
-  const needle = query.trim().toLowerCase();
-  const match = (text: string) => !needle || text.toLowerCase().includes(needle);
+  const filteredChats = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    if (!keyword) return chats;
+    return chats.filter((chat) => chat.title.toLowerCase().includes(keyword));
+  }, [chats, query]);
 
-  const tree = useMemo(
-    () =>
-      projects
-        .map((item) => ({
-          project: item,
-          chats: chats
-            .filter((entry) => entry.projectId === item.id)
-            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-        }))
-        .filter(
-          (node) =>
-            match(node.project.name) ||
-            node.chats.some((entry) => match(entry.title)) ||
-            node.project.id === project?.id,
-        ),
-    // match 只依赖 needle；projects/chats 已是当前快照。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chats, needle, project?.id, projects],
-  );
-
-  if (collapsed) {
-    return (
-      <aside className="flex w-[52px] shrink-0 flex-col items-center gap-1 border-r border-border bg-card py-2.5">
-        <button
-          type="button"
-          onClick={onToggleCollapsed}
-          data-testid="sidebar-expand"
-          className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-          title="展开侧栏"
-        >
-          <PanelLeftOpen className="size-4" />
-        </button>
-        <button
-          type="button"
-          onClick={project ? onNewChat : onNewProject}
-          className="mt-1 flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground"
-          title={project ? '新建对话' : '新建项目'}
-        >
-          <Plus className="size-4" />
-        </button>
-        <button
-          type="button"
-          onClick={onToggleCollapsed}
-          className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-          title="搜索"
-        >
-          <Search className="size-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => onViewChange('projects')}
-          className={cn(
-            'flex size-8 items-center justify-center rounded-md hover:bg-muted hover:text-foreground',
-            view === 'projects' ? 'bg-muted text-foreground' : 'text-muted-foreground',
-          )}
-          title="项目"
-        >
-          <LayoutGrid className="size-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => onViewChange('chats')}
-          className={cn(
-            'flex size-8 items-center justify-center rounded-md hover:bg-muted hover:text-foreground',
-            view === 'chats' ? 'bg-muted text-foreground' : 'text-muted-foreground',
-          )}
-          title="对话"
-        >
-          <MessageSquare className="size-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => onViewChange('skills')}
-          className={cn(
-            'flex size-8 items-center justify-center rounded-md hover:bg-muted hover:text-foreground',
-            view === 'skills' ? 'bg-muted text-foreground' : 'text-muted-foreground',
-          )}
-          title="技能"
-        >
-          <Sparkles className="size-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => onViewChange('templates')}
-          className={cn(
-            'flex size-8 items-center justify-center rounded-md hover:bg-muted hover:text-foreground',
-            view === 'templates' ? 'bg-muted text-foreground' : 'text-muted-foreground',
-          )}
-          title="模板"
-        >
-          <LayoutTemplate className="size-4" />
-        </button>
-        <span className="mt-auto flex size-7 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground">
-          本
-        </span>
-      </aside>
+  const filteredProjects = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    if (!keyword) return projects;
+    return projects.filter(
+      (project) =>
+        project.name.toLowerCase().includes(keyword) ||
+        project.workspacePath.toLowerCase().includes(keyword),
     );
+  }, [projects, query]);
+
+  const currentProject = projects.find((project) => project.id === currentProjectId) ?? null;
+
+  async function submitRename(chatId: string) {
+    if (!draft.trim() || submitting) return;
+    setSubmitting(true);
+    try {
+      await onRenameChat(chatId, draft);
+      setEditingId(null);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
-    <>
-      {overlay ? (
+    <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-muted/20">
+      <div className="flex h-14 items-center gap-2 border-b border-border px-3">
         <button
           type="button"
-          aria-label="关闭侧栏"
-          onClick={onToggleCollapsed}
-          className="fixed inset-0 z-20 bg-black/25"
-        />
-      ) : null}
-      <aside
-        style={width ? { width } : undefined}
-        className={cn(
-          'flex shrink-0 flex-col border-r border-border bg-card',
-          width ? null : 'w-[264px]',
-          overlay && 'fixed inset-y-0 left-0 z-30 max-w-[85vw] shadow-xl',
-        )}
-      >
-        <div className="flex items-center gap-1 px-2.5 pt-2.5 pb-1.5">
-          <button
-            type="button"
-            onClick={onHome}
-            className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-1 text-left hover:bg-muted"
-            title="回到工作区"
+          onClick={onHome}
+          className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-muted"
+        >
+          <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-foreground text-xs font-semibold text-background">
+            PM
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold">派蒙</span>
+            <span className="block truncate text-[10px] text-muted-foreground">本地开发助手</span>
+          </span>
+        </button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="ml-auto size-7"
+          title="技能"
+          onClick={onOpenSkills}
+        >
+          <Sparkles className="size-3.5" />
+        </Button>
+      </div>
+
+      <div className="space-y-2 border-b border-border p-2.5">
+        <Button className="w-full justify-start gap-2" size="sm" onClick={onNewChat}>
+          <MessageSquarePlus className="size-4" />
+          {currentProjectId ? '新建对话' : '打开本地目录'}
+        </Button>
+        {currentProjectId ? (
+          <Button
+            variant="outline"
+            className="w-full justify-start gap-2"
+            size="sm"
+            onClick={onNewProject}
           >
-            <span className="flex size-5 items-center justify-center rounded bg-primary text-[9px] font-medium text-primary-foreground">
-              本
-            </span>
-            <span className="truncate text-[12.5px] font-medium">本地工作区</span>
-            <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
-          </button>
-          <button
-            type="button"
-            onClick={onToggleCollapsed}
-            data-testid="sidebar-collapse"
-            className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-            title="收起侧栏"
-          >
-            <PanelLeftClose className="size-4" />
-          </button>
+            <FolderOpen className="size-4" />
+            打开其他目录
+          </Button>
+        ) : null}
+      </div>
+
+      <div className="border-b border-border p-2.5">
+        <div className="relative">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索对话或项目"
+            className="h-8 pl-8 text-xs"
+          />
         </div>
+      </div>
 
-        <div className="px-2.5 pb-2">
-          <button
-            type="button"
-            onClick={project ? onNewChat : onNewProject}
-            data-testid={project ? 'sidebar-new-chat' : 'sidebar-new-project'}
-            className="flex w-full items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1.5 text-[12px] font-medium transition-colors hover:bg-muted"
-            title={project ? '在当前项目里新建一条对话' : '新建本地项目'}
-          >
-            <Plus className="size-3.5" />
-            {project ? '新建对话' : '新建项目'}
-          </button>
-        </div>
-
-        <div className="px-2.5 pb-2">
-          <div className="flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1">
-            <Search className="size-3.5 shrink-0 text-muted-foreground" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索项目与对话"
-              data-testid="sidebar-search"
-              className="min-w-0 flex-1 bg-transparent text-[11.5px] outline-none placeholder:text-muted-foreground"
-            />
-          </div>
-        </div>
-
-        <nav className="px-2 pb-1">
-          <SidebarLink
-            active={view === 'projects'}
-            icon={LayoutGrid}
-            label="项目"
-            onClick={() => onViewChange('projects')}
-          />
-          <SidebarLink
-            active={view === 'chats'}
-            icon={MessageSquare}
-            label="对话"
-            onClick={() => onViewChange('chats')}
-          />
-          <SidebarLink
-            active={view === 'skills'}
-            icon={Sparkles}
-            label="技能"
-            onClick={() => onViewChange('skills')}
-          />
-          <SidebarLink
-            active={view === 'templates'}
-            icon={LayoutTemplate}
-            label="模板"
-            onClick={() => onViewChange('templates')}
-          />
-        </nav>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-          <div className="mt-3">
-            <SidebarHeading>项目</SidebarHeading>
-            {tree.length === 0 ? (
-              <p className="px-1.5 py-1 text-[10.5px] text-muted-foreground/80">
-                还没有项目；点上方「新建项目」或从模板开始。
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        {currentProject ? (
+          <section className="mb-3">
+            <div className="px-2 pb-1.5">
+              <p className="truncate text-[11px] font-medium tracking-wide text-muted-foreground">
+                当前项目
               </p>
-            ) : null}
-            {tree.map((node) => {
-              const open = expanded[node.project.id] ?? node.project.id === project?.id;
-              return (
-                <div key={node.project.id}>
+              <p className="truncate text-xs font-semibold">{currentProject.name}</p>
+              <p className="truncate font-mono text-[10px] text-muted-foreground">
+                {currentProject.workspacePath}
+              </p>
+            </div>
+            <div className="space-y-0.5">
+              {filteredChats.length === 0 ? (
+                <p className="px-2 py-2 text-[11px] text-muted-foreground">还没有对话。</p>
+              ) : (
+                filteredChats.map((chat) => (
+                  <ChatRow
+                    key={chat.id}
+                    chat={chat}
+                    active={chat.id === currentChatId}
+                    editing={editingId === chat.id}
+                    draft={draft}
+                    submitting={submitting}
+                    onDraftChange={setDraft}
+                    onStartRename={() => {
+                      setEditingId(chat.id);
+                      setDraft(chat.title);
+                    }}
+                    onCancelRename={() => setEditingId(null)}
+                    onSubmitRename={() => void submitRename(chat.id)}
+                    onArchive={() => onArchiveChat(chat.id)}
+                  />
+                ))
+              )}
+            </div>
+          </section>
+        ) : null}
+
+        <section className="mb-3">
+          <p className="px-2 pb-1.5 text-[11px] font-medium tracking-wide text-muted-foreground">
+            {currentProject ? '最近项目' : '本地项目'}
+          </p>
+          <div className="space-y-0.5">
+            {filteredProjects.length === 0 ? (
+              <p className="px-2 py-2 text-[11px] leading-5 text-muted-foreground">
+                还没有项目。打开一个本地目录开始。
+              </p>
+            ) : (
+              filteredProjects.map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  onClick={() => onOpenProject(project)}
+                  className={cn(
+                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
+                    project.id === currentProjectId
+                      ? 'bg-muted text-foreground'
+                      : 'text-muted-foreground hover:bg-muted/70 hover:text-foreground',
+                  )}
+                >
+                  <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border bg-card text-[10px] font-semibold">
+                    {project.name.slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-medium">{project.name}</span>
+                    <span className="block truncate font-mono text-[9.5px] text-muted-foreground/80">
+                      {project.workspacePath}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-[9.5px] text-muted-foreground/70">
+                    {project.chatCount} 对话
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section>
+          <button
+            type="button"
+            onClick={() => setArchivedOpen((value) => !value)}
+            className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium tracking-wide text-muted-foreground hover:bg-muted/60"
+          >
+            <Archive className="size-3.5" />
+            已归档
+            <span className="ml-auto text-[10px]">{archived.length}</span>
+            <ChevronDown
+              className={cn('size-3 transition-transform', archivedOpen && 'rotate-180')}
+            />
+          </button>
+          {archivedOpen ? (
+            <div className="mt-0.5 space-y-0.5">
+              {archived.length === 0 ? (
+                <p className="px-2 py-1.5 text-[11px] text-muted-foreground">没有归档的对话。</p>
+              ) : (
+                archived.map((chat) => (
                   <div
-                    className={cn(
-                      'flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-[11.5px] transition-colors',
-                      node.project.id === project?.id
-                        ? 'font-medium text-foreground'
-                        : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
-                    )}
+                    key={chat.id}
+                    className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/60"
                   >
+                    <span className="min-w-0 flex-1 truncate">{chat.title}</span>
                     <button
                       type="button"
-                      data-testid={`project-open-${node.project.id}`}
-                      onClick={() => {
-                        setExpanded((current) => ({ ...current, [node.project.id]: true }));
-                        onOpenProject(node.project.id);
-                      }}
-                      onDoubleClick={() =>
-                        setExpanded((current) => ({
-                          ...current,
-                          [node.project.id]: !open,
-                        }))
-                      }
-                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                      title={`打开项目　${node.project.workspacePath}`}
+                      title="恢复对话"
+                      onClick={() => onRestoreChat(chat.id)}
+                      className="rounded p-1 hover:bg-muted hover:text-foreground"
                     >
-                      {open ? (
-                        <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
-                      ) : (
-                        <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
-                      )}
-                      {open ? (
-                        <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
-                      ) : (
-                        <FolderClosed className="size-3.5 shrink-0 text-muted-foreground" />
-                      )}
-                      <span className="truncate">{node.project.name}</span>
+                      <RotateCcw className="size-3" />
                     </button>
                   </div>
-                  {open
-                    ? node.chats.map((entry) => (
-                        <ChatRow
-                          key={entry.id}
-                          chatId={entry.id}
-                          title={entry.title}
-                          active={view === 'chat' && entry.id === chat?.id}
-                          onOpen={() => onSelectChat(entry.id)}
-                          onRename={(next) => onRenameChat(entry.id, next)}
-                          onArchive={() => onArchiveChat(entry.id)}
-                        />
-                      ))
-                    : null}
-                </div>
-              );
-            })}
-          </div>
-
-          {needle && tree.length === 0 ? (
-            <p className="px-1.5 py-4 text-[11px] text-muted-foreground">没有匹配的项目或对话</p>
+                ))
+              )}
+            </div>
           ) : null}
+        </section>
+      </div>
+
+      <div className="border-t border-border p-2">
+        <button
+          type="button"
+          onClick={onOpenSkills}
+          className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <Sparkles className="size-3.5" />
+          技能
+          <ArrowUpRight className="ml-auto size-3" />
+        </button>
+        <button
+          type="button"
+          onClick={onHome}
+          className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <SquareArrowOutUpRight className="size-3.5" />
+          首页 / 打开目录
+        </button>
+        <div className="flex items-center gap-1.5 px-2 pt-1 text-[10px] text-muted-foreground/70">
+          <Settings2 className="size-3" />
+          模型配置在 .env
         </div>
-
-        <div className="border-t border-border px-2.5 py-2">
-          <button
-            type="button"
-            onClick={onHome}
-            className="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-muted"
-          >
-            <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground">
-              本
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[11.5px] font-medium">本地用户</span>
-              <span className="block truncate text-[10px] text-muted-foreground">
-                单用户 · 浏览器工作区
-              </span>
-            </span>
-          </button>
-        </div>
-      </aside>
-    </>
+      </div>
+    </aside>
   );
 }
 
-function SidebarHeading({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="px-1.5 pb-1 text-[10px] font-medium tracking-wide text-muted-foreground/80">
-      {children}
-    </div>
-  );
-}
-
-function SidebarLink({
-  icon: Icon,
-  label,
-  active,
-  onClick,
-}: {
-  icon: typeof LayoutGrid;
-  label: string;
-  active?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-[12px] transition-colors',
-        active
-          ? 'bg-muted font-medium text-foreground'
-          : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
-      )}
-    >
-      <Icon className="size-3.5" />
-      {label}
-    </button>
-  );
-}
-
-/** 项目里的对话：点名字进对话，⋯ 里改名或归档。 */
 function ChatRow({
-  chatId,
-  title,
+  chat,
   active,
-  onOpen,
-  onRename,
+  editing,
+  draft,
+  submitting,
+  onDraftChange,
+  onStartRename,
+  onCancelRename,
+  onSubmitRename,
   onArchive,
 }: {
-  chatId: string;
-  title: string;
+  chat: ChatSummary;
   active: boolean;
-  onOpen: () => void;
-  onRename: (title: string) => void;
+  editing: boolean;
+  draft: string;
+  submitting: boolean;
+  onDraftChange: (value: string) => void;
+  onStartRename: () => void;
+  onCancelRename: () => void;
+  onSubmitRename: () => void;
   onArchive: () => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(title);
-
-  function commit() {
-    const next = value.trim();
-    if (next && next !== title) onRename(next);
-    setEditing(false);
-  }
-
   if (editing) {
     return (
-      <input
-        autoFocus
-        value={value}
-        data-testid={`rename-input-${chatId}`}
-        onChange={(event) => setValue(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') commit();
-          if (event.key === 'Escape') {
-            setValue(title);
-            setEditing(false);
-          }
-        }}
-        className="w-full rounded-md border border-border bg-background py-1 pr-1.5 pl-6 text-[11.5px] outline-none focus:border-foreground/40"
-      />
+      <div className="flex items-center gap-1 rounded-md border border-border bg-card px-1.5 py-1">
+        <Input
+          autoFocus
+          value={draft}
+          onChange={(event) => onDraftChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              onSubmitRename();
+            }
+            if (event.key === 'Escape') onCancelRename();
+          }}
+          className="h-6 min-w-0 flex-1 border-0 px-1 text-xs shadow-none focus-visible:ring-0"
+        />
+        <button
+          type="button"
+          disabled={submitting || !draft.trim()}
+          onClick={onSubmitRename}
+          className="rounded px-1 text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+        >
+          保存
+        </button>
+      </div>
     );
   }
 
   return (
-    <div className="group/row relative">
-      <button
-        type="button"
-        data-testid={`chat-row-${chatId}`}
-        onClick={onOpen}
-        className={cn(
-          'flex w-full items-center gap-1.5 rounded-md py-1 pr-7 pl-6 text-left text-[11.5px] transition-colors',
-          active
-            ? 'bg-muted font-medium text-foreground'
-            : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+    <div
+      className={cn(
+        'group flex items-center gap-1 rounded-md px-1.5 py-1 transition-colors',
+        active ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/60',
+      )}
+    >
+      <span className="relative flex size-4 shrink-0 items-center justify-center">
+        {chat.pendingApproval ? (
+          <span className="size-2 rounded-full bg-amber-500" title="等待命令批准" />
+        ) : chat.streaming ? (
+          <span className="size-2 animate-pulse rounded-full bg-emerald-500" title="正在执行" />
+        ) : (
+          <span className="size-1.5 rounded-full bg-muted-foreground/30" />
         )}
+      </span>
+      <Link
+        href={`/chat/${chat.id}`}
+        className="min-w-0 flex-1 truncate py-0.5 text-xs"
+        title={chat.title}
       >
-        <MessageSquare className="size-3 shrink-0" />
-        <span className="truncate">{title}</span>
-      </button>
+        {chat.title}
+      </Link>
+      {chat.pendingApproval ? (
+        <span className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] text-amber-700 dark:text-amber-400">
+          待批准
+        </span>
+      ) : chat.streaming ? (
+        <span className="shrink-0 rounded bg-emerald-500/15 px-1 py-0.5 text-[9px] text-emerald-700 dark:text-emerald-400">
+          执行中
+        </span>
+      ) : (
+        <span className="hidden shrink-0 text-[9px] text-muted-foreground/60 group-hover:inline">
+          {formatTime(chat.updatedAt)}
+        </span>
+      )}
       <DropdownMenu>
         <DropdownMenuTrigger
-          data-testid={`chat-menu-${chatId}`}
-          title="会话操作"
-          className="absolute top-1/2 right-1 -translate-y-1/2 rounded p-0.5 text-muted-foreground/60 opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover/row:opacity-100 data-[state=open]:opacity-100"
+          className="rounded p-0.5 text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100 focus:opacity-100"
+          title="对话操作"
         >
-          <MoreHorizontal className="size-3" />
+          <Settings2 className="size-3" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-40">
-          <DropdownMenuItem
-            className="gap-2 text-[12px]"
-            onClick={() => {
-              setValue(title);
-              setEditing(true);
-            }}
-          >
+          <DropdownMenuItem onClick={onStartRename} className="gap-2 text-xs">
             <Pencil className="size-3.5" />
             重命名
           </DropdownMenuItem>
-          <DropdownMenuItem className="gap-2 text-[12px]" onClick={onArchive}>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={onArchive} className="gap-2 text-xs">
             <Archive className="size-3.5" />
             归档
           </DropdownMenuItem>

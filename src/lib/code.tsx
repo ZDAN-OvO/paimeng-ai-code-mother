@@ -12,14 +12,13 @@ import {
   FolderOpen,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { FileMap } from '@/shared/api/schemas';
 
 type Node = { name: string; path: string; file?: boolean; children: Node[] };
 
-export function buildTree(files: FileMap): Node[] {
+export function buildTree(paths: string[]): Node[] {
   const root: Node[] = [];
-  for (const path of Object.keys(files).sort()) {
-    const segments = path.split('/');
+  for (const path of [...paths].sort()) {
+    const segments = path.split('/').filter(Boolean);
     let cursor = root;
     let prefix = '';
     segments.forEach((segment, index) => {
@@ -59,15 +58,15 @@ function FileIcon({ name, className }: { name: string; className?: string }) {
 }
 
 export function FileTree({
-  files,
+  paths,
   selected,
   onSelect,
 }: {
-  files: FileMap;
+  paths: string[];
   selected: string;
   onSelect: (path: string) => void;
 }) {
-  const tree = useMemo(() => buildTree(files), [files]);
+  const tree = useMemo(() => buildTree(paths), [paths]);
   const [closed, setClosed] = useState<Record<string, boolean>>({ app: false });
 
   const renderNodes = (nodes: Node[], depth: number): ReactNode =>
@@ -124,10 +123,12 @@ export function CodeView({
   code,
   filename = '',
   className,
+  startLine = 1,
 }: {
   code: string;
   filename?: string;
   className?: string;
+  startLine?: number;
 }) {
   const visibleCode = code.replace(/\n$/, '');
   const lines = useMemo(() => visibleCode.split('\n'), [visibleCode]);
@@ -170,7 +171,7 @@ export function CodeView({
         >
           {lines.map((_, index) => (
             <div key={index} className="pr-2 text-muted-foreground/70">
-              {index + 1}
+              {startLine + index}
             </div>
           ))}
         </div>
