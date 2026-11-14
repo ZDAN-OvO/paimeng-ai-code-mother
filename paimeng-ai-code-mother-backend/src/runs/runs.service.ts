@@ -87,6 +87,9 @@ export class RunsService implements OnModuleDestroy {
     const deadlineAt = new Date(Date.now() + this.config.runMaxDurationMs)
     await this.consumeRateLimit(appId)
 
+    // 在事务提交可见之前注册 stream，避免重复请求在提交与注册之间查到 run 却取不到流。
+    const stream = new RunStream(runId)
+    this.streams.set(runId, stream)
     try {
       await this.db.db.transaction(async (tx) => {
         await tx.execute(sql`select pg_advisory_xact_lock(${userId})`)
@@ -171,6 +174,8 @@ export class RunsService implements OnModuleDestroy {
         })
       })
     } catch (err) {
+      this.streams.delete(runId)
+      stream.finish()
       if (err instanceof DuplicateRunError) {
         const run = await this.findByClientRequestId(appId, clientRequestId)
         if (!run) throw ApiException.conflict('重复请求处理失败')
@@ -181,27 +186,28 @@ export class RunsService implements OnModuleDestroy {
 
     const abort = new AbortController()
     this.active.set(runId, { abort, startedAt: Date.now() })
-    const stream = new RunStream(runId)
-    this.streams.set(runId, stream)
     try {
       await this.mutex.withLock(appId, () => this.details.ensureBaseline(runId, appId))
     } catch (err) {
       this.active.delete(runId)
       const message = err instanceof Error ? err.message : String(err)
-      await this.finalize(
-        runId,
-        {
-          status: 'failed',
-          text: '',
-          stepCount: 0,
-          repairCount: 0,
-          errorCode: 'DETAILS_BASELINE_FAILED',
-          errorSummary: `运行详情基线创建失败：${message}`,
-        },
-        { detailsStatus: 'incomplete', detailsError: message, changes: null },
-      )
-      stream.finish()
-      this.streams.delete(runId)
+      try {
+        await this.finalize(
+          runId,
+          {
+            status: 'failed',
+            text: '',
+            stepCount: 0,
+            repairCount: 0,
+            errorCode: 'DETAILS_BASELINE_FAILED',
+            errorSummary: `运行详情基线创建失败：${message}`,
+          },
+          { detailsStatus: 'incomplete', detailsError: message, changes: null },
+        )
+      } finally {
+        stream.finish()
+        this.streams.delete(runId)
+      }
       throw ApiException.conflict(`无法创建本轮文件快照：${message}`)
     }
 

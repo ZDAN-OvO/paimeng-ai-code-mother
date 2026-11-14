@@ -17,6 +17,10 @@ import { INSTANCE_LOCK_KEY } from '../src/startup/instance-lock.service'
 const execute = process.argv.includes('--execute')
 const manifestPath = process.argv[process.argv.indexOf('--manifest') + 1]
 const timeoutMs = 10 * 60_000
+const LOCK_TTL_MS = 60_000
+const LOCK_RENEW_MS = 20_000
+const RENEW_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("pexpire", KEYS[1], ARGV[2]) else return 0 end`
+const RELEASE_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`
 
 for (const path of ['.env', '../.env', 'paimeng-ai-code-mother-backend/.env']) {
   if (existsSync(path)) {
@@ -43,6 +47,11 @@ async function main() {
   const sessions = new SessionService(config, redis)
   const preview = new PreviewService(config, db, redis, docker, runtime, sessions)
   let maintenanceId: string | null = null
+  let renewTimer: NodeJS.Timeout | null = null
+  let lockLost = false
+  const assertLock = () => {
+    if (lockLost) throw new Error('维护锁已丢失，停止清理')
+  }
 
   try {
     await redis.onModuleInit()
@@ -50,9 +59,28 @@ async function main() {
     maintenanceId = randomUUID()
     const locked = await client.set(INSTANCE_LOCK_KEY, maintenanceId, {
       condition: 'NX',
-      expiration: { type: 'PX', value: timeoutMs + 60_000 },
+      expiration: { type: 'PX', value: LOCK_TTL_MS },
     })
     if (locked !== 'OK') throw new Error('后端仍在运行或另一个维护操作正在进行')
+    const renew = async () => {
+      if (!maintenanceId || lockLost) return
+      try {
+        const current = await redis.ensureConnected()
+        const renewed = await current.eval(RENEW_SCRIPT, {
+          keys: [INSTANCE_LOCK_KEY],
+          arguments: [maintenanceId, String(LOCK_TTL_MS)],
+        })
+        if (Number(renewed) !== 1) {
+          lockLost = true
+          if (renewTimer) clearInterval(renewTimer)
+        }
+      } catch {
+        lockLost = true
+        if (renewTimer) clearInterval(renewTimer)
+      }
+    }
+    renewTimer = setInterval(() => void renew(), LOCK_RENEW_MS)
+    renewTimer.unref()
 
     await runtime.onModuleInit()
     const appsService = new AppsService(db, runtime, preview, config)
@@ -85,6 +113,7 @@ async function main() {
     if (manifest.userCount !== userRows.length) {
       throw new Error(`账号数量与清单不一致：清单 ${manifest.userCount}，当前 ${userRows.length}`)
     }
+    assertLock()
     const snapshotIds = new Set(snapshot.map((app: { id: number }) => app.id))
     const currentApps = await db.db
       .select({ id: apps.id, ownerId: apps.ownerId })
@@ -97,6 +126,8 @@ async function main() {
       }
     }
 
+    const deadline = Date.now() + timeoutMs
+    assertLock()
     await db.db
       .update(agentRuns)
       .set({
@@ -111,19 +142,21 @@ async function main() {
       )
 
     for (const app of snapshot) {
+      assertLock()
       const current = currentApps.find((row) => row.id === app.id)
       if (!current) continue
       await appsService.requestDelete(app.id, app.ownerId)
     }
 
-    const deadline = Date.now() + timeoutMs
     let remaining: number[] = []
     while (Date.now() < deadline) {
+      assertLock()
       const rows = await db.db.select({ id: apps.id }).from(apps)
       remaining = rows.map((row) => row.id).filter((id) => snapshotIds.has(id))
       if (!remaining.length) break
       await sleep(1000)
     }
+    assertLock()
     if (remaining.length) throw new Error(`以下应用未在截止时间内删除：${remaining.join(', ')}`)
 
     const [remainingUsers, containers] = await Promise.all([
@@ -147,17 +180,15 @@ async function main() {
 
     console.log(`清理完成：${snapshot.length} 个应用，账号保留 ${remainingUsers.length} 个。`)
   } finally {
+    if (renewTimer) clearInterval(renewTimer)
     if (maintenanceId) {
       const client = await redis.ensureConnected().catch(() => null)
       if (client) {
         await client
-          .eval(
-            `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`,
-            {
-              keys: [INSTANCE_LOCK_KEY],
-              arguments: [maintenanceId],
-            },
-          )
+          .eval(RELEASE_SCRIPT, {
+            keys: [INSTANCE_LOCK_KEY],
+            arguments: [maintenanceId],
+          })
           .catch(() => undefined)
       }
     }
