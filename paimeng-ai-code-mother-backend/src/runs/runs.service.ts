@@ -181,6 +181,8 @@ export class RunsService implements OnModuleDestroy {
 
     const abort = new AbortController()
     this.active.set(runId, { abort, startedAt: Date.now() })
+    const stream = new RunStream(runId)
+    this.streams.set(runId, stream)
     try {
       await this.mutex.withLock(appId, () => this.details.ensureBaseline(runId, appId))
     } catch (err) {
@@ -198,11 +200,11 @@ export class RunsService implements OnModuleDestroy {
         },
         { detailsStatus: 'incomplete', detailsError: message, changes: null },
       )
+      stream.finish()
+      this.streams.delete(runId)
       throw ApiException.conflict(`无法创建本轮文件快照：${message}`)
     }
 
-    const stream = new RunStream(runId)
-    this.streams.set(runId, stream)
     const [current] = await this.db.db
       .select({ status: agentRuns.status })
       .from(agentRuns)

@@ -12,7 +12,7 @@ import { RedisService } from '../src/redis/redis.module'
 import { DockerService } from '../src/runtime/docker.service'
 import { RegistryRelayService } from '../src/runtime/registry-relay.service'
 import { RuntimeService } from '../src/runtime/runtime.service'
-import { INSTANCE_LOCK_KEY, MAINTENANCE_LOCK_KEY } from '../src/startup/instance-lock.service'
+import { INSTANCE_LOCK_KEY } from '../src/startup/instance-lock.service'
 
 const execute = process.argv.includes('--execute')
 const manifestPath = process.argv[process.argv.indexOf('--manifest') + 1]
@@ -47,15 +47,12 @@ async function main() {
   try {
     await redis.onModuleInit()
     const client = await redis.ensureConnected()
-    if (await client.get(INSTANCE_LOCK_KEY)) {
-      throw new Error('后端仍在运行，请先停止后端再执行维护清理')
-    }
     maintenanceId = randomUUID()
-    const locked = await client.set(MAINTENANCE_LOCK_KEY, maintenanceId, {
+    const locked = await client.set(INSTANCE_LOCK_KEY, maintenanceId, {
       condition: 'NX',
       expiration: { type: 'PX', value: timeoutMs + 60_000 },
     })
-    if (locked !== 'OK') throw new Error('另一个维护操作正在运行')
+    if (locked !== 'OK') throw new Error('后端仍在运行或另一个维护操作正在进行')
 
     await runtime.onModuleInit()
     const appsService = new AppsService(db, runtime, preview, config)
@@ -157,7 +154,7 @@ async function main() {
           .eval(
             `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`,
             {
-              keys: [MAINTENANCE_LOCK_KEY],
+              keys: [INSTANCE_LOCK_KEY],
               arguments: [maintenanceId],
             },
           )

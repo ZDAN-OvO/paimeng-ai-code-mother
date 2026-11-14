@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto'
 import { RedisService } from '../redis/redis.module'
 
 export const INSTANCE_LOCK_KEY = 'paimeng:instance:lock'
-export const MAINTENANCE_LOCK_KEY = 'paimeng:maintenance:lock'
 const LOCK_TTL_MS = 15_000
 const RENEW_MS = 5_000
 const RENEW_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("pexpire", KEYS[1], ARGV[2]) else return 0 end`
@@ -19,9 +18,6 @@ export class InstanceLockService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     const client = await this.redis.ensureConnected()
-    if (await client.get(MAINTENANCE_LOCK_KEY)) {
-      throw new Error('系统正在执行维护操作，拒绝启动后端')
-    }
     let acquired = false
     for (let attempt = 0; attempt < 3 && !acquired; attempt += 1) {
       const result = await client.set(INSTANCE_LOCK_KEY, this.instanceId, {
