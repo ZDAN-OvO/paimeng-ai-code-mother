@@ -44,6 +44,10 @@ describe('runtime task timeout', () => {
 echo "$*" >> "$DOCKER_LOG"
 if [ "$1" = "wait" ]; then exec sleep 10; fi
 if [ "$1" = "run" ]; then echo fake-container-id; exit 0; fi
+if [ "$1" = "inspect" ]; then
+  echo '{"Id":"fake-container-id","State":{"Running":true,"Status":"running","ExitCode":0},"Config":{"Labels":{"paimeng.project":"paimeng-ai-code-mother"}},"NetworkSettings":{"Networks":{}}}'
+  exit 0
+fi
 exit 0
 `,
     )
