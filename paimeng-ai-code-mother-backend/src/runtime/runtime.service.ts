@@ -165,7 +165,10 @@ export class RuntimeService implements OnModuleInit {
     const stopForCancel = () => {
       envCancelRequested = true
       // 多次取消检查只触发一次删除；docker rm -f 本身是幂等的。
-      removal ??= this.docker.removeContainer(name).catch(() => undefined)
+      removal ??= this.docker.removeContainer(name).then(
+        () => undefined,
+        () => undefined,
+      )
     }
     if (isCancelled()) stopForCancel()
     const cancelPoll = setInterval(() => {

@@ -17,8 +17,23 @@ export interface DockerRunOptions {
   maxOutputBytes?: number
 }
 
+interface DockerContainerInspect {
+  Id: string
+  State: { Running: boolean; Status: string; ExitCode: number }
+  Config?: { Labels?: Record<string, string> }
+  NetworkSettings: { Networks: Record<string, { IPAddress: string }> }
+}
+
+interface DockerNetworkInspect {
+  Id?: string
+  Driver?: string
+  Internal?: boolean
+  Options?: Record<string, string>
+}
+
 const PROJECT_LABEL = 'paimeng.project'
 const PROJECT_NAME = 'paimeng-ai-code-mother'
+const ICC_OPTION = 'com.docker.network.bridge.enable_icc'
 
 @Injectable()
 export class DockerService {
@@ -94,11 +109,21 @@ export class DockerService {
     const res = await this.run(['inspect', name, '--format', '{{json .}}'], { timeoutMs: 15_000 })
     if (res.code !== 0) return null
     try {
-      return JSON.parse(res.stdout.trim()) as {
-        Id: string
-        State: { Running: boolean; Status: string; ExitCode: number }
-        NetworkSettings: { Networks: Record<string, { IPAddress: string }> }
-      }
+      return JSON.parse(res.stdout.trim()) as DockerContainerInspect
+    } catch {
+      return null
+    }
+  }
+
+  private isProjectContainer(info: DockerContainerInspect) {
+    return info.Config?.Labels?.[PROJECT_LABEL] === PROJECT_NAME
+  }
+
+  async inspectNetwork(name: string) {
+    const res = await this.run(['network', 'inspect', name], { timeoutMs: 15_000 })
+    if (res.code !== 0) return null
+    try {
+      return (JSON.parse(res.stdout) as DockerNetworkInspect[])[0] ?? null
     } catch {
       return null
     }
@@ -110,9 +135,20 @@ export class DockerService {
   }
 
   async ensureNetwork(name: string, internal: boolean) {
-    if (await this.networkExists(name)) return
+    const existing = await this.inspectNetwork(name)
+    if (existing) {
+      if (internal) {
+        if (existing.Internal !== true) {
+          throw new Error(`Docker 网络 ${name} 已存在但不是 internal，拒绝使用`)
+        }
+        if (existing.Options?.[ICC_OPTION] !== 'false') {
+          throw new Error(`Docker 网络 ${name} 未关闭容器间通信（${ICC_OPTION}=false），拒绝使用`)
+        }
+      }
+      return
+    }
     const args = ['network', 'create']
-    if (internal) args.push('--internal', '--opt', 'com.docker.network.bridge.enable_icc=false')
+    if (internal) args.push('--internal', '--opt', `${ICC_OPTION}=false`)
     args.push(name)
     const res = await this.run(args, { timeoutMs: 30_000 })
     if (res.code !== 0) throw new Error(`创建 Docker 网络 ${name} 失败: ${res.stderr || res.stdout}`)
@@ -152,11 +188,25 @@ export class DockerService {
   }
 
   async removeContainer(nameOrId: string) {
-    await this.run(['rm', '-f', nameOrId], { timeoutMs: 30_000 })
+    const info = await this.inspectContainer(nameOrId)
+    if (!info) return false
+    if (!this.isProjectContainer(info)) {
+      this.logger.warn(`拒绝删除非本项目容器 ${nameOrId}`)
+      return false
+    }
+    const res = await this.run(['rm', '-f', nameOrId], { timeoutMs: 30_000 })
+    return res.code === 0
   }
 
   async stopContainer(nameOrId: string) {
-    await this.run(['stop', '-t', '5', nameOrId], { timeoutMs: 20_000 })
+    const info = await this.inspectContainer(nameOrId)
+    if (!info) return false
+    if (!this.isProjectContainer(info)) {
+      this.logger.warn(`拒绝停止非本项目容器 ${nameOrId}`)
+      return false
+    }
+    const res = await this.run(['stop', '-t', '5', nameOrId], { timeoutMs: 20_000 })
+    return res.code === 0
   }
 
   runtimeImageHash(): string {
