@@ -1,0 +1,70 @@
+name: paimeng-ai-code-mother
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-paimeng}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-paimeng}
+      POSTGRES_DB: ${POSTGRES_DB:-paimeng}
+    ports:
+      - '127.0.0.1:5433:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-paimeng} -d ${POSTGRES_DB:-paimeng}']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [platform]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '127.0.0.1:6380:6379'
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [platform]
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NGINX_PORT: ${NGINX_PORT:-8080}
+      MAIN_HOST: ${MAIN_HOST:-paimeng.localhost}
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:-preview.paimeng.localhost}
+      BACKEND_PORT: ${BACKEND_PORT:-8123}
+    volumes:
+      - ./docker/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./paimeng-ai-code-mother-frontend/dist:/usr/share/nginx/html:ro
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'wget -qO- --header="Host: $${MAIN_HOST}" http://127.0.0.1:$${NGINX_PORT}/api/health || exit 1',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  platform:
+    driver: bridge

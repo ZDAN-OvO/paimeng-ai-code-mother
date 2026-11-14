@@ -1,7 +1,0 @@
-node_modules
-.next
-archive
-data
-runtime
-package-lock.json
-next-env.d.ts
