@@ -213,11 +213,11 @@ async function main() {
 
     console.log(`清理完成：${snapshot.length} 个应用，账号保留 ${remainingUsers.length} 个。`)
   } finally {
-    if (renewTimer) clearInterval(renewTimer)
     if (appsService && snapshotIds) {
       appsService.stopDeletionRetries([...snapshotIds])
       await appsService.waitForDeletions([...snapshotIds])
     }
+    if (renewTimer) clearInterval(renewTimer)
     if (maintenanceId) {
       const client = await redis.ensureConnected().catch(() => null)
       if (client) {

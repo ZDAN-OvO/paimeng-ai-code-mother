@@ -183,8 +183,13 @@ export class AppsService {
         .where(eq(apps.id, appId))
     })
     this.preview.revokeApp(appId, 'deleted')
-    void this.runDelete(appId)
+    this.backgroundDelete(appId)
     return true
+  }
+
+  private untrackDelete(appId: number, task: Promise<void>, tasks: Set<Promise<void>>) {
+    tasks.delete(task)
+    if (!tasks.size && this.deletions.get(appId) === tasks) this.deletions.delete(appId)
   }
 
   private runDelete(appId: number) {
@@ -193,11 +198,19 @@ export class AppsService {
     const tasks = this.deletions.get(appId) ?? new Set<Promise<void>>()
     this.deletions.set(appId, tasks)
     tasks.add(task)
-    void task.finally(() => {
-      tasks.delete(task)
-      if (!tasks.size && this.deletions.get(appId) === tasks) this.deletions.delete(appId)
-    })
+    void task.then(
+      () => this.untrackDelete(appId, task, tasks),
+      () => this.untrackDelete(appId, task, tasks),
+    )
     return task
+  }
+
+  private backgroundDelete(appId: number) {
+    void this.runDelete(appId).catch((err) => {
+      this.logger.warn(
+        `应用 ${appId} 删除任务异常: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    })
   }
 
   async waitForDeletions(appIds: number[]) {
@@ -251,7 +264,7 @@ export class AppsService {
     if (existing) clearTimeout(existing)
     const timer = setTimeout(() => {
       this.retryTimers.delete(appId)
-      void this.runDelete(appId)
+      this.backgroundDelete(appId)
     }, delay)
     timer.unref()
     this.retryTimers.set(appId, timer)
@@ -264,7 +277,7 @@ export class AppsService {
       .where(eq(apps.status, 'deleting'))
     for (const row of rows) {
       const delay = row.next ? Math.max(0, row.next.getTime() - Date.now()) : 0
-      if (delay === 0) void this.runDelete(row.id)
+      if (delay === 0) this.backgroundDelete(row.id)
       else this.scheduleRetry(row.id, delay)
     }
     return rows.length
