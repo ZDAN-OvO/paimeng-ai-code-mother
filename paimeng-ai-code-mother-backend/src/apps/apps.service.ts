@@ -47,6 +47,8 @@ const SORT_FIELDS = {
 export class AppsService {
   private readonly logger = new Logger(AppsService.name)
   private retryTimers = new Map<number, NodeJS.Timeout>()
+  private readonly deletions = new Map<number, Set<Promise<void>>>()
+  private deletionStopped = false
 
   constructor(
     private readonly db: DbService,
@@ -181,8 +183,36 @@ export class AppsService {
         .where(eq(apps.id, appId))
     })
     this.preview.revokeApp(appId, 'deleted')
-    void this.performDelete(appId)
+    void this.runDelete(appId)
     return true
+  }
+
+  private runDelete(appId: number) {
+    if (this.deletionStopped) return Promise.resolve()
+    const task = this.performDelete(appId)
+    const tasks = this.deletions.get(appId) ?? new Set<Promise<void>>()
+    this.deletions.set(appId, tasks)
+    tasks.add(task)
+    void task.finally(() => {
+      tasks.delete(task)
+      if (!tasks.size && this.deletions.get(appId) === tasks) this.deletions.delete(appId)
+    })
+    return task
+  }
+
+  async waitForDeletions(appIds: number[]) {
+    const tasks = appIds.flatMap((appId) => [...(this.deletions.get(appId) ?? [])])
+    await Promise.allSettled(tasks)
+  }
+
+  stopDeletionRetries(appIds: number[]) {
+    this.deletionStopped = true
+    for (const appId of appIds) {
+      const timer = this.retryTimers.get(appId)
+      if (!timer) continue
+      clearTimeout(timer)
+      this.retryTimers.delete(appId)
+    }
   }
 
   private async performDelete(appId: number) {
@@ -216,11 +246,12 @@ export class AppsService {
   }
 
   private scheduleRetry(appId: number, delay: number) {
+    if (this.deletionStopped) return
     const existing = this.retryTimers.get(appId)
     if (existing) clearTimeout(existing)
     const timer = setTimeout(() => {
       this.retryTimers.delete(appId)
-      void this.performDelete(appId)
+      void this.runDelete(appId)
     }, delay)
     timer.unref()
     this.retryTimers.set(appId, timer)
@@ -233,7 +264,7 @@ export class AppsService {
       .where(eq(apps.status, 'deleting'))
     for (const row of rows) {
       const delay = row.next ? Math.max(0, row.next.getTime() - Date.now()) : 0
-      if (delay === 0) void this.performDelete(row.id)
+      if (delay === 0) void this.runDelete(row.id)
       else this.scheduleRetry(row.id, delay)
     }
     return rows.length

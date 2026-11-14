@@ -19,6 +19,8 @@ const manifestPath = process.argv[process.argv.indexOf('--manifest') + 1]
 const timeoutMs = 10 * 60_000
 const LOCK_TTL_MS = 60_000
 const LOCK_RENEW_MS = 20_000
+const LOCK_RENEW_TIMEOUT_MS = 10_000
+const LEASE_SAFETY_MS = 10_000
 const RENEW_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("pexpire", KEYS[1], ARGV[2]) else return 0 end`
 const RELEASE_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`
 
@@ -31,6 +33,23 @@ for (const path of ['.env', '../.env', 'paimeng-ai-code-mother-backend/.env']) {
 
 async function sleep(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms)
+    timer.unref()
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
 }
 
 async function main() {
@@ -47,10 +66,15 @@ async function main() {
   const sessions = new SessionService(config, redis)
   const preview = new PreviewService(config, db, redis, docker, runtime, sessions)
   let maintenanceId: string | null = null
+  let appsService: AppsService | null = null
+  let snapshotIds: Set<number> | null = null
   let renewTimer: NodeJS.Timeout | null = null
   let lockLost = false
+  let leaseDeadline = 0
   const assertLock = () => {
-    if (lockLost) throw new Error('维护锁已丢失，停止清理')
+    if (lockLost || performance.now() >= leaseDeadline - LEASE_SAFETY_MS) {
+      throw new Error('维护锁已丢失或租约无法确认，停止清理')
+    }
   }
 
   try {
@@ -62,17 +86,24 @@ async function main() {
       expiration: { type: 'PX', value: LOCK_TTL_MS },
     })
     if (locked !== 'OK') throw new Error('后端仍在运行或另一个维护操作正在进行')
+    leaseDeadline = performance.now() + LOCK_TTL_MS
     const renew = async () => {
       if (!maintenanceId || lockLost) return
       try {
         const current = await redis.ensureConnected()
-        const renewed = await current.eval(RENEW_SCRIPT, {
-          keys: [INSTANCE_LOCK_KEY],
-          arguments: [maintenanceId, String(LOCK_TTL_MS)],
-        })
+        const renewed = await withTimeout(
+          current.eval(RENEW_SCRIPT, {
+            keys: [INSTANCE_LOCK_KEY],
+            arguments: [maintenanceId, String(LOCK_TTL_MS)],
+          }),
+          LOCK_RENEW_TIMEOUT_MS,
+          '维护锁续租超时',
+        )
         if (Number(renewed) !== 1) {
           lockLost = true
           if (renewTimer) clearInterval(renewTimer)
+        } else {
+          leaseDeadline = performance.now() + LOCK_TTL_MS
         }
       } catch {
         lockLost = true
@@ -83,7 +114,8 @@ async function main() {
     renewTimer.unref()
 
     await runtime.onModuleInit()
-    const appsService = new AppsService(db, runtime, preview, config)
+    const service = new AppsService(db, runtime, preview, config)
+    appsService = service
     const [allApps, userRows] = await Promise.all([
       db.db.select({ id: apps.id, ownerId: apps.ownerId, name: apps.appName }).from(apps).orderBy(apps.id),
       db.db.select({ id: users.id }).from(users),
@@ -114,11 +146,12 @@ async function main() {
       throw new Error(`账号数量与清单不一致：清单 ${manifest.userCount}，当前 ${userRows.length}`)
     }
     assertLock()
-    const snapshotIds = new Set(snapshot.map((app: { id: number }) => app.id))
+    const targetIds = new Set<number>(snapshot.map((app: { id: number }) => app.id))
+    snapshotIds = targetIds
     const currentApps = await db.db
       .select({ id: apps.id, ownerId: apps.ownerId })
       .from(apps)
-      .where(inArray(apps.id, [...snapshotIds]))
+      .where(inArray(apps.id, [...targetIds]))
     for (const app of snapshot) {
       const current = currentApps.find((row) => row.id === app.id)
       if (current && current.ownerId !== app.ownerId) {
@@ -138,21 +171,21 @@ async function main() {
         finishedAt: new Date(),
       })
       .where(
-        and(inArray(agentRuns.status, ['running', 'cancelling']), inArray(agentRuns.appId, [...snapshotIds])),
+        and(inArray(agentRuns.status, ['running', 'cancelling']), inArray(agentRuns.appId, [...targetIds])),
       )
 
     for (const app of snapshot) {
       assertLock()
       const current = currentApps.find((row) => row.id === app.id)
       if (!current) continue
-      await appsService.requestDelete(app.id, app.ownerId)
+      await service.requestDelete(app.id, app.ownerId)
     }
 
     let remaining: number[] = []
     while (Date.now() < deadline) {
       assertLock()
       const rows = await db.db.select({ id: apps.id }).from(apps)
-      remaining = rows.map((row) => row.id).filter((id) => snapshotIds.has(id))
+      remaining = rows.map((row) => row.id).filter((id) => targetIds.has(id))
       if (!remaining.length) break
       await sleep(1000)
     }
@@ -166,7 +199,7 @@ async function main() {
     if (remainingUsers.length !== userRows.length) {
       throw new Error(`用户账号数量发生变化：清理前 ${userRows.length}，清理后 ${remainingUsers.length}`)
     }
-    const leaked = containers.filter((id) => snapshotIds.has(id))
+    const leaked = containers.filter((id) => targetIds.has(id))
     if (leaked.length) throw new Error(`仍有旧应用容器：${leaked.join(', ')}`)
 
     const paths = snapshot.flatMap((app) => [
@@ -181,6 +214,10 @@ async function main() {
     console.log(`清理完成：${snapshot.length} 个应用，账号保留 ${remainingUsers.length} 个。`)
   } finally {
     if (renewTimer) clearInterval(renewTimer)
+    if (appsService && snapshotIds) {
+      appsService.stopDeletionRetries([...snapshotIds])
+      await appsService.waitForDeletions([...snapshotIds])
+    }
     if (maintenanceId) {
       const client = await redis.ensureConnected().catch(() => null)
       if (client) {
