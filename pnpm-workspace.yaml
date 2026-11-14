@@ -1,0 +1,12 @@
+packages:
+  - paimeng-ai-code-mother-frontend
+  - paimeng-ai-code-mother-backend
+allowBuilds:
+  '@vscode/ripgrep': true
+  esbuild: true
+  '@scarf/scarf': false
+  core-js: false
+  es5-ext: false
+onlyBuiltDependencies:
+  - esbuild
+  - '@vscode/ripgrep'

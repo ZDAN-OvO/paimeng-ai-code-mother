@@ -1,6 +1,0 @@
-#!/bin/sh
-set -e
-root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-cd "$root/paimeng-ai-code-agent" 2>/dev/null || exit 0
-[ -d node_modules ] || exit 0
-exec npm run --silent type-check

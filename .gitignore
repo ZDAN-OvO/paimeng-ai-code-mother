@@ -1,35 +1,10 @@
-# dependencies
 node_modules/
-
-# next.js
-.next/
-out/
-next-env.d.ts
-*.tsbuildinfo
-
-# runtime data: sandboxes, snapshots, deploys, evidence
-runtime/
-data/
-
-# env
+dist/
 .env
 .env.*
 !.env.example
-
-# tests
+/runtime/
+/paimeng-ai-code-mother-backend/runtime/
 coverage/
 test-results/
 playwright-report/
-
-# os
-.DS_Store
-
-# local tooling and scratch
-.claude/
-.idea
-.vscode
-.archify/
-.impeccable/
-.pi/
-tmp/
-.tmp/

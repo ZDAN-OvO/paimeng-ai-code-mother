@@ -1,60 +1,113 @@
-# Paimeng
+# 派蒙 AI 应用工坊
 
-开源版的 v0。用一句自然语言描述，生成一个完整的 Next.js 应用，在沙箱里实时预览，通过对话迭代，按版本回滚，最后发布成一个可访问的地址。
+AI 生成前端应用的本地平台：用户用一句中文描述创建应用，主 Agent 通过文件工具写入源码，平台负责受控依赖安装、构建验证与实时预览。
 
-## 当前状态
+- 前端：Vue 3 + Vite + Ant Design Vue（`paimeng-ai-code-mother-frontend/`）
+- 后端：独立 NestJS 服务（`paimeng-ai-code-mother-backend/`）
+- 生成的应用：静态 HTML/CSS/JS 或 Vue/React + Vite，运行在隔离的 Docker 容器中
+- 生成技能：后端根目录 `.paimeng/skills/`（`static`、`vue`、`react`）
+- 旧 Java 实现归档在 `deprecated/`，不参与运行
 
-骨架已经落地：Next.js、Tailwind 与 shadcn 的基础、Drizzle 与首条迁移、健康检查、CI。生成、沙箱与发布尚未接通。
+## 环境要求
 
-前端原型已经可以点：[src/prototype/](src/prototype/README.md)。`npm run dev` 之后打开 http://127.0.0.1:3000/prototype，右下角的悬浮条列出 `docs/mvp.md` 的 13 条验收路径。原型只用模拟数据，不需要数据库、Docker 或模型密钥，用来确认 MVP 的范围，并作为后端补接口的依据。
+- Node.js ≥ 22.8（推荐 24）
+- pnpm 10
+- Docker 24+ 与 Docker Compose v2
+- 可访问的 OpenAI Responses 兼容模型网关（默认 `http://127.0.0.1:3425/v1`）
+- Linux 主机（依赖 Docker、`/proc/meminfo`、`df` 与本机网络）
 
-旧的实现整体归档在 [archive/paimeng-ai-code-agent/](archive/paimeng-ai-code-agent/)，只作为参考，不是当前事实。架构与交付顺序见 [docs/architecture.md](docs/architecture.md)。
+## 启动
 
-## 快速开始
+1. 配置环境变量：
 
 ```bash
-docker compose up -d          # Postgres，监听 127.0.0.1:5433
 cp .env.example .env
-npm install
-npm run db:migrate
-npm run dev                   # 应用与前端原型
-curl -s localhost:3000/api/health
+# 至少修改 SESSION_SECRET，并按需填写 AI_BASE_URL / AI_KEY / AI_MODEL / AI_CONTEXT_WINDOW_TOKENS
 ```
 
-前端原型：<http://127.0.0.1:3000/prototype>（说明与接口契约见 [src/prototype/README.md](src/prototype/README.md)）。
+后端从 `paimeng-ai-code-mother-backend/.env` 读取配置；不存在时会回退到仓库根 `.env`。
 
-`/api/health` 返回 `{"ok":true,"database":true}` 表示应用与数据库都就绪。
+2. 启动 PostgreSQL、Redis、Nginx：
 
-## 目录
-
-```
-/
-├── docs/                    # 架构总述与 ADR
-│   ├── architecture.md      # 唯一的架构文档，先读它
-│   └── adr/                 # 每个重要决策一条
-├── archive/                 # 旧实现，只读参考
-│   ├── paimeng-ai-code-agent/   # 基于 pi-durable 的上一版（Next.js）
-│   ├── paimeng-ai-code-backend/
-│   ├── paimeng-ai-code-mother-frontend/
-│   └── paimeng-ai-code-mother-microservice/
-├── AGENTS.md                # 仓库导航与协作约定
-├── PRODUCT.md               # 产品范围、用户与约束
-└── GLOSSARY.md              # 领域术语
+```bash
+docker compose up -d
 ```
 
-新代码落地后，根目录还会有 `src/`、`skills/`、`templates/`、`config/`、`migrations/`，职责见 `docs/architecture.md` 的模块边界一节。
+3. 安装依赖并构建前端与后端：
 
-## 技术栈
+```bash
+pnpm install
+pnpm build
+```
 
-- Next.js（App Router）+ React + TypeScript
-- Tailwind CSS + shadcn/ui
-- Vercel AI SDK 7，agent 使用 `ToolLoopAgent`
-- PostgreSQL + Drizzle ORM
-- Docker：沙箱与发布实例
+4. 初始化数据库：
 
-## 文档
+```bash
+pnpm --filter paimeng-ai-code-mother-backend db:migrate
+```
 
-- 架构与 13 条验收契约：[docs/architecture.md](docs/architecture.md)
-- 产品范围：[PRODUCT.md](PRODUCT.md)
-- 术语：[GLOSSARY.md](GLOSSARY.md)
-- 决策记录：[docs/adr/](docs/adr/)
+5. 启动后端（构建型应用的运行时镜像会在首次需要时构建；也可设 `SETUP_IMAGE_ON_START=true` 在启动时构建）：
+
+```bash
+pnpm dev:backend
+```
+
+6. 打开 `http://paimeng.localhost:8080`（若修改了 `NGINX_PORT`，使用对应端口）。
+
+前端开发模式：`pnpm dev:frontend`，Vite 在 `http://localhost:5173`，`/api` 代理到 `127.0.0.1:8123`。
+
+模型技能说明位于 `paimeng-ai-code-mother-backend/.paimeng/skills/`。每个 `<name>/SKILL.md` 必须包含 Codex 风格的 YAML frontmatter（`name`、`description`），目录名必须与 `name` 一致；平台通过 `load_skill` 只读返回正文，通过 `read_skill_resource` 读取 `references/`、`scripts/`、`assets/` 下的文本资源。
+
+## 端口与域名
+
+| 用途 | 地址 |
+| ---- | ---- |
+| 主站（Nginx） | `http://paimeng.localhost:8080` |
+| 预览 | `http://app-{appId}.preview.paimeng.localhost:8080` |
+| 后端 | `http://127.0.0.1:8123/api` |
+| PostgreSQL | `127.0.0.1:5433` |
+| Redis | `127.0.0.1:6380` |
+
+`paimeng.localhost` 与 `*.preview.paimeng.localhost` 在 Linux 上通常自动解析到 `127.0.0.1`/`::1`。若无法解析，可在 `/etc/hosts` 增加：
+
+```
+127.0.0.1 paimeng.localhost app-1.preview.paimeng.localhost
+```
+
+## 数据与运行目录
+
+- PostgreSQL、Redis 数据在 Compose 命名卷中。
+- 生成的源码、依赖、构建产物、任务日志在 `paimeng-ai-code-mother-backend/runtime/`，已加入 `.gitignore`。
+- 应用容器使用标签 `paimeng.project=paimeng-ai-code-mother`，只清理本项目资源。
+- 运行时镜像名为 `paimeng-app-runtime:<hash>`，由 `docker/runtime/Dockerfile` 构建。
+
+## 检查
+
+```bash
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm build
+```
+
+接口契约见 [`docs/api.md`](docs/api.md)，OpenAPI 文档在 `http://127.0.0.1:8123/api/v3/api-docs`。
+
+黑盒验收（需先启动后端与基础设施）：
+
+```bash
+cd paimeng-ai-code-mother-backend
+npm run test:acceptance
+npm run test:acceptance:concurrency
+```
+
+完整验收记录见 [`docs/acceptance.md`](docs/acceptance.md)。
+
+## 当前范围与限制
+
+- 单机、单 NestJS 实例（Redis 单实例锁）；不支持多副本或跨机调度。
+- 后端重启会终止进行中的运行并标记失败，不自动续跑；预览会在下次访问时重建。
+- 每个用户最多 5 个应用同时运行，整机同时最多 5 个活跃预览。
+- 生成应用只使用白名单内的前端依赖，不提供后端、数据库、密钥或外网访问。
+- 安装/构建任务容器默认 1536 MiB，可用 `TASK_MEMORY_MB` 调整；整机内存预算与宿主预留见 `.env.example`。
+- 静态应用由平台直接提供页面并监听源码变化自动刷新，不需要 `package.json`；Vue/React 应用使用平台约定的 `dev`/`build` 脚本。
+- 首版不支持源码下载、部署分享、精选、管理后台、版本回滚、自动摘要与中断续跑。
