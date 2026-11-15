@@ -8,7 +8,9 @@ export interface BudgetInput {
   outputReserveTokens: number
 }
 
-export function checkContextBudget(input: BudgetInput): { ok: true; bytes: number } | { ok: false; message: string; bytes: number } {
+export function checkContextBudget(
+  input: BudgetInput,
+): { ok: true; bytes: number } | { ok: false; message: string; bytes: number } {
   const payload = JSON.stringify({ system: input.system, messages: input.messages, tools: input.tools })
   const bytes = Buffer.byteLength(payload, 'utf8')
   const limit = input.contextWindowTokens - input.outputReserveTokens

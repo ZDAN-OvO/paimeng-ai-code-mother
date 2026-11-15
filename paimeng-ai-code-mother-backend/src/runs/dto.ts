@@ -14,7 +14,31 @@ export const chatSchema = z.object({
     .string()
     .trim()
     .min(8, 'clientRequestId 长度需在 8-100 之间')
-    .max(100, 'clientRequestId 长度需在 8-100 之间'),
+    .max(64, 'clientRequestId 最多 64 个字符'),
+})
+
+export const enqueueMessageSchema = chatSchema.extend({
+  mode: z.enum(['normal', 'steer']),
+  runId: runIdSchema.optional(),
+})
+export const messageQueueQuerySchema = z.object({ appId: z.coerce.number().int().positive() })
+export const removeQueuedMessageSchema = z.object({
+  appId: z.number().int().positive(),
+  id: z.string().min(1).max(100),
+})
+export const resumeMessageQueueSchema = z.object({ appId: z.number().int().positive() })
+export const queueItemSchema = z.object({
+  id: z.string(),
+  clientRequestId: z.string(),
+  message: z.string(),
+  mode: z.enum(['normal', 'steer']),
+  status: z.enum(['queued', 'claimed', 'started', 'applied', 'returned', 'removed']),
+  runId: z.string().nullable(),
+})
+export const messageQueueSchema = z.object({
+  paused: z.boolean(),
+  items: z.array(queueItemSchema),
+  activeRun: z.object({ runId: z.string(), status: z.enum(['running', 'cancelling']) }).nullable(),
 })
 
 export const cancelRunSchema = z.object({ runId: runIdSchema })
@@ -177,6 +201,12 @@ export const runChunkSchema = z.object({
 })
 
 export class ChatDto extends createZodDto(chatSchema) {}
+export class EnqueueMessageDto extends createZodDto(enqueueMessageSchema) {}
+export class MessageQueueQueryDto extends createZodDto(messageQueueQuerySchema) {}
+export class RemoveQueuedMessageDto extends createZodDto(removeQueuedMessageSchema) {}
+export class ResumeMessageQueueDto extends createZodDto(resumeMessageQueueSchema) {}
+export class BaseResponseQueueItem extends createZodDto(envelope(queueItemSchema)) {}
+export class BaseResponseMessageQueue extends createZodDto(envelope(messageQueueSchema)) {}
 export class CancelRunDto extends createZodDto(cancelRunSchema) {}
 export class RunStatusQueryDto extends createZodDto(runStatusQuerySchema) {}
 export class RunDetailsQueryDto extends createZodDto(runDetailsQuerySchema) {}

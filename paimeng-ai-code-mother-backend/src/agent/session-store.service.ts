@@ -4,6 +4,10 @@ import { asc, eq, sql } from 'drizzle-orm'
 import { DbService } from '../db/db.module'
 import { agentSessionEntries, SessionEntryRow } from '../db/schema'
 import { truncateBytes } from '../common/truncate'
+import { agentRuns, messages } from '../db/schema'
+import { and, inArray } from 'drizzle-orm'
+import type { AppUIMessage } from '../conversations/ui-message'
+import { ApiException } from '../common/api'
 
 export interface AssistantEntryPayload {
   text: string
@@ -32,6 +36,50 @@ export class SessionStoreService {
       .from(agentSessionEntries)
       .where(eq(agentSessionEntries.conversationId, conversationId))
       .orderBy(asc(agentSessionEntries.seq), asc(agentSessionEntries.id))
+  }
+
+  async appendSteers(
+    conversationId: number,
+    runId: string,
+    steers: Array<{ clientRequestId: string; message: string }>,
+    content: AppUIMessage,
+    signal?: AbortSignal,
+  ) {
+    await this.db.db.transaction(async (tx) => {
+      const [run] = await tx.select().from(agentRuns).where(eq(agentRuns.id, runId)).for('update').limit(1)
+      if (!run || run.status !== 'running' || signal?.aborted)
+        throw ApiException.conflict('运行已停止接收插话')
+      const rows = await tx.select().from(agentSessionEntries).where(eq(agentSessionEntries.runId, runId))
+      const consumed = new Set(rows.map((row) => (row.payload as { steerRequestId?: string }).steerRequestId))
+      const [{ next }] = await tx
+        .select({ next: sql<number>`coalesce(max(${agentSessionEntries.seq}), 0) + 1` })
+        .from(agentSessionEntries)
+        .where(eq(agentSessionEntries.conversationId, conversationId))
+      let seq = Number(next)
+      for (const steer of steers) {
+        if (consumed.has(steer.clientRequestId)) continue
+        await tx.insert(agentSessionEntries).values({
+          conversationId,
+          runId,
+          seq: seq++,
+          entryType: 'user',
+          payload: { text: steer.message, steerRequestId: steer.clientRequestId },
+        })
+      }
+      const updated = await tx
+        .update(messages)
+        .set({ content, updatedAt: new Date() })
+        .where(
+          and(
+            eq(messages.runId, runId),
+            eq(messages.role, 'assistant'),
+            inArray(messages.status, ['streaming']),
+          ),
+        )
+        .returning({ id: messages.id })
+      if (updated.length !== 1) throw ApiException.conflict('运行消息已结束，插话尚未生效')
+      if (signal?.aborted) throw ApiException.conflict('运行已停止接收插话')
+    })
   }
 
   async ensureToolResults(conversationId: number, runId: string, reason: string) {

@@ -38,7 +38,12 @@ export const RESERVED_ROOTS = new Set([
   '.cache',
 ])
 
-const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const
+const DEPENDENCY_FIELDS = [
+  'dependencies',
+  'devDependencies',
+  'optionalDependencies',
+  'peerDependencies',
+] as const
 
 export interface Manifest {
   name?: string
@@ -64,7 +69,12 @@ function invalidSpecReason(name: string, spec: string): string | null {
   if (/^(file|link|git|git\+|https?|ssh|npm|workspace|portal|patch|github):/i.test(trimmed)) {
     return `${name} 使用了不允许的来源 ${spec}`
   }
-  if (trimmed.includes('/') || trimmed.includes('\\') || trimmed.endsWith('.tgz') || trimmed.endsWith('.tar.gz')) {
+  if (
+    trimmed.includes('/') ||
+    trimmed.includes('\\') ||
+    trimmed.endsWith('.tgz') ||
+    trimmed.endsWith('.tar.gz')
+  ) {
     return `${name} 使用了不允许的路径或压缩包来源 ${spec}`
   }
   const range = semver.validRange(trimmed)

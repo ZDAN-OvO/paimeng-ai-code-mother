@@ -30,6 +30,14 @@ import {
   runDiffPageSchema,
   runStatusSchema,
   runValidationLogSchema,
+  BaseResponseQueueItem,
+  BaseResponseMessageQueue,
+  EnqueueMessageDto,
+  MessageQueueQueryDto,
+  RemoveQueuedMessageDto,
+  ResumeMessageQueueDto,
+  queueItemSchema,
+  messageQueueSchema,
 } from './dto'
 import { RunDetailsService } from './run-details.service'
 import { RunsService } from './runs.service'
@@ -64,6 +72,70 @@ export class RunsController {
     @Res() res: Response,
   ) {
     const started = await this.runs.startRun(userId, dto.appId, dto.message, dto.clientRequestId)
+    return this.writeRunStream(started.runId, res)
+  }
+
+  @RawResponse()
+  @Post('app/run/stream')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '订阅运行输出，断开订阅不停止运行' })
+  @ApiBody({ type: CancelRunDto })
+  @ApiResponse({
+    status: 200,
+    description: 'Vercel AI SDK UI Message Stream',
+    content: {
+      'text/event-stream': { schema: { type: 'string' } },
+    },
+  })
+  async subscribeRun(@Body() dto: CancelRunDto, @CurrentUser() userId: number, @Res() res: Response) {
+    await this.runs.getRunStatus(userId, { runId: dto.runId })
+    return this.writeRunStream(dto.runId, res)
+  }
+
+  @Post('app/chat/queue')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '将普通消息或插话加入发送队列' })
+  @ApiOkResponse({ type: BaseResponseQueueItem })
+  async enqueueMessage(
+    @Body() dto: EnqueueMessageDto,
+    @CurrentUser() userId: number,
+  ): Promise<z.output<typeof queueItemSchema>> {
+    return this.runs.enqueueMessage(userId, dto)
+  }
+
+  @Get('app/chat/queue')
+  @ApiOperation({ summary: '查询待发送消息、未生效插话和当前运行' })
+  @ApiOkResponse({ type: BaseResponseMessageQueue })
+  async getMessageQueue(
+    @Query() dto: MessageQueueQueryDto,
+    @CurrentUser() userId: number,
+  ): Promise<z.output<typeof messageQueueSchema>> {
+    return this.runs.getMessageQueue(userId, dto.appId)
+  }
+
+  @Post('app/chat/queue/remove')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '移除尚未处理的排队消息' })
+  @ApiOkResponse({ type: BaseResponseMessageQueue })
+  async removeQueuedMessage(
+    @Body() dto: RemoveQueuedMessageDto,
+    @CurrentUser() userId: number,
+  ): Promise<z.output<typeof messageQueueSchema>> {
+    return this.runs.removeQueuedMessage(userId, dto.appId, dto.id)
+  }
+
+  @Post('app/chat/queue/resume')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '继续普通消息队列' })
+  @ApiOkResponse({ type: BaseResponseMessageQueue })
+  async resumeMessageQueue(
+    @Body() dto: ResumeMessageQueueDto,
+    @CurrentUser() userId: number,
+  ): Promise<z.output<typeof messageQueueSchema>> {
+    return this.runs.resumeMessageQueue(userId, dto.appId)
+  }
+
+  private async writeRunStream(runId: string, res: Response) {
     res.status(200)
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache, no-transform')
@@ -80,23 +152,23 @@ export class RunsController {
       res.write(`data: ${JSON.stringify(chunk)}\n\n`)
     }
 
-    const stream = this.runs.getStream(started.runId)
+    const stream = this.runs.getStream(runId)
     if (!stream) {
       const [final, replay] = await Promise.all([
-        this.runs.latestFinishedEvent(started.runId),
-        this.runs.replayChunks(started.runId),
+        this.runs.latestFinishedEvent(runId),
+        this.runs.replayChunks(runId),
       ])
       if (replay.length) {
         for (const chunk of replay) write(chunk)
       } else {
-        write({ type: 'start', messageId: `assistant:${started.runId}` })
+        write({ type: 'start', messageId: `assistant:${runId}` })
       }
       write({
         type: 'data-run',
-        id: `run:${started.runId}`,
+        id: `run:${runId}`,
         transient: true,
         data: {
-          runId: started.runId,
+          runId,
           ...(final ?? {}),
           status: final?.status ?? 'failed',
         },
@@ -115,12 +187,6 @@ export class RunsController {
       clearInterval(heartbeat)
       unsubscribe()
     }
-    // 只有浏览器主动离开/网络异常导致连接未正常结束时才取消运行。
-    // 正常终态由 run-finished 后的 res.end() 标记 writableEnded，不会触发取消。
-    const cancelIfAborted = () => {
-      if (res.writableEnded) return
-      void this.runs.cancelRun(userId, started.runId).catch(() => undefined)
-    }
     const heartbeat = setInterval(() => {
       if (!closed) res.write(': ping\n\n')
     }, 15_000)
@@ -135,7 +201,6 @@ export class RunsController {
     })
     res.on('close', () => {
       cleanup()
-      cancelIfAborted()
     })
   }
 

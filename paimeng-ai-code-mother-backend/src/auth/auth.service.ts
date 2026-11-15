@@ -62,11 +62,7 @@ export class AuthService {
   }
 
   async login(dto: LoginDto, req: Request): Promise<LoginUserVO> {
-    const [row] = await this.db.db
-      .select()
-      .from(users)
-      .where(eq(users.userAccount, dto.userAccount))
-      .limit(1)
+    const [row] = await this.db.db.select().from(users).where(eq(users.userAccount, dto.userAccount)).limit(1)
     if (!row) throw ApiException.badRequest('账号或密码错误')
     const matched = await verifyPassword(dto.userPassword, row.userPassword)
     if (!matched) throw ApiException.badRequest('账号或密码错误')

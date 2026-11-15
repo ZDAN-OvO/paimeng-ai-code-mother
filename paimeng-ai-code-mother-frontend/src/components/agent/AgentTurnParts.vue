@@ -58,6 +58,14 @@
         <span>平台验证 · 第 {{ block.validation.attempt }} 轮</span>
         <span>{{ validationText(block.validation.status) }}</span>
       </div>
+      <div v-else-if="block.type === 'steer'" class="steer-block">
+        <div class="steer-divider" role="separator">
+          <span>插入指令</span>
+        </div>
+        <div class="steer-user-row">
+          <div class="steer-user-bubble">{{ block.steer.text }}</div>
+        </div>
+      </div>
     </template>
   </div>
 </template>
@@ -215,5 +223,44 @@ const validationText = (status: string) =>
 
 .validation-line.failed .validation-dot {
   background: var(--pm-danger);
+}
+
+.steer-block {
+  display: grid;
+  gap: 8px;
+  padding: 5px 0;
+}
+
+.steer-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--pm-ink-3);
+  font-size: 10px;
+}
+
+.steer-divider::before,
+.steer-divider::after {
+  content: '';
+  height: 1px;
+  flex: 1;
+  background: var(--pm-line);
+}
+
+.steer-user-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.steer-user-bubble {
+  max-width: 86%;
+  padding: 9px 12px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--pm-canvas);
+  color: var(--pm-ink);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 </style>

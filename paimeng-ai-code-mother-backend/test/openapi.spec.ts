@@ -19,7 +19,7 @@ const originalEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]))
 let app: INestApplication
 let document: OpenAPIObject
 
-const rawPaths = new Set(['/app/chat/gen/code', '/health', '/health/ready'])
+const rawPaths = new Set(['/app/chat/gen/code', '/app/run/stream', '/health', '/health/ready'])
 
 beforeAll(async () => {
   process.env.SESSION_SECRET = 'x'.repeat(32)
@@ -55,7 +55,7 @@ function operations() {
 
 describe('OpenAPI contract', () => {
   it('documents every route', () => {
-    expect(Object.keys(document.paths ?? {})).toHaveLength(25)
+    expect(Object.keys(document.paths ?? {})).toHaveLength(29)
   })
 
   it('declares the OpenAPI version used by the contract', () => {

@@ -11,7 +11,7 @@
 - 生成的代码不可信。它不能接触宿主机、主站、数据库、密钥、其他应用或互联网。
 - 一次运行的结果只能以平台验证为准，不以模型自述为准。
 - 任何终态只写入一次；重启、断连、取消和完成竞争时不能出现两个结果或永久“进行中”。
-- 资源不足或依赖不可用时明确拒绝，不排队、不降级为不安全的实现。
+- 用户发送的消息可以进入应用内串行队列；运行资源、并发和限流约束不能被队列绕过，依赖不可用时暂停派发并明确报告，不能降级为不安全的实现。
 
 **部署前提**：单台 Linux 主机，Docker Engine，单个后端实例，一个 OpenAI Responses 兼容的模型网关。
 
@@ -39,7 +39,7 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 | Vue 主站 | 交互、渲染流式消息、展示预览 iframe | 判定运行成败、访问 iframe DOM |
 | NestJS 后端 | 鉴权、运行编排、工具执行、容器调度、预览网关 | 执行生成的代码 |
 | PostgreSQL | 所有需要一致性的状态与约束 | 临时计数 |
-| Redis | 有过期语义的共享状态 | 并发上限等一致性约束 |
+| Redis | session、应用消息队列、运行中的 steer 收件箱、限流与锁等短生命周期共享状态 | 已开始运行、消息和会话记录的权威存储 |
 | 容器 | 安装、检查、构建、运行生成的代码 | 访问平台的任何资源 |
 
 ## 3. 后端模块架构
@@ -79,11 +79,12 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 | 数据 | 读者 | 存放 |
 |---|---|---|
 | 消息（`UIMessage`） | 用户 | `messages` |
-| 会话记录：完整模型输入、工具调用与结果 | 模型（重建上下文）、审计 | `agent_session_entries` |
+| 会话记录：完整模型输入、工具调用、结果与已消费 steer | 模型（重建上下文）、审计 | `agent_session_entries` |
 | 运行详情：计划、活动、变更、验证日志 | 用户 | `run_*`、`content_blobs` |
+| 应用消息队列：尚未开始的普通消息、未生效或已退回的 steer | 用户、队列调度器 | Redis，按应用隔离 |
 | 源码、依赖、构建产物、任务日志 | 容器、文件工具 | 后端 `runtime/` 下按应用分目录 |
 
-消息与会话记录分开存放，见 [ADR-0009](adr/0009-separate-ui-messages-from-session-entries.md)。所有资源都归属于某个应用，所有查询都校验应用的所有者。
+消息与会话记录分开存放，见 [ADR-0009](adr/0009-separate-ui-messages-from-session-entries.md)。队列状态以 Redis CAS 原子更新，见 [ADR-0011](adr/0011-redis-message-queues.md)；队列中的普通消息和未生效 steer 不写入 PostgreSQL，只有普通消息成为运行或 steer 被 Agent 消费时才创建对应数据库记录。所有资源都归属于某个应用，所有查询都校验应用的所有者。
 
 ## 5. 运行
 
@@ -96,7 +97,7 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 助手消息：streaming ─► completed | failed | cancelled
 ```
 
-1. **创建**：单个事务内完成校验、加锁，写入用户消息、运行、助手消息占位和会话记录，提交后才开始流式响应。
+1. **入队与创建**：普通消息先以 Redis 队列项存在；轮到队首时，在单个事务内完成校验、加锁，写入用户消息、运行、助手消息占位和会话记录。提交后才开始 Agent 执行。队列项通过 `clientRequestId` 关联这次运行。
 2. **生成**：AI SDK 驱动模型与工具循环，见 [ADR-0001](adr/0001-ai-sdk-with-plain-ts-orchestration.md)。
 3. **验证**：本轮有源码变更时，平台依次执行 `source`、`manifest`、`install`、`typecheck`、`build`、`preview` 检查。
 4. **修复**：验证失败时把错误写回同一对话；首次验证之外最多修复 3 次。
@@ -119,10 +120,11 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 
 ### 5.3 取消与故障
 
-- 用户取消或流异常断开都会进入 `cancelling`；每次文件落盘前都重新检查取消信号。
+- 只有用户显式取消才会进入 `cancelling`；订阅 `/app/run/stream` 的连接关闭只停止本次观察，不改变运行。每次文件落盘前都重新检查取消信号。
 - 已写入的文件保留，不撤销。
 - 无法确认任务容器已经停止时，应用进入执行阻塞，在清理核对通过前不能开始新运行。
-- 后端重启后不续跑，遗留运行一律收尾为失败，见 [ADR-0005](adr/0005-single-instance-no-resume.md)。
+- 运行成功结束后才派发下一条普通消息；失败或取消会暂停该应用的普通队列，等待用户明确继续。
+- 后端重启后不续跑，遗留运行一律收尾为失败；所有恢复的队列都先暂停，只按稳定 `clientRequestId` 与数据库核对已开始项，不自动派发，见 [ADR-0005](adr/0005-single-instance-no-resume.md)。
 
 ## 6. 一致性与并发
 
@@ -134,8 +136,11 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 | 应用状态变更与删除互斥 | 应用行锁与进程内应用锁 |
 | 会话记录顺序 | `(conversation_id, seq)` 唯一索引 |
 | 每个应用每分钟最多 10 次发送 | Redis 滑动窗口；Redis 不可用时拒绝 |
+| 队列状态修改无丢失更新 | 每个应用一份带版本快照；Lua 脚本比较旧值后原子写入 |
+| 同一 `clientRequestId` 幂等 | 应用内查找同一队列项；请求内容和模式完全一致才复用 |
+| 同一运行只消费有序 steer 批次 | `runId`、当前运行和 `steerOpen` 在同一 CAS 中校验 |
 
-一致性约束放在 PostgreSQL，不放在 Redis 或进程内存，见 [ADR-0004](adr/0004-concurrency-limits-in-postgres.md)。
+已开始运行及其约束仍以 PostgreSQL 为权威，Redis 队列不产生第二个运行，也不替代部分唯一索引、用户并发上限或应用限流，见 [ADR-0004](adr/0004-concurrency-limits-in-postgres.md)。尚未开始的消息属于短生命周期队列状态，使用 Redis CAS 实现顺序、幂等和重启暂停，见 [ADR-0011](adr/0011-redis-message-queues.md)。
 
 ## 7. 信任边界
 
@@ -235,7 +240,7 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 | 40100 | 401 | 未登录或登录已失效 |
 | 40300 | 403 | 无权访问该资源 |
 | 40400 | 404 | 资源不存在 |
-| 40900 | 409 | 冲突：运行中删除、已有进行中的运行、重复请求内容不一致 |
+| 40900 | 409 | 冲突：运行中删除、重复请求内容不一致、steer 目标不是当前可插话运行、队列项状态不允许操作 |
 | 42900 | 429 | 限流 |
 | 50000 | 500 | 服务内部错误 |
 | 50300 | 503 | 依赖不可用（Redis、Docker 等） |
@@ -277,16 +282,46 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 | `dynamic-tool` | 工具名、调用 ID、状态和安全摘要后的输入输出，不含文件全文或完整工具输出 |
 | `data-plan` | 计划的一次修订快照 |
 | `data-validation` | 一个验证检查项的状态 |
+| `data-steer` | 已消费的插话；`id` 为 `steer:<clientRequestId>`，`data` 为 `{ text, clientRequestId }` |
 
-完整的工具输入输出只保存在会话记录中，不通过接口返回。
+完整的工具输入输出只保存在会话记录中，不通过接口返回。仍在 Redis 队列中的普通消息或未消费 steer 不出现在对话历史中。
 
 ### 10.5 运行
 
-**`POST /app/chat/gen/code`**：请求 `{ appId, message, clientRequestId }`，`message` 为 1–1000 字符，`clientRequestId` 由前端生成、在应用内唯一。并发与防重规则见第 6 节：重复的 `clientRequestId` 直接返回已有运行的流，内容不同返回 409；超过限流返回 429。
+**`POST /app/chat/queue`**：请求 `{ appId, message, clientRequestId, mode, runId? }`，返回一个 `QueueItem`。`message` 为 1–1000 字符；`clientRequestId` 长度为 8–64，由前端生成并在应用内唯一；`mode` 为 `normal` 或 `steer`。应用、模式和 `runId` 均校验所有者与当前状态。
+
+```text
+QueueItem = {
+  id, clientRequestId, message,
+  mode: normal | steer,
+  status: queued | claimed | started | applied | returned | removed,
+  runId: string | null
+}
+```
+
+- `normal` 在没有当前运行时从队首开始；有当前运行或队首正在认领时保留为 `queued`。普通消息严格按入队顺序启动，一条运行成功后才能开始下一条。失败或取消会暂停队列。
+- `steer` 指向当前可接收插话的 `runId`；运行已结束、正在停止或已关闭收件箱时返回 409。没有当前运行且省略 `runId` 时，服务端把该请求规范化为普通消息。前端在运行中默认使用 steer，并把当前 `activeRun.runId` 一并发送。
+- 同一应用的 `clientRequestId` 是幂等键。消息、模式和目标运行完全相同时返回原队列项，包括已经 `started`、`applied` 或 `removed` 的历史项；任一字段不同则返回 409。
+- 队列项状态从 `queued` 进入 `claimed`，普通消息开始后变为 `started` 并绑定 `runId`；steer 成功落库后变为 `applied`。用户可移除 `queued` 或 `returned` 项，状态变为 `removed`；`claimed` 项不可移除。
+- Redis CAS 保证并发入队、认领、消费和结束竞争没有丢失更新。普通消息在开始前不写入数据库；只有创建运行时才写用户消息、运行、助手消息占位和会话记录。
+
+**`GET /app/chat/queue?appId=`**：返回 `{ paused, items, activeRun }`。`items` 只包含 `queued`、`claimed`、`returned`，按入队顺序排列；`activeRun` 为 `{ runId, status }` 或 `null`，`status` 只能是 `running` 或 `cancelling`。
+
+**`POST /app/chat/queue/remove`**：请求 `{ appId, id }`，移除允许移除的队列项并返回最新队列状态。
+
+**`POST /app/chat/queue/resume`**：请求 `{ appId }`，解除暂停并返回最新队列状态；没有可派发项或仍有当前运行时不启动运行。
+
+steer 在模型当前响应及其全部工具结束并持久化后，一次性消费当时队列中的全部插话，按入队顺序加入同一次模型请求；认领后到达的新插话留给下一次模型调用。会话 user 记录和公开助手消息中的 `data-steer` part 在同一 PostgreSQL 事务内提交；提交成功后才从 Redis 标记 `applied`。运行终止时仍未消费的 steer 改为 `returned` 并保留在 Redis，不写入消息或会话记录，也不自动带入下一轮。结束运行与关闭 steer 收件箱通过同一 CAS 状态机竞争，关闭后到达的 steer 不会只落到 Redis。
+
+每个应用的待处理及未生效消息合计最多 100 条，Redis 队列状态最多 1 MiB，超过限制返回 429。上限只拒绝新增消息，不淘汰已接受的内容或幂等记录。
+
+**`POST /app/run/stream`**：请求 `{ runId }`，返回官方 AI SDK UI Message Stream。连接断开只取消订阅；运行继续，之后可重新用同一 `runId` 订阅或查询状态。
+
+**`POST /app/chat/gen/code`** 是兼容入口：请求 `{ appId, message, clientRequestId }`，把消息按 `normal` 模式交给同一队列，等到队首成为运行后再返回 UI Message Stream。它不再在应用已忙或单用户达到并发上限时直接用 409/429 拒绝发送；队列派发仍受数据库并发约束和限流控制。新客户端统一使用队列接口加 `/app/run/stream`。
 
 响应是 AI SDK UI Message Stream（`text/event-stream`），每个 `data:` 是一个 `UIMessageChunk`，每 15 秒发送注释心跳 `: ping`，最后发送 `data: [DONE]`，不发送模型 reasoning。
 
-- 写入消息的 chunk：`text-*`、`tool-input-available`、`tool-output-available`、`tool-output-error`、`data-plan`、`data-validation`。
+- 写入消息的 chunk：`text-*`、`tool-input-available`、`tool-output-available`、`tool-output-error`、`data-plan`、`data-validation`、`data-steer`。
 - 只用于运行控制、不写入消息的 transient chunk：
 
 | chunk | data |
@@ -297,7 +332,7 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 | `data-preview` | `{ status, kind, url?, error? }` |
 | `data-run` | 终态：`{ runId, status, errorCode, errorSummary, stepCount, repairCount, detailsStatus, detailsError, changes }` |
 
-只有最后一个 `data-run` 的 `status` 为 `completed` 才表示成功。浏览器离开页面或连接异常关闭会触发取消，收到终态后的正常关闭不会触发取消。
+只有最后一个 `data-run` 的 `status` 为 `completed` 才表示成功。浏览器离开页面、网络中断或主动关闭流只停止当前订阅，都不触发取消；取消只能通过 `/app/run/cancel` 发起。
 
 **`GET /app/run/status`**：参数为 `runId`，或在首个流事件丢失时用 `appId` 加 `clientRequestId`。返回运行状态、阶段、步数、修复次数、错误码、时间和 `detailsStatus`（`pending` / `ready` / `incomplete`）。
 
@@ -307,7 +342,7 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 
 | errorCode | 含义 |
 |---|---|
-| `CANCELLED` | 用户取消或连接断开 |
+| `CANCELLED` | 用户显式取消 |
 | `INTERRUPTED` | 后端重启时运行仍在进行，见 [ADR-0005](adr/0005-single-instance-no-resume.md) |
 | `NO_CODE_PRODUCED` | 连续两轮生成都没有源码变更 |
 | `VALIDATION_FAILED` | 修复次数用尽，或验证失败后没有新的修复变更 |
@@ -322,6 +357,8 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 | `INTERNAL_ERROR` | 其他内部错误 |
 
 取消或出错前已经输出的文字都会保留。只读文件或只回复文字的轮次不进入验证。
+
+运行结束采用“先关闭 steer 收件箱，再写终态”的 CAS 竞争顺序。无法确认收件箱关闭或数据库收尾时不得继续下一条普通消息；普通队列保持暂停，由用户确认后继续。后端启动恢复时，数据库按稳定 `clientRequestId` 校正已开始的普通消息，未开始的项保持 Redis `queued`，所有应用队列一律先暂停，不续跑遗留运行，见 [ADR-0005](adr/0005-single-instance-no-resume.md)。
 
 ### 10.6 运行详情
 
@@ -362,13 +399,15 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 ### 10.9 前端接入
 
 - 前端使用 `ai@6.0.330` 的 `DefaultChatTransport` 发送请求并解析 chunk，用 `readUIMessageStream` 维护实时 `UIMessage`；`src/api/generated/` 中的 `ChatUIMessage`（由 `openapi.json` 生成）与 10.4、10.5 保持一致，手写的流式代码在 `src/api/streamChat.ts`。
-- 断流时不自动重发，而是用 `runId` 或 `clientRequestId` 查询终态；状态未确认时不显示成功或已取消。
+- 普通消息和 steer 通过 `/app/chat/queue` 发送；队列状态变化后轮询 `/app/chat/queue`，发现 `activeRun` 后订阅 `/app/run/stream`。断流时不自动重发，而是用 `runId` 或 `clientRequestId` 查询终态；状态未确认时不显示成功或已取消。
 - 生成期间预览 iframe 保持挂载，让 HMR 和自动刷新持续生效。
-- 生成中发送新要求时，先取消旧运行，等它进入终态、旧流和历史收尾完成后，再用新的 `clientRequestId` 发起请求；取消失败或状态未确认时保留输入，不启动重叠的运行。
+- 输入模式默认为 steer；Enter 使用当前模式，Alt+Enter 使用另一模式，Shift+Enter 插入换行，输入法组合期间不提交。存在运行且输入为空时按钮显示停止图标，空输入不会因键盘事件触发停止。
+- 普通消息在当前运行成功结束后串行开始；失败或取消时显示暂停状态，用户可以移除待发送项并明确继续。未被消费的 steer 显示为可恢复草稿的 `returned` 项。
+- 最终助手回复和已消费 steer 都完整展开显示；内部活动摘要可以折叠，这两类用户内容不得折叠。全局页脚展示 `ZDAN-OvO`。
 
 ## 11. 范围边界
 
-**包含**：注册登录、应用管理、对话历史、文件和技能工具、受控依赖、实时预览、验证修复、取消、限流和持久化。
+**包含**：注册登录、应用管理、对话历史、应用内普通消息队列与运行中 steer、文件和技能工具、受控依赖、实时预览、验证修复、取消、限流和持久化。
 
 **不包含**：多实例与跨机调度、SSR、生成应用的后端或数据库、版本回滚、部署分享、源码下载、精选、管理后台、封面截图、可视化编辑、自动上下文摘要、中断续跑。这些功能在界面上不提供入口，也不调用相应 API。
 
@@ -385,3 +424,5 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 | [0007](adr/0007-dependency-allowlist-and-registry-relay.md) | 依赖白名单与 registry 中继 |
 | [0008](adr/0008-no-automatic-context-summarization.md) | 上下文超限时失败，不自动摘要 |
 | [0009](adr/0009-separate-ui-messages-from-session-entries.md) | 消息与会话记录分开存放 |
+| [0010](adr/0010-zod-as-single-source-of-api-contract.md) | zod 是接口契约的单一来源 |
+| [0011](adr/0011-redis-message-queues.md) | 会话共享单实例锁，应用消息使用 Redis CAS 队列 |

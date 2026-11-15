@@ -3,12 +3,12 @@
     <div class="footer-content">
       <p class="copyright">
         <a
-          href="http://github.com/ZDAN-GHN"
+          href="https://github.com/ZDAN-OvO"
           target="_blank"
           rel="noopener noreferrer"
           class="author-link"
         >
-          Code by ZDAN-GHN
+          Code by ZDAN-OvO
         </a>
       </p>
     </div>

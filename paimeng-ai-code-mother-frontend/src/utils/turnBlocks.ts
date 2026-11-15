@@ -1,13 +1,19 @@
 import type { ActivityGroup, ToolStatus, ToolTimelineEntry } from './agentActivity.ts'
 import { groupKindOf, groupStatusOf } from './agentActivity.ts'
 import { describeTool } from './toolDisplay.ts'
-import type { RunPlan, UIMessageToolPart, UIMessageValidationPart } from '@/api/chatTypes'
+import type {
+  RunPlan,
+  UIMessageSteerPart,
+  UIMessageToolPart,
+  UIMessageValidationPart,
+} from '@/api/chatTypes'
 
 export type TurnBlock =
   | { type: 'text'; key: string; text: string }
   | { type: 'tools'; key: string; group: ActivityGroup }
   | { type: 'plan'; key: string; plan: RunPlan }
   | { type: 'validation'; key: string; validation: UIMessageValidationPart['data'] }
+  | { type: 'steer'; key: string; steer: UIMessageSteerPart['data'] }
 
 export function visibleTurnBlocks(
   blocks: TurnBlock[],
@@ -15,15 +21,22 @@ export function visibleTurnBlocks(
   processExpanded: boolean,
 ): TurnBlock[] {
   if (processExpanded || status === 'streaming') return blocks
-  if (status !== 'completed') return []
 
-  let end = blocks.length - 1
-  while (end >= 0 && (blocks[end].type === 'validation' || blocks[end].type === 'plan')) end -= 1
-  if (end < 0 || blocks[end].type !== 'text') return []
+  const visible = new Set<number>()
+  blocks.forEach((block, index) => {
+    if (block.type === 'steer') visible.add(index)
+  })
 
-  let start = end
-  while (start > 0 && blocks[start - 1].type === 'text') start -= 1
-  return blocks.slice(start, end + 1)
+  let end = blocks.map((block) => block.type).lastIndexOf('text')
+  const hasToolAfter = end >= 0 && blocks.slice(end + 1).some((block) => block.type === 'tools')
+  if (hasToolAfter) end = -1
+  if (end >= 0 && blocks[end].type === 'text') {
+    let start = end
+    while (start > 0 && blocks[start - 1].type === 'text') start -= 1
+    for (let index = start; index <= end; index += 1) visible.add(index)
+  }
+
+  return blocks.filter((_, index) => visible.has(index))
 }
 
 export function toolEntryFromPart(
@@ -99,6 +112,10 @@ export function buildTurnBlocks(
     }
     if (part.type === 'data-validation') {
       blocks.push({ type: 'validation', key: part.id, validation: part.data })
+      continue
+    }
+    if (part.type === 'data-steer') {
+      blocks.push({ type: 'steer', key: part.id, steer: part.data })
     }
   }
   flushTools()

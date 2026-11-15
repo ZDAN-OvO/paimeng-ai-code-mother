@@ -30,6 +30,7 @@ export interface RunData {
 }
 
 export interface AppUIDataTypes extends UIDataTypes {
+  steer: { text: string; clientRequestId: string }
   plan: PlanData
   validation: ValidationData
   run: RunData
@@ -146,6 +147,9 @@ export function replayMessageChunks(message: AppUIMessage): AppUIMessageChunk[] 
     if (part.type === 'data-validation') {
       chunks.push({ type: 'data-validation', id: part.id, data: part.data })
     }
+    if (part.type === 'data-steer') {
+      chunks.push({ type: 'data-steer', id: part.id, data: part.data })
+    }
   }
   return chunks
 }
@@ -180,6 +184,16 @@ export class UIMessageEmitter {
   }
 
   emit(type: string, payload: Record<string, unknown> = {}): boolean {
+    if (type === 'steer-applied') {
+      this.closeText()
+      const clientRequestId = stringValue(payload.clientRequestId)
+      this.write({
+        type: 'data-steer',
+        id: `steer:${clientRequestId}`,
+        data: { text: stringValue(payload.text), clientRequestId },
+      })
+      return true
+    }
     if (type === 'text-delta') {
       const delta = stringValue(payload.text)
       if (!delta) return false

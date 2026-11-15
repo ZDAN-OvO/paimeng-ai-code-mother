@@ -31,6 +31,9 @@ export interface AgentRunInput {
   setPhase: (phase: string) => void
   onStep?: (stepCount: number) => void
   isCancelled: () => boolean
+  consumeSteers?: () => Promise<number>
+  hasPendingSteers?: () => Promise<boolean>
+  closeSteerIntake?: () => Promise<boolean>
 }
 
 export interface AgentOutcome {
@@ -127,6 +130,11 @@ export class AgentService {
           errorSummary: blocked.errorSummary,
         }
       }
+      if ((await input.consumeSteers?.()) ?? 0) {
+        progress.onSteer()
+        entries = await this.store.list(input.conversationId)
+      }
+      if (input.isCancelled()) continue
       const messages = this.store.toModelMessages(entries, this.config.toolOutputMaxBytes)
       const budget = checkContextBudget({
         system,
@@ -268,6 +276,12 @@ export class AgentService {
         entries = await this.store.list(input.conversationId)
         continue
       }
+      if (await input.hasPendingSteers?.()) continue
+      if (lastValidation?.ok && !progress.needsValidation) {
+        if (input.closeSteerIntake && !(await input.closeSteerIntake())) continue
+        input.setPhase(PHASE.finish)
+        return { status: 'completed', text: texts.join('\n\n'), stepCount, repairCount }
+      }
       const decision = progress.onTextOnlyTurn()
       if (decision.action === 'prompt') {
         await this.store.append(input.conversationId, input.runId, 'system_note', {
@@ -298,6 +312,7 @@ export class AgentService {
       }
       if (validation.ok) {
         input.emit('validation-status', { status: 'passed', attempt: repairCount + 1 })
+        if (input.closeSteerIntake && !(await input.closeSteerIntake())) continue
         input.setPhase(PHASE.finish)
         return { status: 'completed', text: texts.join('\n\n'), stepCount, repairCount }
       }

@@ -12,7 +12,10 @@ export class SessionService {
   private store: RedisStore | null = null
   private handler: RequestHandler | null = null
 
-  constructor(private readonly config: AppConfigService, private readonly redis: RedisService) {
+  constructor(
+    private readonly config: AppConfigService,
+    private readonly redis: RedisService,
+  ) {
     const client = this.redis.client
     this.store = new RedisStore({
       client: client as never,

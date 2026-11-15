@@ -8,6 +8,29 @@ import {
 } from '../src/conversations/ui-message'
 
 describe('UI message stream', () => {
+  it('preserves steer positions and identifiers through the official stream and replay', async () => {
+    const accumulator = new UIMessageAccumulator('steered-run')
+    const emitter = new UIMessageEmitter('steered-run', (chunk) => accumulator.write(chunk))
+    emitter.start()
+    emitter.emit('text-delta', { text: '检查文件' })
+    emitter.emit('tool-started', { tool: 'read', toolCallId: 'read', input: { path: 'a.html' } })
+    emitter.emit('tool-finished', { tool: 'read', toolCallId: 'read', ok: true })
+    emitter.emit('steer-applied', { clientRequestId: 'request-s1', text: 'S1' })
+    emitter.emit('steer-applied', { clientRequestId: 'request-s2', text: 'S2' })
+    emitter.emit('text-delta', { text: '最终回复' })
+    emitter.finish({ status: 'completed' })
+    const message = await accumulator.close()
+    expect(message.parts.map((part) => part.type)).toEqual([
+      'text',
+      'dynamic-tool',
+      'data-steer',
+      'data-steer',
+      'text',
+    ])
+    const replay = new UIMessageAccumulator('steered-run')
+    for (const chunk of replayMessageChunks(message)) replay.write(chunk)
+    expect(await replay.close()).toEqual(message)
+  })
   it('keeps text, tools, plans and later text in emission order', async () => {
     const chunks: AppUIMessageChunk[] = []
     const accumulator = new UIMessageAccumulator('run-1')

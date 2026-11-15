@@ -86,6 +86,79 @@ async function setup() {
 }
 
 describe('agent model output boundaries', () => {
+  it('consumes the full steer batch only after all tool results and before the next model request', async () => {
+    const { service, input, store, tools } = await setup()
+    const order: string[] = []
+    store.append.mockImplementation(async (_conversation, _run, kind, payload) => {
+      order.push(`${kind}:${payload.toolCallId ?? payload.text}`)
+    })
+    let pending = false
+    const execute = tools.execute.getMockImplementation()!
+    tools.execute.mockImplementation(async (...args) => {
+      const result = await execute(...args)
+      pending = true
+      return result
+    })
+    input.consumeSteers = vi.fn(async () => {
+      if (!pending) return 0
+      expect(order).toEqual(['assistant:开始', 'tool:read-1', 'tool:write-1'])
+      await store.append(1, 'run', 'user', { text: 'S1' })
+      await store.append(1, 'run', 'user', { text: 'S2' })
+      pending = false
+      return 2
+    })
+    respond(
+      [
+        { type: 'text-delta', text: '开始' },
+        { type: 'tool-call', toolCallId: 'read-1', toolName: 'read', input: {} },
+        { type: 'tool-call', toolCallId: 'write-1', toolName: 'write', input: {} },
+      ],
+      'tool-calls',
+    )
+    respond([{ type: 'text-delta', text: '完成' }])
+    expect(await service.execute(input)).toMatchObject({ status: 'completed', stepCount: 2 })
+    expect(order).toEqual([
+      'assistant:开始',
+      'tool:read-1',
+      'tool:write-1',
+      'user:S1',
+      'user:S2',
+      'assistant:完成',
+    ])
+    expect(input.consumeSteers).toHaveBeenCalledTimes(2)
+  })
+
+  it('handles a steer racing with successful validation without repeating unchanged validation', async () => {
+    const { service, input, runtime } = await setup()
+    let pending = false
+    input.consumeSteers = vi.fn(async () => {
+      if (!pending) return 0
+      pending = false
+      return 1
+    })
+    input.closeSteerIntake = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        pending = true
+        return false
+      })
+      .mockResolvedValue(true)
+    respond([{ type: 'tool-call', toolCallId: 'write-1', toolName: 'write', input: {} }], 'tool-calls')
+    respond([{ type: 'text-delta', text: '实现完成' }])
+    respond([{ type: 'text-delta', text: '补充说明' }])
+    expect(await service.execute(input)).toMatchObject({ status: 'completed', stepCount: 3 })
+    expect(runtime.sourceStats).toHaveBeenCalledTimes(1)
+    expect(input.closeSteerIntake).toHaveBeenCalledTimes(2)
+  })
+
+  it('never consumes pending steers after cancellation', async () => {
+    const { service, input, controller } = await setup()
+    input.consumeSteers = vi.fn().mockResolvedValue(2)
+    controller.abort()
+    expect(await service.execute(input)).toMatchObject({ status: 'cancelled' })
+    expect(input.consumeSteers).not.toHaveBeenCalled()
+  })
+
   it('retains already streamed text when the user interrupts a model request', async () => {
     const { service, input, controller } = await setup()
     vi.mocked(streamText).mockReturnValueOnce({

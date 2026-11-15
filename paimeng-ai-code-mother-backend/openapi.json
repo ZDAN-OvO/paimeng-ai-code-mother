@@ -426,6 +426,165 @@
         ]
       }
     },
+    "/app/run/stream": {
+      "post": {
+        "operationId": "subscribeRun",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelRunDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Vercel AI SDK UI Message Stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "summary": "订阅运行输出，断开订阅不停止运行",
+        "tags": [
+          "run"
+        ]
+      }
+    },
+    "/app/chat/queue": {
+      "post": {
+        "operationId": "enqueueMessage",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnqueueMessageDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaseResponseQueueItem"
+                }
+              }
+            }
+          }
+        },
+        "summary": "将普通消息或插话加入发送队列",
+        "tags": [
+          "run"
+        ]
+      },
+      "get": {
+        "operationId": "getMessageQueue",
+        "parameters": [
+          {
+            "name": "appId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "maximum": 9007199254740991,
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaseResponseMessageQueue"
+                }
+              }
+            }
+          }
+        },
+        "summary": "查询待发送消息、未生效插话和当前运行",
+        "tags": [
+          "run"
+        ]
+      }
+    },
+    "/app/chat/queue/remove": {
+      "post": {
+        "operationId": "removeQueuedMessage",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoveQueuedMessageDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaseResponseMessageQueue"
+                }
+              }
+            }
+          }
+        },
+        "summary": "移除尚未处理的排队消息",
+        "tags": [
+          "run"
+        ]
+      }
+    },
+    "/app/chat/queue/resume": {
+      "post": {
+        "operationId": "resumeMessageQueue",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeMessageQueueDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BaseResponseMessageQueue"
+                }
+              }
+            }
+          }
+        },
+        "summary": "继续普通消息队列",
+        "tags": [
+          "run"
+        ]
+      }
+    },
     "/app/run/status": {
       "get": {
         "operationId": "getRunStatus",
@@ -1671,6 +1830,40 @@
                     "type": {
                       "type": "string",
                       "enum": [
+                        "data-steer"
+                      ]
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        },
+                        "clientRequestId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "clientRequestId"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "data"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
                         "text"
                       ]
                     },
@@ -1865,6 +2058,40 @@
         "properties": {
           "part": {
             "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "data-steer"
+                    ]
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "data": {
+                    "type": "object",
+                    "properties": {
+                      "text": {
+                        "type": "string"
+                      },
+                      "clientRequestId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "text",
+                      "clientRequestId"
+                    ]
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "data"
+                ]
+              },
               {
                 "type": "object",
                 "properties": {
@@ -2129,6 +2356,40 @@
                           "type": "array",
                           "items": {
                             "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "enum": [
+                                      "data-steer"
+                                    ]
+                                  },
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "data": {
+                                    "type": "object",
+                                    "properties": {
+                                      "text": {
+                                        "type": "string"
+                                      },
+                                      "clientRequestId": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "text",
+                                      "clientRequestId"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "type",
+                                  "id",
+                                  "data"
+                                ]
+                              },
                               {
                                 "type": "object",
                                 "properties": {
@@ -2581,13 +2842,274 @@
           "clientRequestId": {
             "type": "string",
             "minLength": 8,
-            "maxLength": 100
+            "maxLength": 64
           }
         },
         "required": [
           "appId",
           "message",
           "clientRequestId"
+        ]
+      },
+      "CancelRunDto": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "runId"
+        ]
+      },
+      "EnqueueMessageDto": {
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "clientRequestId": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 64
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "steer"
+            ]
+          },
+          "runId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          }
+        },
+        "required": [
+          "appId",
+          "message",
+          "clientRequestId",
+          "mode"
+        ]
+      },
+      "BaseResponseQueueItem": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "clientRequestId": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "normal",
+                  "steer"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "claimed",
+                  "started",
+                  "applied",
+                  "returned",
+                  "removed"
+                ]
+              },
+              "runId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "clientRequestId",
+              "message",
+              "mode",
+              "status",
+              "runId"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ]
+      },
+      "BaseResponseMessageQueue": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "paused": {
+                "type": "boolean"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "clientRequestId": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "normal",
+                        "steer"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "queued",
+                        "claimed",
+                        "started",
+                        "applied",
+                        "returned",
+                        "removed"
+                      ]
+                    },
+                    "runId": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "clientRequestId",
+                    "message",
+                    "mode",
+                    "status",
+                    "runId"
+                  ]
+                }
+              },
+              "activeRun": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "runId": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "running",
+                          "cancelling"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "runId",
+                      "status"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "paused",
+              "items",
+              "activeRun"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ]
+      },
+      "RemoveQueuedMessageDto": {
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "appId",
+          "id"
+        ]
+      },
+      "ResumeMessageQueueDto": {
+        "type": "object",
+        "properties": {
+          "appId": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "appId"
         ]
       },
       "BaseResponseRunStatus": {
@@ -2715,19 +3237,6 @@
           "code",
           "message",
           "data"
-        ]
-      },
-      "CancelRunDto": {
-        "type": "object",
-        "properties": {
-          "runId": {
-            "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-          }
-        },
-        "required": [
-          "runId"
         ]
       },
       "BaseResponseCancelRun": {

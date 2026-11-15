@@ -108,7 +108,9 @@ export class RegistryRelayService implements OnModuleInit, OnModuleDestroy {
       const upstream = await fetch(upstreamUrl, {
         method: req.method,
         headers: {
-          accept: isMetadata ? 'application/vnd.npm.install-v1+json' : String(req.headers.accept ?? 'application/octet-stream'),
+          accept: isMetadata
+            ? 'application/vnd.npm.install-v1+json'
+            : String(req.headers.accept ?? 'application/octet-stream'),
           'user-agent': 'paimeng-registry-relay/1.0',
         },
         signal: controller.signal,

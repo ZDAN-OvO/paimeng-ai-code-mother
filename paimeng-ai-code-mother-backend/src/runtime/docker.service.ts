@@ -99,7 +99,6 @@ export class DockerService {
     })
   }
 
-
   async containerRunning(name: string) {
     const result = await this.inspectContainer(name)
     return result?.State?.Running === true
@@ -163,7 +162,9 @@ export class DockerService {
     return gateway
   }
 
-  async listProjectContainers(): Promise<Array<{ ID: string; Names: string; State: string; Labels: string }>> {
+  async listProjectContainers(): Promise<
+    Array<{ ID: string; Names: string; State: string; Labels: string }>
+  > {
     const res = await this.run(
       ['ps', '-a', '--filter', `label=${PROJECT_LABEL}=${PROJECT_NAME}`, '--format', '{{json .}}'],
       { timeoutMs: 15_000 },
@@ -239,11 +240,16 @@ export class DockerService {
     const inspect = await this.run(['image', 'inspect', image, '--format', '{{.Id}}'], { timeoutMs: 15_000 })
     if (inspect.code === 0) return image
     if (!this.config.setupImageOnStart) {
-      throw new Error(`运行时镜像 ${image} 不存在，请先启动后端（SETUP_IMAGE_ON_START=true）或运行 docker build`)
+      throw new Error(
+        `运行时镜像 ${image} 不存在，请先启动后端（SETUP_IMAGE_ON_START=true）或运行 docker build`,
+      )
     }
     const context = resolve(__dirname, '../../../docker/runtime')
     this.logger.log(`构建运行时镜像 ${image}`)
-    const res = await this.run(['build', '-t', image, context], { timeoutMs: 300_000, maxOutputBytes: 2 * 1024 * 1024 })
+    const res = await this.run(['build', '-t', image, context], {
+      timeoutMs: 300_000,
+      maxOutputBytes: 2 * 1024 * 1024,
+    })
     if (res.code !== 0) throw new Error(`构建运行时镜像失败: ${(res.stderr || res.stdout).slice(-4000)}`)
     return image
   }

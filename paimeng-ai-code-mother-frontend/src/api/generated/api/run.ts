@@ -14,6 +14,66 @@ export async function chat(body: API.ChatDto, options?: { [key: string]: any }) 
   })
 }
 
+/** 查询待发送消息、未生效插话和当前运行 GET /app/chat/queue */
+export async function getMessageQueue(
+  // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
+  params: API.getMessageQueueParams,
+  options?: { [key: string]: any }
+) {
+  return request<API.BaseResponseMessageQueue>('/app/chat/queue', {
+    method: 'GET',
+    params: {
+      ...params,
+    },
+    ...(options || {}),
+  })
+}
+
+/** 将普通消息或插话加入发送队列 POST /app/chat/queue */
+export async function enqueueMessage(
+  body: API.EnqueueMessageDto,
+  options?: { [key: string]: any }
+) {
+  return request<API.BaseResponseQueueItem>('/app/chat/queue', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  })
+}
+
+/** 移除尚未处理的排队消息 POST /app/chat/queue/remove */
+export async function removeQueuedMessage(
+  body: API.RemoveQueuedMessageDto,
+  options?: { [key: string]: any }
+) {
+  return request<API.BaseResponseMessageQueue>('/app/chat/queue/remove', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  })
+}
+
+/** 继续普通消息队列 POST /app/chat/queue/resume */
+export async function resumeMessageQueue(
+  body: API.ResumeMessageQueueDto,
+  options?: { [key: string]: any }
+) {
+  return request<API.BaseResponseMessageQueue>('/app/chat/queue/resume', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
+    ...(options || {}),
+  })
+}
+
 /** 分页读取运行活动 GET /app/run/activities */
 export async function listRunActivities(
   // 叠加生成的Param类型 (非body参数swagger默认没有生成对象)
@@ -97,6 +157,18 @@ export async function getRunStatus(
     params: {
       ...params,
     },
+    ...(options || {}),
+  })
+}
+
+/** 订阅运行输出，断开订阅不停止运行 POST /app/run/stream */
+export async function subscribeRun(body: API.CancelRunDto, options?: { [key: string]: any }) {
+  return request<string>('/app/run/stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    data: body,
     ...(options || {}),
   })
 }

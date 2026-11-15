@@ -111,6 +111,7 @@ declare namespace API {
           role: 'system' | 'user' | 'assistant'
           metadata?: Record<string, any>
           parts: (
+            | { type: 'data-steer'; id: string; data: { text: string; clientRequestId: string } }
             | { type: 'text'; text: string; state?: 'streaming' | 'done' }
             | {
                 type: 'dynamic-tool'
@@ -170,6 +171,23 @@ declare namespace API {
     }
   }
 
+  type BaseResponseMessageQueue = {
+    code: number
+    message: string
+    data: {
+      paused: boolean
+      items: {
+        id: string
+        clientRequestId: string
+        message: string
+        mode: 'normal' | 'steer'
+        status: 'queued' | 'claimed' | 'started' | 'applied' | 'returned' | 'removed'
+        runId: string | null
+      }[]
+      activeRun: { runId: string; status: 'running' | 'cancelling' } | null
+    }
+  }
+
   type BaseResponsePreviewAccess = {
     code: number
     message: string
@@ -194,6 +212,19 @@ declare namespace API {
       kind: 'static' | 'vue' | 'react' | null
       url: string | null
       lastError: string | null
+    }
+  }
+
+  type BaseResponseQueueItem = {
+    code: number
+    message: string
+    data: {
+      id: string
+      clientRequestId: string
+      message: string
+      mode: 'normal' | 'steer'
+      status: 'queued' | 'claimed' | 'started' | 'applied' | 'returned' | 'removed'
+      runId: string | null
     }
   }
 
@@ -320,6 +351,7 @@ declare namespace API {
     role: 'system' | 'user' | 'assistant'
     metadata?: Record<string, any>
     parts: (
+      | { type: 'data-steer'; id: string; data: { text: string; clientRequestId: string } }
       | { type: 'text'; text: string; state?: 'streaming' | 'done' }
       | {
           type: 'dynamic-tool'
@@ -353,8 +385,20 @@ declare namespace API {
     )[]
   }
 
+  type EnqueueMessageDto = {
+    appId: number
+    message: string
+    clientRequestId: string
+    mode: 'normal' | 'steer'
+    runId?: string
+  }
+
   type getAppVoByIdParams = {
     id: number
+  }
+
+  type getMessageQueueParams = {
+    appId: number
   }
 
   type getPreviewStatusParams = {
@@ -442,6 +486,15 @@ declare namespace API {
     checkPassword: string
   }
 
+  type RemoveQueuedMessageDto = {
+    appId: number
+    id: string
+  }
+
+  type ResumeMessageQueueDto = {
+    appId: number
+  }
+
   type RunChunk = {
     type: 'data-run'
     data: {
@@ -470,6 +523,7 @@ declare namespace API {
 
   type UIMessagePart = {
     part:
+      | { type: 'data-steer'; id: string; data: { text: string; clientRequestId: string } }
       | { type: 'text'; text: string; state?: 'streaming' | 'done' }
       | {
           type: 'dynamic-tool'

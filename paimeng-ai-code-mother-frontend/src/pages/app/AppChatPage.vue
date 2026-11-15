@@ -16,14 +16,6 @@
         </div>
       </div>
       <div class="bar-actions">
-        <a-button
-          v-if="chatState.canStop || chatState.phase === 'stopping'"
-          danger
-          :loading="chatState.phase === 'stopping'"
-          :disabled="!chatState.canStop"
-          @click="handleCancel"
-          >停止生成</a-button
-        >
         <a-button @click="detailOpen = true">应用详情</a-button>
         <a-button v-if="previewUrl" @click="openPreviewWindow">新窗口</a-button>
       </div>
@@ -141,11 +133,8 @@
                 >
                   {{ detailsFor(item)!.detailsError }}
                 </p>
-                <p
-                  v-if="isTurnOpen(item) && item.status === 'failed' && item.errorSummary"
-                  class="error-note"
-                >
-                  {{ item.errorSummary }}
+                <p v-if="item.status === 'failed' && errorSummaryFor(item)" class="error-note">
+                  {{ errorSummaryFor(item) }}
                 </p>
               </div>
             </div>
@@ -153,6 +142,52 @@
         </div>
 
         <div class="composer-area">
+          <div v-if="showQueuePanel" class="queue-panel" aria-live="polite">
+            <div class="queue-head">
+              <span class="queue-title">消息队列</span>
+              <span class="queue-state">{{ queueStateLabel }}</span>
+              <a-button
+                v-if="queueState.paused"
+                size="small"
+                type="link"
+                :loading="queueActionBusy"
+                @click="resumeQueue"
+              >
+                <PlayCircleOutlined />
+                继续队列
+              </a-button>
+            </div>
+            <div v-for="item in queueItems" :key="item.id" class="queue-item">
+              <span class="queue-mode" :class="item.mode">{{
+                item.mode === 'steer' ? '插话发送' : '普通'
+              }}</span>
+              <span class="queue-message">{{ item.message }}</span>
+              <span class="queue-status" :class="item.status">{{ queueItemLabel(item) }}</span>
+              <a-button
+                v-if="item.status === 'returned'"
+                size="small"
+                type="text"
+                :disabled="hasDraftContent || queueActionBusy"
+                :title="hasDraftContent ? '当前草稿非空，不能覆盖' : '恢复为草稿'"
+                aria-label="恢复为草稿"
+                @click="restoreQueueItem(item)"
+              >
+                <UndoOutlined />
+              </a-button>
+              <a-button
+                v-else-if="item.status === 'queued'"
+                size="small"
+                type="text"
+                danger
+                :disabled="queueActionBusy"
+                title="移出队列"
+                aria-label="移出队列"
+                @click="removeQueueItem(item)"
+              >
+                <DeleteOutlined />
+              </a-button>
+            </div>
+          </div>
           <div class="chat-composer">
             <textarea
               v-model="inputMessage"
@@ -160,20 +195,44 @@
               rows="3"
               placeholder="描述你想做的页面，或继续提出修改…"
               @keydown="handleKeydown"
+              @input="handleDraftInput"
             ></textarea>
             <div class="chat-composer-footer">
-              <span>{{ inputMessage.length }}/1000 · Enter 发送，Shift+Enter 换行</span>
+              <div class="composer-meta">
+                <div class="mode-switch" role="group" aria-label="发送模式">
+                  <button
+                    type="button"
+                    :class="{ active: chatMode === 'steer' }"
+                    @click="chatMode = 'steer'"
+                  >
+                    插话发送
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ active: chatMode === 'normal' }"
+                    @click="chatMode = 'normal'"
+                  >
+                    普通
+                  </button>
+                </div>
+                <span>{{ inputMessage.length }}/1000 · Enter 当前模式 · Alt+Enter 另一模式</span>
+              </div>
               <a-button
-                type="primary"
-                :loading="['starting', 'stopping', 'settling'].includes(chatState.phase)"
-                :disabled="!initialized || !chatState.canSubmit || !inputMessage.trim()"
-                @click="sendMessage()"
+                class="composer-action"
+                shape="circle"
+                :type="composerActionKind === 'send' ? 'primary' : 'default'"
+                :danger="composerActionKind === 'stop'"
+                :loading="queueSubmitting"
+                :disabled="!initialized || composerActionKind === 'disabled' || queueSubmitting"
+                :aria-label="composerActionLabel"
+                :title="composerActionLabel"
+                @click="handleComposerAction"
               >
-                {{ isRunning ? '打断并发送' : '发送' }}
+                <StopOutlined v-if="composerActionKind === 'stop'" />
+                <ArrowUpOutlined v-else />
               </a-button>
             </div>
           </div>
-          <p v-if="chatState.pending" class="pending-message">待发送：{{ chatState.pending }}</p>
         </div>
       </section>
 
@@ -308,17 +367,32 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { ArrowLeftOutlined, DownOutlined, RightOutlined } from '@ant-design/icons-vue'
+import {
+  ArrowLeftOutlined,
+  ArrowUpOutlined,
+  DeleteOutlined,
+  DownOutlined,
+  PlayCircleOutlined,
+  RightOutlined,
+  StopOutlined,
+  UndoOutlined,
+} from '@ant-design/icons-vue'
 import AppDetailModal from '@/components/AppDetailModal.vue'
 import ChangeCard from '@/components/agent/ChangeCard.vue'
 import AgentTurnParts from '@/components/agent/AgentTurnParts.vue'
+import { createTaskQueue } from '@/utils/chatCoordinator'
 import {
-  createChatCoordinator,
-  createTaskQueue,
-  type ChatState,
-  type RunSnapshot,
-} from '@/utils/chatCoordinator'
+  composerAction,
+  createQueuedChatCoordinator,
+  draftAfterReturnedRemoval,
+  queueItemLabel,
+  resolveComposerShortcut,
+  returnedItemDraft,
+  shouldStartInitialPrompt,
+  type EnqueueMessageBody,
+} from '@/utils/queuedChatCoordinator'
 import { modelProgressText } from '@/utils/modelProgress'
+import { applyMessageReplay, assistantMessageId } from '@/utils/chatStream'
 import { shouldRefreshPreviewAuth } from '@/utils/previewAuth'
 import { type ToolStatus, type ToolTimelineEntry } from '@/utils/agentActivity'
 import {
@@ -328,12 +402,16 @@ import {
   SPLIT_STORAGE_KEY,
 } from '@/utils/workspace'
 import {
+  cancelRun,
+  enqueueMessage,
+  getMessageQueue,
   getRunDetails,
   getRunDiff,
   getRunStatus,
   listRunActivities,
   listRunChanges,
-  cancelRun,
+  removeQueuedMessage,
+  resumeMessageQueue,
 } from '@/api/generated/api/run'
 import { deleteApp, getAppVoById } from '@/api/generated/api/app'
 import {
@@ -343,8 +421,15 @@ import {
   startPreview,
 } from '@/api/generated/api/preview'
 import { listAppChatHistory } from '@/api/generated/api/chatHistory'
-import { streamChat } from '@/api/streamChat'
-import type { ChatStreamEvent, ChatUIMessage, UIMessageTextPart } from '@/api/chatTypes'
+import { subscribeRunChat } from '@/api/streamChat'
+import type {
+  ChatMode,
+  ChatStreamEvent,
+  ChatUIMessage,
+  MessageQueueState,
+  QueueItem,
+  UIMessageTextPart,
+} from '@/api/chatTypes'
 import type {
   AppPreview,
   AppVO,
@@ -379,13 +464,11 @@ const detailOpen = ref(false)
 const messages = ref<ChatItem[]>([])
 const inputMessage = ref('')
 const initialized = ref(false)
-const chatState = ref<ChatState>({
-  phase: 'idle',
-  run: null,
-  pending: null,
-  canSubmit: true,
-  canStop: false,
-})
+const chatMode = ref<ChatMode>('steer')
+const queueState = ref<MessageQueueState>({ paused: false, items: [], activeRun: null })
+const queueSubmitting = ref(false)
+const queueActionBusy = ref(false)
+const localReturnedRestores = ref<QueueItem[]>([])
 const historyQueue = createTaskQueue()
 const historyLoading = ref(false)
 const nextCursor = ref<string | null>(null)
@@ -401,8 +484,8 @@ const previewUrl = ref('')
 const previewViewport = ref<'fill' | 'tablet' | 'mobile'>('fill')
 const authFrameRef = ref<HTMLIFrameElement>()
 const lastAccessAt = ref(0)
-const currentAssistantKey = ref<string | null>(null)
 const runDetails = reactive<Record<string, RunDetails>>({})
+const terminalRunStatuses = new Map<string, 'completed' | 'failed' | 'cancelled'>()
 const activitiesByRun = reactive<Record<string, RunActivity[]>>({})
 const activitiesLoading = reactive<Record<string, boolean>>({})
 const expandedTurns = ref<string[]>([])
@@ -436,6 +519,30 @@ const viewportOptions = [
 ]
 
 const isRunning = computed(() => runStatus.value === 'running' || runStatus.value === 'cancelling')
+const queueItems = computed(() => {
+  const items = queueState.value.items.filter(
+    (item) => item.status !== 'started' && item.status !== 'removed',
+  )
+  const ids = new Set(items.map((item) => item.id))
+  return [...items, ...localReturnedRestores.value.filter((item) => !ids.has(item.id))]
+})
+const showQueuePanel = computed(() => queueItems.value.length > 0)
+const queueStateLabel = computed(() => {
+  if (queueState.value.paused) return '已暂停'
+  if (queueState.value.activeRun?.status === 'cancelling') return '正在停止当前轮次'
+  if (queueState.value.activeRun) return '当前轮次运行中'
+  if (queueItems.value.some((item) => ['queued', 'claimed'].includes(item.status)))
+    return '等待发送'
+  return queueItems.value.length ? '有消息退回' : '空闲'
+})
+const hasStoppableRun = computed(() => queueState.value.activeRun?.status === 'running')
+const hasDraftContent = computed(() => inputMessage.value.trim().length > 0)
+const composerActionKind = computed(() => composerAction(inputMessage.value, hasStoppableRun.value))
+const composerActionLabel = computed(() => {
+  if (composerActionKind.value === 'send') return '发送消息'
+  if (composerActionKind.value === 'stop') return '停止生成'
+  return '请先输入内容'
+})
 const previewStatusText = computed(() => {
   if (previewStatus.value === 'running') return '预览运行中'
   if (previewStatus.value === 'starting') return '预览启动中'
@@ -468,9 +575,17 @@ let dragging = false
 let dragStartX = 0
 let dragStartWidth = 400
 let narrowMedia: MediaQueryList | null = null
+let observedActiveRunId = ''
+let currentRunFallback: NonNullable<MessageQueueState['activeRun']> | null = null
+let initialPromptStarted = false
+let historyConfirmed = false
+let draftRevision = 0
 
 const detailsFor = (item: ChatItem): RunDetails | undefined =>
   item.runId ? runDetails[item.runId] : undefined
+
+const errorSummaryFor = (item: ChatItem) =>
+  item.errorSummary || (item.runId ? runDetails[item.runId]?.errorSummary : null) || ''
 
 const isTurnOpen = (item: ChatItem) =>
   item.status === 'streaming' || expandedTurns.value.includes(item.key)
@@ -779,7 +894,7 @@ const loadApp = async () => {
     if (current && (current.status === 'running' || current.status === 'cancelling')) {
       runId.value = current.runId
       runStatus.value = current.status
-      chatCoordinator.restore(current)
+      currentRunFallback = { runId: current.runId, status: current.status }
     } else if (previewStatus.value === 'running') {
       await attachPreview()
     }
@@ -789,50 +904,78 @@ const loadApp = async () => {
   }
 }
 
-const ensureAssistantItem = (): ChatItem => {
-  const existing = messages.value.find((item) => item.key === currentAssistantKey.value)
-  if (existing) return existing
+const ensureAssistantItem = (id: string): ChatItem => {
+  const streamId = assistantMessageId(id)
+  const existing = messages.value.find(
+    (item) => item.role === 'assistant' && (item.runId === id || item.message.id === streamId),
+  )
+  if (existing) {
+    existing.runId = id
+    return existing
+  }
   const item: ChatItem = {
-    key: `local-${Date.now()}`,
+    key: `stream-${streamId}`,
     id: null,
-    runId: runId.value,
+    runId: id,
     role: 'assistant',
     status: 'streaming',
-    message: {
-      id: `assistant:${runId.value ?? Date.now()}`,
-      role: 'assistant',
-      parts: [],
-    },
+    message: { id: streamId, role: 'assistant', parts: [] },
     text: '',
     startedAtMs: Date.now(),
   }
-  currentAssistantKey.value = item.key
   messages.value.push(item)
   return item
 }
 
+const handleRunMessage = (id: string, uiMessage: ChatUIMessage) => {
+  if (queueState.value.activeRun && queueState.value.activeRun.runId !== id) return
+  const replay = applyMessageReplay(
+    messages.value,
+    id,
+    uiMessage,
+    (): ChatItem => ({
+      key: `stream-${assistantMessageId(id)}`,
+      id: null,
+      runId: id,
+      role: 'assistant',
+      status: 'streaming',
+      message: { id: assistantMessageId(id), role: 'assistant', parts: [] },
+      text: '',
+      startedAtMs: Date.now(),
+    }),
+  )
+  messages.value = replay.items
+  const item = replay.item
+  item.text = uiText(item.message)
+  const terminalStatus = terminalRunStatuses.get(id)
+  item.status = terminalStatus ?? 'streaming'
+  item.modelProgress = terminalStatus ? '' : item.modelProgress
+  runId.value = id
+  runStatus.value = terminalStatus ?? 'running'
+  scrollToBottom()
+}
+
 const handleEvent = (event: ChatStreamEvent) => {
   if (event.type === 'run-started') {
+    if (terminalRunStatuses.has(event.runId)) return
     runId.value = event.runId
     runStatus.value = 'running'
-    const item = messages.value.find((entry) => entry.key === currentAssistantKey.value)
-    if (item) {
-      item.runId = event.runId
-      item.message = { ...item.message, id: `assistant:${event.runId}` }
-    }
+    const item = messages.value.find(
+      (entry) => entry.role === 'assistant' && entry.runId === event.runId,
+    )
+    if (item) item.message = { ...item.message, id: assistantMessageId(event.runId) }
     return
   }
   if (event.type === 'model-status') {
-    ensureAssistantItem().modelProgress = modelProgressText(event.payload)
+    ensureAssistantItem(event.runId).modelProgress = modelProgressText(event.payload)
     return
   }
   if (event.type === 'plan-updated') {
-    const id = event.runId
-    if (!runDetails[id]) void loadDetails(id, true)
+    void loadDetails(event.runId, true)
     return
   }
   if (event.type === 'validation-status') {
-    if (runId.value) void loadDetails(runId.value, true)
+    void loadDetails(event.runId, true)
     return
   }
   if (event.type === 'preview-status') {
@@ -844,140 +987,226 @@ const handleEvent = (event: ChatStreamEvent) => {
     return
   }
   if (event.type === 'run-finished') {
-    const status = String(event.payload.status ?? 'failed')
+    const status =
+      event.payload.status === 'completed' || event.payload.status === 'cancelled'
+        ? event.payload.status
+        : 'failed'
+    terminalRunStatuses.set(event.runId, status)
     runStatus.value = status
-    const item = messages.value.find((entry) => entry.key === currentAssistantKey.value)
-    if (item) {
-      item.modelProgress = ''
-      item.status =
-        status === 'completed' ? 'completed' : status === 'cancelled' ? 'cancelled' : 'failed'
-      item.errorSummary = (event.payload.errorSummary as string | null) ?? null
-    }
-    if (runId.value) void loadDetails(runId.value, true)
+    const item = ensureAssistantItem(event.runId)
+    item.modelProgress = ''
+    item.status =
+      status === 'completed' ? 'completed' : status === 'cancelled' ? 'cancelled' : 'failed'
+    item.errorSummary = (event.payload.errorSummary as string | null) ?? null
+    void loadDetails(event.runId, true)
+    void loadHistory(true)
+    void syncPreview()
   }
 }
 
-const chatCoordinator = createChatCoordinator<ChatStreamEvent>({
+const queueErrorMessage = (error: unknown, fallback: string) => {
+  const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message
+  return detail || (error instanceof Error ? error.message : fallback)
+}
+
+const knownQueueError = (detail: string) => Object.assign(new Error(detail), { knownOutcome: true })
+
+const queuedChatCoordinator = createQueuedChatCoordinator<ChatStreamEvent>({
+  appId,
   createRequestId: () => crypto.randomUUID(),
-  beforeStart: () => historyQueue.idle(),
-  start: ({ text, clientRequestId }) => {
-    scrollPinned.value = true
-    runStatus.value = 'running'
-    runId.value = null
-    messages.value.push({
-      key: `local-user-${clientRequestId}`,
-      id: null,
-      runId: null,
-      role: 'user',
-      status: 'completed',
-      message: {
-        id: `user:${clientRequestId}`,
-        role: 'user',
-        parts: [{ type: 'text', text, state: 'done' }],
-      },
-      text,
-    })
-    const assistant: ChatItem = {
-      key: `local-assistant-${clientRequestId}`,
-      id: null,
-      runId: null,
-      role: 'assistant',
-      status: 'streaming',
-      message: {
-        id: `assistant:pending:${clientRequestId}`,
-        role: 'assistant',
-        parts: [],
-      },
-      text: '',
-      startedAtMs: Date.now(),
+  enqueue: async (body: EnqueueMessageBody) => {
+    const res = await enqueueMessage(body)
+    if (res.data.code !== 0 || !res.data.data) {
+      throw knownQueueError(res.data.message || '消息入队失败')
     }
-    currentAssistantKey.value = assistant.key
-    messages.value.push(assistant)
-    scrollToBottom()
+    return res.data.data
   },
-  accepted: ({ draft }) => {
-    if (inputMessage.value === draft) inputMessage.value = ''
-  },
-  stream: ({ text, clientRequestId }, onEvent, signal) =>
-    streamChat(
-      { appId, message: text, clientRequestId },
-      {
-        onMessage: (uiMessage) => {
-          const item = messages.value.find(
-            (entry) => entry.key === `local-assistant-${clientRequestId}`,
-          )
-          if (!item) return
-          item.message = uiMessage
-          item.text = uiText(uiMessage)
-          scrollToBottom()
-        },
-        onEvent,
-        onClose: () => undefined,
-      },
-      signal,
-    ),
-  lookup: async ({ runId: id, clientRequestId }) => {
-    try {
-      const res = id
-        ? await getRunStatus({ runId: id })
-        : await getRunStatus({ appId, clientRequestId: clientRequestId! })
-      if (res.data.code !== 0 || !res.data.data) throw new Error(res.data.message || '查询任务失败')
-      return res.data.data
-    } catch (error) {
-      if ((error as { response?: { status?: number } }).response?.status === 404) return null
-      throw error
+  getQueue: async (id) => {
+    const res = await getMessageQueue({ appId: id })
+    if (res.data.code !== 0 || !res.data.data) {
+      throw knownQueueError(res.data.message || '消息队列读取失败')
     }
+    return res.data.data
+  },
+  remove: async (id, itemId) => {
+    const res = await removeQueuedMessage({ appId: id, id: itemId })
+    if (res.data.code !== 0) throw knownQueueError(res.data.message || '移出队列失败')
+  },
+  resume: async (id) => {
+    const res = await resumeMessageQueue({ appId: id })
+    if (res.data.code !== 0 || !res.data.data) {
+      throw knownQueueError(res.data.message || '继续队列失败')
+    }
+    return res.data.data
   },
   cancel: async (id) => {
     const res = await cancelRun({ runId: id })
-    if (res.data.code !== 0) throw new Error(res.data.message || '停止失败，请重试')
+    if (res.data.code !== 0) throw knownQueueError(res.data.message || '停止失败，请重试')
   },
-  refresh: async (run: RunSnapshot | null) => {
-    if (disposed) return
-    runStatus.value = run?.status ?? 'idle'
-    const assistant = messages.value.find((item) => item.key === currentAssistantKey.value)
-    if (assistant) {
-      assistant.modelProgress = ''
-      if (assistant.status === 'streaming') {
-        assistant.status =
-          run?.status === 'completed'
-            ? 'completed'
-            : run?.status === 'cancelled'
-              ? 'cancelled'
-              : 'failed'
+  reconcile: async (id) => {
+    const res = await getRunStatus({ runId: id })
+    if (res.data.code !== 0 || !res.data.data) {
+      throw knownQueueError(res.data.message || '旧运行状态确认失败')
+    }
+    return {
+      runId: id,
+      status: res.data.data.status,
+      errorSummary: res.data.data.errorSummary,
+    }
+  },
+  subscribe: (id, handlers, signal) => subscribeRunChat({ runId: id }, handlers, signal),
+  changed: (next) => {
+    queueState.value = next
+    if (next.activeRun) {
+      runId.value = next.activeRun.runId
+      runStatus.value = terminalRunStatuses.get(next.activeRun.runId) ?? next.activeRun.status
+      if (next.activeRun.runId !== observedActiveRunId) {
+        observedActiveRunId = next.activeRun.runId
+        void loadHistory(true)
       }
+    } else {
+      observedActiveRunId = ''
     }
-    await loadHistory(true)
-    if (disposed) return
-    await syncPreview()
-    await loadDetails(run?.runId ?? null, true)
+    void maybeStartInitialPrompt()
   },
-  event: handleEvent,
-  changed: (state) => {
-    chatState.value = state
-    if (state.run) {
-      runId.value = state.run.runId
-      runStatus.value = state.phase === 'stopping' ? 'cancelling' : state.run.status
-    }
+  message: handleRunMessage,
+  event: (_, event) => handleEvent(event),
+  reconciled: (result) => {
+    handleEvent({
+      runId: result.runId,
+      type: 'run-finished',
+      payload: {
+        status: result.status,
+        errorSummary: result.errorSummary,
+      },
+    })
   },
   error: (error) => message.error(error.message),
 })
 
-const sendMessage = async (textOverride?: string) => {
-  if (!initialized.value || !chatState.value.canSubmit) return
+const sendMessage = async (textOverride?: string, mode: ChatMode = chatMode.value) => {
+  if (!initialized.value || queueSubmitting.value) return
   const draft = typeof textOverride === 'string' ? textOverride : inputMessage.value
-  if (!draft.trim()) return message.warning('请先输入内容')
-  if (draft.trim().length > 1000) return message.warning('消息最多 1000 个字符')
-  await chatCoordinator.submit(draft)
+  const text = draft.trim()
+  if (!text) return
+  if (text.length > 1000) return message.warning('消息最多 1000 个字符')
+  queueSubmitting.value = true
+  scrollPinned.value = true
+  try {
+    await queuedChatCoordinator.enqueue({ appId, message: text, mode })
+    if (inputMessage.value === draft) inputMessage.value = ''
+    scrollToBottom()
+  } catch (error) {
+    message.error(queueErrorMessage(error, '消息发送失败'))
+  } finally {
+    queueSubmitting.value = false
+  }
 }
 
-const handleCancel = () => chatCoordinator.stop()
+const maybeStartInitialPrompt = async () => {
+  if (
+    !shouldStartInitialPrompt({
+      pending: startRequested,
+      started: initialPromptStarted,
+      initialized: initialized.value,
+      historyLoading: historyLoading.value,
+      historyConfirmed,
+      queueConfirmed: queuedChatCoordinator.isQueueConfirmed(),
+      messageCount: messages.value.length,
+      paused: queueState.value.paused,
+      activeRun: queueState.value.activeRun,
+      queueItemCount: queueItems.value.length,
+      initPrompt: app.value?.initPrompt,
+    })
+  ) {
+    return
+  }
+  initialPromptStarted = true
+  await sendMessage(app.value!.initPrompt)
+}
+
+const stopCurrentRun = async () => {
+  try {
+    await queuedChatCoordinator.stop()
+  } catch (error) {
+    message.error(queueErrorMessage(error, '停止失败，请重试'))
+  }
+}
+
+const handleComposerAction = () => {
+  if (composerActionKind.value === 'send') void sendMessage()
+  else if (composerActionKind.value === 'stop') void stopCurrentRun()
+}
 
 const handleKeydown = (event: KeyboardEvent) => {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-    event.preventDefault()
-    void sendMessage()
+  const shortcut = resolveComposerShortcut(event, inputMessage.value, chatMode.value)
+  if (shortcut.type !== 'submit') return
+  event.preventDefault()
+  void sendMessage(undefined, shortcut.mode)
+}
+
+const handleDraftInput = () => {
+  draftRevision += 1
+}
+
+const removeQueueItem = async (item: QueueItem, showError = true): Promise<boolean> => {
+  queueActionBusy.value = true
+  try {
+    await queuedChatCoordinator.remove(item.id)
+    return true
+  } catch (error) {
+    if (showError) message.error(queueErrorMessage(error, '移出队列失败'))
+    return false
+  } finally {
+    queueActionBusy.value = false
   }
+}
+
+const resumeQueue = async () => {
+  queueActionBusy.value = true
+  try {
+    await queuedChatCoordinator.resume()
+  } catch (error) {
+    message.error(queueErrorMessage(error, '继续队列失败'))
+  } finally {
+    queueActionBusy.value = false
+  }
+}
+
+const restoreQueueItem = async (item: QueueItem) => {
+  const originalDraft = inputMessage.value
+  const draft = returnedItemDraft(originalDraft, item)
+  if (draft === null) {
+    if (hasDraftContent.value) message.info('请先发送或清空当前草稿，再恢复退回的消息')
+    return false
+  }
+
+  const revision = draftRevision
+  localReturnedRestores.value = [
+    ...localReturnedRestores.value.filter((entry) => entry.id !== item.id),
+    item,
+  ]
+  const removed = await removeQueueItem(item, false)
+  if (!removed) {
+    message.error('恢复暂时未完成，消息已保留在恢复项中，可稍后重试')
+    return false
+  }
+
+  const resolution = draftAfterReturnedRemoval(
+    originalDraft,
+    draft,
+    inputMessage.value,
+    draftRevision !== revision,
+  )
+  if (resolution.draft !== null) inputMessage.value = resolution.draft
+  if (!resolution.retainLocal) {
+    localReturnedRestores.value = localReturnedRestores.value.filter(
+      (entry) => entry.id !== item.id,
+    )
+  } else {
+    message.info('消息已从队列移除并保留在恢复项中，当前草稿未被覆盖')
+  }
+  return true
 }
 
 const loadActivities = async (id: string) => {
@@ -1324,7 +1553,16 @@ onMounted(async () => {
   window.addEventListener('pointercancel', endDrag)
   window.addEventListener('resize', handleResize)
   await loadApp()
-  await loadHistory(true)
+  historyConfirmed = await loadHistory(true)
+  if (currentRunFallback) {
+    observedActiveRunId = currentRunFallback.runId
+    queuedChatCoordinator.observeActiveRun(currentRunFallback)
+  }
+  try {
+    await queuedChatCoordinator.refresh()
+  } catch (error) {
+    message.error(queueErrorMessage(error, '消息队列读取失败'))
+  }
   if (disposed) return
   initialized.value = true
   startAuthRefresh()
@@ -1333,14 +1571,12 @@ onMounted(async () => {
   }, 1000)
   document.addEventListener('visibilitychange', handleVisibility)
   if (startRequested) await router.replace({ path: route.path, query: {} })
-  if (startRequested && messages.value.length === 0 && app.value?.initPrompt && !isRunning.value) {
-    await sendMessage(app.value.initPrompt)
-  }
+  await maybeStartInitialPrompt()
 })
 
 onBeforeUnmount(() => {
   disposed = true
-  chatCoordinator.dispose()
+  queuedChatCoordinator.dispose()
   if (previewTimer) window.clearTimeout(previewTimer)
   if (heartbeatTimer) window.clearInterval(heartbeatTimer)
   if (authRefreshTimer) window.clearInterval(authRefreshTimer)
@@ -1766,6 +2002,94 @@ onBeforeUnmount(() => {
   background: var(--pm-surface);
 }
 
+.queue-panel {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--pm-line);
+  border-radius: 12px;
+  background: var(--pm-surface-subtle);
+}
+
+.queue-head,
+.queue-item,
+.composer-meta {
+  display: flex;
+  align-items: center;
+}
+
+.queue-head {
+  gap: 8px;
+  min-width: 0;
+  color: var(--pm-ink-2);
+  font-size: 11px;
+}
+
+.queue-title {
+  color: var(--pm-ink);
+  font-weight: 650;
+}
+
+.queue-state {
+  flex: 1;
+  color: var(--pm-ink-3);
+}
+
+.queue-head :deep(.ant-btn) {
+  height: 22px;
+  padding: 0 3px;
+  font-size: 11px;
+}
+
+.queue-item {
+  gap: 7px;
+  min-width: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--pm-line);
+  color: var(--pm-ink-2);
+  font-size: 11px;
+}
+
+.queue-mode {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--pm-canvas);
+  color: var(--pm-ink-3);
+  font-size: 10px;
+}
+
+.queue-mode.steer {
+  color: var(--pm-brand-strong);
+}
+
+.queue-message {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-status {
+  flex: 0 0 auto;
+  color: var(--pm-ink-3);
+  font-size: 10px;
+}
+
+.queue-status.returned {
+  color: var(--pm-warning);
+}
+
+.queue-item :deep(.ant-btn) {
+  flex: 0 0 auto;
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0;
+}
+
 .chat-composer {
   border: 1px solid var(--pm-line);
   border-radius: 14px;
@@ -1795,6 +2119,43 @@ onBeforeUnmount(() => {
   color: var(--pm-ink-3);
   font-size: 10px;
   padding: 2px 4px 0 8px;
+}
+
+.composer-meta {
+  min-width: 0;
+  gap: 8px;
+}
+
+.composer-meta > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-switch {
+  flex: 0 0 auto;
+  display: flex;
+  border: 1px solid var(--pm-line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.mode-switch button {
+  border: 0;
+  background: transparent;
+  color: var(--pm-ink-3);
+  padding: 3px 7px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.mode-switch button.active {
+  background: var(--pm-canvas);
+  color: var(--pm-ink);
+}
+
+.composer-action {
+  flex: 0 0 auto;
 }
 
 .splitter {

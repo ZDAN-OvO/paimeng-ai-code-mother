@@ -27,6 +27,7 @@ import { RunStream } from './run-stream'
 import { ChangeSummary, RunDetailsService } from './run-details.service'
 import { AppMutexService } from '../runtime/app-mutex.service'
 import { RuntimeService } from '../runtime/runtime.service'
+import { MessageQueueStore, type QueueItem } from './message-queue.store'
 
 export interface StartRunResult {
   runId: string
@@ -45,6 +46,12 @@ export class RunsService implements OnModuleDestroy {
   private readonly logger = new Logger(RunsService.name)
   private readonly streams = new Map<string, RunStream>()
   private readonly active = new Map<string, ActiveRun>()
+  private readonly dispatching = new Set<number>()
+  private readonly retryAt = new Map<number, number>()
+  private queueTimer: NodeJS.Timeout | null = null
+  private shuttingDown = false
+  private readonly pendingFinalizations = new Map<string, () => Promise<void>>()
+  private readonly retryingFinalizations = new Set<string>()
 
   constructor(
     private readonly config: AppConfigService,
@@ -56,14 +63,192 @@ export class RunsService implements OnModuleDestroy {
     private readonly runtime: RuntimeService,
     private readonly details: RunDetailsService,
     private readonly mutex: AppMutexService,
+    private readonly queue: MessageQueueStore,
   ) {}
 
   onModuleDestroy() {
+    this.shuttingDown = true
+    if (this.queueTimer) clearInterval(this.queueTimer)
     for (const run of this.active.values()) run.abort.abort()
   }
 
   getStream(runId: string) {
     return this.streams.get(runId) ?? null
+  }
+
+  async enqueueMessage(
+    userId: number,
+    request: {
+      appId: number
+      message: string
+      clientRequestId: string
+      mode: 'normal' | 'steer'
+      runId?: string
+    },
+  ): Promise<QueueItem> {
+    await this.appsService.assertCanRun(request.appId, userId)
+    const existing = await this.findByClientRequestId(request.appId, request.clientRequestId)
+    if (
+      existing &&
+      !(await this.queue.allItems(request.appId)).some(
+        (item) => item.clientRequestId === request.clientRequestId,
+      )
+    ) {
+      if (request.mode !== 'normal' || request.runId) {
+        throw ApiException.conflict('该请求标识已经用于另一条普通消息')
+      }
+      await this.reuseRunResult(existing, request.message)
+      const replayed = await this.queue.enqueue(request.appId, request)
+      await this.queue.ackNormal(request.appId, replayed.id, existing.id)
+      return { ...replayed, status: 'started', runId: existing.id }
+    }
+    const running = await this.currentAppRun(request.appId)
+    if (running) {
+      await this.queue.openRun(request.appId, running.id)
+      if (running.status === 'cancelling') await this.queue.markCancelling(request.appId, running.id)
+    }
+    const item = await this.queue.enqueue(request.appId, request)
+    void this.dispatchQueue(request.appId).catch((error) => this.logger.warn(String(error)))
+    return item
+  }
+
+  async getMessageQueue(userId: number, appId: number) {
+    await this.appsService.getAppVO(appId, userId)
+    return this.queue.snapshot(appId)
+  }
+
+  async removeQueuedMessage(userId: number, appId: number, id: string) {
+    await this.appsService.assertCanRun(appId, userId)
+    return this.queue.remove(appId, id)
+  }
+
+  async resumeMessageQueue(userId: number, appId: number) {
+    await this.appsService.assertCanRun(appId, userId)
+    const state = await this.queue.resume(appId)
+    this.retryAt.delete(appId)
+    void this.dispatchQueue(appId).catch((error) => this.logger.warn(String(error)))
+    return state
+  }
+
+  private async currentAppRun(appId: number) {
+    const [run] = await this.db.db
+      .select()
+      .from(agentRuns)
+      .where(and(eq(agentRuns.appId, appId), inArray(agentRuns.status, ['running', 'cancelling'])))
+      .limit(1)
+    return run ?? null
+  }
+
+  async recoverMessageQueues() {
+    for (const appId of await this.queue.listAppIds()) {
+      const [app] = await this.db.db.select().from(apps).where(eq(apps.id, appId)).limit(1)
+      if (!app || app.status !== 'active') {
+        await this.queue.clear(appId)
+        continue
+      }
+      for (const item of await this.queue.allItems(appId)) {
+        if (item.mode === 'normal' && ['queued', 'claimed'].includes(item.status)) {
+          const run = await this.findByClientRequestId(appId, item.clientRequestId)
+          if (run) await this.queue.ackNormal(appId, item.id, run.id)
+        }
+        if (item.mode === 'steer' && item.runId && ['queued', 'claimed'].includes(item.status)) {
+          const rows = await this.sessionStore.list(
+            (await this.db.db.select().from(conversations).where(eq(conversations.appId, appId)).limit(1))[0]
+              .id,
+          )
+          if (
+            rows.some(
+              (row) =>
+                row.runId === item.runId &&
+                (row.payload as { steerRequestId?: string }).steerRequestId === item.clientRequestId,
+            )
+          ) {
+            await this.queue.ackSteers(appId, item.runId, [item.id])
+          }
+        }
+      }
+    }
+    await this.queue.recover()
+    this.queueTimer = setInterval(() => {
+      if (!this.shuttingDown) void this.dispatchQueues().catch((error) => this.logger.warn(String(error)))
+    }, 500)
+    this.queueTimer.unref?.()
+  }
+
+  private async dispatchQueues() {
+    await Promise.allSettled(
+      [...this.pendingFinalizations.entries()].map(async ([runId, finalize]) => {
+        if (this.retryingFinalizations.has(runId)) return
+        this.retryingFinalizations.add(runId)
+        try {
+          await finalize()
+        } finally {
+          this.retryingFinalizations.delete(runId)
+        }
+      }),
+    )
+    await Promise.allSettled((await this.queue.listAppIds()).map((appId) => this.dispatchQueue(appId)))
+  }
+
+  private async dispatchQueue(appId: number) {
+    if (this.shuttingDown || this.dispatching.has(appId) || (this.retryAt.get(appId) ?? 0) > Date.now())
+      return
+    this.dispatching.add(appId)
+    let item: QueueItem | null = null
+    try {
+      const [app] = await this.db.db.select().from(apps).where(eq(apps.id, appId)).limit(1)
+      if (!app || app.status !== 'active') {
+        await this.queue.clear(appId)
+        return
+      }
+      const state = await this.queue.snapshot(appId)
+      if (state.activeRun) {
+        const [run] = await this.db.db
+          .select()
+          .from(agentRuns)
+          .where(eq(agentRuns.id, state.activeRun.runId))
+          .limit(1)
+        if (run && (TERMINAL as readonly string[]).includes(run.status)) {
+          await this.finishMessageQueue(
+            appId,
+            run.id,
+            run.conversationId,
+            run.status as 'completed' | 'failed' | 'cancelled',
+          )
+        } else return
+      }
+      if (await this.currentAppRun(appId)) return
+      item = await this.queue.claimNormal(appId)
+      if (!item) return
+      if (this.shuttingDown) {
+        await this.queue.releaseNormal(appId, item.id)
+        return
+      }
+      const result = await this.startQueuedRun(app.ownerId, appId, item.message, item.clientRequestId)
+      await this.queue.ackNormal(appId, item.id, result.runId)
+    } catch (error) {
+      if (item) {
+        const run = await this.findByClientRequestId(appId, item.clientRequestId)
+        if (run) {
+          await this.queue.ackNormal(appId, item.id, run.id)
+          if ((TERMINAL as readonly string[]).includes(run.status)) {
+            await this.finishMessageQueue(
+              appId,
+              run.id,
+              run.conversationId,
+              run.status as 'completed' | 'failed' | 'cancelled',
+            )
+          }
+        } else await this.queue.releaseNormal(appId, item.id)
+      }
+      this.retryAt.set(
+        appId,
+        Date.now() + (error instanceof ApiException && error.status === 429 ? 60_000 : 5_000),
+      )
+      this.logger.warn(`应用 ${appId} 队列等待重试: ${String(error)}`)
+    } finally {
+      this.dispatching.delete(appId)
+    }
   }
 
   async startRun(
@@ -72,6 +257,29 @@ export class RunsService implements OnModuleDestroy {
     message: string,
     clientRequestId: string,
   ): Promise<StartRunResult> {
+    const existing = await this.findByClientRequestId(appId, clientRequestId)
+    await this.appsService.assertCanRun(appId, userId)
+    if (existing) return this.reuseRunResult(existing, message)
+    await this.enqueueMessage(userId, { appId, message, clientRequestId, mode: 'normal' })
+    while (!this.shuttingDown) {
+      const run = await this.findByClientRequestId(appId, clientRequestId)
+      if (run) return { runId: run.id, reused: false }
+      const item = (await this.queue.allItems(appId)).find(
+        (entry) => entry.clientRequestId === clientRequestId,
+      )
+      if (!item || item.status === 'removed') throw ApiException.conflict('消息已从队列移除')
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    throw ApiException.unavailable('服务正在停止，消息保留在队列中')
+  }
+
+  private async startQueuedRun(
+    userId: number,
+    appId: number,
+    message: string,
+    clientRequestId: string,
+  ): Promise<StartRunResult> {
+    if (this.shuttingDown) throw ApiException.unavailable('服务正在停止，消息保留在队列中')
     await this.appsService.assertCanRun(appId, userId)
     const existing = await this.findByClientRequestId(appId, clientRequestId)
     if (existing) return this.reuseRunResult(existing, message)
@@ -134,6 +342,8 @@ export class RunsService implements OnModuleDestroy {
           )
         }
 
+        if (this.shuttingDown) throw ApiException.unavailable('服务正在停止，消息保留在队列中')
+
         await tx.insert(messages).values({
           conversationId: conversation.id,
           runId,
@@ -185,8 +395,10 @@ export class RunsService implements OnModuleDestroy {
     }
 
     const abort = new AbortController()
+    if (this.shuttingDown) abort.abort()
     this.active.set(runId, { abort, startedAt: Date.now() })
     try {
+      await this.queue.openRun(appId, runId)
       await this.mutex.withLock(appId, () => this.details.ensureBaseline(runId, appId))
     } catch (err) {
       this.active.delete(runId)
@@ -360,6 +572,44 @@ export class RunsService implements OnModuleDestroy {
         )
       if (changed) schedulePersist(true)
     }
+    const consumeSteers = async () => {
+      const batch = await this.queue.claimSteers(params.appId, params.runId)
+      if (!batch.length) return 0
+      if (abort.signal.aborted) return 0
+      if (flushTimer) clearTimeout(flushTimer)
+      flushTimer = null
+      emitter.closeText()
+      await persistChain
+      const content = await accumulator.snapshot()
+      const alreadyApplied = new Set(
+        content.parts.flatMap((part) =>
+          part.type === 'data-steer'
+            ? [(part as { data: { clientRequestId: string } }).data.clientRequestId]
+            : [],
+        ),
+      )
+      const fresh = batch.filter((item) => !alreadyApplied.has(item.clientRequestId))
+      for (const item of fresh)
+        content.parts.push({
+          type: 'data-steer',
+          id: `steer:${item.clientRequestId}`,
+          data: { text: item.message, clientRequestId: item.clientRequestId },
+        })
+      if (abort.signal.aborted) return 0
+      await this.sessionStore.appendSteers(params.conversationId, params.runId, batch, content, abort.signal)
+      for (const item of fresh)
+        emitter.emit('steer-applied', {
+          text: item.message,
+          clientRequestId: item.clientRequestId,
+        })
+      await accumulator.snapshot()
+      await this.queue.ackSteers(
+        params.appId,
+        params.runId,
+        batch.map((item) => item.id),
+      )
+      return fresh.length
+    }
     let outcome: Awaited<ReturnType<AgentService['execute']>>
     try {
       outcome = await this.agent.execute({
@@ -378,16 +628,25 @@ export class RunsService implements OnModuleDestroy {
         },
         onStep: (stepCount) => void this.updateStepCount(params.runId, stepCount),
         isCancelled: () => abort.signal.aborted,
+        consumeSteers,
+        hasPendingSteers: async () =>
+          (await this.queue.snapshot(params.appId)).items.some(
+            (item) =>
+              item.mode === 'steer' &&
+              item.runId === params.runId &&
+              ['queued', 'claimed'].includes(item.status),
+          ),
+        closeSteerIntake: () => this.queue.closeSteerIntake(params.appId, params.runId),
       })
     } catch (err) {
       this.logger.error(`运行 ${params.runId} 异常结束: ${err instanceof Error ? err.stack : String(err)}`)
       outcome = {
-        status: 'failed',
+        status: abort.signal.aborted ? 'cancelled' : 'failed',
         text: liveText,
         stepCount: 0,
         repairCount: 0,
-        errorCode: 'INTERNAL_ERROR',
-        errorSummary: err instanceof Error ? err.message : String(err),
+        errorCode: abort.signal.aborted ? 'CANCELLED' : 'INTERNAL_ERROR',
+        errorSummary: abort.signal.aborted ? '任务已取消' : err instanceof Error ? err.message : String(err),
       }
     } finally {
       if (flushTimer) clearTimeout(flushTimer)
@@ -444,6 +703,31 @@ export class RunsService implements OnModuleDestroy {
       .where(and(eq(agentRuns.id, runId), inArray(agentRuns.status, ['running', 'cancelling'])))
   }
 
+  private async finishMessageQueue(
+    appId: number,
+    runId: string,
+    conversationId: number,
+    status: 'completed' | 'failed' | 'cancelled',
+  ) {
+    const pending = (await this.queue.allItems(appId)).filter(
+      (item) => item.mode === 'steer' && item.runId === runId && item.status === 'claimed',
+    )
+    if (pending.length) {
+      const entries = await this.sessionStore.list(conversationId)
+      const consumed = new Set(
+        entries
+          .filter((entry) => entry.runId === runId)
+          .map((entry) => (entry.payload as { steerRequestId?: string }).steerRequestId),
+      )
+      await this.queue.ackSteers(
+        appId,
+        runId,
+        pending.filter((item) => consumed.has(item.clientRequestId)).map((item) => item.id),
+      )
+    }
+    await this.queue.finishRun(appId, runId, status)
+  }
+
   private async updatePhase(runId: string, phase: string) {
     await this.db.db
       .update(agentRuns)
@@ -458,7 +742,17 @@ export class RunsService implements OnModuleDestroy {
       .where(and(eq(messages.runId, runId), eq(messages.role, 'assistant'), eq(messages.status, 'streaming')))
   }
 
-  async finalize(
+  async finalize(...args: Parameters<RunsService['finalizeRun']>): Promise<void> {
+    try {
+      await this.finalizeRun(...args)
+      this.pendingFinalizations.delete(args[0])
+    } catch (error) {
+      this.pendingFinalizations.set(args[0], () => this.finalize(...args))
+      throw error
+    }
+  }
+
+  private async finalizeRun(
     runId: string,
     outcome: {
       status: 'completed' | 'failed' | 'cancelled'
@@ -481,6 +775,7 @@ export class RunsService implements OnModuleDestroy {
     let finalErrorCode = outcome.errorCode
     let finalErrorSummary = outcome.errorSummary
     let runAppId = 0
+    let runConversationId = 0
     if (finalStatus === 'cancelled') {
       finalErrorCode = finalErrorCode ?? 'CANCELLED'
       finalErrorSummary = finalErrorSummary ?? '任务已取消'
@@ -493,10 +788,12 @@ export class RunsService implements OnModuleDestroy {
         return
       }
       runAppId = run.appId
+      runConversationId = run.conversationId
       if ((TERMINAL as readonly string[]).includes(run.status)) {
         alreadyFinal = true
         return
       }
+      await this.queue.sealSteerIntake(run.appId, runId)
       if (run.status === 'cancelling') {
         finalStatus = 'cancelled'
         finalErrorCode = 'CANCELLED'
@@ -541,6 +838,11 @@ export class RunsService implements OnModuleDestroy {
       stream?.finish()
       return
     }
+    if (runAppId) {
+      await this.finishMessageQueue(runAppId, runId, runConversationId, finalStatus).catch((error) => {
+        this.logger.warn(`运行 ${runId} 队列收尾等待恢复: ${String(error)}`)
+      })
+    }
     const finishedPayload = {
       status: finalStatus,
       errorCode: finalErrorCode ?? null,
@@ -575,9 +877,12 @@ export class RunsService implements OnModuleDestroy {
       .limit(1)
     if (!run) throw ApiException.notFound('运行记录不存在')
     if (run.ownerId !== userId) throw ApiException.forbidden('无权操作该运行')
+    this.active.get(runId)?.abort.abort()
+    await this.queue.pause(run.run.appId)
     if ((TERMINAL as readonly string[]).includes(run.run.status)) {
       return { runId, status: run.run.status }
     }
+    await this.queue.markCancelling(run.run.appId, runId)
     const updated = await this.db.db
       .update(agentRuns)
       .set({ status: 'cancelling', cancelRequestedAt: new Date() })
@@ -712,6 +1017,7 @@ export class RunsService implements OnModuleDestroy {
   }
 
   async deleteAppData(appId: number) {
+    await this.queue.clear(appId)
     const [conversation] = await this.db.db
       .select()
       .from(conversations)
