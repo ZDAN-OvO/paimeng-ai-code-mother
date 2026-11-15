@@ -22,7 +22,10 @@ export const enqueueMessageSchema = chatSchema.extend({
   mode: z.enum(['normal', 'steer']),
   runId: runIdSchema.optional(),
 })
-export const messageQueueQuerySchema = z.object({ appId: z.coerce.number().int().positive() })
+export const messageQueueQuerySchema = z.object({
+  appId: z.coerce.number().int().positive(),
+  clientRequestId: clientRequestIdSchema.optional(),
+})
 export const removeQueuedMessageSchema = z.object({
   appId: z.number().int().positive(),
   id: z.string().min(1).max(100),
@@ -40,6 +43,7 @@ export const messageQueueSchema = z.object({
   paused: z.boolean(),
   items: z.array(queueItemSchema),
   activeRun: z.object({ runId: z.string(), status: z.enum(['running', 'cancelling']) }).nullable(),
+  requestedItem: queueItemSchema.nullable().optional(),
 })
 
 export const cancelRunSchema = z.object({ runId: runIdSchema })

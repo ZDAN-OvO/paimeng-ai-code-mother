@@ -305,7 +305,7 @@ QueueItem = {
 - 队列项状态从 `queued` 进入 `claimed`，普通消息开始后变为 `started` 并绑定 `runId`；steer 成功落库后变为 `applied`。用户可移除 `queued` 或 `returned` 项，状态变为 `removed`；`claimed` 项不可移除。
 - Redis CAS 保证并发入队、认领、消费和结束竞争没有丢失更新。普通消息在开始前不写入数据库；只有创建运行时才写用户消息、运行、助手消息占位和会话记录。
 
-**`GET /app/chat/queue?appId=`**：返回 `{ paused, items, activeRun }`。`items` 只包含 `queued`、`claimed`、`returned`，按入队顺序排列；`activeRun` 为 `{ runId, status }` 或 `null`，`status` 只能是 `running` 或 `cancelling`。
+**`GET /app/chat/queue?appId=`**：返回 `{ paused, items, activeRun }`。`items` 只包含 `queued`、`claimed`、`returned`，按入队顺序排列；`activeRun` 为 `{ runId, status }` 或 `null`，`status` 只能是 `running` 或 `cancelling`。可选查询参数 `clientRequestId` 使用同一 8–64 字符校验；提供时，同一快照额外返回 `requestedItem`，包括 `started`、`applied`、`removed` 等状态，未找到为 `null`。此查询仍需所有者校验，返回公开摘要，不暴露内部请求元数据。前端据此区分已启动与已移除，单项恢复暂时失败不阻塞其余队列及当前运行的展示。
 
 **`POST /app/chat/queue/remove`**：请求 `{ appId, id }`，移除允许移除的队列项并返回最新队列状态。
 
@@ -336,7 +336,7 @@ steer 在模型当前响应及其全部工具结束并持久化后，一次性�
 
 **`GET /app/run/status`**：参数为 `runId`，或在首个流事件丢失时用 `appId` 加 `clientRequestId`。`clientRequestId` 与发送和入队共用校验：去除首尾空白后为 8–64 字符，与数据库字段上限一致。返回运行状态、阶段、步数、修复次数、错误码、时间和 `detailsStatus`（`pending` / `ready` / `incomplete`）。
 
-**`POST /app/run/cancel`**：请求 `{ runId }`。进行中的运行转为 `cancelling`，终止模型请求和任务容器，5 秒内不再产生新的文件或验证副作用，最终进入 `cancelled`。对已经结束的运行重复取消直接返回。
+**`POST /app/run/cancel`**：请求 `{ runId }`。进行中的运行转为 `cancelling`，终止模型请求和任务容器，5 秒内不再产生新的文件或验证副作用，最终进入 `cancelled`。对已经结束的运行重复取消直接返回，不改变队列状态。暂停队列与关闭插话接收在同一个 CAS 中校验当前运行身份；停止任务前在应用锁内再次确认运行身份，避免旧取消请求影响后续运行。已收尾运行的重复通知不再暂停用户已经恢复的队列。
 
 运行终态的 `errorCode` 与 HTTP 包络错误码相互独立：
 
@@ -399,7 +399,7 @@ steer 在模型当前响应及其全部工具结束并持久化后，一次性�
 ### 10.9 前端接入
 
 - 前端使用 `ai@6.0.330` 的 `DefaultChatTransport` 发送请求并解析 chunk，用 `readUIMessageStream` 维护实时 `UIMessage`；`src/api/generated/` 中的 `ChatUIMessage`（由 `openapi.json` 生成）与 10.4、10.5 保持一致，手写的流式代码在 `src/api/streamChat.ts`。
-- 普通消息和 steer 通过 `/app/chat/queue` 发送；队列状态变化后轮询 `/app/chat/queue`，发现 `activeRun` 后订阅 `/app/run/stream`。断流时不自动重发，而是用 `runId` 或 `clientRequestId` 查询终态；状态未确认时不显示成功或已取消。
+- 普通消息和 steer 通过 `/app/chat/queue` 发送；队列状态变化后轮询 `/app/chat/queue`，发现 `activeRun` 后订阅 `/app/run/stream`。已接受的普通消息离开队列但未观察到活动运行时，按 `clientRequestId` 补查运行，避免漏掉轮询间完成的运行。断流时不自动重发，而是用 `runId` 或 `clientRequestId` 查询终态；状态未确认时不显示成功或已取消。网络错误、HTTP 5xx 或业务内部错误不能证明入队失败，手动重试保留原请求标识及目标运行；只有明确拒绝才丢弃该次请求标识。
 - 生成期间预览 iframe 保持挂载，让 HMR 和自动刷新持续生效。
 - 输入模式默认为 steer；Enter 使用当前模式，Alt+Enter 使用另一模式，Shift+Enter 插入换行，输入法组合期间不提交。存在运行且输入为空时按钮显示停止图标，空输入不会因键盘事件触发停止。
 - 普通消息在当前运行成功结束后串行开始；失败或取消时显示暂停状态，用户可以移除待发送项并明确继续。未被消费的 steer 显示为可恢复草稿的 `returned` 项。

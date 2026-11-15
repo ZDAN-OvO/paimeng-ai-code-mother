@@ -297,6 +297,17 @@ async function runAcceptance() {
 
   const firstActive = await waitForActiveRun(cookie, queueAppId, firstItem.clientRequestId)
   const firstRunId = firstActive.runId
+  const startedLookup = await waitFor(
+    () => request(`/app/chat/queue?appId=${queueAppId}&clientRequestId=${firstItem.clientRequestId}`, { cookie }),
+    (result) => result.json?.data?.requestedItem?.status === 'started',
+    '运行开始后队列项没有完成启动确认',
+  )
+  assert(
+    startedLookup.response.status === 200 &&
+      startedLookup.json?.data?.requestedItem?.status === 'started' &&
+      startedLookup.json.data.requestedItem.runId === firstRunId,
+    '已启动消息应可按请求 ID 查询到对应运行',
+  )
   await disconnectRunStream(cookie, firstRunId)
   const afterDisconnect = await request(`/app/run/status?runId=${firstRunId}`, { cookie })
   assert(afterDisconnect.response.status === 200 && afterDisconnect.json?.code === 0, '断流后查询运行失败')
@@ -334,6 +345,16 @@ async function runAcceptance() {
   })
   assert(removed.response.status === 200 && removed.json?.code === 0, '移除队列消息失败')
   assert(!removed.json.data.items.some((item) => item.id === retained.id), '已移除的队列项仍然可见')
+  const itemQuery = `/app/chat/queue?appId=${queueAppId}&clientRequestId=${queuedRequestId}`
+  const removedLookup = await request(itemQuery, { cookie })
+  assert(
+    removedLookup.response.status === 200 &&
+      removedLookup.json?.data?.requestedItem?.status === 'removed' &&
+      removedLookup.json.data.requestedItem.id === retained.id,
+    '按请求 ID 查询应返回已经移除的消息标记',
+  )
+  const forbiddenLookup = await request(itemQuery, { cookie: otherCookie })
+  assert(forbiddenLookup.response.status === 403, '跨账号查询单条队列消息应返回 403')
   const resumed = await request('/app/chat/queue/resume', {
     method: 'POST',
     cookie,
@@ -346,6 +367,8 @@ async function runAcceptance() {
       resumed.json.data.items.length === 0,
     '移除唯一待发送项后继续队列不应启动运行',
   )
+  await cancelRun(cookie, firstRunId)
+  assert(!(await getQueue(cookie, queueAppId)).paused, '重复取消终态运行不能再次暂停已恢复的队列')
 
   const queueDeleted = await request('/app/delete', {
     method: 'POST',

@@ -33,7 +33,7 @@
 }
 ```
 
-`GET /app/chat/queue` 对外只返回 `queued`、`claimed`、`returned`，并单独返回当前 `activeRun`。`started`、`applied` 和 `removed` 可以通过同 `clientRequestId` 的再次入队幂等读取，但不出现在待处理列表。
+`GET /app/chat/queue` 的待处理列表只返回 `queued`、`claimed`、`returned`，并单独返回当前 `activeRun`。`started`、`applied` 和 `removed` 不出现在待处理列表；可通过可选参数 `clientRequestId` 读取同一快照中的 `requestedItem`，或通过同 ID 再次入队幂等读取。单项状态查询用于区分轮询间已启动的消息与另一页面已经移除的消息，避免把不存在的运行当作队列恢复的必经步骤。
 
 普通消息的规则如下：
 

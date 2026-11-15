@@ -35,6 +35,7 @@ type QueueSnapshot = {
   paused: boolean
   items: QueueItem[]
   activeRun: ActiveRun | null
+  requestedItem?: QueueItem | null
 }
 
 type EnqueueRequest = {
@@ -73,8 +74,14 @@ return 1
 export class MessageQueueStore {
   constructor(private readonly redis: RedisService) {}
 
-  async snapshot(appId: number): Promise<QueueSnapshot> {
-    return this.toSnapshot(await this.readState(appId))
+  async snapshot(appId: number, clientRequestId?: string): Promise<QueueSnapshot> {
+    const state = await this.readState(appId)
+    const snapshot = this.toSnapshot(state)
+    if (clientRequestId !== undefined) {
+      const item = state.items.find((entry) => entry.clientRequestId === clientRequestId)
+      snapshot.requestedItem = item ? this.toQueueItem(item) : null
+    }
+    return snapshot
   }
 
   async enqueue(appId: number, request: EnqueueRequest): Promise<QueueItem> {
@@ -149,9 +156,11 @@ export class MessageQueueStore {
   async markCancelling(appId: number, runId: string): Promise<void> {
     await this.mutate(appId, (state) => {
       if (state.activeRun?.runId !== runId) return { value: undefined }
-      if (state.activeRun.status === 'cancelling' && !state.steerOpen) return { value: undefined }
+      if (state.activeRun.status === 'cancelling' && !state.steerOpen && state.paused)
+        return { value: undefined }
       state.activeRun.status = 'cancelling'
       state.steerOpen = false
+      state.paused = true
       return { value: undefined, state }
     })
   }
@@ -260,12 +269,11 @@ export class MessageQueueStore {
 
   async finishRun(appId: number, runId: string, status: 'completed' | 'failed' | 'cancelled'): Promise<void> {
     await this.mutate(appId, (state) => {
-      let changed = !state.closedRuns.includes(runId)
-      if (changed) state.closedRuns.push(runId)
+      if (state.closedRuns.includes(runId)) return { value: undefined }
+      state.closedRuns.push(runId)
       if (state.activeRun?.runId === runId) {
         state.activeRun = null
         state.steerOpen = false
-        changed = true
       }
       for (const item of state.items) {
         if (
@@ -274,14 +282,12 @@ export class MessageQueueStore {
           (item.status === 'queued' || item.status === 'claimed')
         ) {
           item.status = 'returned'
-          changed = true
         }
       }
       if (status !== 'completed' && !state.paused) {
         state.paused = true
-        changed = true
       }
-      return { value: undefined, state: changed ? state : undefined }
+      return { value: undefined, state }
     })
   }
 

@@ -185,6 +185,14 @@ declare namespace API {
         runId: string | null
       }[]
       activeRun: { runId: string; status: 'running' | 'cancelling' } | null
+      requestedItem?: {
+        id: string
+        clientRequestId: string
+        message: string
+        mode: 'normal' | 'steer'
+        status: 'queued' | 'claimed' | 'started' | 'applied' | 'returned' | 'removed'
+        runId: string | null
+      } | null
     }
   }
 
@@ -399,6 +407,7 @@ declare namespace API {
 
   type getMessageQueueParams = {
     appId: number
+    clientRequestId?: string
   }
 
   type getPreviewStatusParams = {

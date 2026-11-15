@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { chatSchema, enqueueMessageSchema, runStatusQuerySchema } from '../src/runs/dto'
+import {
+  chatSchema,
+  enqueueMessageSchema,
+  messageQueueQuerySchema,
+  runStatusQuerySchema,
+} from '../src/runs/dto'
 
 const input = { appId: 1, message: '继续实现页面' }
 const contracts = [
@@ -11,6 +16,10 @@ const contracts = [
   {
     name: '运行查询',
     parse: (id: string) => runStatusQuerySchema.safeParse({ appId: 1, clientRequestId: id }),
+  },
+  {
+    name: '队列消息查询',
+    parse: (id: string) => messageQueueQuerySchema.safeParse({ appId: 1, clientRequestId: id }),
   },
 ]
 

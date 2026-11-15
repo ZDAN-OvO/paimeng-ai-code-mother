@@ -45,6 +45,8 @@ export type QueuedChatDependencies<Event extends ChatStreamEvent = ChatStreamEve
   createRequestId: () => string
   enqueue: (body: EnqueueMessageBody) => Promise<QueueItem>
   getQueue: (appId: number) => Promise<MessageQueueState>
+  findRunByRequest: (appId: number, clientRequestId: string) => Promise<RunReconcileResult>
+  findQueueItemByRequest: (appId: number, clientRequestId: string) => Promise<QueueItem | null>
   remove: (appId: number, id: string) => Promise<void>
   resume: (appId: number) => Promise<MessageQueueState>
   cancel: (runId: string) => Promise<void>
@@ -102,9 +104,18 @@ export function enqueueFingerprint(message: string, mode: ChatMode): string {
 }
 
 export function isUnknownEnqueueOutcome(error: unknown): boolean {
-  const candidate = error as { knownOutcome?: boolean; response?: unknown } | null
-  if (candidate?.knownOutcome) return false
-  return !candidate?.response
+  const candidate = error as {
+    knownOutcome?: boolean
+    response?: { status?: number; data?: { code?: number } }
+  } | null
+  const status = candidate?.response?.status ?? 0
+  const code = candidate?.response?.data?.code ?? 0
+  if (status >= 500 || code >= 50000 || status === 408 || code === 40800) return true
+  return !(
+    (status >= 400 && status < 500) ||
+    (code >= 40000 && code < 50000) ||
+    candidate?.knownOutcome
+  )
 }
 
 export function resolveComposerShortcut(
@@ -153,6 +164,8 @@ export function createQueuedChatCoordinator<Event extends ChatStreamEvent = Chat
   let knownActiveRunId: string | null = null
   let queueConfirmed = false
   const unconfirmedEnqueues = new Map<string, { clientRequestId: string; runId?: string }>()
+  const pendingNormalRequests = new Map<string, { runId: string | null; lookingUp: boolean }>()
+  const recoveringRequests = new Set<string>()
   let disposed = false
 
   const publish = (next: MessageQueueState) => {
@@ -167,7 +180,11 @@ export function createQueuedChatCoordinator<Event extends ChatStreamEvent = Chat
 
   const schedulePoll = () => {
     clearPoll()
-    const shouldPoll = !disposed && (!queueConfirmed || shouldPollQueue(state))
+    const shouldPoll =
+      !disposed &&
+      (!queueConfirmed ||
+        shouldPollQueue(state) ||
+        [...pendingNormalRequests.values()].some((request) => request.lookingUp))
     if (!shouldPoll) return
     timer = setTimeout(() => {
       void refresh().catch(() => undefined)
@@ -207,9 +224,14 @@ export function createQueuedChatCoordinator<Event extends ChatStreamEvent = Chat
   }
 
   const applyQueueState = async (next: MessageQueueState, generation: number) => {
-    if (generation !== localGeneration) return state
-    const nextRunId = next.activeRun?.runId ?? null
-    if (knownActiveRunId && knownActiveRunId !== nextRunId) {
+    if (disposed || generation !== localGeneration) return state
+    for (const item of next.items) {
+      if (item.mode === 'normal' && (item.status === 'queued' || item.status === 'claimed')) {
+        pendingNormalRequests.set(item.clientRequestId, { runId: item.runId, lookingUp: false })
+      }
+    }
+    let reconciledRunId: string | null = null
+    if (knownActiveRunId && knownActiveRunId !== next.activeRun?.runId) {
       const reconciled = await deps.reconcile(knownActiveRunId)
       if (disposed || generation !== localGeneration) return state
       if (reconciled.status === 'running' || reconciled.status === 'cancelling') {
@@ -222,17 +244,72 @@ export function createQueuedChatCoordinator<Event extends ChatStreamEvent = Chat
         return state
       }
       deps.reconciled(reconciled)
+      reconciledRunId = reconciled.runId
       subscription?.controller.abort()
       subscription = null
       knownActiveRunId = null
     }
 
+    const nextRunId = next.activeRun?.runId ?? null
     publish(next)
     if (nextRunId) {
       knownActiveRunId = nextRunId
       openSubscription(nextRunId)
     } else {
       knownActiveRunId = null
+    }
+    const confirmedState = state
+    for (const [clientRequestId, request] of pendingNormalRequests) {
+      const { runId } = request
+      const item = next.items.find((entry) => entry.clientRequestId === clientRequestId)
+      if (item?.status === 'queued' || item?.status === 'claimed') continue
+      if (
+        item?.status === 'returned' ||
+        item?.status === 'removed' ||
+        (runId && runId === next.activeRun?.runId)
+      ) {
+        pendingNormalRequests.delete(clientRequestId)
+        continue
+      }
+      request.lookingUp = true
+      if (recoveringRequests.has(clientRequestId)) continue
+      recoveringRequests.add(clientRequestId)
+      const isCurrent = () =>
+        !disposed &&
+        generation === localGeneration &&
+        pendingNormalRequests.get(clientRequestId) === request
+      void (async () => {
+        try {
+          const queued = await deps.findQueueItemByRequest(deps.appId, clientRequestId)
+          if (!isCurrent()) return
+          if (queued?.status === 'removed') {
+            pendingNormalRequests.delete(clientRequestId)
+            return
+          }
+          if (queued?.status === 'queued' || queued?.status === 'claimed') return
+          const targetRunId = queued?.runId ?? runId
+          const result = targetRunId
+            ? await deps.reconcile(targetRunId)
+            : await deps.findRunByRequest(deps.appId, clientRequestId)
+          if (!isCurrent()) return
+          if (result.status === 'running' || result.status === 'cancelling') {
+            if (state.activeRun?.runId !== result.runId) {
+              if (state !== confirmedState || state.activeRun) return
+              knownActiveRunId = result.runId
+              publish({ ...state, activeRun: { runId: result.runId, status: result.status } })
+              openSubscription(result.runId)
+            }
+          } else if (result.runId !== reconciledRunId) {
+            deps.reconciled(result)
+          }
+          pendingNormalRequests.delete(clientRequestId)
+        } catch {
+          return
+        } finally {
+          recoveringRequests.delete(clientRequestId)
+          if (!disposed) schedulePoll()
+        }
+      })()
     }
     schedulePoll()
     return state
@@ -293,16 +370,25 @@ export function createQueuedChatCoordinator<Event extends ChatStreamEvent = Chat
       item = await deps.enqueue(body)
       unconfirmedEnqueues.delete(fingerprint)
     } catch (error) {
-      if (input.clientRequestId || !isUnknownEnqueueOutcome(error)) {
+      if (!isUnknownEnqueueOutcome(error)) {
         unconfirmedEnqueues.delete(fingerprint)
       }
       throw error
     }
-    if (visibleQueueItem(item)) {
-      localGeneration += 1
-      publish({ ...state, items: [...state.items.filter((entry) => entry.id !== item.id), item] })
-      schedulePoll()
+    localGeneration += 1
+    if (item.mode === 'normal' && ['queued', 'claimed', 'started'].includes(item.status)) {
+      pendingNormalRequests.set(item.clientRequestId, { runId: item.runId, lookingUp: false })
     }
+    if (visibleQueueItem(item)) {
+      publish({ ...state, items: [...state.items.filter((entry) => entry.id !== item.id), item] })
+    } else if (item.status === 'started' && item.runId) {
+      await ingest({
+        ...state,
+        items: state.items.filter((entry) => entry.id !== item.id),
+        activeRun: { runId: item.runId, status: 'running' },
+      }).catch(() => deps.error(new Error('消息已接收，运行状态刷新失败')))
+    }
+    schedulePoll()
     await refresh(true).catch(() => {
       deps.error(new Error('消息已接收，队列状态刷新失败'))
     })
@@ -312,6 +398,8 @@ export function createQueuedChatCoordinator<Event extends ChatStreamEvent = Chat
   const remove = async (id: string) => {
     await deps.remove(deps.appId, id)
     localGeneration += 1
+    const item = state.items.find((entry) => entry.id === id)
+    if (item) pendingNormalRequests.delete(item.clientRequestId)
     publish({ ...state, items: state.items.filter((item) => item.id !== id) })
   }
 

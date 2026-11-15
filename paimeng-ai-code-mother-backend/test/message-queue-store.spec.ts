@@ -60,6 +60,55 @@ async function setup() {
 }
 
 describe('MessageQueueStore', () => {
+  it('resolves a requested removal marker without exposing stored request metadata', async () => {
+    const { store, module } = await setup()
+    const item = await store.enqueue(1, {
+      message: '已移除',
+      clientRequestId: 'removed-request',
+      mode: 'normal',
+    })
+    await store.remove(1, item.id)
+    expect(await store.snapshot(1)).toEqual({ paused: false, activeRun: null, items: [] })
+    expect(await store.snapshot(1, 'removed-request')).toEqual({
+      paused: false,
+      activeRun: null,
+      items: [],
+      requestedItem: { ...item, status: 'removed' },
+    })
+    expect((await store.snapshot(1, 'unknown-request')).requestedItem).toBeNull()
+    await module.close()
+  })
+
+  it('does not pause a resumed queue when a closed run is finalized again', async () => {
+    const { store, module } = await setup()
+    await store.openRun(1, 'run-1')
+    await store.finishRun(1, 'run-1', 'failed')
+    await store.resume(1)
+    await store.openRun(1, 'run-2')
+    await store.enqueue(1, { message: '下一轮', clientRequestId: 'next-request', mode: 'normal' })
+    await store.finishRun(1, 'run-1', 'failed')
+    expect(await store.snapshot(1)).toMatchObject({ paused: false, activeRun: { runId: 'run-2' } })
+    await store.finishRun(1, 'run-2', 'completed')
+    expect(await store.claimNormal(1)).toMatchObject({ clientRequestId: 'next-request' })
+    await module.close()
+  })
+
+  it('pauses cancellation only while the target is the current run', async () => {
+    const { store, module } = await setup()
+    await store.openRun(1, 'run-1')
+    await store.markCancelling(1, 'run-1')
+    expect(await store.snapshot(1)).toMatchObject({
+      paused: true,
+      activeRun: { runId: 'run-1', status: 'cancelling' },
+    })
+    await store.finishRun(1, 'run-1', 'cancelled')
+    await store.resume(1)
+    await store.openRun(1, 'run-2')
+    await store.markCancelling(1, 'run-1')
+    expect(await store.snapshot(1)).toMatchObject({ paused: false, activeRun: { runId: 'run-2' } })
+    await module.close()
+  })
+
   it('seals failed-run intake before terminal persistence while retaining the unconsumed batch', async () => {
     const { store, module } = await setup()
     await store.openRun(1, 'run-1')

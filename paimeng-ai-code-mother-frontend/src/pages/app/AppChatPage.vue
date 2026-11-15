@@ -175,7 +175,7 @@
                 <UndoOutlined />
               </a-button>
               <a-button
-                v-else-if="item.status === 'queued'"
+                v-if="item.status === 'queued' || item.status === 'returned'"
                 size="small"
                 type="text"
                 danger
@@ -518,7 +518,6 @@ const viewportOptions = [
   { value: 'mobile' as const, label: '390' },
 ]
 
-const isRunning = computed(() => runStatus.value === 'running' || runStatus.value === 'cancelling')
 const queueItems = computed(() => {
   const items = queueState.value.items.filter(
     (item) => item.status !== 'started' && item.status !== 'removed',
@@ -809,6 +808,7 @@ const loadHistory = (reset: boolean): Promise<boolean> =>
   historyQueue.run(async () => {
     if (disposed) return false
     historyLoading.value = true
+    const requestedRunId = runId.value
     try {
       const res = await listAppChatHistory({
         appId,
@@ -829,19 +829,21 @@ const loadHistory = (reset: boolean): Promise<boolean> =>
         scrollPinned.value = true
         scrollToBottom()
       }
-      if (!runId.value && !isRunning.value) {
+      if (reset && !queueState.value.activeRun && runId.value === requestedRunId) {
         const lastRun = [...messages.value]
           .reverse()
           .find((item) => item.role === 'assistant' && item.runId)
         if (lastRun) {
+          runId.value = lastRun.runId ?? ''
           runStatus.value =
-            lastRun.status === 'completed'
+            terminalRunStatuses.get(lastRun.runId ?? '') ??
+            (lastRun.status === 'completed'
               ? 'completed'
               : lastRun.status === 'cancelled'
                 ? 'cancelled'
                 : lastRun.status === 'failed'
                   ? 'failed'
-                  : 'idle'
+                  : 'running')
         }
       }
       const ids = [...new Set(messages.value.map((item) => item.runId).filter(Boolean))].slice(-10)
@@ -992,7 +994,10 @@ const handleEvent = (event: ChatStreamEvent) => {
         ? event.payload.status
         : 'failed'
     terminalRunStatuses.set(event.runId, status)
-    runStatus.value = status
+    if (runId.value === event.runId || (!runId.value && !queueState.value.activeRun)) {
+      runId.value = event.runId
+      runStatus.value = status
+    }
     const item = ensureAssistantItem(event.runId)
     item.modelProgress = ''
     item.status =
@@ -1017,7 +1022,7 @@ const queuedChatCoordinator = createQueuedChatCoordinator<ChatStreamEvent>({
   enqueue: async (body: EnqueueMessageBody) => {
     const res = await enqueueMessage(body)
     if (res.data.code !== 0 || !res.data.data) {
-      throw knownQueueError(res.data.message || '消息入队失败')
+      throw Object.assign(new Error(res.data.message || '消息入队失败'), { response: res })
     }
     return res.data.data
   },
@@ -1027,6 +1032,24 @@ const queuedChatCoordinator = createQueuedChatCoordinator<ChatStreamEvent>({
       throw knownQueueError(res.data.message || '消息队列读取失败')
     }
     return res.data.data
+  },
+  findRunByRequest: async (id, clientRequestId) => {
+    const res = await getRunStatus({ appId: id, clientRequestId })
+    if (res.data.code !== 0 || !res.data.data) {
+      throw knownQueueError(res.data.message || '运行状态确认失败')
+    }
+    return {
+      runId: res.data.data.runId,
+      status: res.data.data.status,
+      errorSummary: res.data.data.errorSummary,
+    }
+  },
+  findQueueItemByRequest: async (id, clientRequestId) => {
+    const res = await getMessageQueue({ appId: id, clientRequestId })
+    if (res.data.code !== 0 || !res.data.data) {
+      throw knownQueueError(res.data.message || '消息状态确认失败')
+    }
+    return res.data.data.requestedItem ?? null
   },
   remove: async (id, itemId) => {
     const res = await removeQueuedMessage({ appId: id, id: itemId })
@@ -1152,7 +1175,13 @@ const handleDraftInput = () => {
 const removeQueueItem = async (item: QueueItem, showError = true): Promise<boolean> => {
   queueActionBusy.value = true
   try {
-    await queuedChatCoordinator.remove(item.id)
+    const localOnly =
+      localReturnedRestores.value.some((entry) => entry.id === item.id) &&
+      !queueState.value.items.some((entry) => entry.id === item.id)
+    if (!localOnly) await queuedChatCoordinator.remove(item.id)
+    localReturnedRestores.value = localReturnedRestores.value.filter(
+      (entry) => entry.id !== item.id,
+    )
     return true
   } catch (error) {
     if (showError) message.error(queueErrorMessage(error, '移出队列失败'))
@@ -1204,6 +1233,10 @@ const restoreQueueItem = async (item: QueueItem) => {
       (entry) => entry.id !== item.id,
     )
   } else {
+    localReturnedRestores.value = [
+      ...localReturnedRestores.value.filter((entry) => entry.id !== item.id),
+      item,
+    ]
     message.info('消息已从队列移除并保留在恢复项中，当前草稿未被覆盖')
   }
   return true

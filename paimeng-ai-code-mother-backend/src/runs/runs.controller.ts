@@ -110,7 +110,7 @@ export class RunsController {
     @Query() dto: MessageQueueQueryDto,
     @CurrentUser() userId: number,
   ): Promise<z.output<typeof messageQueueSchema>> {
-    return this.runs.getMessageQueue(userId, dto.appId)
+    return this.runs.getMessageQueue(userId, dto.appId, dto.clientRequestId)
   }
 
   @Post('app/chat/queue/remove')

@@ -112,9 +112,9 @@ export class RunsService implements OnModuleDestroy {
     return item
   }
 
-  async getMessageQueue(userId: number, appId: number) {
+  async getMessageQueue(userId: number, appId: number, clientRequestId?: string) {
     await this.appsService.getAppVO(appId, userId)
-    return this.queue.snapshot(appId)
+    return this.queue.snapshot(appId, clientRequestId)
   }
 
   async removeQueuedMessage(userId: number, appId: number, id: string) {
@@ -877,12 +877,10 @@ export class RunsService implements OnModuleDestroy {
       .limit(1)
     if (!run) throw ApiException.notFound('运行记录不存在')
     if (run.ownerId !== userId) throw ApiException.forbidden('无权操作该运行')
-    this.active.get(runId)?.abort.abort()
-    await this.queue.pause(run.run.appId)
     if ((TERMINAL as readonly string[]).includes(run.run.status)) {
       return { runId, status: run.run.status }
     }
-    await this.queue.markCancelling(run.run.appId, runId)
+    this.active.get(runId)?.abort.abort()
     const updated = await this.db.db
       .update(agentRuns)
       .set({ status: 'cancelling', cancelRequestedAt: new Date() })
@@ -890,16 +888,21 @@ export class RunsService implements OnModuleDestroy {
       .returning()
     if (!updated.length) {
       const [current] = await this.db.db.select().from(agentRuns).where(eq(agentRuns.id, runId)).limit(1)
-      return { runId, status: current?.status ?? 'cancelling' }
+      if (current?.status !== 'cancelling') return { runId, status: current?.status ?? 'cancelling' }
     }
+    await this.queue.markCancelling(run.run.appId, runId)
     const active = this.active.get(runId)
     if (active) {
       active.abort.abort()
     }
-    await this.runtime.stopTask(run.run.appId)
-    if (await this.runtime.isTaskRunning(run.run.appId)) {
-      await this.appsService.markExecBlocked(run.run.appId, true)
-    }
+    await this.mutex.withLock(run.run.appId, async () => {
+      const current = await this.currentAppRun(run.run.appId)
+      if (current?.id !== runId) return
+      await this.runtime.stopTask(run.run.appId)
+      if (await this.runtime.isTaskRunning(run.run.appId)) {
+        await this.appsService.markExecBlocked(run.run.appId, true)
+      }
+    })
     if (!active) {
       await this.finalize(runId, {
         status: 'cancelled',

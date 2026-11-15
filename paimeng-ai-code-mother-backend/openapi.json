@@ -501,6 +501,16 @@
               "exclusiveMinimum": 0,
               "type": "integer"
             }
+          },
+          {
+            "name": "clientRequestId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "minLength": 8,
+              "maxLength": 64,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3059,6 +3069,63 @@
                     "required": [
                       "runId",
                       "status"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "requestedItem": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "clientRequestId": {
+                        "type": "string"
+                      },
+                      "message": {
+                        "type": "string"
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "normal",
+                          "steer"
+                        ]
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "queued",
+                          "claimed",
+                          "started",
+                          "applied",
+                          "returned",
+                          "removed"
+                        ]
+                      },
+                      "runId": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "clientRequestId",
+                      "message",
+                      "mode",
+                      "status",
+                      "runId"
                     ]
                   },
                   {
