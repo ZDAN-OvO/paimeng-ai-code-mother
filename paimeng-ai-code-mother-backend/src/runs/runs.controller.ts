@@ -1,13 +1,41 @@
-import { Body, Controller, Get, Post, Query, Req, Res } from '@nestjs/common'
-import { ApiBody, ApiResponse } from '@nestjs/swagger'
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, Req, Res } from '@nestjs/common'
+import { ApiBody, ApiExtraModels, ApiOkResponse, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger'
 import type { Request, Response } from 'express'
-import { ApiException } from '../common/api'
+import type { z } from 'zod'
 import { CurrentUser, RawResponse } from '../common/http'
 import type { AppUIMessageChunk } from '../conversations/ui-message'
-import { CancelDto, ChatDto } from './dto'
+import {
+  BaseResponseCancelRun,
+  BaseResponseRunActivityList,
+  BaseResponseRunChangePage,
+  BaseResponseRunDetails,
+  BaseResponseRunDiffPage,
+  BaseResponseRunStatus,
+  BaseResponseRunValidationLog,
+  CancelRunDto,
+  ChatDto,
+  RunActivitiesQueryDto,
+  RunChangeDiffQueryDto,
+  RunChangesQueryDto,
+  RunDetailsQueryDto,
+  PhaseChunk,
+  RunChunk,
+  RunStartedChunk,
+  RunStatusQueryDto,
+  RunValidationLogQueryDto,
+  cancelRunResultSchema,
+  runActivitySchema,
+  runChangePageSchema,
+  runDetailsSchema,
+  runDiffPageSchema,
+  runStatusSchema,
+  runValidationLogSchema,
+} from './dto'
 import { RunDetailsService } from './run-details.service'
 import { RunsService } from './runs.service'
 
+@ApiTags('run')
+@ApiExtraModels(RunStartedChunk, PhaseChunk, RunChunk)
 @Controller()
 export class RunsController {
   constructor(
@@ -27,6 +55,8 @@ export class RunsController {
     },
   })
   @Post('app/chat/gen/code')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '发送消息并流式返回 Agent 输出' })
   async chat(
     @Body() dto: ChatDto,
     @CurrentUser() userId: number,
@@ -110,102 +140,85 @@ export class RunsController {
   }
 
   @Get('app/run/status')
-  async status(
-    @Query('runId') runId: string | undefined,
-    @Query('appId') appIdRaw: string | undefined,
-    @Query('clientRequestId') clientRequestId: string | undefined,
+  @ApiOperation({ summary: '查询运行状态' })
+  @ApiOkResponse({ type: BaseResponseRunStatus })
+  async getRunStatus(
+    @Query() query: RunStatusQueryDto,
     @CurrentUser() userId: number,
-  ) {
-    if (runId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId)) {
-      throw ApiException.badRequest('runId 格式无效')
-    }
-    if (clientRequestId && (clientRequestId.length < 8 || clientRequestId.length > 100)) {
-      throw ApiException.badRequest('clientRequestId 长度需在 8-100 之间')
-    }
-    const appId = appIdRaw === undefined ? undefined : Number(appIdRaw)
-    if (appId !== undefined && (!Number.isInteger(appId) || appId <= 0)) {
-      throw ApiException.badRequest('应用 ID 无效')
-    }
-    return this.runs.getRunStatus(userId, { runId, appId, clientRequestId })
+  ): Promise<z.output<typeof runStatusSchema>> {
+    return this.runs.getRunStatus(userId, query) as Promise<z.output<typeof runStatusSchema>>
   }
 
   @Post('app/run/cancel')
-  async cancel(@Body() dto: CancelDto, @CurrentUser() userId: number) {
-    return this.runs.cancelRun(userId, dto.runId)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '取消运行' })
+  @ApiOkResponse({ type: BaseResponseCancelRun })
+  async cancelRun(
+    @Body() dto: CancelRunDto,
+    @CurrentUser() userId: number,
+  ): Promise<z.output<typeof cancelRunResultSchema>> {
+    return this.runs.cancelRun(userId, dto.runId) as Promise<z.output<typeof cancelRunResultSchema>>
   }
 
   @Get('app/run/details')
-  async runDetails(@Query('runId') runId: string, @CurrentUser() userId: number) {
-    return this.details.getDetails(userId, this.parseRunId(runId))
+  @ApiOperation({ summary: '获取运行详情' })
+  @ApiOkResponse({ type: BaseResponseRunDetails })
+  async getRunDetails(
+    @Query() query: RunDetailsQueryDto,
+    @CurrentUser() userId: number,
+  ): Promise<z.output<typeof runDetailsSchema>> {
+    return this.details.getDetails(userId, query.runId) as Promise<z.output<typeof runDetailsSchema>>
   }
 
   @Get('app/run/activities')
-  async activities(
-    @Query('runId') runId: string,
-    @Query('afterId') afterIdRaw: string | undefined,
-    @Query('limit') limitRaw: string | undefined,
+  @ApiOperation({ summary: '分页读取运行活动' })
+  @ApiOkResponse({ type: BaseResponseRunActivityList })
+  async listRunActivities(
+    @Query() query: RunActivitiesQueryDto,
     @CurrentUser() userId: number,
-  ) {
-    const afterId = afterIdRaw === undefined ? undefined : Number(afterIdRaw)
-    if (afterId !== undefined && (!Number.isInteger(afterId) || afterId < 0)) {
-      throw ApiException.badRequest('afterId 无效')
-    }
-    const limit = limitRaw === undefined ? 200 : Number(limitRaw)
-    if (!Number.isFinite(limit)) throw ApiException.badRequest('limit 无效')
-    return this.details.listActivities(userId, this.parseRunId(runId), afterId, limit)
+  ): Promise<z.output<typeof runActivitySchema>[]> {
+    return this.details.listActivities(userId, query.runId, query.afterId, query.limit ?? 200) as Promise<
+      z.output<typeof runActivitySchema>[]
+    >
   }
 
   @Get('app/run/changes')
-  async changes(
-    @Query('runId') runId: string,
-    @Query('cursor') cursorRaw: string | undefined,
-    @Query('limit') limitRaw: string | undefined,
+  @ApiOperation({ summary: '分页读取运行变更' })
+  @ApiOkResponse({ type: BaseResponseRunChangePage })
+  async listRunChanges(
+    @Query() query: RunChangesQueryDto,
     @CurrentUser() userId: number,
-  ) {
-    const cursor = cursorRaw === undefined ? undefined : Number(cursorRaw)
-    if (cursor !== undefined && (!Number.isInteger(cursor) || cursor < 0)) {
-      throw ApiException.badRequest('cursor 无效')
-    }
-    const limit = limitRaw === undefined ? 100 : Number(limitRaw)
-    if (!Number.isFinite(limit)) throw ApiException.badRequest('limit 无效')
-    return this.details.listChanges(userId, this.parseRunId(runId), cursor, limit)
+  ): Promise<z.output<typeof runChangePageSchema>> {
+    return this.details.listChanges(userId, query.runId, query.cursor, query.limit ?? 100) as Promise<
+      z.output<typeof runChangePageSchema>
+    >
   }
 
   @Get('app/run/change')
-  async change(
-    @Query('runId') runId: string,
-    @Query('fileId') fileIdRaw: string,
-    @Query('cursor') cursorRaw: string | undefined,
-    @Query('limit') limitRaw: string | undefined,
+  @ApiOperation({ summary: '读取单文件变更 diff' })
+  @ApiOkResponse({ type: BaseResponseRunDiffPage })
+  async getRunDiff(
+    @Query() query: RunChangeDiffQueryDto,
     @CurrentUser() userId: number,
-  ) {
-    const fileId = Number(fileIdRaw)
-    if (!Number.isInteger(fileId) || fileId <= 0) throw ApiException.badRequest('fileId 无效')
-    const cursor = cursorRaw === undefined ? 0 : Number(cursorRaw)
-    if (!Number.isInteger(cursor) || cursor < 0) throw ApiException.badRequest('cursor 无效')
-    const limit = limitRaw === undefined ? 200 : Number(limitRaw)
-    if (!Number.isFinite(limit)) throw ApiException.badRequest('limit 无效')
-    return this.details.getChangeDiff(userId, this.parseRunId(runId), fileId, cursor, limit)
+  ): Promise<z.output<typeof runDiffPageSchema>> {
+    return this.details.getChangeDiff(
+      userId,
+      query.runId,
+      query.fileId,
+      query.cursor ?? 0,
+      query.limit ?? 200,
+    ) as Promise<z.output<typeof runDiffPageSchema>>
   }
 
   @Get('app/run/validation/log')
-  async validationLog(
-    @Query('runId') runId: string,
-    @Query('attempt') attemptRaw: string,
-    @Query('check') check: string,
+  @ApiOperation({ summary: '读取验证日志' })
+  @ApiOkResponse({ type: BaseResponseRunValidationLog })
+  async getValidationLog(
+    @Query() query: RunValidationLogQueryDto,
     @CurrentUser() userId: number,
-  ) {
-    const attempt = Number(attemptRaw)
-    if (!Number.isInteger(attempt) || attempt <= 0) throw ApiException.badRequest('attempt 无效')
-    if (!check || check.length > 40) throw ApiException.badRequest('check 无效')
-    return this.details.getValidationLog(userId, this.parseRunId(runId), attempt, check)
-  }
-
-  private parseRunId(runId: string | undefined) {
-    if (!runId) throw ApiException.badRequest('缺少 runId')
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId)) {
-      throw ApiException.badRequest('runId 格式无效')
-    }
-    return runId
+  ): Promise<z.output<typeof runValidationLogSchema>> {
+    return this.details.getValidationLog(userId, query.runId, query.attempt, query.check) as Promise<
+      z.output<typeof runValidationLogSchema>
+    >
   }
 }

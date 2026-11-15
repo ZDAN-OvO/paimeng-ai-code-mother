@@ -1,11 +1,6 @@
 <template>
   <div class="validation-card">
-    <button
-      class="validation-head"
-      type="button"
-      :aria-expanded="open"
-      @click="open = !open"
-    >
+    <button class="validation-head" type="button" :aria-expanded="open" @click="open = !open">
       <span class="validation-title">平台验证</span>
       <span class="validation-meta">
         <span v-if="attempts.length" class="attempt-state" :class="overall.state">
@@ -44,15 +39,16 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { DownOutlined, RightOutlined } from '@ant-design/icons-vue'
+import type { RunValidation } from '@/api/chatTypes'
 
-const props = defineProps<{ validations: API.RunValidation[] }>()
+const props = defineProps<{ validations: RunValidation[] }>()
 const emit = defineEmits<{ (e: 'openLog', attempt: number, check: string): void }>()
 
 const checks = ['source', 'manifest', 'install', 'typecheck', 'build', 'preview']
 const open = ref(false)
 
 const attempts = computed(() => {
-  const byAttempt = new Map<number, API.RunValidation[]>()
+  const byAttempt = new Map<number, RunValidation[]>()
   for (const item of props.validations) {
     const list = byAttempt.get(item.attempt) ?? []
     list.push(item)
@@ -95,7 +91,7 @@ const checkLabel = (check: string) => {
   return map[check] ?? check
 }
 
-const checkText = (status: API.RunValidation['status']) => {
+const checkText = (status: RunValidation['status']) => {
   if (status === 'passed') return '通过'
   if (status === 'failed') return '失败'
   if (status === 'running') return '进行中'

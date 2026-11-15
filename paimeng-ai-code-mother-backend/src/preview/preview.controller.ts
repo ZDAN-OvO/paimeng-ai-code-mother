@@ -1,15 +1,24 @@
-import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common'
-import { createZodDto } from 'nestjs-zod'
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, Req } from '@nestjs/common'
+import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger'
 import type { Request } from 'express'
-import { z } from 'zod'
+import type { z } from 'zod'
 import { ApiException } from '../common/api'
 import { CurrentUser } from '../common/http'
 import { AppsService } from '../apps/apps.service'
+import {
+  AppIdDto,
+  BaseResponseBoolean,
+  BaseResponsePreviewAccess,
+  BaseResponsePreviewStart,
+  BaseResponsePreviewStatus,
+  PreviewStatusQueryDto,
+  previewAccessSchema,
+  previewStartSchema,
+  previewStatusSchemaValue,
+} from './dto'
 import { PreviewService } from './preview.service'
 
-export const appIdSchema = z.object({ appId: z.number().int().positive() })
-export class AppIdDto extends createZodDto(appIdSchema) {}
-
+@ApiTags('preview')
 @Controller()
 export class PreviewController {
   constructor(
@@ -18,7 +27,13 @@ export class PreviewController {
   ) {}
 
   @Post('app/preview/start')
-  async start(@Body() dto: AppIdDto, @CurrentUser() userId: number) {
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '启动或复用预览环境' })
+  @ApiOkResponse({ type: BaseResponsePreviewStart })
+  async startPreview(
+    @Body() dto: AppIdDto,
+    @CurrentUser() userId: number,
+  ): Promise<z.output<typeof previewStartSchema>> {
     const app = await this.apps.findOwnedApp(dto.appId, userId)
     if (app.status !== 'active') throw ApiException.conflict('应用正在删除，无法启动预览')
     const result = await this.preview.ensurePreview(dto.appId)
@@ -30,15 +45,25 @@ export class PreviewController {
   }
 
   @Get('app/preview/status')
-  async status(@Query('appId') appIdRaw: string, @CurrentUser() userId: number) {
-    const appId = Number(appIdRaw)
-    if (!Number.isInteger(appId) || appId <= 0) throw ApiException.badRequest('应用 ID 无效')
-    await this.apps.findOwnedApp(appId, userId)
-    return this.preview.getStatus(appId)
+  @ApiOperation({ summary: '查询预览状态' })
+  @ApiOkResponse({ type: BaseResponsePreviewStatus })
+  async getPreviewStatus(
+    @Query() query: PreviewStatusQueryDto,
+    @CurrentUser() userId: number,
+  ): Promise<z.output<typeof previewStatusSchemaValue>> {
+    await this.apps.findOwnedApp(query.appId, userId)
+    return this.preview.getStatus(query.appId)
   }
 
   @Post('app/preview/access')
-  async access(@Body() dto: AppIdDto, @CurrentUser() userId: number, @Req() req: Request) {
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '签发预览访问票据' })
+  @ApiOkResponse({ type: BaseResponsePreviewAccess })
+  async requestPreviewAccess(
+    @Body() dto: AppIdDto,
+    @CurrentUser() userId: number,
+    @Req() req: Request,
+  ): Promise<z.output<typeof previewAccessSchema>> {
     const app = await this.apps.findOwnedApp(dto.appId, userId)
     if (app.status !== 'active') throw ApiException.conflict('应用正在删除，无法访问预览')
     const ticket = await this.preview.issueTicket(dto.appId, userId, req.sessionID)
@@ -50,7 +75,10 @@ export class PreviewController {
   }
 
   @Post('app/preview/heartbeat')
-  async heartbeat(@Body() dto: AppIdDto, @CurrentUser() userId: number, @Req() req: Request) {
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '续期预览访问授权' })
+  @ApiOkResponse({ type: BaseResponseBoolean })
+  async sendPreviewHeartbeat(@Body() dto: AppIdDto, @CurrentUser() userId: number, @Req() req: Request) {
     await this.apps.findOwnedApp(dto.appId, userId)
     return this.preview.heartbeat(dto.appId, req.sessionID)
   }

@@ -1,6 +1,6 @@
 ---
 name: vue
-description: "在派蒙平台创建或修改 Vue 3 + Vite 构建型应用。适用于用户明确要求 Vue，或现有 package.json 已使用 Vue 的情况；覆盖依赖、类型检查、构建和实时预览的交付流程。"
+description: "在 Paimeng 平台创建或修改 Vue 3 + Vite 构建型应用。适用于用户明确要求 Vue，或现有 package.json 已使用 Vue 的情况；覆盖依赖、类型检查、构建和实时预览的交付流程。"
 ---
 
 # Vue 3 + Vite 交付

@@ -4,7 +4,8 @@ import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { ArrowUpOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { useLoginUserStore } from '@/stores/loginUser'
-import { addApp, listMyAppVoByPage } from '@/api/appController'
+import type { AppVO } from '@/api/apiTypes'
+import { addApp, listMyAppVoByPage } from '@/api/generated/api/app'
 import AppCard from '@/components/AppCard.vue'
 
 const router = useRouter()
@@ -12,7 +13,7 @@ const loginUserStore = useLoginUserStore()
 
 const userPrompt = ref('')
 const creating = ref(false)
-const myApps = ref<API.AppVO[]>([])
+const myApps = ref<AppVO[]>([])
 const myAppsPage = reactive({ current: 1, pageSize: 6, total: 0 })
 const appsLoaded = ref(false)
 const appsError = ref('')
@@ -109,7 +110,7 @@ onMounted(loadMyApps)
 <template>
   <div id="homePage" class="home">
     <section class="hero">
-      <p class="eyebrow">派蒙 AI 应用工坊</p>
+      <p class="eyebrow">Paimeng</p>
       <h1>把一句话，变成能用的应用</h1>
       <p class="lede">描述你想做的页面，AI 会写代码、验证并打开实时预览。</p>
 

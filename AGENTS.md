@@ -1,16 +1,37 @@
-# 派蒙 AI 应用工坊：Agent 开发规范
+# Paimeng：Agent 开发规范
 
 本文件约束在本仓库工作的 AI agent。子目录的 `AGENTS.md` 补充各自规则，冲突时以更深层文件为准。
 
 ## 仓库结构
 
-- pnpm workspace（pnpm 10，Node ≥ 22.8），只包含两个包：
-  - `paimeng-ai-code-mother-frontend/`：Vue 3 + Vite + Ant Design Vue + Pinia 主站
-  - `paimeng-ai-code-mother-backend/`：NestJS 11 + Drizzle（PostgreSQL）+ Redis + Vercel AI SDK
-- `docs/api.md`：前后端唯一接口契约。`docs/acceptance.md`：验收记录。
-- `PLAN.md`：当前架构与范围决策的来源，改动架构前先读相关章节。
-- `deprecated/`：归档的 Java 实现，不参与运行，不要修改、引用或从中迁移代码。
-- `local/`：本地私有计划，已通过 `.git/info/exclude` 忽略，不要提交，也不要在公开文档里引用。
+pnpm workspace（pnpm 10，Node ≥ 22.8），只包含前端和后端两个包：
+
+```text
+.
+├── paimeng-ai-code-mother-frontend/   # 主站：Vue 3 + Vite + Ant Design Vue + Pinia
+├── paimeng-ai-code-mother-backend/    # 后端：NestJS 11 + Drizzle（PostgreSQL）+ Redis + Vercel AI SDK
+│   └── openapi.json                    # 由 zod schema 导出的接口契约，前后端共用
+├── docs/
+│   ├── DESIGN.md                      # 系统设计：架构、边界、约束与接口契约
+│   └── adr/                           # 架构决策记录
+├── docker/
+│   ├── nginx/                         # 主站与预览来源的 Nginx 配置模板
+│   └── runtime/                       # 生成应用的运行时镜像
+├── image/                             # README 配图
+├── deprecated/                        # 归档的 Java 实现，不参与运行
+├── local/                             # 本地私有计划，已被 .git/info/exclude 忽略
+├── GLOSSARY.md                        # 领域术语表
+├── README.md
+├── docker-compose.yml                 # PostgreSQL、Redis、Nginx
+├── .env.example
+└── pnpm-workspace.yaml
+```
+
+- 改动架构、模块边界或安全边界前，先读 `docs/DESIGN.md` 和相关 ADR；推翻已有决策时新增一条 ADR 并标记旧记录被取代。
+- 讨论或命名领域概念时以 `GLOSSARY.md` 为准，新概念确定后同步补充。
+- 单次任务用的临时计划文档（如根目录 `PLAN.md`）不提交，其他文档不要引用。
+- `deprecated/` 不要修改、引用或从中迁移代码。
+- `local/` 不要提交，也不要在公开文档里引用。
 
 ## 工作方式
 
@@ -19,17 +40,19 @@
 - 不读取、不打印、不提交 `.env` 及任何 `.env.*`（`.env.example` 除外）。新增环境变量时同步更新后端 `src/config/env.ts` 和根目录 `.env.example`。
 - 工作区可能有用户未提交的改动，不要还原、覆盖或格式化与任务无关的文件。
 - 未经要求不要 commit、建分支、push。
-- 范围以 `PLAN.md` 和 `README.md` 的“当前范围与限制”为准；文档写明首版不做的功能（源码下载、部署分享、可视化编辑、多实例等），不要顺手实现。
+- 范围以 `docs/DESIGN.md` 的“范围边界”和 `README.md` 的“当前范围与限制”为准；文档写明首版不做的功能（源码下载、部署分享、可视化编辑、多实例等），不要顺手实现。
 
 ## 跨前后端改动
 
-接口变更必须在同一次改动中同步三处：
+接口字段只在后端 zod schema 中定义，然后重新生成契约产物：
 
-1. 后端控制器与 zod schema
-2. `docs/api.md`
-3. 前端 `src/api/*.ts` 与 `src/api/typings.d.ts`（手工维护，不要用 openapi2ts 重新生成覆盖）
+1. 修改后端控制器与 zod schema，运行 `pnpm --filter paimeng-ai-code-mother-backend openapi:export`
+2. 运行 `pnpm --filter paimeng-ai-code-mother-frontend openapi`
+3. 运行 `pnpm contract:check`，确认 `openapi.json` 与 `src/api/generated/` 已同步
 
-所有业务接口使用统一包络 `{ code, message, data }`，错误码表以 `docs/api.md` 为准。新增错误码需同时更新后端 `src/common/api.ts` 和文档。
+`paimeng-ai-code-mother-backend/openapi.json` 和前端 `src/api/generated/` 都是生成产物，要一起提交，但不要手改。前端普通接口一律调用生成函数；只有流式聊天（`src/api/streamChat.ts`）保留手写。
+
+所有业务接口使用统一包络 `{ code, message, data }`，错误码表以 `docs/DESIGN.md` 为准。新增错误码需同时更新后端 `src/common/api.ts` 和该表。
 
 ## 安全边界（不可违反）
 

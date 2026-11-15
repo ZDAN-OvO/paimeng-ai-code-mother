@@ -24,8 +24,9 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { CheckCircleFilled, LoadingOutlined } from '@ant-design/icons-vue'
+import type { RunPlan, RunPlanStep } from '@/api/chatTypes'
 
-const props = defineProps<{ plan: API.RunPlan }>()
+const props = defineProps<{ plan: RunPlan }>()
 
 const allDone = () => props.plan.steps.every((step) => step.status === 'completed')
 const open = ref(!allDone() || props.plan.steps.length < 3)
@@ -37,7 +38,7 @@ watch(
   },
 )
 
-const stateText = (status: API.RunPlanStep['status']) => {
+const stateText = (status: RunPlanStep['status']) => {
   if (status === 'completed') return '已完成'
   if (status === 'in_progress') return '进行中'
   return '待开始'

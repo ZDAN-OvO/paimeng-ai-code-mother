@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 黑盒验收脚本：要求后端、Nginx、PostgreSQL、Redis 已启动。
- * 只覆盖不依赖模型生成的 API 不变量；真实模型四轮验收见 docs/acceptance.md。
+ * 只覆盖不依赖模型生成的 API 不变量，不包含真实模型生成验收。
  */
 const API = process.env.ACCEPTANCE_API ?? 'http://127.0.0.1:8123/api'
 const MAIN = process.env.ACCEPTANCE_MAIN ?? 'http://paimeng.localhost:8090'

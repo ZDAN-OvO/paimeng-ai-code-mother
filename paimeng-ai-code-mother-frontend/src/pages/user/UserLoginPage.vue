@@ -1,6 +1,6 @@
 <template>
   <div id="userLoginPage">
-    <h2 class="title">派蒙 AI 应用工坊 - 用户登录</h2>
+    <h2 class="title">Paimeng - 用户登录</h2>
     <div class="desc">不写一行代码，生成完整应用</div>
     <a-form :model="formState" name="basic" autocomplete="off" @finish="handleSubmit">
       <a-form-item name="userAccount" :rules="[{ required: true, message: '请输入账号' }]">
@@ -27,12 +27,12 @@
 </template>
 <script lang="ts" setup>
 import { reactive } from 'vue'
-import { userLogin } from '@/api/userController.ts'
-import { useLoginUserStore } from '@/stores/loginUser.ts'
+import { userLogin } from '@/api/generated/api/user'
+import { useLoginUserStore } from '@/stores/loginUser'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 
-const formState = reactive<API.UserLoginRequest>({
+const formState = reactive<API.LoginDto>({
   userAccount: '',
   userPassword: '',
 })
@@ -44,7 +44,7 @@ const loginUserStore = useLoginUserStore()
  * 提交表单
  * @param values
  */
-const handleSubmit = async (values: API.UserLoginRequest) => {
+const handleSubmit = async (values: API.LoginDto) => {
   const res = await userLogin(values)
   // 登录成功，把登录态保存到全局状态中
   if (res.data.code === 0 && res.data.data) {

@@ -35,7 +35,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { getAppVoById, updateApp } from '@/api/appController'
+import { getAppVoById, updateApp } from '@/api/generated/api/app'
 
 const route = useRoute()
 const router = useRouter()
@@ -45,7 +45,7 @@ const form = reactive({ appName: '' })
 
 const loadApp = async () => {
   try {
-    const res = await getAppVoById(appId)
+    const res = await getAppVoById({ id: appId })
     if (res.data.code === 0 && res.data.data) {
       form.appName = res.data.data.appName
     } else {

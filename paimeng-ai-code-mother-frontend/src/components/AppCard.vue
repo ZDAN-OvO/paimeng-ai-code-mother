@@ -21,8 +21,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { formatTime } from '@/utils/time'
+import type { AppVO } from '@/api/apiTypes'
 
-const props = defineProps<{ app: API.AppVO }>()
+const props = defineProps<{ app: AppVO }>()
 const emit = defineEmits<{ (e: 'view-chat', appId: number): void }>()
 
 const initial = computed(() => (props.app.appName || '应').trim().slice(0, 1))

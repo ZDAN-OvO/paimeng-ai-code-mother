@@ -30,8 +30,14 @@
           >
             <LoadingOutlined v-if="entry.status === 'running'" class="activity-icon" spin />
             <CloseCircleFilled v-else-if="entry.status === 'failed'" class="activity-icon failed" />
-            <MinusCircleFilled v-else-if="entry.status === 'stopped'" class="activity-icon stopped" />
-            <SearchOutlined v-else-if="entry.tool === 'grep' || entry.tool === 'find'" class="activity-icon" />
+            <MinusCircleFilled
+              v-else-if="entry.status === 'stopped'"
+              class="activity-icon stopped"
+            />
+            <SearchOutlined
+              v-else-if="entry.tool === 'grep' || entry.tool === 'find'"
+              class="activity-icon"
+            />
             <FileTextOutlined
               v-else-if="['read', 'write', 'edit', 'delete', 'ls'].includes(entry.tool)"
               class="activity-icon"
@@ -43,7 +49,11 @@
         </div>
       </div>
       <PlanCard v-else-if="block.type === 'plan'" :plan="block.plan" />
-      <div v-else-if="block.type === 'validation'" class="validation-line" :class="block.validation.status">
+      <div
+        v-else-if="block.type === 'validation'"
+        class="validation-line"
+        :class="block.validation.status"
+      >
         <span class="validation-dot"></span>
         <span>平台验证 · 第 {{ block.validation.attempt }} 轮</span>
         <span>{{ validationText(block.validation.status) }}</span>
@@ -71,12 +81,16 @@ import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
 import PlanCard from './PlanCard.vue'
 import { activityGroupLabel } from '@/utils/agentActivity'
 import { buildTurnBlocks, visibleTurnBlocks } from '@/utils/turnBlocks'
+import type { ChatUIMessage } from '@/api/chatTypes'
 
-const props = withDefaults(defineProps<{
-  message: API.ChatUIMessage
-  status: 'streaming' | 'completed' | 'failed' | 'cancelled'
-  processExpanded?: boolean
-}>(), { processExpanded: true })
+const props = withDefaults(
+  defineProps<{
+    message: ChatUIMessage
+    status: 'streaming' | 'completed' | 'failed' | 'cancelled'
+    processExpanded?: boolean
+  }>(),
+  { processExpanded: true },
+)
 
 const expanded = ref<string[]>([])
 const blocks = computed(() =>
@@ -94,7 +108,13 @@ const toggle = (key: string) => {
   else expanded.value.push(value)
 }
 const validationText = (status: string) =>
-  status === 'passed' ? '通过' : status === 'failed' ? '未通过' : status === 'skipped' ? '未执行' : '验证中'
+  status === 'passed'
+    ? '通过'
+    : status === 'failed'
+      ? '未通过'
+      : status === 'skipped'
+        ? '未执行'
+        : '验证中'
 </script>
 
 <style scoped>

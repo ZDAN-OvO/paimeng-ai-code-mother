@@ -1,6 +1,6 @@
 ---
 name: static
-description: "在派蒙平台创建或修改无需构建的静态 HTML/CSS/JavaScript 页面。适用于纯静态站点、单页交互，或现有项目没有 package.json 的情况；不适用于 Vue/React 构建型项目。"
+description: "在 Paimeng 平台创建或修改无需构建的静态 HTML/CSS/JavaScript 页面。适用于纯静态站点、单页交互，或现有项目没有 package.json 的情况；不适用于 Vue/React 构建型项目。"
 ---
 
 # 静态页面交付

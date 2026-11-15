@@ -1,4 +1,4 @@
-# 派蒙 AI 应用工坊 - 前端
+# Paimeng - 前端
 
 这是一个基于 Vue 3 + TypeScript + Ant Design Vue 的 AI 代码生成器前端项目。用户可以通过与 AI 对话来创建网站应用、查看生成的网站应用效果、部署应用、管理个人应用等。
 
@@ -68,10 +68,11 @@
 
 ```
 src/
-├── api/                    # API 接口定义
-│   ├── appController.ts    # 应用相关接口
-│   ├── userController.ts   # 用户相关接口
-│   └── typings.d.ts        # 类型定义
+├── api/
+│   ├── generated/api/      # openapi2ts 从后端 openapi.json 生成，不手改
+│   ├── apiTypes.ts         # 从生成类型提取的可读类型别名
+│   ├── chatTypes.ts        # 聊天消息与流事件类型
+│   └── streamChat.ts       # 手写的流式聊天请求
 ├── components/             # 公共组件
 │   ├── GlobalHeader.vue    # 全局头部
 │   └── GlobalFooter.vue    # 全局底部
@@ -82,18 +83,12 @@ src/
 │   ├── app/                # 应用相关页面
 │   │   ├── AppChatPage.vue # 应用对话页
 │   │   └── AppEditPage.vue # 应用编辑页
-│   ├── admin/              # 管理员页面
-│   │   ├── AppManagePage.vue # 应用管理页
-│   │   └── UserManagePage.vue # 用户管理页
 │   └── user/               # 用户页面
 │       ├── UserLoginPage.vue
 │       └── UserRegisterPage.vue
 ├── stores/                 # 状态管理
 │   └── loginUser.ts        # 登录用户状态
-├── utils/                  # 工具函数
-│   ├── constants.ts        # 常量定义
-│   ├── format.ts          # 格式化工具
-│   └── validation.ts      # 验证工具
+├── utils/                  # 纯函数工具
 ├── router/                 # 路由配置
 │   └── index.ts
 └── main.ts                # 应用入口

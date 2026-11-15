@@ -1,54 +1,60 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common'
-import { createZodDto } from 'nestjs-zod'
-import { z } from 'zod'
-import { ApiException } from '../common/api'
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query } from '@nestjs/common'
+import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger'
+import type { z } from 'zod'
 import { CurrentUser } from '../common/http'
 import { AppsService } from './apps.service'
+import {
+  AddAppDto,
+  appListPageSchema,
+  appVoSchema,
+  AppIdDto,
+  AppIdBodyDto,
+  BaseResponseAddApp,
+  BaseResponseAppListPage,
+  BaseResponseAppVO,
+  BaseResponseBoolean,
+  ListAppQueryDto,
+  UpdateAppDto,
+} from './dto'
 
-const addSchema = z.object({ initPrompt: z.string().trim().min(1).max(1000) })
-const updateSchema = z.object({
-  id: z.number().int().positive(),
-  appName: z.string().trim().min(1).max(50),
-})
-const idSchema = z.object({ id: z.number().int().positive() })
-const listSchema = z.object({
-  pageNum: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(50).default(12),
-  sortField: z.enum(['createTime', 'updateTime', 'id', 'appName']).default('createTime'),
-  sortOrder: z.enum(['asc', 'desc']).default('desc'),
-})
-
-class AddAppDto extends createZodDto(addSchema) {}
-class UpdateAppDto extends createZodDto(updateSchema) {}
-class IdDto extends createZodDto(idSchema) {}
-class ListQueryDto extends createZodDto(listSchema) {}
-
+@ApiTags('app')
 @Controller()
 export class AppsController {
   constructor(private readonly apps: AppsService) {}
 
   @Post('app/add')
-  async add(@Body() dto: AddAppDto, @CurrentUser() userId: number) {
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '创建应用' })
+  @ApiOkResponse({ type: BaseResponseAddApp })
+  async addApp(@Body() dto: AddAppDto, @CurrentUser() userId: number) {
     return this.apps.createApp(userId, dto.initPrompt)
   }
 
   @Post('app/my/list/page/vo')
-  async listVo(@Body() query: ListQueryDto, @CurrentUser() userId: number) {
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '分页查询我的应用' })
+  @ApiOkResponse({ type: BaseResponseAppListPage })
+  async listMyAppVoByPage(@Body() query: ListAppQueryDto, @CurrentUser() userId: number) {
     return this.listPage(query, userId)
   }
 
   @Get('app/my/list/page')
-  async list(@Query() query: ListQueryDto, @CurrentUser() userId: number) {
+  @ApiOperation({ summary: '分页查询我的应用（兼容别名）' })
+  @ApiOkResponse({ type: BaseResponseAppListPage })
+  async listMyAppByPage(@Query() query: ListAppQueryDto, @CurrentUser() userId: number) {
     return this.listPage(query, userId)
   }
 
-  private async listPage(query: ListQueryDto, userId: number) {
+  private async listPage(
+    query: ListAppQueryDto,
+    userId: number,
+  ): Promise<z.output<typeof appListPageSchema>> {
     const result = await this.apps.listMyApps(
       userId,
-      query.pageNum,
-      query.pageSize,
-      query.sortField,
-      query.sortOrder,
+      query.pageNum ?? 1,
+      query.pageSize ?? 12,
+      query.sortField ?? 'createTime',
+      query.sortOrder ?? 'desc',
     )
     return {
       records: result.records,
@@ -60,20 +66,29 @@ export class AppsController {
   }
 
   @Get('app/get/vo')
-  async get(@Query('id') idRaw: string, @CurrentUser() userId: number) {
-    const id = Number(idRaw)
-    if (!Number.isInteger(id) || id <= 0) throw ApiException.badRequest('应用 ID 无效')
-    return this.apps.getAppVO(id, userId)
+  @ApiOperation({ summary: '获取应用详情' })
+  @ApiOkResponse({ type: BaseResponseAppVO })
+  async getAppVoById(
+    @Query() dto: AppIdDto,
+    @CurrentUser() userId: number,
+  ): Promise<z.output<typeof appVoSchema>> {
+    return this.apps.getAppVO(dto.id, userId)
   }
 
   @Post('app/update')
-  async update(@Body() dto: UpdateAppDto, @CurrentUser() userId: number) {
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '重命名应用' })
+  @ApiOkResponse({ type: BaseResponseBoolean })
+  async updateApp(@Body() dto: UpdateAppDto, @CurrentUser() userId: number): Promise<boolean> {
     await this.apps.rename(dto.id, userId, dto.appName)
     return true
   }
 
   @Post('app/delete')
-  async remove(@Body() dto: IdDto, @CurrentUser() userId: number) {
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: '删除应用' })
+  @ApiOkResponse({ type: BaseResponseBoolean })
+  async deleteApp(@Body() dto: AppIdBodyDto, @CurrentUser() userId: number) {
     await this.apps.requestDelete(dto.id, userId)
     return true
   }

@@ -1,6 +1,6 @@
 <template>
   <div id="userRegisterPage">
-    <h2 class="title">派蒙 AI 应用工坊 - 用户注册</h2>
+    <h2 class="title">Paimeng - 用户注册</h2>
     <div class="desc">不写一行代码，生成完整应用</div>
     <a-form :model="formState" name="basic" autocomplete="off" @finish="handleSubmit">
       <a-form-item name="userAccount" :rules="[{ required: true, message: '请输入账号' }]">
@@ -38,13 +38,13 @@
 
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { userRegister } from '@/api/userController.ts'
+import { userRegister } from '@/api/generated/api/user'
 import { message } from 'ant-design-vue'
 import { reactive } from 'vue'
 
 const router = useRouter()
 
-const formState = reactive<API.UserRegisterRequest>({
+const formState = reactive<API.RegisterDto>({
   userAccount: '',
   userPassword: '',
   checkPassword: '',
@@ -68,7 +68,7 @@ const validateCheckPassword = (rule: unknown, value: string, callback: (error?: 
  * 提交表单
  * @param values
  */
-const handleSubmit = async (values: API.UserRegisterRequest) => {
+const handleSubmit = async (values: API.RegisterDto) => {
   const res = await userRegister(values)
   // 注册成功，跳转到登录页面
   if (res.data.code === 0) {

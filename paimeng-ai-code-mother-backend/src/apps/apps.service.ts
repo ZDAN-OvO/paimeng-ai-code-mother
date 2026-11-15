@@ -12,7 +12,7 @@ import { RuntimeService } from '../runtime/runtime.service'
 export interface AppVO {
   id: number
   appName: string
-  initPrompt: string | null
+  initPrompt: string
   codeGenType: 'static' | 'vue' | 'react' | null
   userId: number
   status: string
@@ -21,7 +21,7 @@ export interface AppVO {
   currentRun: {
     runId: string
     id: string
-    status: string
+    status: 'running' | 'cancelling'
     phase: string
     stepCount: number
     repairCount: number
@@ -72,22 +72,13 @@ export class AppsService {
     return { id: app.id }
   }
 
-  async listMyApps(
-    userId: number,
-    current = 1,
-    pageSize = 12,
-    sortField = 'createTime',
-    sortOrder = 'desc',
-  ) {
+  async listMyApps(userId: number, current = 1, pageSize = 12, sortField = 'createTime', sortOrder = 'desc') {
     const page = Math.max(1, Math.floor(current) || 1)
     const size = Math.min(50, Math.max(1, Math.floor(pageSize) || 12))
     const column = SORT_FIELDS[sortField as keyof typeof SORT_FIELDS] ?? SORT_FIELDS.createTime
     const order = sortOrder === 'asc' ? asc(column) : desc(column)
     const where = and(eq(apps.ownerId, userId), eq(apps.status, 'active'))
-    const [{ value: total }] = await this.db.db
-      .select({ value: count() })
-      .from(apps)
-      .where(where)
+    const [{ value: total }] = await this.db.db.select({ value: count() }).from(apps).where(where)
     const rows = await this.db.db
       .select()
       .from(apps)
@@ -96,7 +87,7 @@ export class AppsService {
       .limit(size)
       .offset((page - 1) * size)
     const records = await Promise.all(rows.map((row) => this.toVO(row, false)))
-    return { records, total, current: page, pageSize: size }
+    return { records, total, current: page, pageSize: size, pages: Math.ceil(Number(total) / size) || 0 }
   }
 
   async findOwnedApp(appId: number, userId: number) {
@@ -141,7 +132,7 @@ export class AppsService {
         ? {
             runId: run.id,
             id: run.id,
-            status: run.status,
+            status: run.status as 'running' | 'cancelling',
             phase: run.phase,
             stepCount: run.stepCount,
             repairCount: run.repairCount,
@@ -207,9 +198,7 @@ export class AppsService {
 
   private backgroundDelete(appId: number) {
     void this.runDelete(appId).catch((err) => {
-      this.logger.warn(
-        `应用 ${appId} 删除任务异常: ${err instanceof Error ? err.message : String(err)}`,
-      )
+      this.logger.warn(`应用 ${appId} 删除任务异常: ${err instanceof Error ? err.message : String(err)}`)
     })
   }
 
