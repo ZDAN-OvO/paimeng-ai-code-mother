@@ -8,4 +8,4 @@
 
 - 改接口字段只改后端 schema，然后运行导出和生成；`contract:check` 在 CI 或本地发现过期产物。
 - 生成的代码不能手改。编译不过时改 schema 或生成配置，不改生成结果。
-- 可空字段统一用 `anyOf` 加 `{ "type": "null" }` 表达，因为 openapi2ts 不识别 OpenAPI 3.0 的 `nullable`，会让可空枚举退化成 `any`。
+- 导出的文档固定为 OpenAPI 3.1：可空字段用 `anyOf` 加 `{ "type": "null" }` 表达。openapi2ts 不识别 3.0 的 `nullable`，会让可空枚举退化成 `any`；`type: "null"` 在 3.0 里又不合法，因此导出时统一转成 3.1 的写法。

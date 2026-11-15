@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Req } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Req } from '@nestjs/common'
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger'
 import type { Request } from 'express'
 import { ZodValidationException } from 'nestjs-zod'
@@ -19,6 +19,7 @@ export class AuthController {
 
   @Public()
   @Post('register')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '注册并登录' })
   @ApiOkResponse({ type: BaseResponseLoginUserVO })
   async userRegister(
@@ -36,6 +37,7 @@ export class AuthController {
 
   @Public()
   @Post('login')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '登录' })
   @ApiOkResponse({ type: BaseResponseLoginUserVO })
   userLogin(@Body() dto: LoginDto, @Req() req: Request): Promise<z.output<typeof loginUserVoSchema>> {
@@ -44,6 +46,7 @@ export class AuthController {
 
   @Public()
   @Post('logout')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '退出登录' })
   @ApiOkResponse({ type: BaseResponseBoolean })
   async userLogout(@Req() req: Request) {

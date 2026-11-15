@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, Req, Res } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, Req, Res } from '@nestjs/common'
 import { ApiBody, ApiExtraModels, ApiOkResponse, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger'
 import type { Request, Response } from 'express'
 import type { z } from 'zod'
@@ -55,6 +55,7 @@ export class RunsController {
     },
   })
   @Post('app/chat/gen/code')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '发送消息并流式返回 Agent 输出' })
   async chat(
     @Body() dto: ChatDto,
@@ -149,6 +150,7 @@ export class RunsController {
   }
 
   @Post('app/run/cancel')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '取消运行' })
   @ApiOkResponse({ type: BaseResponseCancelRun })
   async cancelRun(

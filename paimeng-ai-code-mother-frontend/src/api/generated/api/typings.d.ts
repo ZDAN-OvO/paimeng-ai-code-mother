@@ -155,12 +155,6 @@ declare namespace API {
     }
   }
 
-  type BaseResponseHealth = {
-    code: number
-    message: string
-    data: { status: string; uptimeSeconds: number }
-  }
-
   type BaseResponseLoginUserVO = {
     code: number
     message: string
@@ -201,12 +195,6 @@ declare namespace API {
       url: string | null
       lastError: string | null
     }
-  }
-
-  type BaseResponseReadiness = {
-    code: number
-    message: string
-    data: { status: string; checks: Record<string, any> }
   }
 
   type BaseResponseRunActivityList = {
@@ -396,6 +384,11 @@ declare namespace API {
     check: string
   }
 
+  type HealthResult = {
+    status: string
+    uptimeSeconds: number
+  }
+
   type listAppChatHistoryParams = {
     appId: number
     cursor?: string
@@ -436,6 +429,11 @@ declare namespace API {
   type PhaseChunk = {
     type: 'data-phase'
     data: { runId: string; phase: string }
+  }
+
+  type ReadinessResult = {
+    status: string
+    checks: Record<string, any>
   }
 
   type RegisterDto = {

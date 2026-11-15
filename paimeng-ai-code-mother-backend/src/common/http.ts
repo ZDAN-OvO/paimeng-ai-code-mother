@@ -48,13 +48,11 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     let code: number = API_CODES.INTERNAL
     let status = 500
     let message = '服务器内部错误'
-    let details: unknown
 
     if (exception instanceof ApiException) {
       code = exception.code
       status = exception.status
       message = exception.message
-      details = exception.details
     } else if (exception instanceof ZodValidationException) {
       code = API_CODES.BAD_REQUEST
       status = 400
@@ -63,7 +61,6 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       message =
         issues.map((i) => `${(i.path ?? []).join('.') || 'body'}: ${i.message ?? '格式不正确'}`).join('; ') ||
         '请求参数格式不正确'
-      details = issues
     } else if (exception instanceof HttpException) {
       status = exception.getStatus()
       code = status === 404 ? API_CODES.NOT_FOUND : status === 403 ? API_CODES.FORBIDDEN : API_CODES.BAD_REQUEST
@@ -79,7 +76,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       console.error('[unhandled]', err.stack ?? err.message)
     }
 
-    const body: ApiEnvelope<unknown> = { code, message, data: details ?? null }
+    const body: ApiEnvelope<null> = { code, message, data: null }
     res.status(status).json(body)
   }
 }

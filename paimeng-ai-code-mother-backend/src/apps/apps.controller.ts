@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query } from '@nestjs/common'
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger'
 import type { z } from 'zod'
 import { CurrentUser } from '../common/http'
@@ -23,6 +23,7 @@ export class AppsController {
   constructor(private readonly apps: AppsService) {}
 
   @Post('app/add')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '创建应用' })
   @ApiOkResponse({ type: BaseResponseAddApp })
   async addApp(@Body() dto: AddAppDto, @CurrentUser() userId: number) {
@@ -30,6 +31,7 @@ export class AppsController {
   }
 
   @Post('app/my/list/page/vo')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '分页查询我的应用' })
   @ApiOkResponse({ type: BaseResponseAppListPage })
   async listMyAppVoByPage(@Body() query: ListAppQueryDto, @CurrentUser() userId: number) {
@@ -74,6 +76,7 @@ export class AppsController {
   }
 
   @Post('app/update')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '重命名应用' })
   @ApiOkResponse({ type: BaseResponseBoolean })
   async updateApp(@Body() dto: UpdateAppDto, @CurrentUser() userId: number): Promise<boolean> {
@@ -82,6 +85,7 @@ export class AppsController {
   }
 
   @Post('app/delete')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '删除应用' })
   @ApiOkResponse({ type: BaseResponseBoolean })
   async deleteApp(@Body() dto: AppIdBodyDto, @CurrentUser() userId: number) {

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, Req } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, Req } from '@nestjs/common'
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger'
 import type { Request } from 'express'
 import type { z } from 'zod'
@@ -27,6 +27,7 @@ export class PreviewController {
   ) {}
 
   @Post('app/preview/start')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '启动或复用预览环境' })
   @ApiOkResponse({ type: BaseResponsePreviewStart })
   async startPreview(
@@ -55,6 +56,7 @@ export class PreviewController {
   }
 
   @Post('app/preview/access')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '签发预览访问票据' })
   @ApiOkResponse({ type: BaseResponsePreviewAccess })
   async requestPreviewAccess(
@@ -73,6 +75,7 @@ export class PreviewController {
   }
 
   @Post('app/preview/heartbeat')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '续期预览访问授权' })
   @ApiOkResponse({ type: BaseResponseBoolean })
   async sendPreviewHeartbeat(@Body() dto: AppIdDto, @CurrentUser() userId: number, @Req() req: Request) {

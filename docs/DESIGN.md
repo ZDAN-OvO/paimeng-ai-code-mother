@@ -218,12 +218,12 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 
 ## 10. 接口契约
 
-本节是前后端唯一的接口契约。字段级 schema 以仓库中的 `paimeng-ai-code-mother-backend/openapi.json` 为准：它由后端 zod schema 离线导出，前端 `src/api/generated/` 由 openapi2ts 从同一文件生成，`pnpm contract:check` 保证两者不漂移。本节只描述 schema 表达不了的行为、约束和时序。
+本节是前后端唯一的接口契约。字段级 schema 以仓库中的 `paimeng-ai-code-mother-backend/openapi.json` 为准：它由后端 zod schema 离线导出（OpenAPI 3.1），前端 `src/api/generated/` 由 openapi2ts 从同一文件生成，`pnpm contract:check` 保证两者不漂移。本节只描述 schema 表达不了的行为、约束和时序。
 
 ### 10.1 通用约定
 
 - 前缀为 `/api`。除注册、登录、退出和健康检查外，所有接口都要求登录（session cookie `pm_sid`）。
-- 普通接口返回 JSON 包络 `{ code, message, data }`，成功时 `code` 为 0；失败时 `message` 是中文原因，`data` 为 `null`，同时返回对应的 HTTP 状态码。
+- 普通接口返回 JSON 包络 `{ code, message, data }`，成功时 `code` 为 0，HTTP 状态码统一为 200（包括 `POST`）；失败时 `message` 是中文原因，`data` 为 `null`，同时返回对应的 HTTP 状态码。
 - 用户、应用使用数值 ID，运行使用 UUID，时间为 UTC ISO 8601 字符串。
 - 修改类请求必须携带 `ALLOWED_ORIGINS` 内的 `Origin`，否则返回 403。
 - 应用、对话、运行、预览相关接口只允许应用所有者访问。
@@ -354,8 +354,9 @@ NestJS 后端（宿主机进程，唯一能调用 Docker 的组件）
 
 ### 10.8 健康检查
 
+- 两个接口都直接返回 JSON，不套统一包络。
 - `GET /health`：`{ status, uptimeSeconds }`。
-- `GET /health/ready`：检查 PostgreSQL、Redis 和运行时镜像，任一不可用返回 503。
+- `GET /health/ready`：检查 PostgreSQL、Redis 和运行时镜像，正常返回 200 和 `{ status, checks }`，任一不可用返回 503。
 - `GET /v3/api-docs`：OpenAPI 文档。
 
 ### 10.9 前端接入
