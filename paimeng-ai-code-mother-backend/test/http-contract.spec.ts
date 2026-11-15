@@ -1,6 +1,6 @@
 import 'reflect-metadata'
 import { RequestMethod } from '@nestjs/common'
-import { HTTP_CODE_METADATA, METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants'
+import { HTTP_CODE_METADATA, METHOD_METADATA } from '@nestjs/common/constants'
 import { ZodValidationException, ZodValidationPipe } from 'nestjs-zod'
 import { describe, expect, it } from 'vitest'
 import { AppIdDto } from '../src/apps/dto'

@@ -23,7 +23,7 @@ export class HealthController {
   @Public()
   @RawResponse()
   @Get('health')
-  @ApiOperation({ summary: '存活检查' })
+  @ApiOperation({ summary: '存活检查', security: [] })
   @ApiOkResponse({ type: HealthResult })
   health(): z.output<typeof healthSchema> {
     return { status: 'ok', uptimeSeconds: Math.round(process.uptime()) }
@@ -32,7 +32,7 @@ export class HealthController {
   @Public()
   @RawResponse()
   @Get('health/ready')
-  @ApiOperation({ summary: '就绪检查' })
+  @ApiOperation({ summary: '就绪检查', security: [] })
   @ApiOkResponse({ type: ReadinessResult })
   @ApiResponse({ status: 503, type: ReadinessResult, description: '依赖不可用' })
   async ready(@Res() res: Response) {

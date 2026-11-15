@@ -15,6 +15,8 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
         )
         .setVersion('1.0')
         .addServer('/api')
+        .addCookieAuth('pm_sid')
+        .addSecurityRequirements('cookie')
         .build(),
       { operationIdFactory: operationId, ignoreGlobalPrefix: true },
     ),
