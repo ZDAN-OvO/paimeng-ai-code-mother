@@ -1,6 +1,10 @@
-// 根据后端接口生成前端请求和 TS 模型代码
+import { resolve } from 'node:path'
+
+declare const __dirname: string
+
 export default {
   requestLibPath: "import request from '@/request'",
-  schemaPath: 'http://localhost:8123/api/v3/api-docs',
-  serversPath: './src',
+  schemaPath: resolve(__dirname, '../paimeng-ai-code-mother-backend/openapi.json'),
+  serversPath: resolve(__dirname, 'src/api/generated'),
+  namespace: 'API',
 }

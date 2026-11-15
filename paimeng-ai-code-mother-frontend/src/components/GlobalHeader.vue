@@ -2,8 +2,8 @@
   <header class="header">
     <div class="header-inner">
       <RouterLink to="/" class="brand">
-        <img class="logo" src="@/assets/logo-paimeng.png" alt="派蒙 AI 应用工坊" />
-        <span class="site-title">派蒙 AI 应用工坊</span>
+        <img class="logo" src="@/assets/logo-paimeng.png" alt="Paimeng" />
+        <span class="site-title">Paimeng</span>
       </RouterLink>
 
       <nav class="nav">
@@ -40,8 +40,8 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { LogoutOutlined } from '@ant-design/icons-vue'
-import { useLoginUserStore } from '@/stores/loginUser.ts'
-import { userLogout } from '@/api/userController.ts'
+import { useLoginUserStore } from '@/stores/loginUser'
+import { userLogout } from '@/api/generated/api/user'
 
 const loginUserStore = useLoginUserStore()
 const loginUser = computed(() => loginUserStore.loginUser)

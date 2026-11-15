@@ -1,4 +1,4 @@
-# 派蒙 AI 应用工坊
+# Paimeng
 
 AI 生成前端应用的本地平台：用户用一句中文描述创建应用，主 Agent 通过文件工具写入源码，平台负责受控依赖安装、构建验证与实时预览。
 
@@ -90,7 +90,7 @@ pnpm test
 pnpm build
 ```
 
-接口契约见 [`docs/api.md`](docs/api.md)，OpenAPI 文档在 `http://127.0.0.1:8123/api/v3/api-docs`。
+接口契约见 [`docs/DESIGN.md`](docs/DESIGN.md) 第 10 节，OpenAPI 文档在 `http://127.0.0.1:8123/api/v3/api-docs`。
 
 黑盒验收（需先启动后端与基础设施）：
 
@@ -100,7 +100,7 @@ npm run test:acceptance
 npm run test:acceptance:concurrency
 ```
 
-完整验收记录见 [`docs/acceptance.md`](docs/acceptance.md)。
+整体设计见 [`docs/DESIGN.md`](docs/DESIGN.md)，领域术语见 [`GLOSSARY.md`](GLOSSARY.md)。
 
 ## 当前范围与限制
 

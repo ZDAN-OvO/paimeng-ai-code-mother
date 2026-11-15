@@ -1,26 +1,35 @@
 import { Controller, Get, Param, Query } from '@nestjs/common'
-import { ApiException } from '../common/api'
+import { ApiExtraModels, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger'
+import type { z } from 'zod'
 import { CurrentUser } from '../common/http'
 import { ConversationsService } from './conversations.service'
+import {
+  AppIdParamDto,
+  BaseResponseChatHistory,
+  ChatHistoryQueryDto,
+  ChatUIMessage,
+  UIMessagePart,
+  chatHistorySchema,
+} from './dto'
 
+@ApiTags('chatHistory')
+@ApiExtraModels(ChatUIMessage, UIMessagePart)
 @Controller('chatHistory')
 export class ConversationsController {
   constructor(private readonly conversations: ConversationsService) {}
 
   @Get('app/:appId')
-  history(
+  @ApiOperation({ summary: '分页读取应用对话历史' })
+  @ApiOkResponse({ type: BaseResponseChatHistory })
+  listAppChatHistory(
     @CurrentUser() userId: number,
-    @Param('appId') appId: string,
-    @Query('cursor') cursor?: string,
-    @Query('pageSize') pageSize?: string,
-  ) {
-    const id = Number(appId)
-    if (!Number.isInteger(id) || id <= 0) throw ApiException.badRequest('应用 ID 无效')
-    const size = pageSize === undefined ? undefined : Number(pageSize)
+    @Param() params: AppIdParamDto,
+    @Query() query: ChatHistoryQueryDto,
+  ): Promise<z.output<typeof chatHistorySchema>> {
     return this.conversations.getHistory(userId, {
-      appId: id,
-      cursor,
-      pageSize: Number.isFinite(size) ? size : undefined,
-    })
+      appId: params.appId,
+      cursor: query.cursor,
+      pageSize: query.pageSize,
+    }) as Promise<z.output<typeof chatHistorySchema>>
   }
 }

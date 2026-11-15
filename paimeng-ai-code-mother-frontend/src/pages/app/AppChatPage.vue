@@ -108,7 +108,9 @@
                   :process-expanded="isTurnOpen(item)"
                 />
                 <p
-                  v-if="item.status === 'streaming' && !item.modelProgress && !item.message.parts.length"
+                  v-if="
+                    item.status === 'streaming' && !item.modelProgress && !item.message.parts.length
+                  "
                   class="thinking"
                 >
                   正在思考…
@@ -122,7 +124,9 @@
                 </p>
 
                 <ChangeCard
-                  v-if="isTurnOpen(item) && detailsFor(item)?.changes && item.status !== 'streaming'"
+                  v-if="
+                    isTurnOpen(item) && detailsFor(item)?.changes && item.status !== 'streaming'
+                  "
                   :changes="detailsFor(item)!.changes"
                   :details-status="detailsFor(item)!.detailsStatus"
                   @open="openChanges(item.runId!)"
@@ -137,7 +141,10 @@
                 >
                   {{ detailsFor(item)!.detailsError }}
                 </p>
-                <p v-if="isTurnOpen(item) && item.status === 'failed' && item.errorSummary" class="error-note">
+                <p
+                  v-if="isTurnOpen(item) && item.status === 'failed' && item.errorSummary"
+                  class="error-note"
+                >
                   {{ item.errorSummary }}
                 </p>
               </div>
@@ -301,11 +308,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import {
-  ArrowLeftOutlined,
-  DownOutlined,
-  RightOutlined,
-} from '@ant-design/icons-vue'
+import { ArrowLeftOutlined, DownOutlined, RightOutlined } from '@ant-design/icons-vue'
 import AppDetailModal from '@/components/AppDetailModal.vue'
 import ChangeCard from '@/components/agent/ChangeCard.vue'
 import AgentTurnParts from '@/components/agent/AgentTurnParts.vue'
@@ -325,21 +328,31 @@ import {
   SPLIT_STORAGE_KEY,
 } from '@/utils/workspace'
 import {
-  cancelRun,
-  deleteApp,
-  getAppVoById,
-  getPreviewStatus,
   getRunDetails,
   getRunDiff,
   getRunStatus,
   listRunActivities,
   listRunChanges,
+  cancelRun,
+} from '@/api/generated/api/run'
+import { deleteApp, getAppVoById } from '@/api/generated/api/app'
+import {
+  getPreviewStatus,
   requestPreviewAccess,
   sendPreviewHeartbeat,
   startPreview,
-  streamChat,
-} from '@/api/appController'
-import { listAppChatHistory } from '@/api/chatHistoryController'
+} from '@/api/generated/api/preview'
+import { listAppChatHistory } from '@/api/generated/api/chatHistory'
+import { streamChat } from '@/api/streamChat'
+import type { ChatStreamEvent, ChatUIMessage, UIMessageTextPart } from '@/api/chatTypes'
+import type {
+  AppPreview,
+  AppVO,
+  MessageVO,
+  RunActivity,
+  RunChange,
+  RunDetails,
+} from '@/api/apiTypes'
 
 interface ChatItem {
   key: string
@@ -347,7 +360,7 @@ interface ChatItem {
   runId: string | null
   role: 'user' | 'assistant'
   status: 'completed' | 'streaming' | 'failed' | 'cancelled'
-  message: API.ChatUIMessage
+  message: ChatUIMessage
   text: string
   errorSummary?: string | null
   activities?: string[]
@@ -361,7 +374,7 @@ const router = useRouter()
 const appId = Number(route.params.id)
 const startRequested = route.query.start === '1'
 
-const app = ref<API.AppVO>()
+const app = ref<AppVO>()
 const detailOpen = ref(false)
 const messages = ref<ChatItem[]>([])
 const inputMessage = ref('')
@@ -381,7 +394,7 @@ const messageListRef = ref<HTMLElement>()
 const runId = ref<string | null>(null)
 const runStatus = ref<string>('idle')
 const previewSrc = ref('')
-const previewStatus = ref<API.AppPreview['status']>('stopped')
+const previewStatus = ref<AppPreview['status']>('stopped')
 const previewError = ref('')
 const previewLoading = ref(false)
 const previewUrl = ref('')
@@ -389,14 +402,14 @@ const previewViewport = ref<'fill' | 'tablet' | 'mobile'>('fill')
 const authFrameRef = ref<HTMLIFrameElement>()
 const lastAccessAt = ref(0)
 const currentAssistantKey = ref<string | null>(null)
-const runDetails = reactive<Record<string, API.RunDetails>>({})
-const activitiesByRun = reactive<Record<string, API.RunActivity[]>>({})
+const runDetails = reactive<Record<string, RunDetails>>({})
+const activitiesByRun = reactive<Record<string, RunActivity[]>>({})
 const activitiesLoading = reactive<Record<string, boolean>>({})
 const expandedTurns = ref<string[]>([])
 const now = ref(Date.now())
 const changesOpen = ref(false)
 const changesLoading = ref(false)
-const changes = ref<API.RunChange[]>([])
+const changes = ref<RunChange[]>([])
 const changesRunId = ref('')
 const diffOpen = ref(false)
 const diffLoading = ref(false)
@@ -456,7 +469,7 @@ let dragStartX = 0
 let dragStartWidth = 400
 let narrowMedia: MediaQueryList | null = null
 
-const detailsFor = (item: ChatItem): API.RunDetails | undefined =>
+const detailsFor = (item: ChatItem): RunDetails | undefined =>
   item.runId ? runDetails[item.runId] : undefined
 
 const isTurnOpen = (item: ChatItem) =>
@@ -578,7 +591,7 @@ const describeTool = (
   return `已${phrase}`
 }
 
-const timelineFromActivities = (activities: API.RunActivity[]): ToolTimelineEntry[] => {
+const timelineFromActivities = (activities: RunActivity[]): ToolTimelineEntry[] => {
   const starts = new Map<string, { tool: string; input?: Record<string, unknown> }>()
   const finishes = new Map<
     string,
@@ -670,7 +683,7 @@ const scrollToBottom = () => {
 const loadDetails = async (id: string | null, force = false) => {
   if (!id || (!force && runDetails[id])) return
   try {
-    const res = await getRunDetails(id)
+    const res = await getRunDetails({ runId: id })
     if (res.data.code === 0 && res.data.data) runDetails[id] = res.data.data
   } catch {
     // 详情失败不清空已显示内容
@@ -695,7 +708,7 @@ const loadHistory = (reset: boolean): Promise<boolean> =>
       messages.value = reset
         ? records
         : [...records.filter((item) => !existingIds.has(item.id)), ...messages.value]
-      nextCursor.value = res.data.data.nextCursor
+      nextCursor.value = res.data.data.nextCursor ?? null
       hasMore.value = res.data.data.hasMore
       if (reset) {
         scrollPinned.value = true
@@ -727,14 +740,14 @@ const loadHistory = (reset: boolean): Promise<boolean> =>
     }
   })
 
-const uiText = (message: API.ChatUIMessage | undefined) =>
+const uiText = (message: ChatUIMessage | undefined) =>
   (message?.parts ?? [])
-    .filter((part): part is API.UIMessageTextPart => part.type === 'text')
+    .filter((part): part is UIMessageTextPart => part.type === 'text')
     .map((part) => part.text)
     .join('')
 
-const toChatItem = (item: API.MessageVO): ChatItem => {
-  const message: API.ChatUIMessage = item.content ?? {
+const toChatItem = (item: MessageVO): ChatItem => {
+  const message: ChatUIMessage = item.content ?? {
     id: `${item.role}:${item.runId ?? item.id}`,
     role: item.role,
     parts: [],
@@ -753,7 +766,7 @@ const toChatItem = (item: API.MessageVO): ChatItem => {
 
 const loadApp = async () => {
   try {
-    const res = await getAppVoById(appId)
+    const res = await getAppVoById({ id: appId })
     if (res.data.code !== 0 || !res.data.data) {
       message.error(res.data.message || '应用不存在')
       await router.push('/')
@@ -798,7 +811,7 @@ const ensureAssistantItem = (): ChatItem => {
   return item
 }
 
-const handleEvent = (event: API.ChatStreamEvent) => {
+const handleEvent = (event: ChatStreamEvent) => {
   if (event.type === 'run-started') {
     runId.value = event.runId
     runStatus.value = 'running'
@@ -825,7 +838,7 @@ const handleEvent = (event: API.ChatStreamEvent) => {
   if (event.type === 'preview-status') {
     const status = String(event.payload.status ?? '')
     if (status === 'running' || status === 'starting' || status === 'failed') {
-      previewStatus.value = status as API.AppPreview['status']
+      previewStatus.value = status as AppPreview['status']
       if (status === 'failed') previewError.value = String(event.payload.error ?? '')
     }
     return
@@ -844,7 +857,7 @@ const handleEvent = (event: API.ChatStreamEvent) => {
   }
 }
 
-const chatCoordinator = createChatCoordinator<API.ChatStreamEvent>({
+const chatCoordinator = createChatCoordinator<ChatStreamEvent>({
   createRequestId: () => crypto.randomUUID(),
   beforeStart: () => historyQueue.idle(),
   start: ({ text, clientRequestId }) => {
@@ -905,7 +918,9 @@ const chatCoordinator = createChatCoordinator<API.ChatStreamEvent>({
     ),
   lookup: async ({ runId: id, clientRequestId }) => {
     try {
-      const res = await getRunStatus(id ?? { appId, clientRequestId: clientRequestId! })
+      const res = id
+        ? await getRunStatus({ runId: id })
+        : await getRunStatus({ appId, clientRequestId: clientRequestId! })
       if (res.data.code !== 0 || !res.data.data) throw new Error(res.data.message || '查询任务失败')
       return res.data.data
     } catch (error) {
@@ -914,7 +929,7 @@ const chatCoordinator = createChatCoordinator<API.ChatStreamEvent>({
     }
   },
   cancel: async (id) => {
-    const res = await cancelRun(id)
+    const res = await cancelRun({ runId: id })
     if (res.data.code !== 0) throw new Error(res.data.message || '停止失败，请重试')
   },
   refresh: async (run: RunSnapshot | null) => {
@@ -969,7 +984,7 @@ const loadActivities = async (id: string) => {
   if (activitiesByRun[id] || activitiesLoading[id]) return
   activitiesLoading[id] = true
   try {
-    const res = await listRunActivities(id)
+    const res = await listRunActivities({ runId: id, limit: 200 })
     activitiesByRun[id] = res.data.data ?? []
   } catch {
     activitiesByRun[id] = []
@@ -998,7 +1013,7 @@ const openChanges = async (id: string) => {
   changes.value = []
   changesRunId.value = id
   try {
-    const res = await listRunChanges(id)
+    const res = await listRunChanges({ runId: id, limit: 100 })
     changes.value = res.data.data?.records ?? []
   } catch {
     message.error('文件变更加载失败')
@@ -1007,7 +1022,7 @@ const openChanges = async (id: string) => {
   }
 }
 
-const openDiff = async (change: API.RunChange) => {
+const openDiff = async (change: RunChange) => {
   diffOpen.value = true
   diffPath.value = change.path
   diffRunId.value = changesRunId.value
@@ -1016,7 +1031,7 @@ const openDiff = async (change: API.RunChange) => {
   diffCursor.value = null
   diffLoading.value = true
   try {
-    const response = await getRunDiff(diffRunId.value, change.id)
+    const response = await getRunDiff({ runId: diffRunId.value, fileId: change.id })
     if (response.data.data) {
       diffLines.value = response.data.data.lines
       diffCursor.value = response.data.data.nextCursor
@@ -1034,7 +1049,11 @@ const loadMoreDiff = async () => {
   if (!diffCursor.value || !diffRunId.value) return
   diffLoading.value = true
   try {
-    const res = await getRunDiff(diffRunId.value, diffFileId.value, diffCursor.value)
+    const res = await getRunDiff({
+      runId: diffRunId.value,
+      fileId: diffFileId.value,
+      cursor: diffCursor.value ?? undefined,
+    })
     if (res.data.data) {
       diffLines.value = [...diffLines.value, ...res.data.data.lines]
       diffCursor.value = res.data.data.nextCursor ? Number(res.data.data.nextCursor) : null
@@ -1051,7 +1070,7 @@ const diffLineClass = (line: string) => {
   return ''
 }
 
-const changeStatusLabel = (status: API.RunChange['status']) => {
+const changeStatusLabel = (status: RunChange['status']) => {
   if (status === 'added') return '新增'
   if (status === 'deleted') return '删除'
   if (status === 'modified') return '修改'
@@ -1107,7 +1126,7 @@ const handleSplitterKeydown = (event: KeyboardEvent) => {
 }
 
 const requestAndSubmitTicket = async () => {
-  const res = await requestPreviewAccess(appId)
+  const res = await requestPreviewAccess({ appId })
   if (res.data.code !== 0 || !res.data.data) throw new Error(res.data.message || '预览授权失败')
   const { url, ticket } = res.data.data
   previewUrl.value = url
@@ -1175,7 +1194,7 @@ const submitPreviewTicket = async (url: string, ticket: string) => {
 
 const syncPreview = async () => {
   try {
-    const res = await getPreviewStatus(appId)
+    const res = await getPreviewStatus({ appId })
     if (res.data.code !== 0 || !res.data.data) return
     previewStatus.value = res.data.data.status
     previewError.value = res.data.data.lastError ?? ''
@@ -1200,9 +1219,9 @@ const schedulePreviewPoll = () => {
 const startPreviewManually = async () => {
   previewLoading.value = true
   try {
-    const res = await startPreview(appId)
+    const res = await startPreview({ appId })
     if (res.data.code === 0 && res.data.data) {
-      previewStatus.value = res.data.data.status as API.AppPreview['status']
+      previewStatus.value = res.data.data.status as AppPreview['status']
       previewError.value = res.data.data.error ?? ''
       if (res.data.data.status === 'running') await applyPreviewAccess()
       else if (res.data.data.status === 'starting') schedulePreviewPoll()
@@ -1226,7 +1245,7 @@ const startHeartbeat = () => {
   if (heartbeatTimer) window.clearInterval(heartbeatTimer)
   heartbeatTimer = window.setInterval(() => {
     if (document.visibilityState === 'visible')
-      void sendPreviewHeartbeat(appId).catch(() => undefined)
+      void sendPreviewHeartbeat({ appId }).catch(() => undefined)
   }, 30_000)
 }
 

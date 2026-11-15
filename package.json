@@ -14,6 +14,7 @@
     "lint": "pnpm --filter paimeng-ai-code-mother-backend lint && pnpm --filter paimeng-ai-code-mother-frontend lint",
     "test": "pnpm --filter paimeng-ai-code-mother-backend test && pnpm --filter paimeng-ai-code-mother-frontend test",
     "format": "pnpm --filter paimeng-ai-code-mother-backend format && pnpm --filter paimeng-ai-code-mother-frontend format",
+    "contract:check": "pnpm --filter paimeng-ai-code-mother-backend openapi:check && pnpm --filter paimeng-ai-code-mother-frontend openapi:check",
     "compose:up": "docker compose up -d postgres redis nginx",
     "compose:down": "docker compose down"
   }

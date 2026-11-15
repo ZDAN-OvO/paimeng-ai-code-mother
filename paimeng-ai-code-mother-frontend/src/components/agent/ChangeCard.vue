@@ -21,8 +21,10 @@
 </template>
 
 <script setup lang="ts">
+import type { RunDetails } from '@/api/apiTypes'
+
 defineProps<{
-  changes: API.RunDetails['changes']
+  changes: RunDetails['changes']
   detailsStatus?: 'pending' | 'ready' | 'incomplete'
 }>()
 const emit = defineEmits<{ (e: 'open'): void }>()

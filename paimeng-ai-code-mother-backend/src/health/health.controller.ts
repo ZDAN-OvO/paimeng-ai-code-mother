@@ -1,11 +1,15 @@
 import { Controller, Get, Res } from '@nestjs/common'
+import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger'
 import type { Response } from 'express'
-import { Public, RawResponse } from '../common/http'
+import { Public } from '../common/http'
 import { DbService } from '../db/db.module'
 import { RedisService } from '../redis/redis.module'
 import { RuntimeService } from '../runtime/runtime.service'
 import { Logger } from '@nestjs/common'
+import type { z } from 'zod'
+import { BaseResponseHealth, BaseResponseReadiness, healthSchema } from './dto'
 
+@ApiTags('health')
 @Controller()
 export class HealthController {
   private readonly logger = new Logger(HealthController.name)
@@ -17,15 +21,17 @@ export class HealthController {
   ) {}
 
   @Public()
-  @RawResponse()
   @Get('health')
-  health() {
+  @ApiOperation({ summary: '存活检查' })
+  @ApiOkResponse({ type: BaseResponseHealth })
+  health(): z.output<typeof healthSchema> {
     return { status: 'ok', uptimeSeconds: Math.round(process.uptime()) }
   }
 
   @Public()
-  @RawResponse()
   @Get('health/ready')
+  @ApiOperation({ summary: '就绪检查' })
+  @ApiOkResponse({ type: BaseResponseReadiness })
   async ready(@Res() res: Response) {
     const checks: Record<string, string> = {}
     try {

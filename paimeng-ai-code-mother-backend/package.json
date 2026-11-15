@@ -2,7 +2,7 @@
   "name": "paimeng-ai-code-mother-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "派蒙 AI 应用工坊后端（NestJS）",
+  "description": "Paimeng 后端（NestJS）",
   "type": "commonjs",
   "main": "dist/main.js",
   "scripts": {
@@ -13,6 +13,8 @@
     "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\"",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
+    "openapi:export": "tsc -p tsconfig.build.json && node dist/openapi/export.js",
+    "openapi:check": "tsc -p tsconfig.build.json && node dist/openapi/export.js --check",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:acceptance": "node scripts/acceptance.mjs",

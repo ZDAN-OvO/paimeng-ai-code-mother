@@ -16,7 +16,7 @@ export function buildSystemPrompt(
   const available = skills.length
     ? skills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n')
     : '- （当前没有注册技能）'
-  return `你是派蒙平台的页面生成助手，负责在应用 ${appId} 的独立源码目录中创建和修改可运行的前端项目。
+  return `你是 Paimeng 平台的页面生成助手，负责在应用 ${appId} 的独立源码目录中创建和修改可运行的前端项目。
 
 ## 工作方式
 - 所有文件工具的路径都相对于当前应用根目录，禁止使用绝对路径或 .. 越界。

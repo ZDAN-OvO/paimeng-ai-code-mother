@@ -1,12 +1,13 @@
 import type { ActivityGroup, ToolStatus, ToolTimelineEntry } from './agentActivity.ts'
 import { groupKindOf, groupStatusOf } from './agentActivity.ts'
 import { describeTool } from './toolDisplay.ts'
+import type { RunPlan, UIMessageToolPart, UIMessageValidationPart } from '@/api/chatTypes'
 
 export type TurnBlock =
   | { type: 'text'; key: string; text: string }
   | { type: 'tools'; key: string; group: ActivityGroup }
-  | { type: 'plan'; key: string; plan: API.RunPlan }
-  | { type: 'validation'; key: string; validation: API.UIMessageValidationPart['data'] }
+  | { type: 'plan'; key: string; plan: RunPlan }
+  | { type: 'validation'; key: string; validation: UIMessageValidationPart['data'] }
 
 export function visibleTurnBlocks(
   blocks: TurnBlock[],
@@ -26,7 +27,7 @@ export function visibleTurnBlocks(
 }
 
 export function toolEntryFromPart(
-  part: API.UIMessageToolPart,
+  part: UIMessageToolPart,
   fallback: ToolStatus,
 ): ToolTimelineEntry {
   const status: ToolStatus =
@@ -51,7 +52,7 @@ export function toolEntryFromPart(
 }
 
 export function buildTurnBlocks(
-  parts: API.UIMessagePart[],
+  parts: API.ChatUIMessage['parts'],
   terminalStatus: 'streaming' | 'completed' | 'failed' | 'cancelled',
 ): TurnBlock[] {
   const blocks: TurnBlock[] = []

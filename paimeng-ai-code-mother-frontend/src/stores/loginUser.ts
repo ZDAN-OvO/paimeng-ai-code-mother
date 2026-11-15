@@ -1,13 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { getLoginUser } from '@/api/userController.ts'
+import type { LoginUserVO } from '@/api/apiTypes'
+import { getLoginUser } from '@/api/generated/api/user'
 
 /**
  * 登录用户信息
  */
 export const useLoginUserStore = defineStore('loginUser', () => {
   // 默认值
-  const loginUser = ref<Partial<API.LoginUserVO>>({
+  const loginUser = ref<Partial<LoginUserVO>>({
     userName: '未登录',
   })
 
@@ -26,7 +27,7 @@ export const useLoginUserStore = defineStore('loginUser', () => {
   }
 
   // 更新登录用户信息
-  function setLoginUser(newLoginUser: Partial<API.LoginUserVO>) {
+  function setLoginUser(newLoginUser: Partial<LoginUserVO>) {
     loginUser.value = newLoginUser
   }
 

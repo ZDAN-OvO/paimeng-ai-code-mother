@@ -1,13 +1,13 @@
 import { existsSync } from 'node:fs'
 import { Logger } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
-import { cleanupOpenApiDoc } from 'nestjs-zod'
+import { SwaggerModule } from '@nestjs/swagger'
 import type { Request, Response, NextFunction } from 'express'
 import { AppModule } from './app.module'
 import { AppConfigService } from './config/config.module'
 import { SessionService } from './auth/session.service'
 import { PreviewService } from './preview/preview.service'
+import { buildOpenApiDocument } from './openapi/document'
 
 if (existsSync('.env')) {
   process.loadEnvFile('.env')
@@ -62,19 +62,14 @@ async function bootstrap() {
   })
   app.use(session.middleware())
 
-  const document = cleanupOpenApiDoc(SwaggerModule.createDocument(
-    app,
-    new DocumentBuilder()
-      .setTitle('派蒙 AI 代码生成平台 API')
-      .setDescription('唯一 API 契约见 docs/api.md')
-      .setVersion('1.0')
-      .build(),
-  ))
+  const document = buildOpenApiDocument(app)
   SwaggerModule.setup('api/v3/api-docs', app, document)
 
   await app.listen(config.port, '127.0.0.1')
   const server = app.getHttpServer()
-  server.on('upgrade', (req: Request, socket: never, head: Buffer) => preview.handleUpgrade(req, socket, head))
+  server.on('upgrade', (req: Request, socket: never, head: Buffer) =>
+    preview.handleUpgrade(req, socket, head),
+  )
 
   Logger.log(`后端已启动 http://127.0.0.1:${config.port}/api`, 'Bootstrap')
 }

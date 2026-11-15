@@ -40,11 +40,11 @@
 import { computed } from 'vue'
 import { EditOutlined, DeleteOutlined } from '@ant-design/icons-vue'
 import { formatTime } from '@/utils/time'
+import type { AppVO } from '@/api/apiTypes'
 
-const props = withDefaults(
-  defineProps<{ open: boolean; app?: API.AppVO; showActions?: boolean }>(),
-  { showActions: false },
-)
+const props = withDefaults(defineProps<{ open: boolean; app?: AppVO; showActions?: boolean }>(), {
+  showActions: false,
+})
 const emit = defineEmits<{
   (e: 'update:open', value: boolean): void
   (e: 'edit'): void

@@ -3,7 +3,7 @@ import router from '@/router'
 
 let firstFetchLoginUser = true
 
-router.beforeEach(async (to, from, next) => {
+router.beforeEach(async () => {
   const loginUserStore = useLoginUserStore()
   if (firstFetchLoginUser) {
     try {
@@ -12,5 +12,5 @@ router.beforeEach(async (to, from, next) => {
       firstFetchLoginUser = false
     }
   }
-  next()
+  return true
 })
