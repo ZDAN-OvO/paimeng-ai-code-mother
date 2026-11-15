@@ -615,7 +615,7 @@
             "in": "query",
             "schema": {
               "minLength": 8,
-              "maxLength": 100,
+              "maxLength": 64,
               "type": "string"
             }
           }

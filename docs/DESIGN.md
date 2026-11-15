@@ -334,7 +334,7 @@ steer 在模型当前响应及其全部工具结束并持久化后，一次性�
 
 只有最后一个 `data-run` 的 `status` 为 `completed` 才表示成功。浏览器离开页面、网络中断或主动关闭流只停止当前订阅，都不触发取消；取消只能通过 `/app/run/cancel` 发起。
 
-**`GET /app/run/status`**：参数为 `runId`，或在首个流事件丢失时用 `appId` 加 `clientRequestId`。返回运行状态、阶段、步数、修复次数、错误码、时间和 `detailsStatus`（`pending` / `ready` / `incomplete`）。
+**`GET /app/run/status`**：参数为 `runId`，或在首个流事件丢失时用 `appId` 加 `clientRequestId`。`clientRequestId` 与发送和入队共用校验：去除首尾空白后为 8–64 字符，与数据库字段上限一致。返回运行状态、阶段、步数、修复次数、错误码、时间和 `detailsStatus`（`pending` / `ready` / `incomplete`）。
 
 **`POST /app/run/cancel`**：请求 `{ runId }`。进行中的运行转为 `cancelling`，终止模型请求和任务容器，5 秒内不再产生新的文件或验证副作用，最终进入 `cancelled`。对已经结束的运行重复取消直接返回。
 

@@ -6,15 +6,16 @@ import { planStepSchema } from '../conversations/dto'
 const runIdSchema = z.string().uuid('runId 格式无效')
 const runStatusValueSchema = z.enum(['running', 'cancelling', 'completed', 'failed', 'cancelled'])
 const detailsStatusSchema = z.enum(['pending', 'ready', 'incomplete'])
+const clientRequestIdSchema = z
+  .string()
+  .trim()
+  .min(8, 'clientRequestId 长度需在 8-64 之间')
+  .max(64, 'clientRequestId 长度需在 8-64 之间')
 
 export const chatSchema = z.object({
   appId: z.number().int().positive('应用 ID 无效'),
   message: z.string().trim().min(1, '消息不能为空').max(1000, '消息最多 1000 个字符'),
-  clientRequestId: z
-    .string()
-    .trim()
-    .min(8, 'clientRequestId 长度需在 8-100 之间')
-    .max(64, 'clientRequestId 最多 64 个字符'),
+  clientRequestId: clientRequestIdSchema,
 })
 
 export const enqueueMessageSchema = chatSchema.extend({
@@ -46,7 +47,7 @@ export const cancelRunSchema = z.object({ runId: runIdSchema })
 export const runStatusQuerySchema = z.object({
   runId: runIdSchema.optional(),
   appId: z.coerce.number().int().positive('应用 ID 无效').optional(),
-  clientRequestId: z.string().min(8).max(100).optional(),
+  clientRequestId: clientRequestIdSchema.optional(),
 })
 
 export const runDetailsQuerySchema = z.object({ runId: runIdSchema })
