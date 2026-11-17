@@ -27,7 +27,8 @@ Playwright 启动 `node scripts/ci/browser-server.mjs`，不复用已有服务�
 套件只有四个测试，Chromium 单 worker、无重试。单个测试限时 45 秒，整个套件限时 180 秒。
 
 1. UI 注册、登录、创建应用、自动发送首条需求，验证最终回复与跨源 iframe 内容，刷新后恢复历史和预览。API 补充验证其他账号不能访问应用、历史、队列、运行和预览票据，预览 Origin 不能修改主站数据，无授权的预览请求返回 401。
-2. 确认运行中后通过 UI 插话，刷新中断 SSE 并重连。插话必须进入同一运行、状态为 `applied`，后端发往固定模型服务的请求必须包含插话，最终回复和预览必须包含插话结果。
+2. 确认运行中后通过 UI 插话，刷新中断 SSE 并重连。刷新前必须先看到一段只存在于模型流、从不落库的中间文本；刷新时对 `/api/app/run/stream` 的订阅必须是同一 `runId`、HTTP 200、`text/event-stream`，且重放流里重新出现那段中间文本。插话必须进入同一运行、状态为 `applied`，后端发往固定模型服务的请求必须包含插话，最终回复和预览必须包含插话结果。
+   这组断言的作用是：把 SSE 订阅改成 500 或让流不再推送，用例必须变红。只比对终态做不到这一点——前端有队列轮询与状态核对兜底，SSE 全坏也能显示完成。
 3. 确认 `running` 后添加普通等待消息，再通过 UI 停止。要求严格的 `cancelled` 终态、队列暂停且保留原等待消息、模型连接已中止。刷新后等待消息仍在且未产生新运行。
 4. 本地模型返回 Responses `response.failed`，运行必须为 `failed / MODEL_ERROR`。刷新后保留失败历史，通过 UI 继续队列，新运行可以成功。
 
@@ -37,7 +38,7 @@ Playwright 启动 `node scripts/ci/browser-server.mjs`，不复用已有服务�
 
 失败 trace 和截图写入仓库根目录 `test-results/`，与临时服务目录分离，供 CI 上传。此配置只运行不含真实模型密钥的固定模型流程。trace 会包含临时测试账号与会话，保留期限由 CI 配置决定。
 
-后端日志位于 `CI_TEST_WORK_DIR/browser-backend.log`。运行目录由 webServer 删除；日志、PG、Redis 和外层临时目录由根 runner 的 `finally` 删除。排查启动错误时，应在 runner 清理前收集日志。
+后端日志位于 `CI_TEST_WORK_DIR/browser-backend.log`。运行目录由根 runner 的 `finally` 删除，所以启动器在退出时会把它复制到 `test-results/browser-backend.log`（CI 失败时随 `test-results/` 一起上传）；非零退出时还会把末 40 行直接打印到日志里。PG、Redis 容器与临时目录同样由外层 `finally` 销毁，取消信号会立即升级为强杀，保证清理有时间执行。
 
 webServer 启动限时 35 秒，后端就绪探测限时 25 秒，单次探测限时 1 秒。代理有空闲和总时长限制。SIGTERM、SIGINT 会关闭连接并终止后端进程组，超过宽限期使用 SIGKILL。后端守护进程还监听父进程 IPC 断开，并设置最大存活时间，避免启动器异常退出留下后端后代。
 

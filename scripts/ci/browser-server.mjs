@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createServer, request as httpRequest } from 'node:http'
 import { createReadStream, openSync, closeSync } from 'node:fs'
-import { access, mkdir, mkdtemp, rm, stat } from 'node:fs/promises'
+import { access, copyFile, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { browserEnvironment, repoRoot } from '../../tests/e2e/environment.mjs'
@@ -10,6 +10,8 @@ import { createModelServer } from '../../tests/e2e/model-server.mjs'
 const env = browserEnvironment()
 const frontend = join(repoRoot, 'paimeng-ai-code-mother-frontend/dist')
 const main = join(repoRoot, 'paimeng-ai-code-mother-backend/dist/main.js')
+const backendLog = join(env.workDir, 'browser-backend.log')
+const preservedLog = join(repoRoot, 'test-results', 'browser-backend.log')
 const sockets = new Set()
 const upstreams = new Set()
 const servers = []
@@ -23,6 +25,24 @@ function killBackend(signal) {
   if (!supervisor?.pid) return
   try { process.kill(-supervisor.pid, signal) } catch (error) {
     if (error.code !== 'ESRCH') console.error('后端进程组终止失败:', error.code)
+  }
+}
+
+// 运行目录由根 runner 删除；失败时必须把后端日志搬到会被上传的位置，否则排查线索一起消失。
+async function preserveBackendLog(code) {
+  try {
+    await mkdir(dirname(preservedLog), { recursive: true })
+    await copyFile(backendLog, preservedLog)
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error(`后端日志保存失败: ${error.code}`)
+  }
+  if (code === 0) return
+  try {
+    const lines = (await readFile(backendLog, 'utf8')).trimEnd().split('\n')
+    console.error(`测试后端日志（末 ${Math.min(lines.length, 40)} 行，完整内容见 test-results/browser-backend.log）：`)
+    console.error(lines.slice(-40).join('\n'))
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error(`后端日志读取失败: ${error.code}`)
   }
 }
 
@@ -47,6 +67,7 @@ async function shutdown(code = 0) {
     killBackend('SIGKILL')
     await Promise.race([supervisorClosed, delay(500)])
   }
+  await preserveBackendLog(code)
   if (scratch) await rm(scratch, { recursive: true, force: true })
   clearTimeout(hardDeadline)
   process.exit(code)
@@ -181,7 +202,7 @@ async function start() {
     // 静态流程不会访问 registry；误触发也只能到本地 fixture，不能访问公网。
     REGISTRY_UPSTREAM: env.modelOrigin,
   }
-  const log = openSync(join(env.workDir, 'browser-backend.log'), 'a', 0o600)
+  const log = openSync(backendLog, 'a', 0o600)
   try {
     supervisor = spawn(process.execPath, [join(repoRoot, 'tests/e2e/backend-process.mjs'), main], {
       cwd: env.workDir, env: childEnv, detached: true,
@@ -192,7 +213,7 @@ async function start() {
   supervisor.on('error', () => void shutdown(1))
   supervisor.on('message', (message) => {
     if (message.type === 'backend-exit' && !stopping) {
-      console.error('测试后端提前退出，检查 CI_TEST_WORK_DIR/browser-backend.log')
+      console.error('测试后端提前退出，日志会在退出时复制到 test-results/browser-backend.log')
       void shutdown(1)
     }
   })
@@ -211,7 +232,7 @@ async function start() {
     } catch { /* 启动探测按截止时间重试 */ }
     await delay(100)
   }
-  if (!stopping) throw new Error('测试后端 25 秒内未就绪，检查 CI_TEST_WORK_DIR/browser-backend.log')
+  if (!stopping) throw new Error('测试后端 25 秒内未就绪，日志会在退出时复制到 test-results/browser-backend.log')
 }
 
 start().catch((error) => { console.error(error.message); void shutdown(1) })

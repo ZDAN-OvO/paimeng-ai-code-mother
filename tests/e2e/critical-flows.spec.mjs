@@ -13,10 +13,10 @@ const test = base.extend({
       async create(mode = 'normal') {
         const marker = `e2e-${randomUUID().replaceAll('-', '')}`
         const steer = `插话-${marker.slice(4, 16)}`
-        await control('/__control/scenarios', 'POST', { marker, mode, steer })
+        const created = await control('/__control/scenarios', 'POST', { marker, mode, steer })
         markers.push(marker)
         return {
-          marker, steer, prompt: `创建一个静态页面，页面标记为 ${marker}`,
+          marker, steer, partial: created.partial, prompt: `创建一个静态页面，页面标记为 ${marker}`,
           stats: () => control(`/__control/scenarios/${marker}`),
           release: () => control(`/__control/scenarios/${marker}/release`, 'POST'),
         }
@@ -198,12 +198,24 @@ test('运行中插话经真实队列消费，刷新重连后同一轮完成并�
   const { appId, item } = await createApp(page, scenario)
   const run = await waitRun(page, appId, item, 'running')
   await expect.poll(async () => (await scenario.stats()).waiting).toBe(true)
+  // 这段文本只在模型流里，从不落库：看得见就证明 SSE 真的在推流，而不是靠轮询回填终态。
+  await expect(page.getByText(scenario.partial, { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
   const steer = await send(page, scenario.steer, '插话发送')
   expect(steer).toMatchObject({ mode: 'steer', runId: run.runId })
   await expect(page.getByText('插话发送 · 等待插入当前轮次', { exact: true })).toBeVisible()
   // reload 真正断开浏览器 SSE；模型请求仍被闸门持有，不能凭固定 sleep 猜时机。
-  await page.reload()
+  const [subscription] = await Promise.all([
+    page.waitForResponse((response) =>
+      new URL(response.url()).pathname === '/api/app/run/stream' && response.request().method() === 'POST'),
+    page.reload(),
+  ])
+  // 重连必须是对同一运行的真实订阅：状态码、流式类型、runId 三者都要对。
+  expect(subscription.status()).toBe(200)
+  expect(subscription.headers()['content-type']).toContain('text/event-stream')
+  expect(subscription.request().postDataJSON()).toMatchObject({ runId: run.runId })
+  // 重放的历史流里必须包含刷新前推过的中间文本。
+  await expect(page.getByText(scenario.partial, { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
   await expect(page.getByText('插话发送 · 等待插入当前轮次', { exact: true })).toBeVisible()
   expect((await readRun(page, appId, item)).runId).toBe(run.runId)

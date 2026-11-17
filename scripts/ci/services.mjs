@@ -32,7 +32,8 @@ const shutdown = new AbortController()
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => {
     shutdown.abort(new Error(`CI interrupted by ${signal}`))
-    for (const child of children) terminate(child)
+    // 取消后立即升级为强杀，避免子进程忽略 TERM 时把清理拖到 job 超时被外部强杀。
+    for (const child of children) terminate(child, 'SIGKILL')
   })
 }
 
@@ -70,8 +71,10 @@ export function start(command, args, { cwd = root, env = baseEnv, stdio = 'inher
 
 export async function stop(child) {
   try {
-    terminate(child)
-    const deadline = Date.now() + 5000
+    // 用户取消时不再等 TERM 宽限期，否则清理会被忽略信号的进程拖住。
+    const interrupted = shutdown.signal.aborted
+    terminate(child, interrupted ? 'SIGKILL' : 'SIGTERM')
+    const deadline = Date.now() + (interrupted ? 500 : 5000)
     while (groupAlive(child) && Date.now() < deadline) await delay(50)
     // The leader may have exited while a descendant still ignores TERM.
     if (groupAlive(child)) terminate(child, 'SIGKILL')
@@ -89,8 +92,21 @@ export async function run(command, args, options = {}) {
   }, options.timeoutMs ?? 180_000)
   try {
     const code = await new Promise((resolveCode, reject) => {
-      child.once('error', reject)
-      child.once('close', resolveCode)
+      // 取消必须立即打断等待：否则要等到子进程自己的超时才返回，清理来不及执行。
+      const onAbort = () => {
+        terminate(child, 'SIGKILL')
+        reject(shutdown.signal.reason)
+      }
+      shutdown.signal.addEventListener('abort', onAbort, { once: true })
+      child.once('error', (error) => {
+        shutdown.signal.removeEventListener('abort', onAbort)
+        reject(error)
+      })
+      child.once('close', (code) => {
+        shutdown.signal.removeEventListener('abort', onAbort)
+        resolveCode(code)
+      })
+      if (shutdown.signal.aborted) onAbort()
     })
     shutdown.signal.throwIfAborted()
     if (code !== 0) throw new Error(`${command} failed (${timedOut ? 'timeout' : `exit ${code}`})`)
@@ -220,6 +236,7 @@ export async function withServices(work) {
       } catch (error) {
         failure ??= error
         console.error(`CI cleanup failed: ${error.message}`)
+        console.error(`Remove the leftover container manually: docker rm -fv ${name}`)
       }
     }
     await rm(directory, { recursive: true, force: true }).catch((error) => {

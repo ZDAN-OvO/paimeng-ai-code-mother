@@ -31,11 +31,12 @@ export function createModelServer() {
       if (!/^e2e-[a-f0-9]{32}$/.test(marker) || !['normal', 'hold', 'fail'].includes(mode) ||
           typeof steer !== 'string' || steer.length > 100) throw new Error('invalid scenario')
       if (scenarios.has(marker)) throw new Error('duplicate scenario')
+      const partial = `正在生成 ${marker}。`
       scenarios.set(marker, {
-        marker, mode, steer, phase: 0, requests: 0, waiting: false,
+        marker, mode, steer, partial, phase: 0, requests: 0, waiting: false,
         aborted: false, seenSteer: false, calls: [], failureSent: false,
       })
-      return json(res, { marker })
+      return json(res, { marker, partial })
     }
     const control = /^\/__control\/scenarios\/(e2e-[a-f0-9]{32})(\/release)?$/.exec(url.pathname)
     if (control) {
@@ -64,7 +65,18 @@ export function createModelServer() {
     // 只有后端发来的模型请求包含插话，才把它写进 HTML 和最终回复，防止伪造“已消费”。
     scenario.seenSteer ||= Boolean(scenario.steer && (body.input ?? []).some((item) =>
       item.role === 'user' && JSON.stringify(item.content).includes(scenario.steer)))
-    if (scenario.mode === 'hold' && scenario.requests === 1) {
+    const held = scenario.mode === 'hold' && scenario.requests === 1
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
+    const id = `resp_${randomUUID()}`
+    const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`)
+    send({ type: 'response.created', response: { id, created_at: 1, model: body.model } })
+    if (held) {
+      // 中间文本只存在于流里，从不落库：页面能看到它，就证明 SSE 真的在推流。
+      const partialId = `msg_${randomUUID()}`
+      send({ type: 'response.output_item.added', output_index: 0,
+        item: { type: 'message', id: partialId, role: 'assistant', status: 'in_progress', content: [] } })
+      send({ type: 'response.output_text.delta', item_id: partialId, output_index: 0,
+        content_index: 0, delta: scenario.partial })
       const released = await new Promise((resolve) => {
         let settled = false
         const finish = (ok) => {
@@ -89,11 +101,10 @@ export function createModelServer() {
         res.once('close', closed)
       })
       if (!released) return
+      send({ type: 'response.output_item.done', output_index: 0,
+        item: { type: 'message', id: partialId, role: 'assistant', status: 'completed',
+          content: [{ type: 'output_text', text: scenario.partial, annotations: [] }] } })
     }
-    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
-    const id = `resp_${randomUUID()}`
-    const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`)
-    send({ type: 'response.created', response: { id, created_at: 1, model: body.model } })
     if (scenario.mode === 'fail' && !scenario.failureSent) {
       scenario.failureSent = true
       send({ type: 'response.failed', sequence_number: 1,
@@ -114,10 +125,11 @@ export function createModelServer() {
       const callId = `call_${randomUUID()}`
       const item = { type: 'function_call', id: `fc_${randomUUID()}`, call_id: callId,
         name: call.name, arguments: JSON.stringify(call.input), status: 'completed' }
-      send({ type: 'response.output_item.added', output_index: 0, item: { ...item, arguments: '' } })
+      const outputIndex = held ? 1 : 0
+      send({ type: 'response.output_item.added', output_index: outputIndex, item: { ...item, arguments: '' } })
       send({ type: 'response.function_call_arguments.delta', item_id: item.id,
-        output_index: 0, delta: item.arguments })
-      send({ type: 'response.output_item.done', output_index: 0, item })
+        output_index: outputIndex, delta: item.arguments })
+      send({ type: 'response.output_item.done', output_index: outputIndex, item })
       scenario.lastCall = callId
       scenario.phase++
     } else {

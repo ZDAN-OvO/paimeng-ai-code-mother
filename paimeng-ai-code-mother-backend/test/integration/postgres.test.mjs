@@ -10,6 +10,24 @@ import { TEST_TIMEOUT, bounded, outcome, waitForBlocked, withHarness } from './s
 
 const options = { timeout: TEST_TIMEOUT }
 
+// drizzle 的 SQL 类型名与 format_type() 的写法不同，归一到同一种拼写再比对。
+const TYPE_ALIASES = [
+  [/^varchar/, 'character varying'],
+  [/^timestamp$/, 'timestamp without time zone'],
+  [/^timestamptz/, 'timestamp with time zone'],
+  [/^serial$/, 'integer'],
+  [/^bigserial$/, 'bigint'],
+  [/^smallserial$/, 'smallint'],
+]
+
+const migratedType = (sqlType) =>
+  TYPE_ALIASES.reduce(
+    (type, [pattern, name]) => type.replace(pattern, name),
+    sqlType.toLowerCase(),
+  )
+
+const ON_DELETE_CODE = { cascade: 'c', 'set null': 'n', restrict: 'r', 'no action': 'a', 'set default': 'd' }
+
 test('empty-database migration replay matches the built schema and migration ledger', options, async () => {
   await withHarness(async ({ db }) => {
     const journal = JSON.parse(
@@ -33,9 +51,15 @@ test('empty-database migration replay matches the built schema and migration led
     for (const table of tables) {
       const config = getTableConfig(table)
       const { rows: columns } = await db.pool.query(
-        `select column_name, is_nullable, column_default from information_schema.columns
-         where table_schema = 'public' and table_name = $1 order by ordinal_position`,
-        [config.name],
+        `select a.attname as column_name,
+                a.attnotnull as not_null,
+                format_type(a.atttypid, a.atttypmod) as data_type,
+                pg_get_expr(d.adbin, d.adrelid) as column_default
+         from pg_attribute a
+         left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+         where a.attrelid = $1::regclass and a.attnum > 0 and not a.attisdropped
+         order by a.attnum`,
+        [`public.${config.name}`],
       )
       assert.deepEqual(
         columns.map((column) => column.column_name).sort(),
@@ -45,16 +69,25 @@ test('empty-database migration replay matches the built schema and migration led
       for (const column of config.columns) {
         const actual = columns.find((entry) => entry.column_name === column.name)
         assert.equal(
-          actual.is_nullable,
-          column.notNull ? 'NO' : 'YES',
+          actual.not_null,
+          column.notNull,
           `${config.name}.${column.name} nullability`,
+        )
+        // 类型、长度、精度必须与迁移后的真实列一致，否则漏写迁移查不出来。
+        assert.equal(
+          actual.data_type.toLowerCase(),
+          migratedType(column.getSQLType()),
+          `${config.name}.${column.name} type`,
         )
         if (column.hasDefault)
           assert.notEqual(actual.column_default, null, `${config.name}.${column.name} default`)
       }
       const { rows: indexes } = await db.pool.query(
         `select c.relname as name, i.indisunique as unique, i.indisvalid as valid,
-                pg_get_expr(i.indpred, i.indrelid) as predicate
+                pg_get_expr(i.indpred, i.indrelid) as predicate,
+                coalesce((select array_agg(a.attname::text order by k.ord)
+                   from unnest(i.indkey) with ordinality as k(attnum, ord)
+                   join pg_attribute a on a.attrelid = i.indrelid and a.attnum = k.attnum), '{}') as columns
          from pg_index i join pg_class c on c.oid = i.indexrelid
          where i.indrelid = $1::regclass`,
         [`public.${config.name}`],
@@ -65,6 +98,12 @@ test('empty-database migration replay matches the built schema and migration led
         assert.equal(actual.valid, true)
         assert.equal(actual.unique, index.config.unique)
         assert.equal(actual.predicate !== null, Boolean(index.config.where))
+        // 索引名相同但建在别的列上属于静默失效，必须比对列顺序。
+        assert.deepEqual(
+          actual.columns.map((name) => String(name)),
+          index.config.columns.map((column) => column.name),
+          `${config.name} index ${index.config.name} columns`,
+        )
       }
       const { rows: foreignKeys } = await db.pool.query(
         `select conname, confdeltype from pg_constraint where conrelid = $1::regclass and contype = 'f'`,
@@ -73,7 +112,7 @@ test('empty-database migration replay matches the built schema and migration led
       for (const foreignKey of config.foreignKeys) {
         const actual = foreignKeys.find((entry) => entry.conname === foreignKey.getName())
         assert.ok(actual, `Missing foreign key ${foreignKey.getName()}`)
-        assert.equal(actual.confdeltype, foreignKey.onDelete === 'cascade' ? 'c' : 'n')
+        assert.equal(actual.confdeltype, ON_DELETE_CODE[foreignKey.onDelete ?? 'no action'], `${foreignKey.getName()} onDelete`)
       }
     }
   })
