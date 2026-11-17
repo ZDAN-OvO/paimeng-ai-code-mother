@@ -89,7 +89,30 @@ pnpm build
 pnpm contract:check
 ```
 
-push 到 `main` 和 pull request 会在 GitHub Actions 上自动跑这组检查（`.github/workflows/ci.yml`）。
+push 到 `main` 和 pull request 会在 GitHub Actions 上自动跑这组检查。另一个并行任务执行真实 PostgreSQL、Redis 集成测试和 Chromium 浏览器测试。`check` 汇总两个任务，只有两者都成功才通过；`main` 的合并规则要求 `check` 通过，且分支包含最新主干。管理员仍可使用仓库原有的绕过权限。
+
+### 运行集成测试与浏览器测试
+
+先安装依赖和 Chromium：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
+```
+
+需要本机 Docker 可用。按改动范围选择一个命令：
+
+```bash
+pnpm test:integration  # 真实 PostgreSQL、Redis 与迁移
+pnpm test:e2e          # Chromium 中的关键操作流程
+pnpm test:system       # 两者一起运行，CI 使用此入口
+```
+
+启动器自动构建所需产物，创建独立的 PostgreSQL、Redis 容器和临时运行目录，并在退出时清理本次创建的资源。测试不加载 `.env`，不连接开发数据库，也不让浏览器测试的后端访问 Docker。浏览器测试只替换模型响应，鉴权、消息队列、SSE、文件写入和静态预览仍走真实后端。
+
+PR 测试使用构建后的前端和测试代理，不覆盖生产 Nginx、真实模型或应用容器构建。失败时 GitHub Actions 保留浏览器截图与 trace 三天。
+
+CI 的模型响应全部来自本地测试服务，不调用真实模型，也不需要网关地址或 API Key。需要真实模型的黑盒验收在本机手动执行，不纳入 CI；生成应用的 Docker 构建与容器预览仍需单独验收。
 
 OpenAPI 页面在 `http://127.0.0.1:8123/api/v3/api-docs`。
 
