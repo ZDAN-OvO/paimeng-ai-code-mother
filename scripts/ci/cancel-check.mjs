@@ -2,7 +2,7 @@
 // 需要 Docker 与 Chromium，属于「按需/发布前」检查，不放进每次 PR 的必跑集合。
 //   pnpm test:cancel
 //
-// 归属靠 CI_TEST_OWNER 标记，而不是「跑前跑后的全局差集」：同一台机器上可能有别的 worktree
+// 归属靠 CI_TEST_OWNER 标记认领，而不是「跑前跑后的全局差集」：同一台机器上可能有别的 worktree
 // 或别的 agent 在跑同一套测试，差集会把它们新建的进程、容器和目录算成本轮残留。
 import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync } from 'node:fs'
@@ -12,7 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { root } from './services.mjs'
 
 const owner = randomUUID()
-// 本轮工作目录落在自己的根目录下，事后这个根目录必须是空的。
+// 本轮工作目录落在自己的根目录下，事后这个根目录下不能有本轮的工作目录。
 const workRoot = mkdtempSync(join(process.env.TMPDIR ?? '/tmp', `paimeng-cancel-${owner.slice(0, 8)}-`))
 const logPath = join(workRoot, 'runner.log')
 
@@ -22,20 +22,42 @@ const probe = (command, args) => {
   return result
 }
 
-// 本轮进程：所有后代都继承 CI_TEST_OWNER，读 /proc/<pid>/environ 认领，不靠进程名。
-const ownerPids = () => {
-  const found = []
+const readCmdline = (pid) => {
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ')
+  } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+// 活着的判断只看 /proc 状态：僵尸进程不能执行代码，算已清理。
+const isAlive = (pid) => {
+  try {
+    return !/\) Z /.test(readFileSync(`/proc/${pid}/stat`, 'utf8'))
+  } catch (error) {
+    if (error.code === 'ENOENT') return false
+    throw error
+  }
+}
+
+// 带本轮标记的进程。environ 读不到（EACCES/EPERM）不能当成「不存在」，
+// 所以调用方必须结合已经认领过的 pid 做存活复核，而不是只看这一次扫描结果。
+const claimedPids = () => {
+  const claimed = []
+  let unreadable = 0
   for (const entry of readdirSync('/proc')) {
     if (!/^\d+$/.test(entry)) continue
     let environ
     try {
       environ = readFileSync(`/proc/${entry}/environ`, 'utf8')
-    } catch {
-      continue // 别人的进程读不到，也不属于本轮
+    } catch (error) {
+      if (error.code === 'EACCES' || error.code === 'EPERM') unreadable += 1
+      continue
     }
-    if (environ.split('\0').includes(`CI_TEST_OWNER=${owner}`)) found.push(Number(entry))
+    if (environ.split('\0').includes(`CI_TEST_OWNER=${owner}`)) claimed.push(Number(entry))
   }
-  return found
+  return { claimed, unreadable }
 }
 
 const ownerContainers = () => {
@@ -92,9 +114,17 @@ async function waitForGone(probeFn, label, timeoutMs = 15_000) {
 
 try {
   const readyLog = await waitForReady()
-  // 归属机制自检：此刻本轮确实有容器和进程，否则后面的「没有残留」是空断言。
+  // 归属机制自检：逐个确认关键进程都被认领，不能只看「认领到几个」。
+  const initial = claimedPids()
+  const cmdlines = initial.claimed.map((pid) => readCmdline(pid) ?? '')
+  const expectClaimed = (label, needle) =>
+    check(`${label}已被归属标记认领`, cmdlines.some((line) => line.includes(needle)),
+      `已认领 ${initial.claimed.length} 个进程`)
+  expectClaimed('runner', 'scripts/ci/run.mjs')
+  expectClaimed('浏览器服务', 'scripts/ci/browser-server.mjs')
+  expectClaimed('后端守护进程', 'tests/e2e/backend-process.mjs')
+  expectClaimed('后端主进程', 'paimeng-ai-code-mother-backend/dist/main.js')
   check('本轮容器可被归属标记识别', ownerContainers().length > 0, ownerContainers().join(','))
-  check('本轮进程可被归属标记识别', ownerPids().length > 0, ownerPids().join(','))
   const webPort = Number(/paimeng\.localhost:(\d+)/.exec(readyLog)?.[1])
   check('已记录浏览器服务端口', Number.isInteger(webPort), String(webPort))
   check('取消前浏览器服务端口可用', webPort > 0 && portOpen(webPort))
@@ -107,9 +137,13 @@ try {
   check('取消后 runner 在 15 秒内退出', elapsed < 15_000, `${elapsed}ms`)
   check('取消后 runner 退出码非 0', runner.exitCode !== 0, String(runner.exitCode))
 
-  await waitForGone(() => ownerPids().length === 0 && ownerContainers().length === 0, '本轮资源清空', 15_000)
-  const leftoverPids = ownerPids()
-  check('取消后无残留进程', leftoverPids.length === 0, leftoverPids.join(','))
+  // 清理完成 = 取消前认领到的进程都不再存活，且再次扫描也没有新增带标记的进程。
+  const leftovers = () =>
+    [...new Set([...initial.claimed, ...claimedPids().claimed])].filter((pid) => isAlive(pid))
+  await waitForGone(() => leftovers().length === 0 && ownerContainers().length === 0, '本轮资源清空', 15_000)
+  const leftoverPids = leftovers()
+  check('取消后无残留进程', leftoverPids.length === 0,
+    leftoverPids.map((pid) => `${pid} ${readCmdline(pid) ?? ''}`.trim()).join(' | '))
   const leftoverContainers = ownerContainers()
   check('取消后无残留测试容器', leftoverContainers.length === 0, leftoverContainers.join(','))
   const leftoverEntries = workRootEntries()

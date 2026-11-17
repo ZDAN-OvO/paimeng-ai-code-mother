@@ -205,6 +205,8 @@ async function start() {
     // 静态流程不会访问 registry；误触发也只能到本地 fixture，不能访问公网。
     REGISTRY_UPSTREAM: env.modelOrigin,
   }
+  // 归属标记必须传给后端：否则取消后残留的后端进程无法被认领，取消检查会漏报。
+  if (process.env.CI_TEST_OWNER) childEnv.CI_TEST_OWNER = process.env.CI_TEST_OWNER
   const log = openSync(backendLog, 'a', 0o600)
   try {
     supervisor = spawn(process.execPath, [join(repoRoot, 'tests/e2e/backend-process.mjs'), main], {

@@ -134,6 +134,19 @@ async function waitRun(page, appId, item, status) {
 
 function preview(page) { return page.frameLocator('iframe[title="应用预览"]') }
 
+// 按 SSE 帧切开：每个 data: 负载一项，[DONE] 单独保留，便于校验顺序而不只是「存在」。
+function sseFrames(body) {
+  return body
+    .split('\n\n')
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => block.split('\n')
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim())
+      .join('\n'))
+    .filter(Boolean)
+}
+
 // 独立开一条真实订阅并持续读到关闭：用来证明放行之后服务端仍在推送，而不是只重放旧帧就关流。
 // ready 在拿到响应头时兑现：调用方必须先等到它，否则「订阅晚建立 + 只回快照」的假实现也能过。
 function streamRun(cookie, runId) {
@@ -280,13 +293,21 @@ test('运行中插话经真实队列消费，刷新后重新订阅并完成同�
     await expect.poll(() => live.ended() || live.failure(), {
       message: '运行结束后订阅应正常关闭', timeout: 20_000,
     }).toBe(true)
-    const frames = live.frames()
+    const frames = sseFrames(live.frames())
     expect(live.failure(), '这条订阅不能异常中断').toBeNull()
     expect(live.ended(), '订阅应自行结束').toBe(true)
-    expect(frames, '放行后应有写入校验帧，重放快照里不可能有').toMatch(/"type":"data-validation"[^\n]*"check":"source"/)
-    expect(frames, '放行后应收到最终文本').toContain(`页面已完成 ${scenario.marker}`)
-    expect(frames, '结束时应有终态帧').toMatch(/"type":"data-run"[^\n]*"status":"completed"/)
-    expect(frames, '流应以 [DONE] 收尾').toContain('[DONE]')
+    const at = (pattern) => frames.findIndex((frame) => pattern.test(frame))
+    const validation = at(/"type":"data-validation"[^\n]*"check":"source"/)
+    const finalText = frames.findIndex((frame) => frame.includes(`页面已完成 ${scenario.marker}`))
+    const terminal = at(/"type":"data-run"[^\n]*"status":"completed"/)
+    // [DONE] 必须是唯一的最后一帧：提前发一个再补帧的实现，用「包含」判断会漏掉。
+    const done = frames.map((frame, index) => (frame === '[DONE]' ? index : -1)).filter((index) => index >= 0)
+    expect(done, '流里必须且只能有一个 [DONE]').toHaveLength(1)
+    expect(done[0], '[DONE] 必须是最后一帧').toBe(frames.length - 1)
+    expect(validation, '放行后应有写入校验帧，重放快照里不可能有').toBeGreaterThan(-1)
+    expect(finalText, '放行后应收到最终文本').toBeGreaterThan(-1)
+    expect(terminal, '结束时应有 completed 终态帧').toBeGreaterThan(-1)
+    expect(done[0], '[DONE] 必须在终态帧之后').toBeGreaterThan(terminal)
   } finally {
     live.close()
   }
