@@ -1,32 +1,8 @@
 # 后端规范（NestJS）
 
-## 结构
+## 开发约定
 
-```text
-paimeng-ai-code-mother-backend/
-├── src/
-│   ├── main.ts / app.module.ts   # 启动入口与模块注册
-│   ├── config/                   # 环境变量 schema 与 AppConfigService
-│   ├── common/                   # 统一包络、错误码、HTTP 工具、截断
-│   ├── db/                       # Drizzle schema 与迁移脚本
-│   ├── redis/                    # Redis 连接
-│   ├── startup/                  # 单实例锁与启动收尾
-│   ├── health/                   # 存活与就绪检查
-│   ├── auth/                     # 注册、登录、session
-│   ├── apps/                     # 应用 CRUD 与删除流程
-│   ├── conversations/            # 对话、消息与 UIMessage 转换
-│   ├── runs/                     # 运行的创建、流式输出、取消、详情
-│   ├── agent/                    # 模型调用、上下文预算、系统提示
-│   ├── tools/                    # 提供给模型的工具注册与包装
-│   ├── skills/                   # 技能注册与读取
-│   ├── runtime/                  # 文件服务、依赖策略、Docker 调度
-│   └── preview/                  # 预览授权与预览网关
-├── .paimeng/skills/              # 生成技能：static、vue、react
-├── drizzle/                      # 已生成的迁移文件，不要修改
-├── scripts/                      # 黑盒验收与维护脚本
-├── test/                         # Vitest 单元测试（*.spec.ts）
-└── runtime/                      # 生成应用的源码、依赖和日志，已忽略
-```
+分层、数据所有权与信任边界见[架构](../ARCHITECTURE.md)，跨包红线与接口契约生成流程见[根规范](../AGENTS.md)。
 
 - 控制器只做参数校验、取当前用户、调用 service；Agent 工具循环、Docker 调度、文件操作放在对应 service 中。
 - 新的 provider/controller 需要在 `src/app.module.ts` 注册（现状见下文“模块”）。
@@ -38,7 +14,7 @@ paimeng-ai-code-mother-backend/
 ### 模块
 
 - 官方推荐按业务领域拆 feature module，模块只 `exports` 需要被其他模块使用的 provider（Modules 章节）。现状是业务 provider 全部注册在 `AppModule`，只有 `config`、`db`、`redis` 是独立模块。
-- 不要在现状上局部新建只包含部分业务 provider 的 feature module：它看不到注册在根模块里的 service，补救时容易产生循环导入。拆分模块需要整体迁移，并按 `docs/DESIGN.md` 第 3 节的分层确定 `exports`。
+- 不要在现状上局部新建只包含部分业务 provider 的 feature module：它看不到注册在根模块里的 service，补救时容易产生循环导入。拆分模块需要整体迁移，并按[全局架构的后端分层](../ARCHITECTURE.md#后端模块架构)确定 `exports`。
 - 不使用 barrel 文件（`index.ts` 汇总导出）组织 module 和 provider，官方明确指出它会造成循环依赖（Circular dependency 章节）。
 - 避免循环依赖，不用 `forwardRef` 掩盖分层问题；需要时把共享部分下沉到更低层的模块。
 
@@ -70,7 +46,7 @@ paimeng-ai-code-mother-backend/
 - 新接口的查询参数和路径参数同样定义成 zod DTO，用 `@Query() dto` 接收；不要新增 `@Query('id') raw: string` 再手动解析的写法。
 - 控制器直接返回数据，由 `EnvelopeInterceptor` 包装成 `{ code: 0, message: 'ok', data }`。SSE、预览代理等非 JSON 响应使用 `@RawResponse()`。
 - 每个 JSON 接口都要声明响应 schema：用 `envelope(数据 schema)` 生成 `BaseResponse*` DTO，挂在 `@ApiOkResponse` 上，并给控制器加 `@ApiTags`、给方法加 `@ApiOperation`。处理函数用 `z.output<typeof schema>` 标注返回类型，让返回值与 schema 对不上时编译失败。
-- 改完 schema 运行 `pnpm openapi:export` 更新根目录 `openapi.json`（与前端生成代码一起提交）。`openapi.json` 是生成产物，不要手改；`pnpm openapi:check` 会检测是否过期。
+- 改完 schema 按[根规范](../AGENTS.md#接口契约)重新生成契约。本包只负责 `pnpm openapi:export`；`openapi.json` 是生成产物，不要手改，`pnpm openapi:check` 会检测是否过期。
 - OpenAPI 中声明响应时，按官方“generic ApiResponse”的写法：用 `ApiExtraModels` 注册数据模型，用 `getSchemaPath` 加 `allOf` 把它放进包络的 `data` 字段（OpenAPI Operations 章节）。不要用 `nestjs-zod` 的 `ZodResponse`，它要求处理函数直接返回 schema 本身，和统一包络冲突。
 - OpenAPI 页面在 `/api/v3/api-docs`，按 `@nestjs/swagger` 默认约定，JSON 在 `/api/v3/api-docs-json`。
 - 业务错误抛 `ApiException` 的静态工厂（`badRequest`、`notFound`、`conflict` 等），`message` 写给最终用户看的中文原因，不要直接抛 Nest 内置 `HttpException`。

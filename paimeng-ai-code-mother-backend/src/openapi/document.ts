@@ -11,7 +11,7 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
       new DocumentBuilder()
         .setTitle('Paimeng API')
         .setDescription(
-          '唯一 API 契约见 docs/DESIGN.md 的“接口契约”和 paimeng-ai-code-mother-backend/openapi.json',
+          '字段契约见本页导出的 OpenAPI 文档；公共约定见仓库根 AGENTS.md，模块行为见 ARCHITECTURE.md',
         )
         .setVersion('1.0')
         .addServer('/api')

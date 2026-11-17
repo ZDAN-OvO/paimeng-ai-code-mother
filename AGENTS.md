@@ -1,79 +1,94 @@
-# Paimeng：Agent 开发规范
+# Paimeng
 
-本文件约束在本仓库工作的 AI agent。子目录的 `AGENTS.md` 补充各自规则，冲突时以更深层文件为准。
+AI 生成前端应用的本地平台：用户一句话创建应用，Agent 用文件工具写源码，平台在隔离容器里安装、构建、验证，并通过独立来源预览。
 
-## 仓库结构
-
-pnpm workspace（pnpm 10，Node ≥ 22.8），只包含前端和后端两个包：
+## 项目结构
 
 ```text
 .
-├── paimeng-ai-code-mother-frontend/   # 主站：Vue 3 + Vite + Ant Design Vue + Pinia
-├── paimeng-ai-code-mother-backend/    # 后端：NestJS 11 + Drizzle（PostgreSQL）+ Redis + Vercel AI SDK
-│   └── openapi.json                    # 由 zod schema 导出的接口契约，前后端共用
-├── docs/
-│   ├── DESIGN.md                      # 系统设计：架构、边界、约束与接口契约
-│   └── adr/                           # 架构决策记录
+├── AGENTS.md / README.md        # 开发规范 / 启动与使用说明
+├── ARCHITECTURE.md              # 模块分层、数据所有权、信任边界
+├── GLOSSARY.md                  # 领域术语，命名以此为准
+├── docs/adr/                    # 架构决策记录，已定决策只追加不改写
+├── docker-compose.yml           # PostgreSQL 16、Redis 7、Nginx
 ├── docker/
-│   ├── nginx/                         # 主站与预览来源的 Nginx 配置模板
-│   └── runtime/                       # 生成应用的运行时镜像
-├── image/                             # README 配图
-├── deprecated/                        # 归档的 Java 实现，不参与运行
-├── local/                             # 本地私有计划，已被 .git/info/exclude 忽略
-├── GLOSSARY.md                        # 领域术语表
-├── README.md
-├── docker-compose.yml                 # PostgreSQL、Redis、Nginx
-├── .env.example
-└── pnpm-workspace.yaml
+│   ├── nginx/                   # 按 Host 分流主站与预览
+│   └── runtime/                 # 生成应用的安装/构建镜像
+├── paimeng-ai-code-mother-backend/     # NestJS 11 + Drizzle + Redis + AI SDK
+│   ├── src/
+│   │   ├── auth/ apps/ conversations/ runs/ preview/ health/   # 接入层：控制器 + service
+│   │   ├── agent/               # 一次运行内的模型循环、上下文预算、验证与修复
+│   │   ├── tools/               # 模型能力唯一入口：授权、预算、取消、截断
+│   │   ├── skills/              # 读取 .paimeng/skills/，只读
+│   │   ├── runtime/             # 文件校验、依赖白名单、Docker 调度、应用锁
+│   │   ├── startup/             # 单实例锁、遗留运行收尾、容器核对
+│   │   ├── common/              # 包络、错误码（api.ts）、截断
+│   │   ├── config/env.ts        # 环境变量 zod 校验，唯一读取入口
+│   │   ├── db/schema.ts         # 表结构唯一来源
+│   │   └── openapi/             # 导出 openapi.json
+│   ├── drizzle/                 # 生成的 SQL 迁移，已有文件不改
+│   ├── .paimeng/skills/         # 生成技能：static、vue、react
+│   ├── openapi.json             # 生成产物：接口契约
+│   ├── scripts/                 # 黑盒验收、并发验收、遗留数据清理
+│   └── test/*.spec.ts           # Vitest 单测，全部离线
+├── paimeng-ai-code-mother-frontend/    # Vue 3 + Vite + Ant Design Vue + Pinia
+│   ├── src/
+│   │   ├── pages/               # 首页、登录注册、AppChatPage（对话+预览）、AppEditPage
+│   │   ├── components/          # 通用组件；MarkdownRenderer.vue 唯一渲染模型输出
+│   │   ├── api/generated/       # 生成产物：接口函数与类型
+│   │   ├── api/streamChat.ts    # 唯一手写接口：流式聊天
+│   │   ├── utils/               # 纯逻辑：SSE 解析、队列协调、活动与进度推导
+│   │   ├── stores/              # Pinia，只放跨页面状态
+│   │   ├── request.ts           # 唯一 axios 实例
+│   │   └── config/env.ts        # 前端环境变量唯一读取入口
+│   └── test/*.test.ts           # node:test 单测，只测纯逻辑
+├── deprecated/                  # 旧实现存档，不改、不引用、不迁移
+└── local/                       # 本地草稿，不提交
 ```
 
-- 改动架构、模块边界或安全边界前，先读 `docs/DESIGN.md` 和相关 ADR；推翻已有决策时新增一条 ADR 并标记旧记录被取代。
-- 讨论或命名领域概念时以 `GLOSSARY.md` 为准，新概念确定后同步补充。
-- 单次任务用的临时计划文档（如根目录 `PLAN.md`）不提交，其他文档不要引用。
-- `deprecated/` 不要修改、引用或从中迁移代码。
-- `local/` 不要提交，也不要在公开文档里引用。
+## 一次生成的生命周期
 
-## 工作方式
+```text
+用户发消息
+→ conversations/runs 接收，写入 Redis 应用队列（queued；clientRequestId 幂等）
+→ 派发器取出 → PostgreSQL 事务创建 run（running；同一应用最多 1 个进行中）
+→ agent 模型循环 → tools 调用 runtime 写文件、装依赖、在容器里构建
+   ├─ 运行中插话（steer）进收件箱，Agent 消费后 applied，未消费的 returned
+   └─ 用户取消 → cancelling
+→ 平台验证结果决定终态：completed / failed / cancelled，只写一次
+→ 前端经 SSE 收流，断流不算成功；预览走 app-{appId}.preview.<domain>
+后端重启：遗留 run 收尾为 failed，队列暂停，不续跑（ADR-0005、ADR-0011）
+```
 
-- 只用 pnpm，不要用 npm/yarn 安装依赖，不要生成 `package-lock.json`。
-- 新增依赖前先确认现有依赖无法满足。后端依赖锁定精确版本（不加 `^`）。
-- 不读取、不打印、不提交 `.env` 及任何 `.env.*`（`.env.example` 除外）。新增环境变量时同步更新后端 `src/config/env.ts` 和根目录 `.env.example`。
-- 工作区可能有用户未提交的改动，不要还原、覆盖或格式化与任务无关的文件。
-- 未经要求不要 commit、建分支、push。
-- 范围以 `docs/DESIGN.md` 的“范围边界”和 `README.md` 的“当前范围与限制”为准；文档写明首版不做的功能（源码下载、部署分享、可视化编辑、多实例等），不要顺手实现。
+## 红线
 
-## 跨前后端改动
+- 生成代码不可信：只在隔离容器运行，不挂 Docker socket、不发布宿主端口、无外网/数据库/密钥；后端不执行生成代码。
+- 预览独立来源，不与主站互访 DOM、不共享 cookie；预览 iframe 只嵌入不读写。
+- 模型和用户内容只经 `MarkdownRenderer.vue` 渲染，保持 `html: false`；不用 `v-html`。
+- 修改类接口保留 Origin 校验；接口默认需登录，公开接口显式 `@Public()`；资源查询校验所有者。
+- Docker 只操作带 `paimeng.project=paimeng-ai-code-mother` 标签的对象。
+- 只用 pnpm；后端依赖锁精确版本；新增依赖先确认现有依赖不够用。
+- 不读、不打印、不提交 `.env*`（`.env.example` 除外）；新增变量同步 `src/config/env.ts` 和 `.env.example`。
+- 不还原、覆盖或格式化与任务无关的文件；未经要求不 commit、不建分支、不 push。
+- 改变已定架构决策先新增 ADR，由用户批准。
 
-接口字段只在后端 zod schema 中定义，然后重新生成契约产物：
+## 接口契约
 
-1. 修改后端控制器与 zod schema，运行 `pnpm --filter paimeng-ai-code-mother-backend openapi:export`
-2. 运行 `pnpm --filter paimeng-ai-code-mother-frontend openapi`
-3. 运行 `pnpm contract:check`，确认 `openapi.json` 与 `src/api/generated/` 已同步
-
-`paimeng-ai-code-mother-backend/openapi.json` 和前端 `src/api/generated/` 都是生成产物，要一起提交，但不要手改。前端普通接口一律调用生成函数；只有流式聊天（`src/api/streamChat.ts`）保留手写。
-
-所有业务接口使用统一包络 `{ code, message, data }`，错误码表以 `docs/DESIGN.md` 为准。新增错误码需同时更新后端 `src/common/api.ts` 和该表。
-
-## 安全边界（不可违反）
-
-- 生成的应用运行在隔离 Docker 容器中：不挂载 Docker socket，不发布宿主机端口，只允许白名单依赖，不提供外网、数据库或密钥。
-- 预览使用独立来源 `app-{appId}.preview.<domain>`，不要让主站与预览 iframe 互相访问 DOM 或共享 cookie。
-- 聊天 Markdown 渲染保持 `html: false`。
-- 修改类接口保留 Origin 校验；新接口默认需要登录，公开接口必须显式使用 `@Public()`。
-- 应用、会话、运行等资源查询必须校验所有者。
-- Docker 资源只操作带 `paimeng.project=paimeng-ai-code-mother` 标签的对象。
-
-## 验证
-
-提交结果前，在仓库根目录按改动范围运行：
+接口字段只在后端 zod schema 定义，业务 JSON 统一 `{ code, message, data }`，错误码在 `src/common/api.ts`。改接口后：
 
 ```bash
-pnpm typecheck
-pnpm lint
-pnpm test
-pnpm build
+pnpm --filter paimeng-ai-code-mother-backend openapi:export   # 更新 openapi.json
+pnpm --filter paimeng-ai-code-mother-frontend openapi         # 更新 src/api/generated/
+pnpm contract:check                                           # 确认两者同步
 ```
 
-只改一个包时可用 `pnpm --filter <包名> <脚本>` 缩小范围。涉及运行链路（生成、安装、构建、预览、取消、并发）时，在基础设施和后端已启动的前提下补跑 `paimeng-ai-code-mother-backend` 的 `test:acceptance` / `test:acceptance:concurrency`，无法运行时在交付说明里写明。
+生成产物一起提交，不手改。
 
-交付说明写清楚：改了什么、为什么、跑了哪些检查及结果、哪些没验证。
+## 开发约定（oil-dev）
+
+- 快测：`pnpm --filter paimeng-ai-code-mother-backend exec vitest run test/{target}.spec.ts`、`pnpm --filter paimeng-ai-code-mother-frontend exec node --test test/{target}.test.ts`
+- 重测：`pnpm --filter paimeng-ai-code-mother-backend test:acceptance`、`pnpm --filter paimeng-ai-code-mother-backend test:acceptance:concurrency`
+- 门禁：`pnpm typecheck`、`pnpm lint`、`pnpm test`、`pnpm build`、`pnpm contract:check`
+- 高风险：`paimeng-ai-code-mother-backend/src/runtime/**`、`paimeng-ai-code-mother-backend/src/agent/**`、`paimeng-ai-code-mother-backend/src/tools/**`、`paimeng-ai-code-mother-backend/src/runs/**`、`paimeng-ai-code-mother-backend/src/auth/**`、`paimeng-ai-code-mother-backend/src/preview/**`、`paimeng-ai-code-mother-backend/src/db/schema.ts`
+- 禁改：`paimeng-ai-code-mother-frontend/src/api/generated/`、`paimeng-ai-code-mother-backend/openapi.json`、`paimeng-ai-code-mother-backend/drizzle/`、`deprecated/`
+- 频率：编码途中只跑 typecheck；每轮改完跑相关快测；门禁在整批收尾或合并前跑一次；重测在改运行链路时跑，需先启动基础设施和后端，跑不了在交付说明写明。
