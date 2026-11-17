@@ -20,7 +20,9 @@ export default defineConfig({
   retries: 0,
   forbidOnly: true,
   reporter: [['list']],
-  outputDir: join(repoRoot, 'test-results'),
+  // 同一 checkout 可能有多个运行在并行（多个 worktree / agent）；共用 outputDir 会被
+  // 后启动的 Playwright 清空，导致前一个运行的 trace 在用例中途消失。
+  outputDir: join(repoRoot, 'test-results', `run-${process.pid}-${Date.now()}`),
   globalTeardown: './tests/e2e/global-teardown.mjs',
   use: {
     baseURL: env.mainOrigin,

@@ -135,9 +135,16 @@ async function waitRun(page, appId, item, status) {
 function preview(page) { return page.frameLocator('iframe[title="应用预览"]') }
 
 // 独立开一条真实订阅并持续读到关闭：用来证明放行之后服务端仍在推送，而不是只重放旧帧就关流。
+// ready 在拿到响应头时兑现：调用方必须先等到它，否则「订阅晚建立 + 只回快照」的假实现也能过。
 function streamRun(cookie, runId) {
   const parts = []
-  let ended = false
+  const state = { status: 0, contentType: '', ended: false, failure: null }
+  let settle
+  const ready = new Promise((resolve, reject) => { settle = { resolve, reject } })
+  const fail = (error) => {
+    state.failure ??= error
+    settle.reject(error)
+  }
   const request = httpRequest(`${env.probeOrigin}/api/app/run/stream`, {
     method: 'POST',
     headers: {
@@ -146,16 +153,30 @@ function streamRun(cookie, runId) {
       'content-type': 'application/json',
     },
   }, (response) => {
+    state.status = response.statusCode
+    state.contentType = String(response.headers['content-type'] ?? '')
+    if (state.status !== 200 || !state.contentType.includes('text/event-stream')) {
+      fail(new Error(`订阅异常：${state.status} ${state.contentType}`))
+      response.resume()
+      return
+    }
+    settle.resolve()
     response.setEncoding('utf8')
     response.on('data', (part) => { parts.push(part) })
-    response.on('end', () => { ended = true })
-    response.on('error', () => { ended = true })
+    response.on('end', () => { state.ended = true })
+    response.on('error', (error) => { state.ended = true; state.failure ??= error })
   })
   const timer = setTimeout(() => request.destroy(new Error('run stream timed out')), 30_000)
-  request.on('error', () => { ended = true })
+  request.on('error', (error) => { state.ended = true; fail(error) })
   request.on('close', () => clearTimeout(timer))
   request.end(JSON.stringify({ runId }))
-  return { frames: () => parts.join(''), ended: () => ended, close: () => request.destroy() }
+  return {
+    ready, state,
+    frames: () => parts.join(''),
+    ended: () => state.ended,
+    failure: () => state.failure,
+    close: () => request.destroy(),
+  }
 }
 
 async function expectCompleted(page, scenario, suffix = '') {
@@ -249,13 +270,23 @@ test('运行中插话经真实队列消费，刷新后重新订阅并完成同�
   expect(session).toBeTruthy()
   const live = streamRun(`pm_sid=${session.value}`, run.runId)
   try {
+    // 先确认订阅已经建立、并且已经收到这个运行的重放帧，再放行；否则「订阅晚到 + 只回快照」会蒙过去。
+    await live.ready
+    await expect.poll(() => /"type":"start"/.test(live.frames()), {
+      message: '订阅建立后应先收到该运行的重放帧', timeout: 10_000,
+    }).toBe(true)
     await scenario.release()
-    await expect.poll(() => live.ended() || /"check":"source"/.test(live.frames()), {
-      message: '放行后订阅必须继续推送', timeout: 15_000,
+    // 必须等服务端自己把流收尾：提前断流、永久挂流、只回快照都会在这里露馅。
+    await expect.poll(() => live.ended() || live.failure(), {
+      message: '运行结束后订阅应正常关闭', timeout: 20_000,
     }).toBe(true)
     const frames = live.frames()
+    expect(live.failure(), '这条订阅不能异常中断').toBeNull()
+    expect(live.ended(), '订阅应自行结束').toBe(true)
     expect(frames, '放行后应有写入校验帧，重放快照里不可能有').toMatch(/"type":"data-validation"[^\n]*"check":"source"/)
-    expect(frames).toContain('"type":"text-delta"')
+    expect(frames, '放行后应收到最终文本').toContain(`页面已完成 ${scenario.marker}`)
+    expect(frames, '结束时应有终态帧').toMatch(/"type":"data-run"[^\n]*"status":"completed"/)
+    expect(frames, '流应以 [DONE] 收尾').toContain('[DONE]')
   } finally {
     live.close()
   }

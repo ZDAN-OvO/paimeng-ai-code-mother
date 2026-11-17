@@ -37,7 +37,7 @@
 
 ## 产物与清理
 
-失败 trace 和截图写入仓库根目录 `test-results/`，与临时服务目录分离，供 CI 上传。同目录还会留下 `browser-backend.log`（后端日志）与 `docker-calls.log`（Docker 调用审计）。
+失败 trace 和截图写入仓库根目录 `test-results/run-<pid>-<时间戳>/`，与临时服务目录分离，供 CI 上传。每次运行独占一个子目录：同一个 checkout 里并行跑两套测试时，后启动的 Playwright 不会清掉前一套的 trace。`test-results/` 根目录还会留下 `browser-backend.log`（后端日志）与 `docker-calls.log`（Docker 调用审计）。
 
 后端在 `CI_TEST_WORK_DIR` 上会被删除，所以这两份记录由启动器与 `globalTeardown` 在清理前搬到 `test-results/`。此配置只运行不含真实模型密钥的固定模型流程。trace 会包含临时测试账号与会话，保留期限由 CI 配置决定。
 

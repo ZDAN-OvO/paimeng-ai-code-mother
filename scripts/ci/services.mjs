@@ -23,7 +23,9 @@ export async function buildApp(includeFrontend = true) {
 
 // Do not inherit application configuration or NODE_OPTIONS that could load .env files.
 export const baseEnv = Object.fromEntries(
-  ['PATH', 'HOME', 'USER', 'LANG', 'TZ', 'CI', 'GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT'].flatMap((key) =>
+  // CI_TEST_OWNER 是本次运行的归属标记：取消检查靠它认领进程与容器，不会被同机其它运行干扰。
+  // TMPDIR 由调用方决定，工作目录因此落在它自己的根目录下。
+  ['PATH', 'HOME', 'USER', 'LANG', 'TZ', 'CI', 'GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'TMPDIR', 'CI_TEST_OWNER'].flatMap((key) =>
     process.env[key] === undefined ? [] : [[key, process.env[key]]],
   ),
 )
@@ -175,7 +177,9 @@ export async function withServices(work) {
   const addContainer = async (suffix, args) => {
     const name = `paimeng-ci-${token}-${suffix}`
     containers.push(name)
-    await run('docker', ['run', '-d', '--name', name, '--label', `paimeng.ci=${token}`, ...args], {
+    const labels = ['--label', `paimeng.ci=${token}`]
+    if (process.env.CI_TEST_OWNER) labels.push('--label', `paimeng.ci.owner=${process.env.CI_TEST_OWNER}`)
+    await run('docker', ['run', '-d', '--name', name, ...labels, ...args], {
       timeoutMs: 180_000,
     })
     return name
