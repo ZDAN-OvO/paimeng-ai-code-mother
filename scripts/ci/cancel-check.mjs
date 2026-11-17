@@ -22,28 +22,40 @@ const probe = (command, args) => {
   return result
 }
 
-const readCmdline = (pid) => {
+const readArgv = (pid) => {
   try {
-    return readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ')
+    return readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean)
   } catch (error) {
     if (error.code === 'ENOENT') return null
     throw error
   }
 }
 
-// 活着的判断只看 /proc 状态：僵尸进程不能执行代码，算已清理。
-const isAlive = (pid) => {
+// 进程身份 = pid + 启动时间。只看 pid 会在 pid 被复用时把无关新进程当成残留。
+const procStat = (pid) => {
   try {
-    return !/\) Z /.test(readFileSync(`/proc/${pid}/stat`, 'utf8'))
+    const raw = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    // comm 可能含空格和括号，从最后一个 ')' 之后切；此后第一个字段是 state（整体第 3 字段），
+    // starttime 是整体第 22 字段，所以下标是 19。
+    const fields = raw.slice(raw.lastIndexOf(')') + 2).split(' ')
+    return { state: fields[0], starttime: fields[19] }
   } catch (error) {
-    if (error.code === 'ENOENT') return false
+    if (error.code === 'ENOENT') return null
     throw error
   }
 }
 
+// 同一实例且不是僵尸，才算「还活着」。pid 被复用时 starttime 会变，视为已清理。
+const aliveInstance = (identity) => {
+  const stat = procStat(identity.pid)
+  if (!stat) return false
+  if (stat.starttime !== identity.starttime) return false
+  return stat.state !== 'Z'
+}
+
 // 带本轮标记的进程。environ 读不到（EACCES/EPERM）不能当成「不存在」，
 // 所以调用方必须结合已经认领过的 pid 做存活复核，而不是只看这一次扫描结果。
-const claimedPids = () => {
+const claimedProcesses = () => {
   const claimed = []
   let unreadable = 0
   for (const entry of readdirSync('/proc')) {
@@ -55,7 +67,9 @@ const claimedPids = () => {
       if (error.code === 'EACCES' || error.code === 'EPERM') unreadable += 1
       continue
     }
-    if (environ.split('\0').includes(`CI_TEST_OWNER=${owner}`)) claimed.push(Number(entry))
+    if (!environ.split('\0').includes(`CI_TEST_OWNER=${owner}`)) continue
+    const stat = procStat(Number(entry))
+    if (stat) claimed.push({ pid: Number(entry), starttime: stat.starttime })
   }
   return { claimed, unreadable }
 }
@@ -115,15 +129,25 @@ async function waitForGone(probeFn, label, timeoutMs = 15_000) {
 try {
   const readyLog = await waitForReady()
   // 归属机制自检：逐个确认关键进程都被认领，不能只看「认领到几个」。
-  const initial = claimedPids()
-  const cmdlines = initial.claimed.map((pid) => readCmdline(pid) ?? '')
-  const expectClaimed = (label, needle) =>
-    check(`${label}已被归属标记认领`, cmdlines.some((line) => line.includes(needle)),
-      `已认领 ${initial.claimed.length} 个进程`)
-  expectClaimed('runner', 'scripts/ci/run.mjs')
-  expectClaimed('浏览器服务', 'scripts/ci/browser-server.mjs')
-  expectClaimed('后端守护进程', 'tests/e2e/backend-process.mjs')
-  expectClaimed('后端主进程', 'paimeng-ai-code-mother-backend/dist/main.js')
+  const initial = claimedProcesses()
+  // 只认 argv 里真正的入口脚本（argv[1]）。用子串匹配会把「守护进程的启动参数里带着
+  // main.js 路径」误判成主进程已认领，因此还要求四个角色对应四个不同 PID。
+  const entry = (pid) => readArgv(pid)?.[1] ?? ''
+  const rolePids = (suffix) => initial.claimed
+    .filter((identity) => entry(identity.pid).endsWith(suffix))
+    .map((identity) => identity.pid)
+  const expectRole = (label, suffix) => {
+    const pids = rolePids(suffix)
+    check(`${label}已被归属标记认领`, pids.length === 1, `命中 ${pids.join(',') || '无'}`)
+    return pids
+  }
+  const roles = [
+    expectRole('runner', 'scripts/ci/run.mjs'),
+    expectRole('浏览器服务', 'scripts/ci/browser-server.mjs'),
+    expectRole('后端守护进程', 'tests/e2e/backend-process.mjs'),
+    expectRole('后端主进程', 'paimeng-ai-code-mother-backend/dist/main.js'),
+  ].flat()
+  check('四个角色对应四个不同进程', new Set(roles).size === 4 && roles.length === 4, roles.join(','))
   check('本轮容器可被归属标记识别', ownerContainers().length > 0, ownerContainers().join(','))
   const webPort = Number(/paimeng\.localhost:(\d+)/.exec(readyLog)?.[1])
   check('已记录浏览器服务端口', Number.isInteger(webPort), String(webPort))
@@ -138,12 +162,17 @@ try {
   check('取消后 runner 退出码非 0', runner.exitCode !== 0, String(runner.exitCode))
 
   // 清理完成 = 取消前认领到的进程都不再存活，且再次扫描也没有新增带标记的进程。
-  const leftovers = () =>
-    [...new Set([...initial.claimed, ...claimedPids().claimed])].filter((pid) => isAlive(pid))
+  const leftovers = () => {
+    const seen = new Map()
+    for (const identity of [...initial.claimed, ...claimedProcesses().claimed]) {
+      seen.set(`${identity.pid}:${identity.starttime}`, identity)
+    }
+    return [...seen.values()].filter((identity) => aliveInstance(identity))
+  }
   await waitForGone(() => leftovers().length === 0 && ownerContainers().length === 0, '本轮资源清空', 15_000)
   const leftoverPids = leftovers()
   check('取消后无残留进程', leftoverPids.length === 0,
-    leftoverPids.map((pid) => `${pid} ${readCmdline(pid) ?? ''}`.trim()).join(' | '))
+    leftoverPids.map((identity) => `${identity.pid} ${readArgv(identity.pid)?.join(' ') ?? ''}`.trim()).join(' | '))
   const leftoverContainers = ownerContainers()
   check('取消后无残留测试容器', leftoverContainers.length === 0, leftoverContainers.join(','))
   const leftoverEntries = workRootEntries()
