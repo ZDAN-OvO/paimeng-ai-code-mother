@@ -49,7 +49,13 @@ const fresh = (before, after) => [...after].filter((entry) => !before.has(entry)
 
 let before
 try {
-  before = { containers: containers(), ports: ports(), workDirs: workDirs() }
+  // 进程也用前后快照：本机可能有别的 worktree 在跑同一套测试，不能把别人的进程算成残留。
+  before = {
+    containers: containers(),
+    ports: ports(),
+    workDirs: workDirs(),
+    pids: new Map(watched.map((pattern) => [pattern, new Set(pids(pattern))])),
+  }
 } catch (error) {
   console.error(`探针不可用，无法判断清理结果：${error.message}`)
   process.exit(1)
@@ -106,9 +112,13 @@ try {
   check('取消后 runner 在 15 秒内退出', elapsed < 15_000, `${elapsed}ms`)
   check('取消后 runner 退出码非 0', runner.exitCode !== 0, String(runner.exitCode))
   await delay(1500)
-  for (const pattern of watched) {
-    const alive = pids(pattern)
-    check(`取消后无残留进程 ${pattern}`, alive.length === 0, alive.join(','))
+  try {
+    for (const pattern of watched) {
+      const alive = fresh(before.pids.get(pattern), new Set(pids(pattern)))
+      check(`取消后无残留进程 ${pattern}`, alive.length === 0, alive.join(','))
+    }
+  } catch (error) {
+    check('残留进程检查可以执行', false, error.message)
   }
   try {
     const newContainers = fresh(before.containers, containers())

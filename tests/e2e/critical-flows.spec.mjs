@@ -238,7 +238,7 @@ test('运行中插话经真实队列消费，刷新后重新订阅并完成同�
   expect(subscription.status()).toBe(200)
   expect(subscription.headers()['content-type']).toContain('text/event-stream')
   expect(subscription.request().postDataJSON()).toMatchObject({ runId: run.runId })
-  // 界面能看到不够：历史接口也能返回已落库的文本。真正要证的是这条订阅收到了帧。
+  // 界面能看到不够：历史接口也能返回已落库的文本。页面这条订阅只证明「重订阅了同一个运行」。
   await expect(page.getByText(scenario.partial, { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
   await expect(page.getByText('插话发送 · 等待插入当前轮次', { exact: true })).toBeVisible()
