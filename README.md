@@ -110,9 +110,10 @@ pnpm exec playwright install --with-deps chromium
 pnpm test:integration  # 真实 PostgreSQL、Redis 与迁移
 pnpm test:e2e          # Chromium 中的关键操作流程
 pnpm test:system       # 两者一起运行，CI 使用此入口
+pnpm test:cancel       # 取消（Ctrl-C / CI 取消）后是否真的清理干净，按需执行
 ```
 
-启动器自动构建所需产物，创建独立的 PostgreSQL、Redis 容器和临时运行目录，分配空闲端口（因此多个 worktree 可以同时跑），并在退出时清理本次创建的资源。测试不加载 `.env`，不连接开发数据库，也不让浏览器测试的后端访问 Docker。浏览器测试只替换模型响应，鉴权、消息队列、SSE、文件写入和静态预览仍走真实后端。
+启动器自动构建所需产物，创建独立的 PostgreSQL、Redis 容器和临时运行目录，分配空闲端口（因此多个 worktree 可以同时跑），并由它自己拉起浏览器测试服务——取消时连这个服务一起收掉，不会留下占着端口的孤儿进程。退出时清理本次创建的全部资源。测试不加载 `.env`，不连接开发数据库，也不让浏览器测试的后端访问 Docker。浏览器测试只替换模型响应，鉴权、消息队列、SSE、文件写入和静态预览仍走真实后端。
 
 PR 测试使用构建后的前端和测试代理，不覆盖生产 Nginx、真实模型或应用容器构建。失败时 GitHub Actions 保留浏览器截图与 trace 三天；后端运行日志会复制到 `test-results/browser-backend.log`，Docker 调用审计记录在 `test-results/docker-calls.log`，一并上传。
 

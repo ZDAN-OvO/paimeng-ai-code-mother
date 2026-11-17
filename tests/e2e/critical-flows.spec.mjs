@@ -214,7 +214,7 @@ test('运行中插话经真实队列消费，刷新后重新订阅并完成同�
   expect(subscription.status()).toBe(200)
   expect(subscription.headers()['content-type']).toContain('text/event-stream')
   expect(subscription.request().postDataJSON()).toMatchObject({ runId: run.runId })
-  // 重放的历史流里必须包含刷新前推过的中间文本。
+  // 界面能看到不够：历史接口也能返回已落库的文本。真正要证的是这条订阅收到了帧。
   await expect(page.getByText(scenario.partial, { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
   await expect(page.getByText('插话发送 · 等待插入当前轮次', { exact: true })).toBeVisible()
@@ -226,6 +226,12 @@ test('运行中插话经真实队列消费，刷新后重新订阅并完成同�
   await expect(page.getByText('插入指令', { exact: true })).toBeVisible()
   await expect(page.getByText(scenario.steer, { exact: true })).toBeVisible()
   await expect(preview(page).getByText(`页面已生成；已应用插话：${scenario.steer}`, { exact: true })).toBeVisible()
+  // 直接读这条订阅的响应体：历史重放会带出已落库文本，只有真实推送才带得出 text-delta 帧。
+  // text/event-stream 不带 charset，Playwright 取回的文本里中文已是乱码，
+  // 所以只比对这条流里的 ASCII 标记：中间文本一定在 text-delta 帧里，且只由这条订阅送出。
+  const frames = Buffer.from(await subscription.body()).toString('latin1')
+  expect(frames).toContain('"type":"text-delta"')
+  expect(frames).toMatch(new RegExp(`"type":"text-delta"[^\\n]*${scenario.marker}`))
   const queue = await dataOf(page, `/app/chat/queue?appId=${appId}&clientRequestId=${steer.clientRequestId}`)
   expect(queue.requestedItem).toMatchObject({ id: steer.id, status: 'applied', runId: run.runId })
   expect((await scenario.stats()).seenSteer).toBe(true)

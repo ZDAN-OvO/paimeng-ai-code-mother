@@ -95,6 +95,7 @@ pnpm contract:check                                           # 确认两者同�
 
 - 快测：`pnpm --filter paimeng-ai-code-mother-backend exec vitest run test/{target}.spec.ts`、`pnpm --filter paimeng-ai-code-mother-frontend exec node --test test/{target}.test.ts`
 - 真服务测试：`pnpm test:integration`（真实 PostgreSQL / Redis 与迁移）、`pnpm test:e2e`（Chromium 关键流程，模型用固定响应）、`pnpm test:system`（两者一起，CI 用此入口）。三者都需要本机 Docker；启动器自建一次性容器、临时目录和动态端口，退出时清理，不读写 `.env`。
+- 按需检查：`pnpm test:cancel` 验证取消后没有残留进程、容器与端口；改动 `scripts/ci/**` 或进程清理逻辑时执行。
 - 重测：改了 `src/runs/**`、`src/agent/**`、`src/runtime/**`、`src/db/schema.ts`、`drizzle/**` 或消息队列相关代码时跑 `pnpm test:integration`；改了页面交互、SSE、预览或排队状态机时跑 `pnpm test:e2e`。`pnpm --filter paimeng-ai-code-mother-backend test:acceptance`、`test:acceptance:concurrency` 仍需手动跑。
 - 门禁：`pnpm typecheck`、`pnpm lint`、`pnpm check:syntax`、`pnpm test`、`pnpm build`、`pnpm contract:check`，合并前再加 `pnpm test:system`。CI 的 `check` 汇总基础检查与系统测试，两者都过才能合并。
 - 高风险：`paimeng-ai-code-mother-backend/src/runtime/**`、`paimeng-ai-code-mother-backend/src/agent/**`、`paimeng-ai-code-mother-backend/src/tools/**`、`paimeng-ai-code-mother-backend/src/runs/**`、`paimeng-ai-code-mother-backend/src/auth/**`、`paimeng-ai-code-mother-backend/src/preview/**`、`paimeng-ai-code-mother-backend/src/db/schema.ts`

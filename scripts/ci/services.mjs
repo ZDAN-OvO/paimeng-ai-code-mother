@@ -30,11 +30,16 @@ export const baseEnv = Object.fromEntries(
 
 const children = new Set()
 const shutdown = new AbortController()
+// 取消后先给子进程一个有界窗口自行收尾（Playwright 要关 webServer，启动器要关后端），
+// 到点再强杀；全程不用等子进程自己的超时，否则 CI 会在宽限期内被外部强杀。
+const ABORT_GRACE_MS = 3000
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.once(signal, () => {
     shutdown.abort(new Error(`CI interrupted by ${signal}`))
-    // 取消后立即升级为强杀，避免子进程忽略 TERM 时把清理拖到 job 超时被外部强杀。
-    for (const child of children) terminate(child, 'SIGKILL')
+    for (const child of children) {
+      terminate(child, 'SIGTERM')
+      setTimeout(() => terminate(child, 'SIGKILL'), ABORT_GRACE_MS).unref()
+    }
   })
 }
 
@@ -72,10 +77,10 @@ export function start(command, args, { cwd = root, env = baseEnv, stdio = 'inher
 
 export async function stop(child) {
   try {
-    // 用户取消时不再等 TERM 宽限期，否则清理会被忽略信号的进程拖住。
+    // 取消时窗口更短，但仍要够启动器关掉它自己的后端进程组。
     const interrupted = shutdown.signal.aborted
-    terminate(child, interrupted ? 'SIGKILL' : 'SIGTERM')
-    const deadline = Date.now() + (interrupted ? 500 : 5000)
+    terminate(child, 'SIGTERM')
+    const deadline = Date.now() + (interrupted ? ABORT_GRACE_MS : 5000)
     while (groupAlive(child) && Date.now() < deadline) await delay(50)
     // The leader may have exited while a descendant still ignores TERM.
     if (groupAlive(child)) terminate(child, 'SIGKILL')
@@ -95,7 +100,8 @@ export async function run(command, args, options = {}) {
     const code = await new Promise((resolveCode, reject) => {
       // 取消必须立即打断等待：否则要等到子进程自己的超时才返回，清理来不及执行。
       const onAbort = () => {
-        terminate(child, 'SIGKILL')
+        terminate(child, 'SIGTERM')
+        setTimeout(() => terminate(child, 'SIGKILL'), ABORT_GRACE_MS).unref()
         reject(shutdown.signal.reason)
       }
       shutdown.signal.addEventListener('abort', onAbort, { once: true })
@@ -241,7 +247,8 @@ export async function withServices(work) {
   } catch (error) {
     failure = error
   } finally {
-    for (const child of [...children]) await stop(child)
+    // 反向停止：后起的子进程先收，避免先杀父进程留下孤儿。
+    for (const child of [...children].reverse()) await stop(child)
     for (const name of containers.reverse()) {
       try {
         // Only names created by this invocation; never prune or enumerate by product labels.

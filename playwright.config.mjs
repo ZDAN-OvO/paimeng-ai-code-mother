@@ -35,13 +35,17 @@ export default defineConfig({
     viewport: { width: 1440, height: 1000 },
     launchOptions: { args: ['--host-resolver-rules=MAP *.localhost 127.0.0.1'] },
   } }],
-  webServer: {
-    command: 'node scripts/ci/browser-server.mjs',
-    url: `${env.probeOrigin}/__e2e/ready`,
-    reuseExistingServer: false,
-    timeout: 35_000,
-    gracefulShutdown: { signal: 'SIGTERM', timeout: 6_000 },
-    stdout: 'pipe',
-    stderr: 'pipe',
-  },
+  // 经 `pnpm test:e2e` 时由 runner 自己拉起并持有 webServer，取消时才能连它一起收掉；
+  // 只有直接跑 playwright 时这里才代为启动。
+  webServer: process.env.CI_TEST_EXTERNAL_WEBSERVER === '1'
+    ? undefined
+    : {
+        command: 'node scripts/ci/browser-server.mjs',
+        url: `${env.probeOrigin}/__e2e/ready`,
+        reuseExistingServer: false,
+        timeout: 35_000,
+        gracefulShutdown: { signal: 'SIGTERM', timeout: 6_000 },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
 })
