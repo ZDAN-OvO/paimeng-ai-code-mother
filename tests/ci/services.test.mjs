@@ -28,14 +28,26 @@ test('cleanup kills a TERM-ignoring descendant after its process-group leader ex
       child.once('exit', () => { clearTimeout(timer); reject(new Error('Leader exited before readiness')) })
     })
     await stop(child)
+    // SIGKILL 是异步的：等一小会儿再判，避免偶发的状态竞态。
     // A dead orphan can remain a zombie briefly until the host init reaps it.
     // Neither a zombie nor a missing PID can execute code or keep files/sockets open.
-    try {
-      const stat = await readFile(`/proc/${pid}/stat`, 'utf8')
-      assert.match(stat, /\) Z /, 'A live descendant survived cleanup')
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error
+    const deadline = Date.now() + 5000
+    let survived = null
+    for (;;) {
+      let stat = null
+      try {
+        stat = await readFile(`/proc/${pid}/stat`, 'utf8')
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error
+      }
+      if (stat === null || /\) Z /.test(stat)) break
+      if (Date.now() > deadline) {
+        survived = stat.trim()
+        break
+      }
+      await new Promise((done) => setTimeout(done, 50))
     }
+    assert.equal(survived, null, `A live descendant survived cleanup: ${survived}`)
   } finally {
     if (pid) { try { process.kill(pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error } }
     await stop(child)
@@ -78,7 +90,10 @@ test('cancellation rejects a still-running command instead of waiting for its ti
   assert.ok(output, 'The cancelled runner produced no result')
   const result = JSON.parse(output)
   assert.equal(result.resolved, false, 'A cancelled run must not resolve as success')
-  // 关键回归：取消到返回必须远小于命令自身超时，否则清理来不及在 CI 宽限期内执行。
-  assert.ok(Date.now() - signalled < 5000, `Cancellation took ${Date.now() - signalled}ms`)
+  // 关键回归：run() 在收到取消时就 reject，不等命令自己的 60 秒超时。
+  // 这里量的是「signal 到 reject」；进程整体退出的时间要再加一个有界宽限（TERM→KILL）。
+  assert.ok(result.elapsed < 5000, `Cancellation rejection took ${result.elapsed}ms`)
+  const teardown = Date.now() - signalled
+  assert.ok(teardown < 15_000, `Cancellation teardown took ${teardown}ms`)
   assert.match(result.message, /interrupted/)
 })

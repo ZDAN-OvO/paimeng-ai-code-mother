@@ -86,6 +86,9 @@ export async function stop(child) {
     while (groupAlive(child) && Date.now() < deadline) await delay(50)
     // The leader may have exited while a descendant still ignores TERM.
     if (groupAlive(child)) terminate(child, 'SIGKILL')
+    // SIGKILL 是异步的：等它落地，调用方拿到的才是「已经不可执行」。
+    const killed = Date.now() + 1000
+    while (groupAlive(child) && Date.now() < killed) await delay(50)
   } finally {
     children.delete(child)
   }
