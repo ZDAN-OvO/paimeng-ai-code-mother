@@ -22,7 +22,9 @@ export default defineConfig({
   reporter: [['list']],
   // 同一 checkout 可能有多个运行在并行（多个 worktree / agent）；共用 outputDir 会被
   // 后启动的 Playwright 清空，导致前一个运行的 trace 在用例中途消失。
-  outputDir: join(repoRoot, 'test-results', `run-${process.pid}-${Date.now()}`),
+  // 配置会被主进程和每个 worker 各自加载一次，所以目录名必须由 runner 传入，
+  // 在这里现算会算出多个目录。
+  outputDir: process.env.CI_TEST_RESULTS_DIR ?? join(repoRoot, 'test-results', `run-${process.pid}`),
   globalTeardown: './tests/e2e/global-teardown.mjs',
   use: {
     baseURL: env.mainOrigin,
