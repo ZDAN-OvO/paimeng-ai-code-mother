@@ -19,6 +19,11 @@ export const planStepSchema = z.object({
 
 export const uiMessagePartSchema = z.union([
   z.object({
+    type: z.literal('data-steer'),
+    id: z.string(),
+    data: z.object({ text: z.string(), clientRequestId: z.string() }),
+  }),
+  z.object({
     type: z.literal('text'),
     text: z.string(),
     state: z.enum(['streaming', 'done']).optional(),

@@ -92,7 +92,12 @@ export class DependencyService {
     const manifest = await this.readManifest(ctx.appId)
     if (!manifest) throw new Error('项目缺少 package.json')
     const next: Manifest = { ...manifest }
-    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const) {
+    for (const field of [
+      'dependencies',
+      'devDependencies',
+      'optionalDependencies',
+      'peerDependencies',
+    ] as const) {
       if (!next[field]) continue
       const copy = { ...next[field] }
       for (const name of names) delete copy[name]

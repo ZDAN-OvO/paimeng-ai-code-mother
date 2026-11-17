@@ -56,14 +56,16 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     } else if (exception instanceof ZodValidationException) {
       code = API_CODES.BAD_REQUEST
       status = 400
-      const issues = (exception.getZodError() as { issues?: { path?: (string | number)[]; message?: string }[] })
-        .issues ?? []
+      const issues =
+        (exception.getZodError() as { issues?: { path?: (string | number)[]; message?: string }[] }).issues ??
+        []
       message =
         issues.map((i) => `${(i.path ?? []).join('.') || 'body'}: ${i.message ?? '格式不正确'}`).join('; ') ||
         '请求参数格式不正确'
     } else if (exception instanceof HttpException) {
       status = exception.getStatus()
-      code = status === 404 ? API_CODES.NOT_FOUND : status === 403 ? API_CODES.FORBIDDEN : API_CODES.BAD_REQUEST
+      code =
+        status === 404 ? API_CODES.NOT_FOUND : status === 403 ? API_CODES.FORBIDDEN : API_CODES.BAD_REQUEST
       const body = exception.getResponse()
       message =
         typeof body === 'string'

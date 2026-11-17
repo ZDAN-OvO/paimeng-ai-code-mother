@@ -31,6 +31,14 @@ export class RunProgress {
     this.everMutated = true
   }
 
+  onSteer() {
+    this.promptedWithoutMutation = false
+  }
+
+  get needsValidation() {
+    return this.mutatedSinceValidation
+  }
+
   onTextOnlyTurn(): TextTurnDecision {
     if (this.mutatedSinceValidation) {
       this.mutatedSinceValidation = false

@@ -282,7 +282,7 @@ class FakeResponse extends EventEmitter {
 }
 
 describe('SSE disconnect handling', () => {
-  it('cancels the run when the stream disconnects before the final event', async () => {
+  it('only unsubscribes when the stream disconnects before the final event', async () => {
     const stream = new RunStream('run-disconnect')
     let cancelled = 0
     const runs = {
@@ -305,7 +305,7 @@ describe('SSE disconnect handling', () => {
 
     response.emit('close')
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(cancelled).toBe(1)
+    expect(cancelled).toBe(0)
   })
 
   it('does not cancel after a normal run-finished close', async () => {

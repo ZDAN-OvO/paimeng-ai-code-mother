@@ -101,7 +101,10 @@ export class SkillService {
   private normalizeResourcePath(relative: string) {
     if (!relative || typeof relative !== 'string') throw new Error('技能资源路径不能为空')
     if (relative.includes('\0')) throw new Error('技能资源路径包含非法字符')
-    const clean = relative.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/^\/+/, '')
+    const clean = relative
+      .replace(/\\/g, '/')
+      .replace(/^\.\/+/, '')
+      .replace(/^\/+/, '')
     const parts = clean.split('/').filter(Boolean)
     if (parts.length === 0 || parts.includes('..')) throw new Error('技能资源路径非法')
     if (!ALLOWED_RESOURCE_ROOTS.has(parts[0])) {

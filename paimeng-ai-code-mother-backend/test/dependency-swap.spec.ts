@@ -26,9 +26,7 @@ describe('dependency swap', () => {
   it('restores the old node_modules when staged modules are missing', async () => {
     const { root, nodeModules } = await setup()
     const backup = join(root, 'backup')
-    await expect(
-      swapNodeModules(nodeModules, join(root, 'missing-node_modules'), backup),
-    ).rejects.toThrow()
+    await expect(swapNodeModules(nodeModules, join(root, 'missing-node_modules'), backup)).rejects.toThrow()
     expect(await readFile(join(nodeModules, 'marker'), 'utf8')).toBe('old')
   })
 })

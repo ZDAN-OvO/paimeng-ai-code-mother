@@ -34,5 +34,6 @@ export class StartupService implements OnApplicationBootstrap {
     await this.preview.resetStates()
     const resumed = await this.apps.resumePendingDeletes()
     if (resumed > 0) this.logger.log(`恢复 ${resumed} 个待删除应用`)
+    await this.runs.recoverMessageQueues()
   }
 }

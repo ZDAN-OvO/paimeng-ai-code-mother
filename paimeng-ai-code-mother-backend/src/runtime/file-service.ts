@@ -82,7 +82,8 @@ export class FileService {
     let existing = parent
     while (!existsSync(existing) && existing.length > realRoot.length) existing = dirname(existing)
     const realParent = await realpath(existing)
-    if (!realParent.startsWith(realRoot + sep) && realParent !== realRoot) throw new Error('路径越界（软链接）')
+    if (!realParent.startsWith(realRoot + sep) && realParent !== realRoot)
+      throw new Error('路径越界（软链接）')
     return target
   }
 
@@ -146,12 +147,14 @@ export class FileService {
       const known = ctx.readVersions.get(relative)
       if (!known) throw new Error(`文件 ${relative} 已存在，覆盖前请先读取`)
       const raw = await readFile(target, 'utf8')
-      if (hashContent(raw) !== known) throw new Error(`文件 ${relative} 在读取后被其他任务修改，请重新读取后再写入`)
+      if (hashContent(raw) !== known)
+        throw new Error(`文件 ${relative} 在读取后被其他任务修改，请重新读取后再写入`)
     }
     const stats = await this.sourceStats(ctx.appId)
     if (!exists && stats.files + 1 > this.config.maxFileCount) throw new Error('项目文件数量超过上限（5000）')
     const delta = exists ? bytes - (await stat(target)).size : bytes
-    if (stats.bytes + Math.max(0, delta) > this.config.maxSourceBytes) throw new Error('项目源码总量超过上限（100 MiB）')
+    if (stats.bytes + Math.max(0, delta) > this.config.maxSourceBytes)
+      throw new Error('项目源码总量超过上限（100 MiB）')
     await mkdir(dirname(target), { recursive: true })
     const tmp = join(dirname(target), `.paimeng-${randomBytes(6).toString('hex')}.tmp`)
     await writeFile(tmp, content, 'utf8')
@@ -174,7 +177,8 @@ export class FileService {
     const known = ctx.readVersions.get(relative)
     if (!known) throw new Error(`修改前请先读取文件 ${relative}`)
     const raw = await readFile(target, 'utf8')
-    if (hashContent(raw) !== known) throw new Error(`文件 ${relative} 在读取后被其他任务修改，请重新读取后再修改`)
+    if (hashContent(raw) !== known)
+      throw new Error(`文件 ${relative} 在读取后被其他任务修改，请重新读取后再修改`)
     let updated = raw
     for (const edit of edits) {
       if (!edit.oldText) throw new Error('oldText 不能为空')
@@ -186,7 +190,8 @@ export class FileService {
     if (bytes > this.config.maxFileBytes) throw new Error('文件超过单文件大小限制（1 MiB）')
     const stats = await this.sourceStats(ctx.appId)
     const delta = bytes - Buffer.byteLength(raw, 'utf8')
-    if (stats.bytes + Math.max(0, delta) > this.config.maxSourceBytes) throw new Error('项目源码总量超过上限（100 MiB）')
+    if (stats.bytes + Math.max(0, delta) > this.config.maxSourceBytes)
+      throw new Error('项目源码总量超过上限（100 MiB）')
     const tmp = join(dirname(target), `.paimeng-${randomBytes(6).toString('hex')}.tmp`)
     await writeFile(tmp, updated, 'utf8')
     if (ctx.isCancelled()) {

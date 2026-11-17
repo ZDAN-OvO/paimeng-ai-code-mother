@@ -113,7 +113,9 @@ export class RuntimeService implements OnModuleInit {
     }
     if (available > 0 && available < reserve + need) {
       const fmt = (n: number) => `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`
-      throw new Error(`宿主可用内存不足：需要预留 ${fmt(reserve)} 并分配 ${fmt(need)}，当前可用 ${fmt(available)}`)
+      throw new Error(
+        `宿主可用内存不足：需要预留 ${fmt(reserve)} 并分配 ${fmt(need)}，当前可用 ${fmt(available)}`,
+      )
     }
     const free = this.docker.hostDiskFreeBytes(this.config.runtimeRoot)
     if (free > 0 && free < this.config.diskReserveBytes) {
@@ -240,7 +242,13 @@ export class RuntimeService implements OnModuleInit {
       return { ok: true, changed: false, logs: '无 package.json，无需安装依赖', durationMs: 0 }
     }
     if (info.manifestError) {
-      return { ok: false, changed: false, logs: '', error: info.manifestError, durationMs: Date.now() - started }
+      return {
+        ok: false,
+        changed: false,
+        logs: '',
+        error: info.manifestError,
+        durationMs: Date.now() - started,
+      }
     }
     const validation = validateManifest(info.manifest as Manifest)
     if (!validation.ok) {
@@ -618,7 +626,11 @@ export class RuntimeService implements OnModuleInit {
     }
     const logs = await this.docker.containerLogs(name, 300)
     await this.docker.removeContainer(name)
-    return { ok: false, logs, error: `预览启动超时（${Math.round(this.config.previewStartTimeoutMs / 1000)} 秒）` }
+    return {
+      ok: false,
+      logs,
+      error: `预览启动超时（${Math.round(this.config.previewStartTimeoutMs / 1000)} 秒）`,
+    }
   }
 
   async stopPreviewContainer(appId: number) {

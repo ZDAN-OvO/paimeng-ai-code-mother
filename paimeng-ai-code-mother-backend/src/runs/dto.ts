@@ -6,15 +6,44 @@ import { planStepSchema } from '../conversations/dto'
 const runIdSchema = z.string().uuid('runId 格式无效')
 const runStatusValueSchema = z.enum(['running', 'cancelling', 'completed', 'failed', 'cancelled'])
 const detailsStatusSchema = z.enum(['pending', 'ready', 'incomplete'])
+const clientRequestIdSchema = z
+  .string()
+  .trim()
+  .min(8, 'clientRequestId 长度需在 8-64 之间')
+  .max(64, 'clientRequestId 长度需在 8-64 之间')
 
 export const chatSchema = z.object({
   appId: z.number().int().positive('应用 ID 无效'),
   message: z.string().trim().min(1, '消息不能为空').max(1000, '消息最多 1000 个字符'),
-  clientRequestId: z
-    .string()
-    .trim()
-    .min(8, 'clientRequestId 长度需在 8-100 之间')
-    .max(100, 'clientRequestId 长度需在 8-100 之间'),
+  clientRequestId: clientRequestIdSchema,
+})
+
+export const enqueueMessageSchema = chatSchema.extend({
+  mode: z.enum(['normal', 'steer']),
+  runId: runIdSchema.optional(),
+})
+export const messageQueueQuerySchema = z.object({
+  appId: z.coerce.number().int().positive(),
+  clientRequestId: clientRequestIdSchema.optional(),
+})
+export const removeQueuedMessageSchema = z.object({
+  appId: z.number().int().positive(),
+  id: z.string().min(1).max(100),
+})
+export const resumeMessageQueueSchema = z.object({ appId: z.number().int().positive() })
+export const queueItemSchema = z.object({
+  id: z.string(),
+  clientRequestId: z.string(),
+  message: z.string(),
+  mode: z.enum(['normal', 'steer']),
+  status: z.enum(['queued', 'claimed', 'started', 'applied', 'returned', 'removed']),
+  runId: z.string().nullable(),
+})
+export const messageQueueSchema = z.object({
+  paused: z.boolean(),
+  items: z.array(queueItemSchema),
+  activeRun: z.object({ runId: z.string(), status: z.enum(['running', 'cancelling']) }).nullable(),
+  requestedItem: queueItemSchema.nullable().optional(),
 })
 
 export const cancelRunSchema = z.object({ runId: runIdSchema })
@@ -22,7 +51,7 @@ export const cancelRunSchema = z.object({ runId: runIdSchema })
 export const runStatusQuerySchema = z.object({
   runId: runIdSchema.optional(),
   appId: z.coerce.number().int().positive('应用 ID 无效').optional(),
-  clientRequestId: z.string().min(8).max(100).optional(),
+  clientRequestId: clientRequestIdSchema.optional(),
 })
 
 export const runDetailsQuerySchema = z.object({ runId: runIdSchema })
@@ -177,6 +206,12 @@ export const runChunkSchema = z.object({
 })
 
 export class ChatDto extends createZodDto(chatSchema) {}
+export class EnqueueMessageDto extends createZodDto(enqueueMessageSchema) {}
+export class MessageQueueQueryDto extends createZodDto(messageQueueQuerySchema) {}
+export class RemoveQueuedMessageDto extends createZodDto(removeQueuedMessageSchema) {}
+export class ResumeMessageQueueDto extends createZodDto(resumeMessageQueueSchema) {}
+export class BaseResponseQueueItem extends createZodDto(envelope(queueItemSchema)) {}
+export class BaseResponseMessageQueue extends createZodDto(envelope(messageQueueSchema)) {}
 export class CancelRunDto extends createZodDto(cancelRunSchema) {}
 export class RunStatusQueryDto extends createZodDto(runStatusQuerySchema) {}
 export class RunDetailsQueryDto extends createZodDto(runDetailsQuerySchema) {}

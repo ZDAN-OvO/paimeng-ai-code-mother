@@ -140,8 +140,7 @@ export class PreviewService implements OnModuleDestroy {
     let status: 'stopped' | 'starting' | 'running' | 'failed'
     if (kind === 'static') {
       status = existsSync(join(this.config.appSourceDir(appId), 'index.html')) ? 'running' : 'stopped'
-    }
-    else status = state?.status ?? 'stopped'
+    } else status = state?.status ?? 'stopped'
     if (status === 'running' && (kind === 'vue' || kind === 'react')) {
       const running = await this.docker.containerRunning(`paimeng-app-${appId}`)
       if (!running) {
@@ -605,7 +604,9 @@ export class PreviewService implements OnModuleDestroy {
     }
     if (rel.endsWith('/')) rel += 'index.html'
     if (rel === '/') rel = '/index.html'
-    const safeRel = normalize(rel).replace(/^(\.\.[/\\])+/, '').replace(/^[/\\]+/, '')
+    const safeRel = normalize(rel)
+      .replace(/^(\.\.[/\\])+/, '')
+      .replace(/^[/\\]+/, '')
     let file = resolve(root, safeRel)
     if (!file.startsWith(resolve(root) + sep) && file !== resolve(root)) {
       this.writePlain(res, 403, '路径越界')
@@ -744,5 +745,4 @@ export class PreviewService implements OnModuleDestroy {
     this.states.clear()
     this.versions.clear()
   }
-
 }

@@ -58,11 +58,13 @@ exit 0
     process.env.DOCKER_BIN = script
     process.env.DOCKER_LOG = log
     try {
-      const runtime = new RuntimeService(
-        config(root),
-        new DockerService(config(root)),
-        { url: 'http://127.0.0.1:4873', error: null } as never,
-      )
+      const docker = new DockerService(config(root))
+      docker.hostMemoryAvailableBytes = () => 16 * 1024 * 1024 * 1024
+      docker.hostDiskFreeBytes = () => 100 * 1024 * 1024 * 1024
+      const runtime = new RuntimeService(config(root), docker, {
+        url: 'http://127.0.0.1:4873',
+        error: null,
+      } as never)
       const started = Date.now()
       const result = await runtime.build(1)
       expect(result.ok).toBe(false)

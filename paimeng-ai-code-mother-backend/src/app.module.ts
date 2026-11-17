@@ -20,6 +20,7 @@ import { RedisModule } from './redis/redis.module'
 import { RunsController } from './runs/runs.controller'
 import { RunsService } from './runs/runs.service'
 import { RunDetailsService } from './runs/run-details.service'
+import { MessageQueueStore } from './runs/message-queue.store'
 import { AppMutexService } from './runtime/app-mutex.service'
 import { DependencyService } from './runtime/dependency.service'
 import { DockerService } from './runtime/docker.service'
@@ -54,6 +55,7 @@ import { ToolRegistryService } from './tools/tool-registry.service'
     SessionStoreService,
     AgentService,
     RunsService,
+    MessageQueueStore,
     RunDetailsService,
     ToolRegistryService,
     SkillService,

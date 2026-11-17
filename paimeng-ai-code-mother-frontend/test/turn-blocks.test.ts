@@ -13,6 +13,12 @@ const tool = (id: string, toolName: string) =>
     input: {},
     output: {},
   }) as never
+const steer = (id: string, value: string) =>
+  ({
+    type: 'data-steer',
+    id: `steer:${id}`,
+    data: { text: value, clientRequestId: id },
+  }) as never
 
 test('keeps text, tools, plans and later text in stored part order', () => {
   const blocks = buildTurnBlocks(
@@ -115,4 +121,63 @@ test('commentary before a later operation is not promoted to a final reply', () 
   assert.deepEqual(visibleTurnBlocks(blocks, 'streaming', false), blocks)
   assert.deepEqual(visibleTurnBlocks(blocks, 'failed', false), [])
   assert.deepEqual(visibleTurnBlocks(blocks, 'cancelled', false), [])
+})
+
+test('collapsed turns keep steer bubbles in their original positions with the final reply', () => {
+  const blocks = buildTurnBlocks(
+    [
+      text('开始处理。'),
+      tool('read-1', 'read'),
+      steer('request-1', '先保留现有导航'),
+      tool('edit-1', 'edit'),
+      steer('request-2', '再调整配色'),
+      tool('build-1', 'build'),
+      text('两处修改都已完成。'),
+    ],
+    'completed',
+  )
+
+  const visible = visibleTurnBlocks(blocks, 'completed', false)
+  assert.deepEqual(
+    visible.map((block) => block.type),
+    ['steer', 'steer', 'text'],
+  )
+  assert.equal(visible[0]?.type === 'steer' && visible[0].steer.text, '先保留现有导航')
+  assert.equal(visible[0]?.key, 'steer:request-1')
+  assert.equal(visible[1]?.type === 'steer' && visible[1].steer.text, '再调整配色')
+  assert.equal(visible[2]?.type === 'text' && visible[2].text, '两处修改都已完成。')
+})
+
+test('failed and cancelled turns keep steer bubbles and the last reply without later tools', () => {
+  for (const status of ['failed', 'cancelled'] as const) {
+    const blocks = buildTurnBlocks(
+      [
+        tool('edit-1', 'edit'),
+        steer('request-1', '改成两列'),
+        text('已保留两列布局，但后续验证未完成。'),
+      ],
+      status,
+    )
+    const visible = visibleTurnBlocks(blocks, status, false)
+    assert.deepEqual(
+      visible.map((block) => block.type),
+      ['steer', 'text'],
+    )
+    assert.equal(
+      visible[1]?.type === 'text' && visible[1].text,
+      '已保留两列布局，但后续验证未完成。',
+    )
+  }
+})
+
+test('a steer arriving after the final reply does not hide that reply', () => {
+  const blocks = buildTurnBlocks(
+    [tool('build-1', 'build'), text('修改已经完成。'), steer('request-1', '收到，继续保持')],
+    'completed',
+  )
+  const visible = visibleTurnBlocks(blocks, 'completed', false)
+  assert.deepEqual(
+    visible.map((block) => block.type),
+    ['text', 'steer'],
+  )
 })

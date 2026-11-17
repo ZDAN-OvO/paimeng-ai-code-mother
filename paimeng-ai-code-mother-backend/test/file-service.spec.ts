@@ -5,7 +5,9 @@ import { describe, expect, it } from 'vitest'
 import type { AppConfigService } from '../src/config/config.module'
 import { FileService, type ToolContext } from '../src/runtime/file-service'
 
-function testConfig(overrides: Partial<Record<'maxFileBytes' | 'maxSourceBytes' | 'maxFileCount', number>> = {}) {
+function testConfig(
+  overrides: Partial<Record<'maxFileBytes' | 'maxSourceBytes' | 'maxFileCount', number>> = {},
+) {
   return {
     appSourceDir: (appId: number) => join(root, String(appId)),
     maxFileBytes: 1024 * 1024,
@@ -65,9 +67,9 @@ describe('file service boundaries', () => {
     const ctx = context(1)
 
     await expect(files.read(ctx, '../2/secret.txt')).rejects.toThrow('..')
-    await expect(
-      files.write(ctx, '../../.paimeng/skills/static/SKILL.md', 'overwritten'),
-    ).rejects.toThrow('..')
+    await expect(files.write(ctx, '../../.paimeng/skills/static/SKILL.md', 'overwritten')).rejects.toThrow(
+      '..',
+    )
     await symlink(join(root, '2'), join(root, '1/other-app'))
     await expect(files.read(ctx, 'other-app/secret.txt')).rejects.toThrow('软链接')
   })
