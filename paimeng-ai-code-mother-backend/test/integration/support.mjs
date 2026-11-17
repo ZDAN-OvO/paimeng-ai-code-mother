@@ -74,6 +74,45 @@ export const outcome = (status = 'completed', text = 'integration result') => ({
   repairCount: 0,
 })
 
+// 测试配置必须走生产 env schema，否则手抄的子集会随产品新增字段悄悄漂移：
+// 少一个 runDetailDiffMaxBytes 这类字段，测试仍然绿，但截断逻辑已经是 NaN。
+function buildConfig(connections, workDir) {
+  const overrides = {
+    NODE_ENV: 'test',
+    SESSION_SECRET: 'integration-test-session-secret-value',
+    DATABASE_URL: connections.databaseUrl,
+    REDIS_URL: connections.redisUrl,
+    AI_BASE_URL: 'http://127.0.0.1:9/v1',
+    AI_MODEL: 'integration-test-model',
+    AI_CONTEXT_WINDOW_TOKENS: '128000',
+    RUNTIME_ROOT: join(workDir, 'runtime'),
+    LOG_DIR: join(workDir, 'logs'),
+    MAX_RUNS_PER_USER: '2',
+    RUN_MAX_DURATION_MS: '60000',
+    APP_RATE_LIMIT_PER_MINUTE: '100',
+    // runDetailReserveBytes 由 MAX_SOURCE_BYTES 推导；配额必须明显大于保留量，否则明细写入被拒。
+    RUN_DETAIL_QUOTA_BYTES: String(64 * 1024 * 1024),
+    MAX_SOURCE_BYTES: String(1024 * 1024),
+    RUN_DETAIL_MANIFEST_MAX_BYTES: String(1024 * 1024),
+    RUN_DETAIL_ACTIVITY_MAX_BYTES: String(1024 * 1024),
+    RUN_DETAIL_FINALIZE_TIMEOUT_MS: '5000',
+    MAX_FILE_BYTES: String(1024 * 1024),
+  }
+  const saved = Object.keys(overrides).map((key) => [key, process.env[key]])
+  Object.assign(process.env, overrides)
+  try {
+    const config = new AppConfigService()
+    // Nest calls onModuleInit during init(); compile() alone does not, so resolve paths here.
+    config.onModuleInit()
+    return config
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
+
 export async function withHarness(fn) {
   const connections = isolatedConnections()
   const workDir = process.env.CI_TEST_WORK_DIR
@@ -84,19 +123,7 @@ export async function withHarness(fn) {
   assert.equal(await realpath(workDir), resolve(workDir), 'CI_TEST_WORK_DIR must not contain symlinks')
   const info = await stat(workDir)
   assert.ok(info.isDirectory() && (info.mode & 0o077) === 0, 'CI_TEST_WORK_DIR must be private (0700)')
-  const config = {
-    ...connections,
-    maxRunsPerUser: 2,
-    runMaxDurationMs: 60_000,
-    appRateLimitPerMinute: 100,
-    runDetailActivityMaxBytes: 1024 * 1024,
-    runDetailManifestMaxBytes: 1024 * 1024,
-    runDetailReserveBytes: 1024,
-    runDetailQuotaBytes: 16 * 1024 * 1024,
-    runDetailFinalizeTimeoutMs: 5000,
-    maxFileBytes: 1024 * 1024,
-    appSourceDir: (appId) => join(workDir, 'sources', String(appId)),
-  }
+  const config = buildConfig(connections, workDir)
   const executions = new Map()
   const agent = {
     async execute(params) {

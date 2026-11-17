@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { createServer } from 'node:net'
 import { mkdtemp, mkdir, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -129,6 +130,25 @@ export function docker(args, timeout = 30_000) {
   return result.stdout.trim()
 }
 
+// 固定端口会和本机 vite preview、其他 worktree 的并行运行撞车。开三个 socket 同时取端口，
+// 避免同一进程内拿到重复值；真正的占用冲突仍由启动器的显式失败兜底。
+export async function freePorts(count) {
+  const servers = []
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const server = createServer()
+      servers.push(server)
+      await new Promise((done, reject) => {
+        server.once('error', reject)
+        server.listen(0, '127.0.0.1', done)
+      })
+    }
+    return servers.map((server) => server.address().port)
+  } finally {
+    await Promise.all(servers.map((server) => new Promise((done) => server.close(done))))
+  }
+}
+
 export async function waitFor(check, label, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -190,10 +210,15 @@ export async function withServices(work) {
         return false
       }
     }, 'Redis')
+    const [webPort, backendPort, modelPort] = await freePorts(3)
     const env = {
       ...baseEnv,
       CI_TEST_ISOLATED: '1',
       CI_TEST_WORK_DIR: workDir,
+      // 显式下发动态端口；baseEnv 是白名单，不会继承宿主上的同名变量。
+      CI_TEST_WEB_PORT: String(webPort),
+      CI_TEST_BACKEND_PORT: String(backendPort),
+      CI_TEST_MODEL_PORT: String(modelPort),
       CI_TEST_DATABASE_URL: `postgres://paimeng:ci-only@127.0.0.1:${port(postgres, 5432)}/${database}`,
       CI_TEST_REDIS_URL: `redis://127.0.0.1:${port(redis, 6379)}/15`,
     }

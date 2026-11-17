@@ -1,6 +1,7 @@
 import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { backend, buildApp, root, run, withServices } from './services.mjs'
+import { launcherLimitMs } from '../../tests/e2e/environment.mjs'
+import { backend, buildApp, freePorts, root, run, withServices } from './services.mjs'
 
 const mode = process.argv[2] ?? 'system'
 if (!['integration', 'e2e', 'system'].includes(mode)) throw new Error(`Unknown CI test mode: ${mode}`)
@@ -20,7 +21,7 @@ await withServices(async ({ env }) => {
   if (mode !== 'integration') {
     await run('pnpm', ['exec', 'playwright', 'test', '--config', join(root, 'playwright.config.mjs')], {
       env,
-      timeoutMs: 240_000,
+      timeoutMs: launcherLimitMs + 60_000,
     })
   }
 })

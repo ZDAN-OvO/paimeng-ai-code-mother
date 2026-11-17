@@ -28,6 +28,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
+      - run: pnpm check:syntax
       - run: pnpm test
       - run: pnpm build
       - run: pnpm contract:check
@@ -52,7 +53,6 @@ jobs:
         with:
           name: browser-failure
           path: |
-            playwright-report/
             test-results/
           retention-days: 3
           if-no-files-found: ignore

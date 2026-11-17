@@ -1,5 +1,6 @@
 // 独立进程组的守护进程。IPC 断开也会收尾，覆盖启动器被直接杀死的情况。
 import { spawn } from 'node:child_process'
+import { backendSupervisorLimitMs } from './environment.mjs'
 
 let stopping = false
 function stop() {
@@ -16,7 +17,7 @@ process.on('SIGINT', stop)
 process.on('disconnect', stop)
 process.on('uncaughtException', stop)
 process.on('unhandledRejection', stop)
-setTimeout(stop, 200_000).unref()
+setTimeout(stop, backendSupervisorLimitMs).unref()
 
 const backend = spawn(process.execPath, [process.argv[2]], {
   cwd: process.cwd(), env: process.env, stdio: ['ignore', 'inherit', 'inherit'],

@@ -4,7 +4,7 @@ import { createReadStream, openSync, closeSync } from 'node:fs'
 import { access, copyFile, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { browserEnvironment, repoRoot } from '../../tests/e2e/environment.mjs'
+import { browserEnvironment, launcherLimitMs, repoRoot } from '../../tests/e2e/environment.mjs'
 import { createModelServer } from '../../tests/e2e/model-server.mjs'
 
 const env = browserEnvironment()
@@ -85,7 +85,7 @@ process.on('unhandledRejection', (error) => {
 })
 process.on('exit', () => killBackend('SIGKILL'))
 // 即便调用方没有清理，也不允许服务器永久驻留。
-setTimeout(() => void shutdown(1), 195_000).unref()
+setTimeout(() => void shutdown(1), launcherLimitMs).unref()
 
 async function listen(server, port) {
   server.requestTimeout = 30_000
@@ -198,7 +198,10 @@ async function start() {
     INSTALL_TIMEOUT_MS: '5000', BUILD_TIMEOUT_MS: '5000', PREVIEW_START_TIMEOUT_MS: '5000',
     RUN_DETAIL_FINALIZE_TIMEOUT_MS: '5000',
     RUNTIME_ROOT: join(scratch, 'runtime'), LOG_DIR: join(scratch, 'logs'), TMPDIR: join(scratch, 'tmp'),
-    DOCKER_BIN: '/bin/false', SETUP_IMAGE_ON_START: 'false',
+    // 记录型替身：误调用会立刻失败并留下记录，由 globalTeardown 断言一次都没有。
+    DOCKER_BIN: join(repoRoot, 'tests/e2e/docker-audit.sh'),
+    DOCKER_AUDIT_FILE: join(env.workDir, 'docker-calls.log'),
+    SETUP_IMAGE_ON_START: 'false',
     // 静态流程不会访问 registry；误触发也只能到本地 fixture，不能访问公网。
     REGISTRY_UPSTREAM: env.modelOrigin,
   }

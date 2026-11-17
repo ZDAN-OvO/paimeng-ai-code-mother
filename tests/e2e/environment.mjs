@@ -5,6 +5,14 @@ import { fileURLToPath } from 'node:url'
 
 export const repoRoot = fileURLToPath(new URL('../../', import.meta.url))
 
+// 整套浏览器测试的时间预算。单个用例、套件、启动器、后端守护进程的上限都从这里推导，
+// 加用例时只改用例数和 here，不要各自拍一个数字。
+export const browserTestLimitMs = 45_000
+export const expectedSpecCount = 5
+export const suiteLimitMs = browserTestLimitMs * expectedSpecCount + 15_000
+export const launcherLimitMs = suiteLimitMs + 60_000
+export const backendSupervisorLimitMs = suiteLimitMs + 70_000
+
 export function browserEnvironment(env = process.env) {
   if (env.CI_TEST_ISOLATED !== '1') throw new Error('浏览器测试要求 CI_TEST_ISOLATED=1')
   const databaseUrl = isolatedUrl(env.CI_TEST_DATABASE_URL, ['postgres:', 'postgresql:'])

@@ -20,7 +20,7 @@ Playwright 启动 `node scripts/ci/browser-server.mjs`，不复用已有服务�
 
 主站为 `http://paimeng.localhost:4173`，预览为 `http://app-{id}.preview.paimeng.localhost:4173`。二者来源不同，但站点相同，符合预览 Cookie 的 `SameSite=Lax` 约束。Chromium 将 `*.localhost` 映射到 `127.0.0.1`；所有测试服务器只监听 loopback。端口覆盖会同时更新主站、代理与预览地址。
 
-后端环境使用白名单重新构造，PG、Redis、模型地址均由测试指定。`AI_*` 不继承宿主配置，`DOCKER_BIN=/bin/false`，运行目录与日志写入临时目录。前端由 Node 提供静态文件，`/api` 和预览 Host 原样代理到后端；没有 Vite 环境文件加载，也没有业务 API mock。
+后端环境使用白名单重新构造，PG、Redis、模型地址均由测试指定。`AI_*` 不继承宿主配置，`DOCKER_BIN` 指向记录型替身 `tests/e2e/docker-audit.sh`（调用即失败并写入记录），运行目录与日志写入临时目录。`globalTeardown` 会断言过程中没有出现 `docker run/create/exec/build/rm` 这类真正执行或构建容器的命令——启动阶段的 `network inspect`、`ps --filter label`、`inspect paimeng-app-*` 属于只读探测，允许出现。前端由 Node 提供静态文件，`/api` 和预览 Host 原样代理到后端；没有 Vite 环境文件加载，也没有业务 API mock。
 
 ## 覆盖范围
 
@@ -36,7 +36,9 @@ Playwright 启动 `node scripts/ci/browser-server.mjs`，不复用已有服务�
 
 ## 产物与清理
 
-失败 trace 和截图写入仓库根目录 `test-results/`，与临时服务目录分离，供 CI 上传。此配置只运行不含真实模型密钥的固定模型流程。trace 会包含临时测试账号与会话，保留期限由 CI 配置决定。
+失败 trace 和截图写入仓库根目录 `test-results/`，与临时服务目录分离，供 CI 上传。同目录还会留下 `browser-backend.log`（后端日志）与 `docker-calls.log`（Docker 调用审计）。
+
+后端在 `CI_TEST_WORK_DIR` 上会被删除，所以这两份记录由启动器与 `globalTeardown` 在清理前搬到 `test-results/`。此配置只运行不含真实模型密钥的固定模型流程。trace 会包含临时测试账号与会话，保留期限由 CI 配置决定。
 
 后端日志位于 `CI_TEST_WORK_DIR/browser-backend.log`。运行目录由根 runner 的 `finally` 删除，所以启动器在退出时会把它复制到 `test-results/browser-backend.log`（CI 失败时随 `test-results/` 一起上传）；非零退出时还会把末 40 行直接打印到日志里。PG、Redis 容器与临时目录同样由外层 `finally` 销毁，取消信号会立即升级为强杀，保证清理有时间执行。
 

@@ -20,7 +20,8 @@
     "test:integration": "node scripts/ci/run.mjs integration",
     "test:e2e": "node scripts/ci/run.mjs e2e",
     "test:system": "node scripts/ci/run.mjs system",
-    "test:ci": "node --test tests/ci/*.test.mjs"
+    "test:ci": "node --test tests/ci/*.test.mjs",
+    "check:syntax": "node scripts/ci/syntax-check.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.65.1"

@@ -1,14 +1,19 @@
 import { defineConfig, devices } from '@playwright/test'
 import { join } from 'node:path'
-import { browserEnvironment, repoRoot } from './tests/e2e/environment.mjs'
+import {
+  browserEnvironment,
+  browserTestLimitMs,
+  repoRoot,
+  suiteLimitMs,
+} from './tests/e2e/environment.mjs'
 
 const env = browserEnvironment()
 
 export default defineConfig({
   testDir: './tests/e2e',
   testMatch: '**/*.spec.mjs',
-  timeout: 45_000,
-  globalTimeout: 180_000,
+  timeout: browserTestLimitMs,
+  globalTimeout: suiteLimitMs,
   expect: { timeout: 10_000 },
   workers: 1,
   fullyParallel: false,
@@ -16,6 +21,7 @@ export default defineConfig({
   forbidOnly: true,
   reporter: [['list']],
   outputDir: join(repoRoot, 'test-results'),
+  globalTeardown: './tests/e2e/global-teardown.mjs',
   use: {
     baseURL: env.mainOrigin,
     actionTimeout: 10_000,

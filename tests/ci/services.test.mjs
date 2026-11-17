@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import { start, stop } from '../../scripts/ci/services.mjs'
 
-test('cleanup kills a TERM-ignoring descendant after its process-group leader exits', { timeout: 10_000 }, async () => {
+test('cleanup kills a TERM-ignoring descendant after its process-group leader exits', { timeout: 10_000, skip: process.platform !== 'linux' }, async (t) => {
+  // 依赖 /proc 判定僵尸进程；非 Linux 上宁可跳过，也不要读完 ENOENT 就当成通过。
+  if (process.platform !== 'linux') return t.skip('需要 /proc 才能区分僵尸与存活后代')
   const descendant = `process.on('SIGTERM', () => {}); process.send('ready'); setInterval(() => {}, 1000)`
   const leader = `
     const { spawn } = require('node:child_process')

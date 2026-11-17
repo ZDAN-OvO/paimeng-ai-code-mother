@@ -100,6 +100,8 @@ push 到 `main` 和 pull request 会在 GitHub Actions 上自动跑这组检查�
 ```bash
 pnpm install --frozen-lockfile
 pnpm exec playwright install chromium
+# 新的 Linux 机器还要装系统依赖：
+pnpm exec playwright install --with-deps chromium
 ```
 
 需要本机 Docker 可用。按改动范围选择一个命令：
@@ -110,9 +112,9 @@ pnpm test:e2e          # Chromium 中的关键操作流程
 pnpm test:system       # 两者一起运行，CI 使用此入口
 ```
 
-启动器自动构建所需产物，创建独立的 PostgreSQL、Redis 容器和临时运行目录，并在退出时清理本次创建的资源。测试不加载 `.env`，不连接开发数据库，也不让浏览器测试的后端访问 Docker。浏览器测试只替换模型响应，鉴权、消息队列、SSE、文件写入和静态预览仍走真实后端。
+启动器自动构建所需产物，创建独立的 PostgreSQL、Redis 容器和临时运行目录，分配空闲端口（因此多个 worktree 可以同时跑），并在退出时清理本次创建的资源。测试不加载 `.env`，不连接开发数据库，也不让浏览器测试的后端访问 Docker。浏览器测试只替换模型响应，鉴权、消息队列、SSE、文件写入和静态预览仍走真实后端。
 
-PR 测试使用构建后的前端和测试代理，不覆盖生产 Nginx、真实模型或应用容器构建。失败时 GitHub Actions 保留浏览器截图与 trace 三天，后端运行日志会复制到 `test-results/browser-backend.log` 一并上传。
+PR 测试使用构建后的前端和测试代理，不覆盖生产 Nginx、真实模型或应用容器构建。失败时 GitHub Actions 保留浏览器截图与 trace 三天；后端运行日志会复制到 `test-results/browser-backend.log`，Docker 调用审计记录在 `test-results/docker-calls.log`，一并上传。
 
 CI 的模型响应全部来自本地测试服务，不调用真实模型，也不需要网关地址或 API Key。需要真实模型的黑盒验收在本机手动执行，不纳入 CI；生成应用的 Docker 构建与容器预览仍需单独验收。
 
