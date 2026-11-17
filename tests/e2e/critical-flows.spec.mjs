@@ -192,7 +192,7 @@ test('注册登录、生成静态页、刷新恢复，并拒绝跨账号与预�
   expect(unauthenticated.status).toBe(401)
 })
 
-test('运行中插话经真实队列消费，刷新重连后同一轮完成并更新预览', async ({ page, model }) => {
+test('运行中插话经真实队列消费，刷新后重新订阅并完成同一轮', async ({ page, model }) => {
   const scenario = await model.create('hold')
   await registerAndLogin(page)
   const { appId, item } = await createApp(page, scenario)
