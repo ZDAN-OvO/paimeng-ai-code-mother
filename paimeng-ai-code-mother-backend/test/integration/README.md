@@ -17,6 +17,8 @@ pnpm test:integration
 pnpm test:system
 ```
 
+测试配置由生产 env schema 生成：`support.mjs` 先把本次需要的变量写进 `process.env`、构造 `AppConfigService` 并 `onModuleInit()`，随后立即恢复，中间没有 `await`。经 runner 运行时 `process.env` 是白名单，不会混入开发者 shell 的变量；如果绕过 runner 直接 `node --test`，宿主上的同名变量会被读到。
+
 `scripts/ci/services.mjs` 复用 Drizzle migrator 和仓库原始 SQL。URL 校验在测试连接前执行。PostgreSQL 语句、锁等待及闲置事务均有服务端超时。测试有用例超时、等待上限与 finally 清理。并发通过受控 Agent 信号、真实 GET 响应屏障或 `pg_blocking_pids()` 同步，不用固定 sleep 判断结果。
 
 覆盖：
