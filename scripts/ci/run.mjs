@@ -24,15 +24,22 @@ await withServices(async ({ env }) => {
     const managed = { ...env, CI_TEST_EXTERNAL_WEBSERVER: '1' }
     const browser = browserEnvironment(managed)
     const server = start(process.execPath, [join(root, 'scripts/ci/browser-server.mjs')], { env: managed })
+    // 启动失败要立刻报错，不要让就绪等待空耗满 40 秒。
+    const exited = new Promise((_, reject) => {
+      server.once('exit', (code, signal) =>
+        reject(new Error(`浏览器测试服务提前退出（${signal ?? code}），见上方输出`)))
+      server.once('error', (error) => reject(new Error(`浏览器测试服务无法启动：${error.message}`)))
+    })
+    exited.catch(() => {})
     try {
-      await waitFor(async () => {
+      await Promise.race([waitFor(async () => {
         try {
           const response = await fetch(`${browser.probeOrigin}/__e2e/ready`, { signal: AbortSignal.timeout(1000) })
           return response.ok
         } catch {
           return false
         }
-      }, '浏览器测试服务就绪', 40_000)
+      }, '浏览器测试服务就绪', 40_000), exited])
       await run('pnpm', ['exec', 'playwright', 'test', '--config', join(root, 'playwright.config.mjs')], {
         env: managed,
         timeoutMs: launcherLimitMs + 60_000,

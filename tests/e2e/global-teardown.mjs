@@ -2,9 +2,9 @@ import { copyFile, mkdir, readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { browserEnvironment, repoRoot } from './environment.mjs'
 
-// DOCKER_BIN 指向记录型替身。启动阶段本来就会做只读探测（network inspect、ps label、
-// inspect paimeng-app-*），这些允许；但任何会真正执行生成代码的命令都不允许出现，
-// 否则说明这轮「静态页面」测试已经越界去跑容器了。
+// DOCKER_BIN 指向记录型替身。启动阶段本来就会做只读探测（network inspect/create、ps label、
+// inspect paimeng-app-*），这些允许；会构建或执行容器的命令一律不允许出现。
+// `image`、`buildx` 也一起拦：静态流程走到镜像操作，下一步就是 build 或 run，已经越界。
 const FORBIDDEN = /^(run|create|start|stop|exec|build|kill|rm|pull|push|commit|cp|image|container|buildx)\b/
 
 export default async function globalTeardown() {

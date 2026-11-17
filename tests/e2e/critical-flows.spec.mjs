@@ -134,6 +134,30 @@ async function waitRun(page, appId, item, status) {
 
 function preview(page) { return page.frameLocator('iframe[title="应用预览"]') }
 
+// 独立开一条真实订阅并持续读到关闭：用来证明放行之后服务端仍在推送，而不是只重放旧帧就关流。
+function streamRun(cookie, runId) {
+  const parts = []
+  let ended = false
+  const request = httpRequest(`${env.probeOrigin}/api/app/run/stream`, {
+    method: 'POST',
+    headers: {
+      Host: new URL(env.mainOrigin).host,
+      Cookie: cookie,
+      'content-type': 'application/json',
+    },
+  }, (response) => {
+    response.setEncoding('utf8')
+    response.on('data', (part) => { parts.push(part) })
+    response.on('end', () => { ended = true })
+    response.on('error', () => { ended = true })
+  })
+  const timer = setTimeout(() => request.destroy(new Error('run stream timed out')), 30_000)
+  request.on('error', () => { ended = true })
+  request.on('close', () => clearTimeout(timer))
+  request.end(JSON.stringify({ runId }))
+  return { frames: () => parts.join(''), ended: () => ended, close: () => request.destroy() }
+}
+
 async function expectCompleted(page, scenario, suffix = '') {
   await expect(page.getByText(`页面已完成 ${scenario.marker}${suffix}`, { exact: true })).toBeVisible()
   await expect(preview(page).getByRole('heading', { name: scenario.marker, exact: true })).toBeVisible()
@@ -219,19 +243,28 @@ test('运行中插话经真实队列消费，刷新后重新订阅并完成同�
   await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
   await expect(page.getByText('插话发送 · 等待插入当前轮次', { exact: true })).toBeVisible()
   expect((await readRun(page, appId, item)).runId).toBe(run.runId)
-  await scenario.release()
+  // 页面的订阅只证明「刷新后确实又订阅了同一个运行」。要证明「服务端还在推」，
+  // 必须有一条跨过放行点的长连接：只有重放旧帧就关流的实现，拿不到放行后才产生的帧。
+  const session = (await page.context().cookies(env.mainOrigin)).find((entry) => entry.name === 'pm_sid')
+  expect(session).toBeTruthy()
+  const live = streamRun(`pm_sid=${session.value}`, run.runId)
+  try {
+    await scenario.release()
+    await expect.poll(() => live.ended() || /"check":"source"/.test(live.frames()), {
+      message: '放行后订阅必须继续推送', timeout: 15_000,
+    }).toBe(true)
+    const frames = live.frames()
+    expect(frames, '放行后应有写入校验帧，重放快照里不可能有').toMatch(/"type":"data-validation"[^\n]*"check":"source"/)
+    expect(frames).toContain('"type":"text-delta"')
+  } finally {
+    live.close()
+  }
   const completed = await waitRun(page, appId, item, 'completed')
   expect(completed.runId).toBe(run.runId)
   await expectCompleted(page, scenario, `；已应用插话：${scenario.steer}`)
   await expect(page.getByText('插入指令', { exact: true })).toBeVisible()
   await expect(page.getByText(scenario.steer, { exact: true })).toBeVisible()
   await expect(preview(page).getByText(`页面已生成；已应用插话：${scenario.steer}`, { exact: true })).toBeVisible()
-  // 直接读这条订阅的响应体：历史重放会带出已落库文本，只有真实推送才带得出 text-delta 帧。
-  // text/event-stream 不带 charset，Playwright 取回的文本里中文已是乱码，
-  // 所以只比对这条流里的 ASCII 标记：中间文本一定在 text-delta 帧里，且只由这条订阅送出。
-  const frames = Buffer.from(await subscription.body()).toString('latin1')
-  expect(frames).toContain('"type":"text-delta"')
-  expect(frames).toMatch(new RegExp(`"type":"text-delta"[^\\n]*${scenario.marker}`))
   const queue = await dataOf(page, `/app/chat/queue?appId=${appId}&clientRequestId=${steer.clientRequestId}`)
   expect(queue.requestedItem).toMatchObject({ id: steer.id, status: 'applied', runId: run.runId })
   expect((await scenario.stats()).seenSteer).toBe(true)

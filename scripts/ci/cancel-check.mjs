@@ -2,7 +2,7 @@
 // 需要 Docker 与 Chromium，属于「按需/发布前」检查，不放进每次 PR 的必跑集合。
 //   pnpm test:cancel
 import { spawn, spawnSync } from 'node:child_process'
-import { closeSync, openSync, readFileSync } from 'node:fs'
+import { closeSync, openSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -16,28 +16,44 @@ const watched = [
   'paimeng-ai-code-mother-backend/dist/main.js',
 ]
 
+// 探针本身失败不能被当成「没有残留」：那样 Docker 不可用时这套检查会一路绿到底。
+const probe = (command, args) => {
+  const result = spawnSync(command, args, { encoding: 'utf8' })
+  if (result.error) throw new Error(`${command} 无法执行：${result.error.message}`)
+  return result
+}
 const pids = (pattern) => {
-  const found = spawnSync('pgrep', ['-f', pattern], { encoding: 'utf8' })
-  return found.status === 0 ? found.stdout.split('\n').filter(Boolean).map(Number) : []
+  const result = probe('pgrep', ['-f', pattern])
+  if (result.status === 0) return result.stdout.split('\n').filter(Boolean).map(Number)
+  // pgrep：0 有匹配，1 无匹配，其它都是查询失败。
+  if (result.status === 1) return []
+  throw new Error(`pgrep 查询失败（exit ${result.status}）：${result.stderr.trim()}`)
 }
 const containers = () => {
-  const found = spawnSync('docker', ['ps', '-a', '--filter', 'label=paimeng.ci', '--format', '{{.Names}}'], {
-    encoding: 'utf8',
-  })
-  return new Set(found.stdout.split('\n').filter(Boolean))
+  const result = probe('docker', ['ps', '-a', '--filter', 'label=paimeng.ci', '--format', '{{.Names}}'])
+  if (result.status !== 0) throw new Error(`docker ps 查询失败（exit ${result.status}）：${result.stderr.trim()}`)
+  return new Set(result.stdout.split('\n').filter(Boolean))
 }
 const ports = () => {
-  const listening = spawnSync('ss', ['-ltnp'], { encoding: 'utf8' }).stdout
+  const result = probe('ss', ['-ltnp'])
+  if (result.status !== 0) throw new Error(`ss 查询失败（exit ${result.status}）：${result.stderr.trim()}`)
   return new Set(
-    listening
+    result.stdout
       .split('\n')
       .filter((line) => line.includes('node'))
       .map((line) => line.split(/\s+/)[3]),
   )
 }
+const workDirs = () => new Set(readdirSync(tmpdir()).filter((name) => name.startsWith('paimeng-ci-')))
 const fresh = (before, after) => [...after].filter((entry) => !before.has(entry))
 
-const before = { containers: containers(), ports: ports() }
+let before
+try {
+  before = { containers: containers(), ports: ports(), workDirs: workDirs() }
+} catch (error) {
+  console.error(`探针不可用，无法判断清理结果：${error.message}`)
+  process.exit(1)
+}
 const log = openSync(logPath, 'w')
 const runner = spawn(process.execPath, [join(root, 'scripts/ci/run.mjs'), 'e2e'], {
   cwd: root,
@@ -94,10 +110,16 @@ try {
     const alive = pids(pattern)
     check(`取消后无残留进程 ${pattern}`, alive.length === 0, alive.join(','))
   }
-  const newContainers = fresh(before.containers, containers())
-  check('取消后无残留测试容器', newContainers.length === 0, newContainers.join(','))
-  const newPorts = fresh(before.ports, ports())
-  check('取消后无残留监听端口', newPorts.length === 0, newPorts.join(','))
+  try {
+    const newContainers = fresh(before.containers, containers())
+    check('取消后无残留测试容器', newContainers.length === 0, newContainers.join(','))
+    const newPorts = fresh(before.ports, ports())
+    check('取消后无残留监听端口', newPorts.length === 0, newPorts.join(','))
+    const newDirs = fresh(before.workDirs, workDirs())
+    check('取消后无残留临时目录', newDirs.length === 0, newDirs.join(','))
+  } catch (error) {
+    check('残留检查可以执行', false, error.message)
+  }
 } catch (error) {
   console.error(error.message)
   failures += 1
