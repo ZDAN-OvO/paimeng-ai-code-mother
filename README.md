@@ -89,7 +89,37 @@ pnpm build
 pnpm contract:check
 ```
 
-push 到 `main` 和 pull request 会在 GitHub Actions 上自动跑这组检查（`.github/workflows/ci.yml`）。
+push 到 `main` 和 pull request 会在 GitHub Actions 上自动跑这组检查。另一个并行任务执行真实 PostgreSQL、Redis 集成测试和 Chromium 浏览器测试。`check` 汇总两个任务，只有两者都成功才通过；`main` 的合并规则要求 `check` 通过，且分支包含最新主干。管理员仍可使用仓库原有的绕过权限。
+
+`check` 能挡住误合并，但挡不住故意绕过：有写权限的人可以直接改 `.github/workflows/ci.yml`，让这个检查永远通过。这是单人仓库的固有边界，不是配置遗漏。要真正硬化，需要把检查放进组织级 required workflow，或对 workflow 与门禁脚本的改动要求独立审批；在只有一名维护者时，这两条都会自锁。因此定位是「防止手滑」，不是「防内部恶意」。
+
+### 运行集成测试与浏览器测试
+
+先安装依赖和 Chromium：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
+# 新的 Linux 机器还要装系统依赖：
+pnpm exec playwright install --with-deps chromium
+```
+
+需要本机 Docker 可用。按改动范围选择一个命令：
+
+```bash
+pnpm test:integration  # 真实 PostgreSQL、Redis 与迁移
+pnpm test:e2e          # Chromium 中的关键操作流程
+pnpm test:system       # 两者一起运行，CI 使用此入口
+pnpm test:cancel       # 取消（Ctrl-C / CI 取消）后是否真的清理干净，按需执行
+                       # 断言：runner 15 秒内非零退出、无残留进程/容器/监听端口/临时目录；
+                       # 探针本身查询失败也算失败，不会因为 Docker 不可用而假绿
+```
+
+启动器自动构建所需产物，创建独立的 PostgreSQL、Redis 容器和临时运行目录，分配空闲端口（因此多个 worktree 可以同时跑），并由它自己拉起浏览器测试服务——取消时连这个服务一起收掉，不会留下占着端口的孤儿进程。退出时清理本次创建的全部资源。测试不加载 `.env`，不连接开发数据库，也不让浏览器测试的后端访问 Docker。浏览器测试只替换模型响应，鉴权、消息队列、SSE、文件写入和静态预览仍走真实后端。
+
+PR 测试使用构建后的前端和测试代理，不覆盖生产 Nginx、真实模型或应用容器构建。失败时 GitHub Actions 保留浏览器截图与 trace 三天；后端运行日志会复制到 `test-results/browser-backend.log`，Docker 调用审计记录在 `test-results/docker-calls.log`，一并上传。
+
+CI 的模型响应全部来自本地测试服务，不调用真实模型，也不需要网关地址或 API Key。需要真实模型的黑盒验收在本机手动执行，不纳入 CI；生成应用的 Docker 构建与容器预览仍需单独验收。
 
 OpenAPI 页面在 `http://127.0.0.1:8123/api/v3/api-docs`。
 
