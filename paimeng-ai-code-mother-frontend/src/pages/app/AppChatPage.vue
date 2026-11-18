@@ -907,9 +907,8 @@ const loadApp = async () => {
       runId.value = current.runId
       runStatus.value = current.status
       currentRunFallback = { runId: current.runId, status: current.status }
-    } else if (previewStatus.value === 'running') {
-      await attachPreview()
     }
+    if (previewStatus.value === 'running') void attachPreview()
   } catch {
     message.error('加载应用失败')
     await router.push('/')
@@ -939,9 +938,26 @@ const ensureAssistantItem = (id: string): ChatItem => {
   return item
 }
 
+const previewProbedToolCalls = new Set<string>()
+// 静态项目写出入口文件即可预览，不必等到验证阶段的 preview-status。
+const syncPreviewAfterFileChange = (id: string, uiMessage: ChatUIMessage) => {
+  if (previewSrc.value) return
+  let changed = false
+  for (const part of uiMessage.parts) {
+    if (part.type !== 'dynamic-tool' || part.state !== 'output-available') continue
+    if (!['write', 'edit', 'delete'].includes(part.toolName)) continue
+    const key = `${id}:${part.toolCallId}`
+    if (previewProbedToolCalls.has(key)) continue
+    previewProbedToolCalls.add(key)
+    changed = true
+  }
+  if (changed) void syncPreview()
+}
+
 const handleRunMessage = (id: string, uiMessage: ChatUIMessage) => {
   if (queueState.value.activeRun && queueState.value.activeRun.runId !== id) return
   liveRunIds.add(id)
+  syncPreviewAfterFileChange(id, uiMessage)
   const replay = applyMessageReplay(
     messages.value,
     id,
@@ -994,8 +1010,10 @@ const handleEvent = (event: ChatStreamEvent) => {
   if (event.type === 'preview-status') {
     const status = String(event.payload.status ?? '')
     if (status === 'running' || status === 'starting' || status === 'failed') {
+      previewSyncSeq += 1
       previewStatus.value = status as AppPreview['status']
       if (status === 'failed') previewError.value = String(event.payload.error ?? '')
+      if (status === 'running') void attachPreview()
     }
     return
   }
@@ -1405,6 +1423,7 @@ const requestAndSubmitTicket = async () => {
   const { url, ticket } = res.data.data
   previewUrl.value = url
   await submitPreviewTicket(url, ticket.ticket)
+  if (disposed) return
   lastAccessAt.value = Date.now()
   startHeartbeat()
 }
@@ -1466,14 +1485,18 @@ const submitPreviewTicket = async (url: string, ticket: string) => {
   })
 }
 
+let previewSyncSeq = 0
 const syncPreview = async () => {
+  const seq = ++previewSyncSeq
   try {
     const res = await getPreviewStatus({ appId })
+    // 文件变更会并发探测，只采用最新一次的结果。
+    if (disposed || seq !== previewSyncSeq) return
     if (res.data.code !== 0 || !res.data.data) return
     previewStatus.value = res.data.data.status
     previewError.value = res.data.data.lastError ?? ''
     if (res.data.data.status === 'running') {
-      if (!previewSrc.value) await applyPreviewAccess()
+      await attachPreview()
     } else if (res.data.data.status === 'starting') {
       schedulePreviewPoll()
     }
@@ -1483,6 +1506,7 @@ const syncPreview = async () => {
 }
 
 const schedulePreviewPoll = () => {
+  if (disposed) return
   if (previewTimer) window.clearTimeout(previewTimer)
   previewTimer = window.setTimeout(async () => {
     await syncPreview()
@@ -1540,9 +1564,13 @@ const startAuthRefresh = () => {
   }, 60_000)
 }
 
-const attachPreview = async () => {
-  if (previewSrc.value) return
-  await applyPreviewAccess()
+let previewAttach: Promise<void> | null = null
+const attachPreview = () => {
+  if (previewSrc.value) return Promise.resolve()
+  previewAttach ??= applyPreviewAccess().finally(() => {
+    previewAttach = null
+  })
+  return previewAttach
 }
 
 const openPreviewWindow = () => {
