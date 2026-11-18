@@ -28,6 +28,7 @@ beforeAll(async () => {
   process.env.AI_BASE_URL = 'http://127.0.0.1:3425/v1'
   process.env.AI_MODEL = 'test-model'
   process.env.AI_CONTEXT_WINDOW_TOKENS = '10000'
+  // preview 只扫描模块元数据，不实例化普通 provider，也不启动服务连接。
   app = await NestFactory.create(AppModule, { preview: true, logger: false })
   app.setGlobalPrefix('api')
   document = buildOpenApiDocument(app)
@@ -54,10 +55,6 @@ function operations() {
 }
 
 describe('OpenAPI contract', () => {
-  it('documents every route', () => {
-    expect(Object.keys(document.paths ?? {})).toHaveLength(29)
-  })
-
   it('declares the OpenAPI version used by the contract', () => {
     expect(document.openapi).toBe('3.1.0')
   })
@@ -98,10 +95,17 @@ describe('OpenAPI contract', () => {
   })
 
   it('keeps nullable enums strict instead of falling back to any', () => {
-    const serialized = JSON.stringify(document)
-    expect(serialized).toContain(
-      '"anyOf":[{"type":"string","enum":["static","vue","react"]},{"type":"null"}]',
-    )
-    expect(serialized).not.toContain('"nullable":true')
+    const app = document.components?.schemas?.BaseResponseAppVO as {
+      properties: { data: { properties: { codeGenType: unknown } } }
+    }
+    expect(app.properties.data.properties.codeGenType).toEqual({
+      anyOf: [{ type: 'string', enum: ['static', 'vue', 'react'] }, { type: 'null' }],
+    })
+    const check = (value: unknown) => {
+      if (!value || typeof value !== 'object') return
+      expect((value as Record<string, unknown>).nullable).not.toBe(true)
+      for (const child of Object.values(value)) check(child)
+    }
+    check(document)
   })
 })

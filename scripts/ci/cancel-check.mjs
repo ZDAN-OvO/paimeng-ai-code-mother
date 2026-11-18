@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { root } from './services.mjs'
+import { expectedSpecCount } from '../../tests/e2e/environment.mjs'
 
 const owner = randomUUID()
 // 本轮工作目录落在自己的根目录下，事后这个根目录下不能有本轮的工作目录。
@@ -90,8 +91,10 @@ const portOpen = (port) => {
   return result.status === 0
 }
 
+const verify = process.argv[2] === 'verify'
+const runnerScript = verify ? 'scripts/verify/cli.mjs' : 'scripts/ci/run.mjs'
 const log = openSync(logPath, 'w')
-const runner = spawn(process.execPath, [join(root, 'scripts/ci/run.mjs'), 'e2e'], {
+const runner = spawn(process.execPath, [join(root, runnerScript), ...(verify ? ['run', 'all'] : ['e2e'])], {
   cwd: root,
   stdio: ['ignore', log, log],
   detached: true,
@@ -110,7 +113,7 @@ async function waitForReady(deadlineMs = 120_000) {
   while (Date.now() < until) {
     if (runner.exitCode !== null) throw new Error(`runner 提前退出（${runner.exitCode}），见 ${logPath}`)
     const text = readFileSync(logPath, 'utf8')
-    if (text.includes('浏览器测试服务已就绪') && text.includes('Running 4 tests')) return text
+    if (text.includes('浏览器测试服务已就绪') && text.includes(`Running ${expectedSpecCount} tests`)) return text
     await delay(200)
   }
   throw new Error(`runner 未进入用例阶段，见 ${logPath}`)
@@ -142,7 +145,7 @@ try {
     return pids
   }
   const roles = [
-    expectRole('runner', 'scripts/ci/run.mjs'),
+    expectRole('runner', runnerScript),
     expectRole('浏览器服务', 'scripts/ci/browser-server.mjs'),
     expectRole('后端守护进程', 'tests/e2e/backend-process.mjs'),
     expectRole('后端主进程', 'paimeng-ai-code-mother-backend/dist/main.js'),
@@ -178,6 +181,21 @@ try {
   const leftoverEntries = workRootEntries()
   check('取消后无残留临时目录', leftoverEntries.length === 0, leftoverEntries.join(','))
   check('取消后浏览器服务端口已关闭', webPort > 0 && !portOpen(webPort))
+  if (verify) {
+    const output = readFileSync(logPath, 'utf8')
+    const directory = /"directory": "([^"\n]+)"/.exec(output)?.[1]
+    check('取消后保留证据目录', Boolean(directory), directory ?? '未记录')
+    if (directory) {
+      const report = JSON.parse(readFileSync(join(directory, 'manifest.json'), 'utf8'))
+      check('取消报告保留原始中断原因', report.ok === false && /interrupted/.test(report.error ?? ''))
+      check('取消报告包含生命周期与清理证明', report.lifecycle?.ready === true &&
+        Object.values(report.lifecycle?.cleanup ?? {}).length === 3 &&
+        Object.values(report.lifecycle.cleanup).every(Boolean))
+      const audit = readFileSync(join(directory, 'docker-calls.log'), 'utf8')
+      check('取消后 Docker 审计仍存在且有启动记录', /network inspect/.test(audit))
+    }
+  }
+
 } catch (error) {
   console.error(error.message)
   failures += 1

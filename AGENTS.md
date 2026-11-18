@@ -46,6 +46,8 @@ AI 生成前端应用的本地平台：用户一句话创建应用，Agent 用�
 │   └── test/*.test.ts           # node:test 单测，只测纯逻辑
 ├── playwright.config.mjs        # 浏览器测试配置；端口与时间预算由 runner 下发
 ├── scripts/ci/                  # CI 启动器：隔离服务、浏览器服务、脚本语法自检
+├── scripts/verify/              # 按用户功能运行的浏览器验证 CLI
+├── .agents/skills/verify-paimeng/ # 启动、驱动、证据与清理流程
 ├── tests/e2e/                   # Playwright 关键流程与固定模型服务
 ├── tests/ci/                    # CI 启动器自身的离线测试
 ├── deprecated/                  # 旧实现存档，不改、不引用、不迁移
@@ -93,11 +95,11 @@ pnpm contract:check                                           # 确认两者同�
 
 ## 开发约定（oil-dev）
 
-- 快测：`pnpm --filter paimeng-ai-code-mother-backend exec vitest run test/{target}.spec.ts`、`pnpm --filter paimeng-ai-code-mother-frontend exec node --test test/{target}.test.ts`
+- 快测：`pnpm test:module <backend|frontend|ci|integration> <文件名主干...>`；`--list` 查看可用名称。只运行明确选中的文件，名称无效时报错。测试选层见 [tests/README.md](tests/README.md)。
 - 真服务测试：`pnpm test:integration`（真实 PostgreSQL / Redis 与迁移）、`pnpm test:e2e`（Chromium 关键流程，模型用固定响应）、`pnpm test:system`（两者一起，CI 用此入口）。三者都需要本机 Docker；启动器自建一次性容器、临时目录和动态端口，退出时清理，不读写 `.env`。
 - 按需检查：`pnpm test:cancel` 验证取消后没有残留进程、容器与端口；改动 `scripts/ci/**` 或进程清理逻辑时执行。
-- 重测：改了 `src/runs/**`、`src/agent/**`、`src/runtime/**`、`src/db/schema.ts`、`drizzle/**` 或消息队列相关代码时跑 `pnpm test:integration`；改了页面交互、SSE、预览或排队状态机时跑 `pnpm test:e2e`。`pnpm --filter paimeng-ai-code-mother-backend test:acceptance`、`test:acceptance:concurrency` 仍需手动跑。
+- 重测：跨越 PostgreSQL 持久化边界时追加 `pnpm test:module integration postgres`，跨越 Redis 队列边界时追加 `pnpm test:module integration redis`；页面交互、SSE 或预览链路变更，验证目标由现有 spec 覆盖时，按 [verify-paimeng](.agents/skills/verify-paimeng/SKILL.md) 运行 `pnpm verify run <功能>`；未覆盖的页面或交互用 T3 Code 内置的浏览器交互验证，即使它属于这五个功能。独立模块内部调整只跑对应模块测试；全套系统回归在整批收尾或合并前统一跑。真实模型与容器验收仍用后端 `test:acceptance`、`test:acceptance:concurrency`，不能用固定模型结果替代。
 - 门禁：`pnpm typecheck`、`pnpm lint`、`pnpm check:syntax`、`pnpm test`、`pnpm build`、`pnpm contract:check`，合并前再加 `pnpm test:system`。CI 的 `check` 汇总基础检查与系统测试，两者都过才能合并。
 - 高风险：`paimeng-ai-code-mother-backend/src/runtime/**`、`paimeng-ai-code-mother-backend/src/agent/**`、`paimeng-ai-code-mother-backend/src/tools/**`、`paimeng-ai-code-mother-backend/src/runs/**`、`paimeng-ai-code-mother-backend/src/auth/**`、`paimeng-ai-code-mother-backend/src/preview/**`、`paimeng-ai-code-mother-backend/src/db/schema.ts`
 - 禁改：`paimeng-ai-code-mother-frontend/src/api/generated/`、`paimeng-ai-code-mother-backend/openapi.json`、`paimeng-ai-code-mother-backend/drizzle/`、`deprecated/`
-- 频率：编码途中只跑 typecheck；每轮改完跑相关快测；门禁在整批收尾或合并前跑一次；重测在改运行链路时跑，需先启动基础设施和后端，跑不了在交付说明写明。
+- 频率：编码途中按需 typecheck；每轮完成后跑相关模块测试；涉及外部边界时追加对应集成模块或浏览器功能。全量门禁整批收尾或合并前跑一次。隔离启动器自动创建基础设施与后端，跑不了就说明具体原因。

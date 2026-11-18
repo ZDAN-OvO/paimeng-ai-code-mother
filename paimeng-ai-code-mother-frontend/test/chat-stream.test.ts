@@ -40,6 +40,7 @@ test('replaying a run replaces the same assistant snapshot instead of appending 
   assert.deepEqual(replayed.item.message.parts, [{ type: 'text', text: '已完成' }])
 })
 
+
 type HistoryItem = {
   id: number | null
   runId: string | null

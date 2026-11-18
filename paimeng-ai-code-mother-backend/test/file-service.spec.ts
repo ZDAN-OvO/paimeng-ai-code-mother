@@ -1,9 +1,11 @@
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { useTempDirs } from './support/temp-dir'
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { AppConfigService } from '../src/config/config.module'
 import { FileService, type ToolContext } from '../src/runtime/file-service'
+
+const tempDir = useTempDirs()
 
 function testConfig(
   overrides: Partial<Record<'maxFileBytes' | 'maxSourceBytes' | 'maxFileCount', number>> = {},
@@ -31,7 +33,7 @@ function context(appId: number): ToolContext {
 }
 
 async function setup(overrides: Parameters<typeof testConfig>[0] = {}) {
-  root = await mkdtemp(join(tmpdir(), 'paimeng-files-'))
+  root = await tempDir('paimeng-files-')
   await mkdir(join(root, '1'), { recursive: true })
   return new FileService(testConfig(overrides))
 }
@@ -54,7 +56,7 @@ describe('file service boundaries', () => {
     await expect(files.write(ctx, '../outside.txt', 'x')).rejects.toThrow('..')
     await expect(files.write(ctx, '/etc/passwd', 'x')).rejects.toThrow('绝对路径')
     await expect(files.write(ctx, '.npmrc', 'x')).rejects.toThrow('平台保留')
-    const outside = await mkdtemp(join(tmpdir(), 'paimeng-outside-'))
+    const outside = await tempDir('paimeng-outside-')
     await writeFile(join(outside, 'secret.txt'), 'secret')
     await symlink(outside, join(root, '1/link'))
     await expect(files.read(ctx, 'link/secret.txt')).rejects.toThrow('软链接')
@@ -101,7 +103,12 @@ describe('file service boundaries', () => {
     const read = await files.read(ctx, 'big.txt')
     expect(read.truncated).toBe(true)
     expect(read.content).toContain('51200 字节上限')
-    expect(read.nextOffset).toBeGreaterThan(1)
+    const lines = content.split('\n')
+    const expectedOffset = Math.ceil((50 * 1024) / Buffer.byteLength(lines[0] + '\n')) + 1
+    expect(read.nextOffset).toBe(expectedOffset)
+    const continued = await files.read(ctx, 'big.txt', read.nextOffset!)
+    expect(continued.content.split('\n')[0]).toBe(lines[expectedOffset - 1])
+    expect(continued.truncated).toBe(false)
   })
 
   it('enforces file count and total source size quotas', async () => {

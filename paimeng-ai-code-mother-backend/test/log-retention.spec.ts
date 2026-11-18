@@ -1,8 +1,10 @@
-import { mkdtemp, readdir, utimes, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { useTempDirs } from './support/temp-dir'
+import { readdir, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { pruneLogDir, truncateLogTail } from '../src/runtime/log-retention'
+
+const tempDir = useTempDirs()
 
 describe('log retention', () => {
   it('keeps the tail of an oversized log', () => {
@@ -12,7 +14,7 @@ describe('log retention', () => {
   })
 
   it('keeps newest files until the per-app byte budget is reached', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'paimeng-logs-'))
+    const dir = await tempDir('paimeng-logs-')
     await writeFile(join(dir, 'old.log'), 'a'.repeat(10))
     await writeFile(join(dir, 'middle.log'), 'b'.repeat(10))
     await writeFile(join(dir, 'new.log'), 'c'.repeat(10))

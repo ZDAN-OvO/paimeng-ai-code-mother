@@ -15,6 +15,11 @@ describe('tool registry', () => {
     const schemas = registry.modelToolSchemas()
     expect(Object.keys(schemas)).toContain('write')
     expect(schemas.load_skill.inputSchema).toBeTruthy()
-    expect(JSON.stringify(schemas)).toContain('load_skill')
+    const serialized = JSON.parse(JSON.stringify(schemas))
+    expect(serialized.write.inputSchema).toMatchObject({
+      type: 'object',
+      required: ['path', 'content'],
+      properties: { path: { type: 'string' }, content: { type: 'string' } },
+    })
   })
 })

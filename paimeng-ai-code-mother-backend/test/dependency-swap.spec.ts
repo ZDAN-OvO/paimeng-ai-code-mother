@@ -1,11 +1,13 @@
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { useTempDirs } from './support/temp-dir'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { swapNodeModules } from '../src/runtime/dependency-swap'
 
+const tempDir = useTempDirs()
+
 async function setup() {
-  const root = await mkdtemp(join(tmpdir(), 'paimeng-swap-'))
+  const root = await tempDir('paimeng-swap-')
   const nodeModules = join(root, 'node_modules')
   const staged = join(root, 'staging-node_modules')
   await mkdir(nodeModules, { recursive: true })

@@ -2,7 +2,7 @@ import 'reflect-metadata'
 import { RequestMethod } from '@nestjs/common'
 import { HTTP_CODE_METADATA, METHOD_METADATA } from '@nestjs/common/constants'
 import { ZodValidationException, ZodValidationPipe } from 'nestjs-zod'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { AppIdDto } from '../src/apps/dto'
 import { AppsController } from '../src/apps/apps.controller'
 import { AuthController } from '../src/auth/auth.controller'
@@ -37,7 +37,7 @@ describe('HTTP contract validation', () => {
   })
 
   it('rejects a non-positive page size', () => {
-    expect(validate({ appId: '1', pageSize: '0' }, ChatHistoryQueryDto)).not.toBeNull()
+    expect(validate({ appId: '1', pageSize: '0' }, ChatHistoryQueryDto)).toContain('pageSize:')
   })
 
   it('rejects an invalid application path parameter', () => {
@@ -47,7 +47,7 @@ describe('HTTP contract validation', () => {
   it('rejects an invalid file id', () => {
     expect(
       validate({ runId: '7f9c2b1a-3c4d-4e5f-8a9b-0c1d2e3f4a5b', fileId: 'x' }, RunChangeDiffQueryDto),
-    ).not.toBeNull()
+    ).toContain('fileId: Invalid input: expected number, received NaN')
   })
 
   it('accepts a run status query by run id or by request id', () => {
@@ -58,13 +58,10 @@ describe('HTTP contract validation', () => {
   it('returns a null data field for validation errors', () => {
     const response = {
       headersSent: false,
-      status(code: number) {
-        expect(code).toBe(400)
-        return this
-      },
-      json(body: unknown) {
-        expect(body).toMatchObject({ code: 40000, message: expect.any(String), data: null })
-      },
+      status: vi.fn(function () {
+        return response
+      }),
+      json: vi.fn(),
     }
     const host = {
       switchToHttp: () => ({ getResponse: () => response }),
@@ -73,6 +70,12 @@ describe('HTTP contract validation', () => {
       new ZodValidationException({ issues: [{ path: ['id'], message: '应用 ID 无效' }] }),
       host as never,
     )
+    expect(response.status).toHaveBeenCalledExactlyOnceWith(400)
+    expect(response.json).toHaveBeenCalledExactlyOnceWith({
+      code: 40000,
+      message: 'id: 应用 ID 无效',
+      data: null,
+    })
   })
 
   it('returns 200 for every POST handler', () => {

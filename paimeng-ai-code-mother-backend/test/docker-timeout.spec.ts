@@ -1,13 +1,15 @@
-import { chmod, mkdtemp, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { useTempDirs } from './support/temp-dir'
+import { chmod, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { AppConfigService } from '../src/config/config.module'
 import { DockerService } from '../src/runtime/docker.service'
 
+const tempDir = useTempDirs()
+
 describe('docker task timeout', () => {
   it('kills a hanging docker CLI command when the timeout expires', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'paimeng-docker-timeout-'))
+    const root = await tempDir('paimeng-docker-timeout-')
     const script = join(root, 'sleep-docker.sh')
     await writeFile(script, '#!/bin/sh\nexec sleep 5\n')
     await chmod(script, 0o755)

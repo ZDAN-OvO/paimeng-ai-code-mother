@@ -51,7 +51,7 @@
 - 普通 JSON 请求统一通过 `src/request.ts` 的 axios 实例（带 cookie，401 自动跳登录），不要另建 axios 实例。流式生成接口是例外，在 `src/api/streamChat.ts` 中用 `fetch` 读取响应流。
 - 普通接口调用 `src/api/generated/` 下的生成函数，类型也在生成文件里；该目录由 `pnpm openapi` 从后端 `openapi.json` 生成，不能手改。改接口时按[根规范](../AGENTS.md#接口契约)重新生成。业务代码里的可读类型别名写在 `src/api/apiTypes.ts`，聊天相关类型写在 `src/api/chatTypes.ts`。
 - 只有流式聊天保留手写实现，位于 `src/api/streamChat.ts`。
-- 生成过程的流式响应使用 `src/utils/sse.ts` 解析，断流不能当作成功处理。
+- 生成过程在 `src/api/streamChat.ts` 使用 AI SDK 的 `DefaultChatTransport` 与 `readUIMessageStream` 读取流；断流不能当作成功处理。
 - 接口地址和预览地址从 `src/config/env.ts` 获取，不要在组件里硬编码域名或端口。
 
 ## 安全
@@ -68,4 +68,4 @@
 
 - 测试使用 Node 内置 `node:test`，文件放在 `test/*.test.ts`，从 `../src/...` 以 `.ts` 后缀导入，只测不依赖 DOM 的纯逻辑。
 - Prettier：无分号、单引号、行宽 100。ESLint 已包含 Vue 与 TypeScript 推荐规则。
-- 改动后至少运行 `pnpm --filter paimeng-ai-code-mother-frontend type-check`、`lint`、`test`。
+- 改动后运行 type-check、lint 与对应的 `pnpm test:module frontend <名称>`；跨页面交互再按根规范运行对应浏览器功能，全量测试留到整批收尾。

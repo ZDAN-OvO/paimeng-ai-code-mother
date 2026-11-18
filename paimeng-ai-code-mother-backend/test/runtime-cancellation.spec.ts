@@ -1,15 +1,12 @@
-import { existsSync } from 'node:fs'
-import { EventEmitter } from 'node:events'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { AppConfigService } from '../src/config/config.module'
 import { DockerService, type DockerResult } from '../src/runtime/docker.service'
-import { FileService, type ToolContext } from '../src/runtime/file-service'
 import { RuntimeService } from '../src/runtime/runtime.service'
-import { RunsController } from '../src/runs/runs.controller'
-import { RunStream } from '../src/runs/run-stream'
+import { useTempDirs } from './support/temp-dir'
+
+const tempDir = useTempDirs()
 
 const TIMEOUT_MS = 5000
 
@@ -115,7 +112,7 @@ function runtimeConfig(root: string) {
 }
 
 async function setupRuntime() {
-  const root = await mkdtemp(join(tmpdir(), 'paimeng-cancel-'))
+  const root = await tempDir('paimeng-cancel-')
   const docker = new FakeDocker()
   const runtime = new RuntimeService(
     runtimeConfig(root),
@@ -128,82 +125,6 @@ async function setupRuntime() {
   runtime.isPortOpen = async () => false
   return { root, docker, runtime }
 }
-
-async function setupFiles() {
-  const root = await mkdtemp(join(tmpdir(), 'paimeng-cancel-files-'))
-  const files = new FileService({
-    appSourceDir: (appId: number) => join(root, String(appId)),
-    maxFileBytes: 1024 * 1024,
-    maxSourceBytes: 100 * 1024 * 1024,
-    maxFileCount: 5000,
-  } as unknown as AppConfigService)
-  await mkdir(join(root, '1'), { recursive: true })
-  return { root, files }
-}
-
-function toolContext(isCancelled: () => boolean): ToolContext {
-  return {
-    appId: 1,
-    runId: 'run',
-    isCancelled,
-    readVersions: new Map(),
-    markPreviewChanged: () => undefined,
-    emit: () => undefined,
-  }
-}
-
-describe('file tool cancellation', () => {
-  it('does not write when cancellation is already requested', async () => {
-    const { root, files } = await setupFiles()
-    await expect(
-      files.write(
-        toolContext(() => true),
-        'index.html',
-        '<h1>x</h1>',
-      ),
-    ).rejects.toThrow('任务已取消')
-    expect(existsSync(join(root, '1/index.html'))).toBe(false)
-  })
-
-  it('removes the staged temp file when cancellation arrives during write', async () => {
-    const { root, files } = await setupFiles()
-    let checks = 0
-    const ctx = toolContext(() => {
-      checks += 1
-      return checks >= 2
-    })
-    await expect(files.write(ctx, 'index.html', '<h1>x</h1>')).rejects.toThrow('任务已取消')
-    expect(existsSync(join(root, '1/index.html'))).toBe(false)
-    expect(existsSync(join(root, '1'))).toBe(true)
-  })
-
-  it('leaves the original file unchanged when cancellation arrives during edit', async () => {
-    const { root, files } = await setupFiles()
-    await writeFile(join(root, '1/index.html'), '<h1>old</h1>')
-    let checks = 0
-    const ctx = toolContext(() => {
-      checks += 1
-      return checks >= 2
-    })
-    await files.read(ctx, 'index.html')
-    await expect(files.edit(ctx, 'index.html', [{ oldText: 'old', newText: 'new' }])).rejects.toThrow(
-      '任务已取消',
-    )
-    expect(await readFile(join(root, '1/index.html'), 'utf8')).toBe('<h1>old</h1>')
-  })
-
-  it('does not delete when cancellation is already requested', async () => {
-    const { root, files } = await setupFiles()
-    await writeFile(join(root, '1/index.html'), '<h1>x</h1>')
-    await expect(
-      files.delete(
-        toolContext(() => true),
-        'index.html',
-      ),
-    ).rejects.toThrow('任务已取消')
-    expect(existsSync(join(root, '1/index.html'))).toBe(true)
-  })
-})
 
 describe('runtime stage cancellation', () => {
   it('stops an install container within five seconds of cancellation', async () => {
@@ -259,86 +180,5 @@ describe('runtime stage cancellation', () => {
     expect(result.error).toBe('任务已取消')
     expect(docker.removed).toContain('paimeng-app-1')
     expect(Date.now() - started).toBeLessThan(TIMEOUT_MS)
-  })
-})
-
-class FakeResponse extends EventEmitter {
-  writableEnded = false
-  status() {
-    return this
-  }
-  setHeader() {
-    return this
-  }
-  flushHeaders() {
-    return undefined
-  }
-  write() {
-    return true
-  }
-  end() {
-    this.writableEnded = true
-  }
-}
-
-describe('SSE disconnect handling', () => {
-  it('only unsubscribes when the stream disconnects before the final event', async () => {
-    const stream = new RunStream('run-disconnect')
-    let cancelled = 0
-    const runs = {
-      startRun: async () => ({ runId: stream.runId, reused: false }),
-      getStream: () => stream,
-      latestFinishedEvent: async () => null,
-      cancelRun: async () => {
-        cancelled += 1
-        return { runId: stream.runId, status: 'cancelling' }
-      },
-    }
-    const controller = new RunsController(runs as never, {} as never)
-    const response = new FakeResponse()
-    await controller.chat(
-      { appId: 1, message: '生成页面', clientRequestId: 'request-0001' } as never,
-      1,
-      {} as never,
-      response as never,
-    )
-
-    response.emit('close')
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(cancelled).toBe(0)
-  })
-
-  it('does not cancel after a normal run-finished close', async () => {
-    const stream = new RunStream('run-finished')
-    let cancelled = 0
-    const runs = {
-      startRun: async () => ({ runId: stream.runId, reused: false }),
-      getStream: () => stream,
-      latestFinishedEvent: async () => null,
-      cancelRun: async () => {
-        cancelled += 1
-        return { runId: stream.runId, status: 'cancelling' }
-      },
-    }
-    const controller = new RunsController(runs as never, {} as never)
-    const response = new FakeResponse()
-    await controller.chat(
-      { appId: 1, message: '生成页面', clientRequestId: 'request-0002' } as never,
-      1,
-      {} as never,
-      response as never,
-    )
-
-    stream.emit({
-      type: 'data-run',
-      id: `run:${stream.runId}`,
-      transient: true,
-      data: { runId: stream.runId, status: 'completed' },
-    })
-    stream.finish()
-    response.emit('close')
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(cancelled).toBe(0)
-    expect(response.writableEnded).toBe(true)
   })
 })

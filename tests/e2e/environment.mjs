@@ -1,3 +1,4 @@
+import { features } from '../../scripts/verify/features.mjs'
 import { lstatSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
@@ -6,9 +7,9 @@ import { fileURLToPath } from 'node:url'
 export const repoRoot = fileURLToPath(new URL('../../', import.meta.url))
 
 // 整套浏览器测试的时间预算。单个用例、套件、启动器、后端守护进程的上限都从这里推导，
-// 加用例时只改用例数和 here，不要各自拍一个数字。
+// 功能数量来自 CLI 功能表；调整预算只改这里，不要各自拍一个数字。
 export const browserTestLimitMs = 45_000
-export const expectedSpecCount = 5
+export const expectedSpecCount = Object.keys(features).length
 export const suiteLimitMs = browserTestLimitMs * expectedSpecCount + 15_000
 export const launcherLimitMs = suiteLimitMs + 60_000
 export const backendSupervisorLimitMs = suiteLimitMs + 70_000
