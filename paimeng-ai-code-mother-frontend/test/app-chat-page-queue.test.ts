@@ -294,3 +294,149 @@ test('editing during restoration retains the returned message and local deletion
   assert.deepEqual(localReturnedRestores.value, [])
   assert.equal(inputMessage.value, '恢复期间输入的新草稿')
 })
+
+test('a running preview status during generation attaches the preview without waiting for the run to finish', async () => {
+  const previewStatus = { value: 'stopped' }
+  let attached = 0
+  const handleEvent = pageAction('handleEvent', {
+    previewSyncSeq: 0,
+    previewStatus,
+    previewError: { value: '' },
+    attachPreview: async () => {
+      attached += 1
+    },
+  })
+  handleEvent({ type: 'preview-status', runId: 'run-1', payload: { status: 'running' } })
+  assert.equal(previewStatus.value, 'running')
+  assert.equal(attached, 1, 'preview must be shown as soon as it is running')
+})
+
+test('opening the page while a run is active still attaches an already running preview', async () => {
+  const runId = { value: null as string | null }
+  const runStatus = { value: 'idle' }
+  let attached = 0
+  const loadApp = pageAction('loadApp', {
+    appId: 7,
+    getAppVoById: async () => ({
+      data: {
+        code: 0,
+        data: {
+          preview: { status: 'running', lastError: null },
+          currentRun: { runId: 'run-1', status: 'running' },
+        },
+      },
+    }),
+    app: { value: null },
+    previewStatus: { value: 'stopped' },
+    previewError: { value: '' },
+    runId,
+    runStatus,
+    currentRunFallback: null,
+    attachPreview: async () => {
+      attached += 1
+    },
+    message: { error: (text: string) => assert.fail(text) },
+    router: { push: async () => assert.fail('should stay on page') },
+  })
+  await loadApp()
+  assert.equal(runStatus.value, 'running')
+  assert.equal(attached, 1)
+})
+
+test('a finished file write probes the preview once so static pages appear before validation', () => {
+  let synced = 0
+  const syncPreviewAfterFileChange = pageAction('syncPreviewAfterFileChange', {
+    previewSrc: { value: '' },
+    previewProbedToolCalls: new Set<string>(),
+    syncPreview: async () => {
+      synced += 1
+    },
+  })
+  const message = (state: string) => ({
+    id: 'm',
+    role: 'assistant',
+    parts: [{ type: 'dynamic-tool', toolName: 'write', toolCallId: 'call-1', state }],
+  })
+  syncPreviewAfterFileChange('run-1', message('input-available'))
+  assert.equal(synced, 0)
+  syncPreviewAfterFileChange('run-1', message('output-available'))
+  syncPreviewAfterFileChange('run-1', message('output-available'))
+  assert.equal(synced, 1)
+  syncPreviewAfterFileChange('run-2', message('output-available'))
+  assert.equal(synced, 2, 'a reused tool call id in a later run still probes')
+})
+
+test('concurrent preview attaches share one access request', async () => {
+  let requests = 0
+  let release = () => {}
+  const previewSrc = { value: '' }
+  const attachPreview = pageAction('attachPreview', {
+    previewSrc,
+    previewAttach: null,
+    applyPreviewAccess: () => {
+      requests += 1
+      return new Promise<void>((resolve) => {
+        release = () => {
+          previewSrc.value = 'http://preview/'
+          resolve()
+        }
+      })
+    },
+  })
+  const first = attachPreview()
+  const second = attachPreview()
+  release()
+  await Promise.all([first, second])
+  await attachPreview()
+  assert.equal(requests, 1)
+})
+
+test('a stale preview probe cannot overwrite a newer result', async () => {
+  const responses: Array<(status: string) => void> = []
+  const previewStatus = { value: 'stopped' }
+  let attached = 0
+  const syncPreview = pageAction('syncPreview', {
+    appId: 7,
+    disposed: false,
+    previewSyncSeq: 0,
+    getPreviewStatus: () =>
+      new Promise((resolve) =>
+        responses.push((status) => resolve({ data: { code: 0, data: { status, lastError: null } } })),
+      ),
+    previewStatus,
+    previewError: { value: '' },
+    attachPreview: async () => {
+      attached += 1
+    },
+    schedulePreviewPoll: () => assert.fail('stale starting must not schedule polling'),
+  })
+  const older = syncPreview()
+  const newer = syncPreview()
+  responses[1]('running')
+  await newer
+  responses[0]('starting')
+  await older
+  assert.equal(previewStatus.value, 'running')
+  assert.equal(attached, 1)
+})
+
+test('preview polling and heartbeat stop once the page is unmounted', async () => {
+  const schedulePreviewPoll = pageAction('schedulePreviewPoll', {
+    disposed: true,
+    previewTimer: null,
+    window: { setTimeout: () => assert.fail('no poll after unmount') },
+  })
+  schedulePreviewPoll()
+  const requestAndSubmitTicket = pageAction('requestAndSubmitTicket', {
+    appId: 7,
+    disposed: true,
+    requestPreviewAccess: async () => ({
+      data: { code: 0, data: { url: 'http://preview', ticket: { ticket: 't' } } },
+    }),
+    previewUrl: { value: '' },
+    submitPreviewTicket: async () => undefined,
+    lastAccessAt: { value: 0 },
+    startHeartbeat: () => assert.fail('no heartbeat after unmount'),
+  })
+  await requestAndSubmitTicket()
+})
