@@ -1,3 +1,4 @@
+import { mergeHistoryWithLiveMessages } from '../src/utils/chatStream.ts'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
@@ -951,6 +952,7 @@ test('recovering an older terminal run cannot change the active run indicator', 
   const item = { status: 'streaming', modelProgress: '处理中', errorSummary: null }
   let historyLoads = 0
   const handleEvent = pageAction('handleEvent', {
+    liveRunIds: new Set<string>(),
     runStatus,
     runId: { value: 'run-current' },
     terminalRunStatuses,
@@ -979,6 +981,7 @@ test('an older terminal result cannot replace a newer failed result after the qu
   const item = { status: 'streaming', modelProgress: '', errorSummary: null }
   const terminalRunStatuses = new Map([['run-newer', 'failed']])
   const handleEvent = pageAction('handleEvent', {
+    liveRunIds: new Set<string>(),
     runStatus,
     runId,
     terminalRunStatuses,
@@ -1001,11 +1004,19 @@ test('fresh idle history owns the latest run but a response requested before a n
   const pending = new Promise((resolve) => {
     resolveHistory = resolve
   })
-  const record = { role: 'assistant', runId: 'run-missed', status: 'failed', id: 12 }
+  const record = {
+    role: 'assistant',
+    runId: 'run-missed',
+    status: 'failed',
+    id: 12,
+    message: { id: 'assistant:run-missed', role: 'assistant', parts: [] },
+  }
   let response: Promise<unknown> = Promise.resolve({
     data: { code: 0, data: { records: [record], hasMore: false } },
   })
   const loadHistory = pageAction('loadHistory', {
+    liveRunIds: new Set<string>(),
+    mergeHistoryWithLiveMessages,
     runId,
     runStatus,
     disposed: false,
