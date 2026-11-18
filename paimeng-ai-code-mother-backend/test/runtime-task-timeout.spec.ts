@@ -1,10 +1,12 @@
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { useTempDirs } from './support/temp-dir'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { AppConfigService } from '../src/config/config.module'
 import { DockerService } from '../src/runtime/docker.service'
 import { RuntimeService } from '../src/runtime/runtime.service'
+
+const tempDir = useTempDirs()
 
 function config(root: string, previewStartTimeoutMs = 60_000) {
   return {
@@ -29,7 +31,7 @@ function config(root: string, previewStartTimeoutMs = 60_000) {
 
 describe('runtime task timeout', () => {
   it('kills a hanging build wait and removes the task container', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'paimeng-task-timeout-'))
+    const root = await tempDir('paimeng-task-timeout-')
     await mkdir(join(root, 'source/1'), { recursive: true })
     await mkdir(join(root, 'deps/1/node_modules'), { recursive: true })
     await writeFile(
@@ -81,7 +83,7 @@ exit 0
   })
 
   it('removes the preview container when startup exceeds the deadline', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'paimeng-preview-timeout-'))
+    const root = await tempDir('paimeng-preview-timeout-')
     await mkdir(join(root, 'source/1'), { recursive: true })
     await mkdir(join(root, 'deps/1/node_modules/vite'), { recursive: true })
     const removed: string[] = []

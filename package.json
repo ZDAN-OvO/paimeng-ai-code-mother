@@ -22,7 +22,9 @@
     "test:system": "node scripts/ci/run.mjs system",
     "test:ci": "node --test tests/ci/*.test.mjs",
     "check:syntax": "node scripts/ci/syntax-check.mjs",
-    "test:cancel": "node scripts/ci/cancel-check.mjs"
+    "test:cancel": "node scripts/ci/cancel-check.mjs",
+    "verify": "node scripts/verify/cli.mjs",
+    "test:module": "node scripts/test-module.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.65.1"

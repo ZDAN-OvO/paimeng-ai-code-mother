@@ -1,0 +1,20 @@
+import { test, expect, registerAndLogin, createApp, waitRun, send, readRun, dataOf, expectCompleted } from './fixtures.mjs'
+
+test('固定模型返回错误时保留 failed 历史，继续队列后新一轮可成功', async ({ page, model }) => {
+  const scenario = await model.create('fail')
+  await registerAndLogin(page)
+  const { appId, item } = await createApp(page, scenario)
+  const failed = await waitRun(page, appId, item, 'failed')
+  expect(failed.errorCode).toBe('MODEL_ERROR')
+  await expect(page.getByText(`模型请求失败：模型故障 ${scenario.marker}`, { exact: true }).first()).toBeVisible()
+  await expect(page.getByTitle('应用预览', { exact: true })).toHaveCount(0)
+  await page.reload()
+  await expect(page.getByRole('button', { name: /^生成失败/ })).toBeVisible()
+  const retry = await send(page, `重新生成静态页面 ${scenario.marker}`, '普通')
+  expect((await dataOf(page, `/app/chat/queue?appId=${appId}`)).paused).toBe(true)
+  await page.getByRole('button', { name: /继续队列/ }).click()
+  const completed = await waitRun(page, appId, retry, 'completed')
+  expect(completed.runId).not.toBe(failed.runId)
+  await expectCompleted(page, scenario)
+  expect((await readRun(page, appId, item)).status).toBe('failed')
+})

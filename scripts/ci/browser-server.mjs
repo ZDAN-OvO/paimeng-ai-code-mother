@@ -11,7 +11,7 @@ const env = browserEnvironment()
 const frontend = join(repoRoot, 'paimeng-ai-code-mother-frontend/dist')
 const main = join(repoRoot, 'paimeng-ai-code-mother-backend/dist/main.js')
 const backendLog = join(env.workDir, 'browser-backend.log')
-const preservedLog = join(repoRoot, 'test-results', 'browser-backend.log')
+const preservedLog = join(process.env.CI_TEST_RESULTS_DIR ?? join(repoRoot, 'test-results'), 'browser-backend.log')
 const sockets = new Set()
 const upstreams = new Set()
 const servers = []
@@ -39,7 +39,7 @@ async function preserveBackendLog(code) {
   if (code === 0) return
   try {
     const lines = (await readFile(backendLog, 'utf8')).trimEnd().split('\n')
-    console.error(`测试后端日志（末 ${Math.min(lines.length, 40)} 行，完整内容见 test-results/browser-backend.log）：`)
+    console.error(`测试后端日志（末 ${Math.min(lines.length, 40)} 行，完整内容见 ${preservedLog}）：`)
     console.error(lines.slice(-40).join('\n'))
   } catch (error) {
     if (error.code !== 'ENOENT') console.error(`后端日志读取失败: ${error.code}`)
@@ -218,7 +218,7 @@ async function start() {
   supervisor.on('error', () => void shutdown(1))
   supervisor.on('message', (message) => {
     if (message.type === 'backend-exit' && !stopping) {
-      console.error('测试后端提前退出，日志会在退出时复制到 test-results/browser-backend.log')
+      console.error(`测试后端提前退出，日志会在退出时复制到 ${preservedLog}`)
       void shutdown(1)
     }
   })
@@ -237,7 +237,7 @@ async function start() {
     } catch { /* 启动探测按截止时间重试 */ }
     await delay(100)
   }
-  if (!stopping) throw new Error('测试后端 25 秒内未就绪，日志会在退出时复制到 test-results/browser-backend.log')
+  if (!stopping) throw new Error(`测试后端 25 秒内未就绪，日志会在退出时复制到 ${preservedLog}`)
 }
 
 start().catch((error) => { console.error(error.message); void shutdown(1) })

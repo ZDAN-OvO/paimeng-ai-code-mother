@@ -19,19 +19,27 @@ export default defineConfig({
   fullyParallel: false,
   retries: 0,
   forbidOnly: true,
-  reporter: [['list']],
+  reporter: [
+    [join(repoRoot, 'tests/e2e/phase-reporter.mjs')],
+    ['list'],
+    ...(process.env.CI_TEST_EVIDENCE === '1'
+      ? [['json', { outputFile: join(process.env.CI_TEST_RESULTS_DIR, 'results.json') }]]
+      : []),
+  ],
   // 同一 checkout 可能有多个运行在并行（多个 worktree / agent）；共用 outputDir 会被
   // 后启动的 Playwright 清空，导致前一个运行的 trace 在用例中途消失。
   // 配置会被主进程和每个 worker 各自加载一次，所以目录名必须由 runner 传入，
   // 在这里现算会算出多个目录。
-  outputDir: process.env.CI_TEST_RESULTS_DIR ?? join(repoRoot, 'test-results', `run-${process.pid}`),
+  outputDir: process.env.CI_TEST_EVIDENCE === '1'
+    ? join(process.env.CI_TEST_RESULTS_DIR, 'artifacts')
+    : process.env.CI_TEST_RESULTS_DIR ?? join(repoRoot, 'test-results', `run-${process.pid}`),
   globalTeardown: './tests/e2e/global-teardown.mjs',
   use: {
     baseURL: env.mainOrigin,
     actionTimeout: 10_000,
     navigationTimeout: 15_000,
-    trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
+    trace: process.env.CI_TEST_EVIDENCE === '1' ? 'on' : 'retain-on-failure',
+    screenshot: process.env.CI_TEST_EVIDENCE === '1' ? 'on' : 'only-on-failure',
     serviceWorkers: 'block',
   },
   projects: [{ name: 'chromium', use: {
