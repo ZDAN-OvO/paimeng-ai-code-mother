@@ -28,7 +28,7 @@ export function createModelServer() {
     const url = new URL(req.url, 'http://fixture')
     if (url.pathname === '/__control/scenarios' && req.method === 'POST') {
       const { marker, mode = 'normal', steer = '' } = await readJson(req)
-      if (!/^e2e-[a-f0-9]{32}$/.test(marker) || !['normal', 'hold', 'fail'].includes(mode) ||
+      if (!/^e2e-[a-f0-9]{32}$/.test(marker) || !['normal', 'hold', 'hold-before-text', 'fail'].includes(mode) ||
           typeof steer !== 'string' || steer.length > 100) throw new Error('invalid scenario')
       if (scenarios.has(marker)) throw new Error('duplicate scenario')
       const partial = `正在生成 ${marker}。`
@@ -65,42 +65,21 @@ export function createModelServer() {
     // 只有后端发来的模型请求包含插话，才把它写进 HTML 和最终回复，防止伪造“已消费”。
     scenario.seenSteer ||= Boolean(scenario.steer && (body.input ?? []).some((item) =>
       item.role === 'user' && JSON.stringify(item.content).includes(scenario.steer)))
-    const held = scenario.mode === 'hold' && scenario.requests === 1
+    const held = ['hold', 'hold-before-text'].includes(scenario.mode) && scenario.requests === 1
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
     const id = `resp_${randomUUID()}`
     const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`)
     send({ type: 'response.created', response: { id, created_at: 1, model: body.model } })
     if (held) {
-      // 中间文本只存在于流里，从不落库：页面能看到它，就证明 SSE 真的在推流。
+      // 先截取真实历史，再发首段文本，供历史/SSE 竞态测试按事件控制顺序。
+      if (scenario.mode === 'hold-before-text' && !await waitForRelease(scenario, res)) return
+      // 后端会异步落库；闸门期间不再发新帧。
       const partialId = `msg_${randomUUID()}`
       send({ type: 'response.output_item.added', output_index: 0,
         item: { type: 'message', id: partialId, role: 'assistant', status: 'in_progress', content: [] } })
       send({ type: 'response.output_text.delta', item_id: partialId, output_index: 0,
         content_index: 0, delta: scenario.partial })
-      const released = await new Promise((resolve) => {
-        let settled = false
-        const finish = (ok) => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          res.off('close', closed)
-          scenario.waiting = false
-          delete scenario.release
-          delete scenario.abort
-          resolve(ok)
-        }
-        const closed = () => { scenario.aborted = true; finish(false) }
-        const timer = setTimeout(() => {
-          scenario.aborted = true
-          res.destroy(new Error('fixture gate exceeded 20 seconds'))
-          finish(false)
-        }, 20_000)
-        scenario.release = () => finish(true)
-        scenario.abort = () => { res.destroy(); closed() }
-        scenario.waiting = true
-        res.once('close', closed)
-      })
-      if (!released) return
+      if (!await waitForRelease(scenario, res)) return
       send({ type: 'response.output_item.done', output_index: 0,
         item: { type: 'message', id: partialId, role: 'assistant', status: 'completed',
           content: [{ type: 'output_text', text: scenario.partial, annotations: [] }] } })
@@ -157,4 +136,30 @@ function requireToolResult(input, callId) {
 function json(res, body, status = 200) {
   res.writeHead(status, { 'content-type': 'application/json' })
   res.end(JSON.stringify(body))
+}
+
+async function waitForRelease(scenario, res) {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (ok) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      res.off('close', closed)
+      scenario.waiting = false
+      delete scenario.release
+      delete scenario.abort
+      resolve(ok)
+    }
+    const closed = () => { scenario.aborted = true; finish(false) }
+    const timer = setTimeout(() => {
+      scenario.aborted = true
+      res.destroy(new Error('fixture gate exceeded 20 seconds'))
+      finish(false)
+    }, 20_000)
+    scenario.release = () => finish(true)
+    scenario.abort = () => { res.destroy(); closed() }
+    scenario.waiting = true
+    res.once('close', closed)
+  })
 }

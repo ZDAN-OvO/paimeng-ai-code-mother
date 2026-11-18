@@ -392,7 +392,11 @@ import {
   type EnqueueMessageBody,
 } from '@/utils/queuedChatCoordinator'
 import { modelProgressText } from '@/utils/modelProgress'
-import { applyMessageReplay, assistantMessageId } from '@/utils/chatStream'
+import {
+  applyMessageReplay,
+  assistantMessageId,
+  mergeHistoryWithLiveMessages,
+} from '@/utils/chatStream'
 import { shouldRefreshPreviewAuth } from '@/utils/previewAuth'
 import { type ToolStatus, type ToolTimelineEntry } from '@/utils/agentActivity'
 import {
@@ -485,6 +489,7 @@ const previewViewport = ref<'fill' | 'tablet' | 'mobile'>('fill')
 const authFrameRef = ref<HTMLIFrameElement>()
 const lastAccessAt = ref(0)
 const runDetails = reactive<Record<string, RunDetails>>({})
+const liveRunIds = new Set<string>()
 const terminalRunStatuses = new Map<string, 'completed' | 'failed' | 'cancelled'>()
 const activitiesByRun = reactive<Record<string, RunActivity[]>>({})
 const activitiesLoading = reactive<Record<string, boolean>>({})
@@ -821,8 +826,13 @@ const loadHistory = (reset: boolean): Promise<boolean> =>
       const records = res.data.data.records.map(toChatItem)
       const existingIds = new Set(messages.value.map((item) => item.id))
       messages.value = reset
-        ? records
+        ? mergeHistoryWithLiveMessages(records, messages.value, liveRunIds)
         : [...records.filter((item) => !existingIds.has(item.id)), ...messages.value]
+      for (const item of records) {
+        if (item.role === 'assistant' && item.runId && item.status !== 'streaming') {
+          liveRunIds.delete(item.runId)
+        }
+      }
       nextCursor.value = res.data.data.nextCursor ?? null
       hasMore.value = res.data.data.hasMore
       if (reset) {
@@ -931,6 +941,7 @@ const ensureAssistantItem = (id: string): ChatItem => {
 
 const handleRunMessage = (id: string, uiMessage: ChatUIMessage) => {
   if (queueState.value.activeRun && queueState.value.activeRun.runId !== id) return
+  liveRunIds.add(id)
   const replay = applyMessageReplay(
     messages.value,
     id,
@@ -993,6 +1004,7 @@ const handleEvent = (event: ChatStreamEvent) => {
       event.payload.status === 'completed' || event.payload.status === 'cancelled'
         ? event.payload.status
         : 'failed'
+    liveRunIds.add(event.runId)
     terminalRunStatuses.set(event.runId, status)
     if (runId.value === event.runId || (!runId.value && !queueState.value.activeRun)) {
       runId.value = event.runId

@@ -35,7 +35,7 @@ async function control(path, method = 'GET', data) {
   return response.json()
 }
 
-// 业务 API 请求仍由浏览器发到真实后端；没有 page.route 或业务 HTTP 替身。
+// 业务 API 请求仍由浏览器发到真实后端；竞态测试仅延后真实历史响应。
 async function api(page, path, method = 'GET', data) {
   return page.evaluate(async ({ path, method, data }) => {
     const response = await fetch(`/api${path}`, {
@@ -256,10 +256,7 @@ test('运行中插话经真实队列消费，刷新后重新订阅并完成同�
   const { appId, item } = await createApp(page, scenario)
   const run = await waitRun(page, appId, item, 'running')
   await expect.poll(async () => (await scenario.stats()).waiting).toBe(true)
-  // 这里不断言那段中间文本：CI 上观测到助手气泡停在「正在思考…」、parts 为空。
-  // 运行中加载历史会用历史快照整体替换消息列表，可能覆盖掉还没落库的实时内容
-  // （issue #183）。该缺陷修复后应把断言加回来。
-  // 「服务端能持续推送」由刷新后另开的那条长连接证明（见下方 streamRun），与首帧渲染无关。
+  await expect(page.getByText(scenario.partial, { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '停止生成', exact: true })).toBeEnabled()
   const steer = await send(page, scenario.steer, '插话发送')
   expect(steer).toMatchObject({ mode: 'steer', runId: run.runId })
@@ -322,6 +319,49 @@ test('运行中插话经真实队列消费，刷新后重新订阅并完成同�
   const queue = await dataOf(page, `/app/chat/queue?appId=${appId}&clientRequestId=${steer.clientRequestId}`)
   expect(queue.requestedItem).toMatchObject({ id: steer.id, status: 'applied', runId: run.runId })
   expect((await scenario.stats()).seenSteer).toBe(true)
+})
+
+test('旧历史在实时文本渲染后返回，不能清空同一轮助手内容', async ({ page, model }) => {
+  const scenario = await model.create('hold-before-text')
+  await registerAndLogin(page)
+  let captured
+  const historyCaptured = new Promise((resolve) => { captured = resolve })
+  let releaseHistory
+  const historyGate = new Promise((resolve) => { releaseHistory = resolve })
+  let held = false
+  await page.route('**/api/chatHistory/app/*', async (route) => {
+    const response = await route.fetch()
+    const snapshot = await response.json()
+    const assistant = snapshot.data?.records.find((item) => item.role === 'assistant' && item.status === 'streaming')
+    if (!held && assistant) {
+      held = true
+      captured({ assistant, status: response.status() })
+      await historyGate
+    }
+    await route.fulfill({ response })
+  })
+  try {
+    const { appId, item } = await createApp(page, scenario)
+    const run = await waitRun(page, appId, item, 'running')
+    const snapshot = await historyCaptured
+    expect(snapshot.status).toBe(200)
+    expect(snapshot.assistant.runId).toBe(run.runId)
+    expect(snapshot.assistant.content.parts).toEqual([])
+    await expect.poll(async () => (await scenario.stats()).waiting).toBe(true)
+    await scenario.release()
+    await expect(page.getByText(scenario.partial, { exact: true })).toBeVisible()
+    // 旧历史只有在 SSE 文本真正可见后才送达，此后模型仍被第二道闸门挡住。
+    releaseHistory()
+    await expect(page.getByText('正在加载对话…', { exact: true })).toBeHidden()
+    await expect(page.getByText(scenario.partial, { exact: true })).toBeVisible()
+    await expect(page.locator('article.message-assistant')).toHaveCount(1)
+    await scenario.release()
+    await waitRun(page, appId, item, 'completed')
+    await expectCompleted(page, scenario)
+  } finally {
+    releaseHistory()
+    await page.unrouteAll({ behavior: 'wait' })
+  }
 })
 
 test('确认 running 后停止，终态只能 cancelled，队列暂停且保留普通等待项', async ({ page, model }) => {
