@@ -7,8 +7,8 @@ export const features = {
 }
 
 export function featureFiles(name) {
-  if (name === 'all') return []
-  if (!Object.hasOwn(features, name))
+  if (name !== 'all' && !Object.hasOwn(features, name))
     throw new Error(`未知功能 ${name}；可用：${Object.keys(features).join(', ')}, all`)
-  return [`tests/e2e/${name}.spec.mjs`]
+  const selected = name === 'all' ? Object.keys(features) : [name]
+  return selected.map((feature) => `tests/e2e/${feature}.spec.mjs`)
 }

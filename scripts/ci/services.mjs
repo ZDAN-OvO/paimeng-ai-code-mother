@@ -32,6 +32,7 @@ export const baseEnv = Object.fromEntries(
 
 const children = new Set()
 const shutdown = new AbortController()
+export const shutdownSignal = shutdown.signal
 // 取消后先给子进程一个有界窗口自行收尾（Playwright 要关 webServer，启动器要关后端），
 // 到点再强杀；全程不用等子进程自己的超时，否则 CI 会在宽限期内被外部强杀。
 const ABORT_GRACE_MS = 3000
@@ -165,7 +166,10 @@ export async function waitFor(check, label, timeoutMs = 30_000) {
   while (Date.now() < deadline) {
     shutdown.signal.throwIfAborted()
     if (await check()) return
-    await delay(150, undefined, { signal: shutdown.signal })
+    await delay(150, undefined, { signal: shutdown.signal }).catch((error) => {
+      shutdown.signal.throwIfAborted()
+      throw error
+    })
   }
   throw new Error(`Timed out waiting for ${label}`)
 }
@@ -273,13 +277,13 @@ export async function withServices(work) {
           docker(['rm', '-fv', name])
         }
       } catch (error) {
-        failure ??= error
+        failure ??= shutdown.signal.reason ?? error
         console.error(`CI cleanup failed: ${error.message}`)
         console.error(`Remove the leftover container manually: docker rm -fv ${name}`)
       }
     }
     await rm(directory, { recursive: true, force: true }).catch((error) => {
-      failure ??= error
+      failure ??= shutdown.signal.reason ?? error
     })
   }
   if (failure) throw failure

@@ -1,7 +1,8 @@
 import { createConnection } from 'node:net'
-import { access, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { writeFileSync } from 'node:fs'
+import { access, copyFile, mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { docker } from '../ci/services.mjs'
+import { docker, shutdownSignal } from '../ci/services.mjs'
 
 export async function preserveRuntimeEvidence(workDir, resultsDir) {
   await mkdir(resultsDir, { recursive: true })
@@ -62,21 +63,35 @@ export async function finishLifecycle(resultsDir, lifecycle, isolated, failure, 
     }
   }
   lifecycle.cleanupErrors = errors
-  if (!lifecycle.cleanup || Object.values(lifecycle.cleanup).some((ok) => !ok) || errors.length) {
-    failure ??= new Error('隔离实例清理未通过，见 lifecycle.json')
-  }
-  if (failure) lifecycle.error = failure.message
   try {
     await mkdir(resultsDir, { recursive: true })
-    await writeFile(join(resultsDir, 'lifecycle.json'), JSON.stringify(lifecycle, null, 2) + '\n')
+    if (shutdownSignal.aborted) {
+      lifecycle.interruption = shutdownSignal.reason.message
+      failure ??= shutdownSignal.reason
+    }
+    if (!lifecycle.cleanup || Object.values(lifecycle.cleanup).some((ok) => !ok) || errors.length) {
+      failure ??= new Error('隔离实例清理未通过，见 lifecycle.json')
+    }
+    if (failure) lifecycle.error = failure.message
+    writeFileSync(join(resultsDir, 'lifecycle.json'), JSON.stringify(lifecycle, null, 2) + '\n')
   } catch (error) {
     errors.push(`lifecycle: ${error.message}`)
     console.error(`生命周期证据保存失败：${error.message}`)
-    failure ??= error
+    failure ??= shutdownSignal.reason ?? error
   }
   return failure
 }
 
 export async function readLifecycle(directory) {
   return JSON.parse(await readFile(join(directory, 'lifecycle.json'), 'utf8'))
+}
+
+export function writeManifest(directory, report) {
+  // 产物哈希等异步工作完成后，连续完成取消检查和最终写入。
+  if (shutdownSignal.aborted) {
+    report.interruption = shutdownSignal.reason.message
+    report.error ??= report.interruption
+    report.ok = false
+  }
+  writeFileSync(join(directory, 'manifest.json'), JSON.stringify(report, null, 2) + '\n')
 }

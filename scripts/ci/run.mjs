@@ -4,7 +4,7 @@ import { featureFiles } from '../verify/features.mjs'
 import { mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { browserEnvironment, launcherLimitMs } from '../../tests/e2e/environment.mjs'
-import { backend, buildApp, root, run, start, stop, waitFor, withServices } from './services.mjs'
+import { backend, buildApp, root, run, shutdownSignal, start, stop, waitFor, withServices } from './services.mjs'
 
 const resultsRoot = join(root, 'test-results')
 // 每次运行一个独占目录：并行运行时后启动的 Playwright 不会清掉前一套的 trace。
@@ -138,8 +138,10 @@ export async function runSuite(mode = 'system', feature, proof) {
   } catch (error) {
     failure = error
   } finally {
+    failure ??= shutdownSignal.reason
     if (proof) failure = await finishLifecycle(resultsDir, lifecycle, isolated, failure)
   }
+  failure ??= shutdownSignal.reason
   if (failure) throw failure
 }
 

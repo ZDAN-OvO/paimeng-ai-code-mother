@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { baseEnv, root } from '../ci/services.mjs'
 import { runSuite } from '../ci/run.mjs'
-import { readLifecycle } from './evidence.mjs'
+import { readLifecycle, writeManifest } from './evidence.mjs'
 import { features, featureFiles } from './features.mjs'
 
 const [command = 'help', feature = 'all', ...extra] = process.argv.slice(2)
@@ -74,7 +74,7 @@ try {
     console.log(JSON.stringify(result, null, 2))
     if (!result.ok) process.exitCode = 1
   } else {
-    featureFiles(feature)
+    const selected = featureFiles(feature)
     const preflight = await doctor()
     if (!preflight.ok) throw new Error(`预检失败：${JSON.stringify(preflight)}`)
     const directory = join(root, 'test-results', `verify-${Date.now()}-${randomUUID().slice(0, 8)}`)
@@ -97,7 +97,7 @@ try {
       await runSuite('e2e', feature, directory)
       const result = JSON.parse(await readFile(join(directory, 'results.json'), 'utf8'))
       if (
-        result.stats?.expected !== (feature === 'all' ? Object.keys(features).length : 1) ||
+        result.stats?.expected !== selected.length ||
         result.stats?.unexpected ||
         result.stats?.skipped ||
         result.stats?.flaky
@@ -121,7 +121,6 @@ try {
       report.ok = true
     } catch (error) {
       report.error = error.message
-      process.exitCode = 1
     } finally {
       if (!report.lifecycle) {
         try {
@@ -130,9 +129,15 @@ try {
           report.lifecycleError = error.message
         }
       }
-      report.artifacts ??= await artifacts(directory)
+      try {
+        report.artifacts ??= await artifacts(directory)
+      } catch (error) {
+        report.artifactsError = error.message
+        report.error ??= error.message
+      }
       report.finishedAt = new Date().toISOString()
-      await writeFile(join(directory, 'manifest.json'), JSON.stringify(report, null, 2) + '\n')
+      writeManifest(directory, report)
+      if (!report.ok) process.exitCode = 1
       console.log(JSON.stringify(report, null, 2))
     }
   }

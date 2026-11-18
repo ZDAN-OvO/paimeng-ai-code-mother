@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { root } from './services.mjs'
-import { expectedSpecCount } from '../../tests/e2e/environment.mjs'
+import { browserTestsStarted } from '../../tests/e2e/phase-reporter.mjs'
 
 const owner = randomUUID()
 // 本轮工作目录落在自己的根目录下，事后这个根目录下不能有本轮的工作目录。
@@ -113,7 +113,7 @@ async function waitForReady(deadlineMs = 120_000) {
   while (Date.now() < until) {
     if (runner.exitCode !== null) throw new Error(`runner 提前退出（${runner.exitCode}），见 ${logPath}`)
     const text = readFileSync(logPath, 'utf8')
-    if (text.includes('浏览器测试服务已就绪') && text.includes(`Running ${expectedSpecCount} tests`)) return text
+    if (text.includes('浏览器测试服务已就绪') && text.split('\n').includes(browserTestsStarted)) return text
     await delay(200)
   }
   throw new Error(`runner 未进入用例阶段，见 ${logPath}`)
