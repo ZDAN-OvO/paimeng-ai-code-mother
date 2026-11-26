@@ -1,9 +1,10 @@
 import logging
+from uuid import UUID
 
 from redis.exceptions import RedisError
 
-from app.db.history_repository import HistoryRepository, HistorySnapshot
-from app.db.models import HistoryMessage, MessageType
+from app.db.history_repository import HistoryRepository, HistorySnapshot, MessageWrite
+from app.db.models import GenerationStatus, HistoryMessage, MessageType
 from app.memory.versioned_redis_memory import VersionedRedisMemory
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,22 @@ class HistoryService:
         task_id: int | None = None,
     ) -> HistoryMessage:
         result = await self.repository.append(app_id, user_id, message_type, message, task_id)
+        return await self._cache_write(app_id, result)
+
+    async def start_generation(self, app_id: int, user_id: int, task_id: UUID, content: str) -> HistoryMessage:
+        return await self._cache_write(app_id, await self.repository.start_generation(app_id, user_id, task_id, content))
+
+    async def register_generation_user(self, app_id: int, user_id: int, task_id: UUID, content: str) -> HistoryMessage:
+        result = await self.repository.start_generation(app_id, user_id, task_id, content, allow_existing=True)
+        return await self._cache_write(app_id, result)
+
+    async def commit_generation_result(
+        self, app_id: int, task_id: UUID, status: GenerationStatus, content: str, build_result: dict | None
+    ) -> HistoryMessage:
+        result = await self.repository.commit_generation_result(app_id, task_id, status, content, build_result)
+        return await self._cache_write(app_id, result)
+
+    async def _cache_write(self, app_id: int, result: MessageWrite) -> HistoryMessage:
         if result.previous_version is not None:
             try:
                 await self.memory.append(app_id, result.previous_version, result.version, result.message)

@@ -5,7 +5,9 @@ from redis.asyncio import Redis
 from redis.asyncio.retry import Retry
 from redis.backoff import NoBackoff
 
-from app.api import internal_history, internal_routing
+from app.agent.responses import ResponsesModel
+from app.agent.runner import GenerationRunner
+from app.api import internal_generation, internal_history, internal_routing
 from app.config import Settings
 from app.db.connection import create_engine
 from app.db.history_repository import HistoryRepository
@@ -20,7 +22,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(application: FastAPI):
         config = settings or Settings()
         application.state.settings = config
-        application.state.type_router = TypeRouter(build_responses_model(config))
+        model = build_responses_model(config)
+        application.state.type_router = TypeRouter(model)
+        application.state.generation = GenerationRunner(
+            ResponsesModel(model), config.paimeng_workspace_root, config.generation_context_tokens
+        )
         engine = create_engine(config.postgres_url)
         try:
             async with Redis.from_url(
@@ -38,6 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application = FastAPI(title="Paimeng Agent Service", lifespan=lifespan)
     application.include_router(internal_history.router)
     application.include_router(internal_routing.router)
+    application.include_router(internal_generation.router)
 
     @application.get("/health")
     async def health() -> dict[str, str]:

@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, BeforeValidator, Field, StringConstraints
@@ -38,7 +39,7 @@ class MessageBody(BaseModel):
     userId: ID
     messageType: InputMessageType
     message: Annotated[str, StringConstraints(min_length=1, pattern=r"\S")]
-    taskId: ID | None = None
+    taskId: ID | UUID | None = None
 
 
 class AdminPageRequest(BaseModel):
@@ -104,9 +105,14 @@ async def list_app_messages(
 @router.post("/apps/{app_id}/messages")
 async def write_app_message(app_id: AppID, body: MessageBody, history: HistoryDependency) -> MessageRecord:
     try:
-        message = await history.append(
-            app_id, body.userId, _canonical_message_type(body.messageType), body.message, body.taskId
-        )
+        if isinstance(body.taskId, UUID):
+            if body.messageType != "user":
+                raise HTTPException(status_code=422, detail="UUID 任务只允许通过此接口补登记用户消息")
+            message = await history.register_generation_user(app_id, body.userId, body.taskId, body.message)
+        else:
+            message = await history.append(
+                app_id, body.userId, _canonical_message_type(body.messageType), body.message, body.taskId
+            )
     except HistoryDeleted as exc:
         raise HTTPException(status_code=410, detail="应用历史已删除") from exc
     except MessageConflict as exc:
