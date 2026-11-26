@@ -1,8 +1,6 @@
 package com.zdan.paimengaicodemother.controller;
 
 import cn.hutool.core.bean.BeanUtil;
-import cn.hutool.core.util.StrUtil;
-import cn.hutool.json.JSONUtil;
 import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.zdan.paimengaicodemother.annotation.AuthCheck;
@@ -19,24 +17,25 @@ import com.zdan.paimengaicodemother.model.dto.app.*;
 import com.zdan.paimengaicodemother.model.entity.App;
 import com.zdan.paimengaicodemother.model.entity.User;
 import com.zdan.paimengaicodemother.model.vo.AppVO;
-import com.zdan.paimengaicodemother.ratelimiter.annotaion.RateLimit;
-import com.zdan.paimengaicodemother.ratelimiter.enums.RateLimitType;
 import com.zdan.paimengaicodemother.service.AppService;
 import com.zdan.paimengaicodemother.service.ProjectDownloadService;
 import com.zdan.paimengaicodemother.service.UserService;
+import com.zdan.paimengaicodemother.task.GenerationTaskCoordinator;
+import com.zdan.paimengaicodemother.task.GenerationTaskCoordinator.Submission;
+import com.zdan.paimengaicodemother.task.GenerationTaskCoordinator.SubmitRequest;
+import com.zdan.paimengaicodemother.task.GenerationTaskCoordinator.Summary;
+import com.zdan.paimengaicodemother.task.TaskEventSubscriptions;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.MediaType;
-import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.File;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
+import java.util.UUID;
 
 /**
  * 应用 控制层。
@@ -51,15 +50,21 @@ public class AppController {
     private final UserService userService;
     private final ProjectDownloadService projectDownloadService;
     private final WorkspaceProperties workspaceProperties;
+    private final GenerationTaskCoordinator tasks;
+    private final TaskEventSubscriptions subscriptions;
 
     public AppController(AppService appService,
                          UserService userService,
                          ProjectDownloadService projectDownloadService,
-                         WorkspaceProperties workspaceProperties) {
+                         WorkspaceProperties workspaceProperties,
+                         GenerationTaskCoordinator tasks,
+                         TaskEventSubscriptions subscriptions) {
         this.appService = appService;
         this.userService = userService;
         this.projectDownloadService = projectDownloadService;
         this.workspaceProperties = workspaceProperties;
+        this.tasks = tasks;
+        this.subscriptions = subscriptions;
     }
 
     /**
@@ -123,43 +128,34 @@ public class AppController {
         return ResultUtils.success(deployUrl);
     }
 
-    /**
-     * ai 对话生成代码
-     */
+    @PostMapping("/chat/tasks")
+    public BaseResponse<Submission> submitTask(@RequestBody SubmitRequest body, HttpServletRequest request) {
+        long userId = userService.getLoginUser(request).getId();
+        return ResultUtils.success(tasks.submit(body.appId(), body.message(), body.clientRequestId(), userId));
+    }
+
+    @GetMapping("/chat/tasks/active")
+    public BaseResponse<Summary> activeTask(@RequestParam Long appId, HttpServletRequest request) {
+        long userId = userService.getLoginUser(request).getId();
+        return ResultUtils.success(tasks.active(appId, userId));
+    }
+
+    @GetMapping(value = "/chat/tasks/{taskId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter taskEvents(@PathVariable UUID taskId,
+                                 @RequestHeader(name = "Last-Event-ID", required = false) String headerCursor,
+                                 @RequestParam(required = false) String lastEventId,
+                                 HttpServletRequest request) {
+        long userId = userService.getLoginUser(request).getId();
+        return subscriptions.subscribe(taskId, userId, headerCursor == null ? lastEventId : headerCursor, false);
+    }
+
     @GetMapping(value = "/chat/gen/code", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    // 1 分钟内最多允许请求 5 次，采用根据用户类型进行限流
-    @RateLimit(limitType = RateLimitType.USER, rate = 1, rateInterval = 60, message = "AI 对话请求过于频繁，请稍后再试")
-    public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId,
-                                                       @RequestParam String message,
-                                                       HttpServletRequest request) {
-        if (appId == null || appId <= 0) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "应用 id 错误");
-        }
-        if (StrUtil.isBlank(message)) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "提示词不能为空");
-        }
-        // 获取当前用户
-        User loginUser = userService.getLoginUser(request);
-        // 调用服务生成代码（ SSE 流式返回）
-        Flux<String> contentFlux = appService.chatToGenCode(appId, message, loginUser);
-        // 对返回结果进行处理（封装为 json，避免传递到前端后出现空格丢失）
-        return contentFlux
-                .map(chunk -> {
-                    Map<String, String> chunkJsonMap = Map.of("d", chunk);
-                    String chunkJson = JSONUtil.toJsonStr(chunkJsonMap);
-                    return ServerSentEvent.<String>builder()
-                            .data(chunkJson)
-                            .build();
-                })
-                .concatWith(
-                        // 发送结束事件（前端不区分异常和正常结束，两种方式的结束都会触发 onClos 事件，
-                        //             自定义结束事件便于前端判断流式数据的结束）
-                        Mono.just(
-                                ServerSentEvent.<String>builder()
-                                        .event("done")
-                                        .build()
-                        )
-                );
+    public SseEmitter chatToGenCode(@RequestParam Long appId,
+                                    @RequestParam String message,
+                                    HttpServletRequest request) {
+        long userId = userService.getLoginUser(request).getId();
+        Submission submitted = tasks.submit(appId, message, "legacy:" + UUID.randomUUID(), userId);
+        return subscriptions.subscribe(submitted.taskId(), userId, null, true);
     }
 
     /**

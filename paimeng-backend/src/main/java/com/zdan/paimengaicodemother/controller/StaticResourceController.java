@@ -13,7 +13,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.HandlerMapping;
 
-import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 
 /**
  * 静态资源访问
@@ -38,35 +41,42 @@ public class StaticResourceController {
     public ResponseEntity<Resource> serveStaticResource(
             @PathVariable String deployKey,
             HttpServletRequest request) {
+        if (!deployKey.matches("[A-Za-z0-9_-]+")) {
+            return ResponseEntity.notFound().build();
+        }
         try {
-            // 获取资源路径
             String resourcePath = (String) request.getAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE);
             resourcePath = resourcePath.substring(("/static/" + deployKey).length());
-            // 如果是目录访问（不带斜杠），重定向到带斜杠的URL
             if (resourcePath.isEmpty()) {
                 HttpHeaders headers = new HttpHeaders();
                 headers.add("Location", request.getRequestURI() + "/");
                 return new ResponseEntity<>(headers, HttpStatus.MOVED_PERMANENTLY);
             }
-            // 默认返回 index.html
-            if (resourcePath.equals("/")) {
-                resourcePath = "/index.html";
-            }
-            // 构建文件路径
-            String filePath = workspaceProperties.getCodeOutputRootDir() + File.separator + deployKey + resourcePath;
-            File file = new File(filePath);
-            // 检查文件是否存在
-            if (!file.exists()) {
+            if (!resourcePath.startsWith("/") || resourcePath.indexOf('\\') >= 0 || resourcePath.indexOf(':') >= 0) {
                 return ResponseEntity.notFound().build();
             }
-            // 返回文件资源
-            Resource resource = new FileSystemResource(file);
-            return ResponseEntity.ok()
-                    .header("Content-Type", getContentTypeWithCharset(filePath))
-                    .body(resource);
 
-        } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+            Path relative = Path.of(resourcePath.equals("/") ? "index.html" : resourcePath.substring(1));
+            for (Path part : relative) {
+                if (part.toString().equals("..")) {
+                    return ResponseEntity.notFound().build();
+                }
+            }
+            Path root = workspaceProperties.getCodeOutputRootDir().toRealPath();
+            Path app = root.resolve(deployKey);
+            if (relative.getRoot() != null || !app.toRealPath().equals(app)) {
+                return ResponseEntity.notFound().build();
+            }
+            Path file = app.resolve(relative).normalize().toRealPath();
+            if (!file.startsWith(app) || !Files.isRegularFile(file)) {
+                return ResponseEntity.notFound().build();
+            }
+
+            return ResponseEntity.ok()
+                    .header("Content-Type", getContentTypeWithCharset(file.toString()))
+                    .body(new FileSystemResource(file));
+        } catch (IOException | InvalidPathException error) {
+            return ResponseEntity.notFound().build();
         }
     }
 

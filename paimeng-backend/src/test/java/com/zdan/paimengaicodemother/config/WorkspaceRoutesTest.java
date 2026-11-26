@@ -7,6 +7,8 @@ import com.zdan.paimengaicodemother.model.entity.User;
 import com.zdan.paimengaicodemother.service.AppService;
 import com.zdan.paimengaicodemother.service.UserService;
 import com.zdan.paimengaicodemother.service.impl.ProjectDownloadServiceImpl;
+import com.zdan.paimengaicodemother.task.GenerationTaskCoordinator;
+import com.zdan.paimengaicodemother.task.TaskEventSubscriptions;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -57,7 +59,8 @@ class WorkspaceRoutesTest {
                     workingDirectory, null, "code_output", "code_staging", "code_deploy", "screenshots");
             MockMvc mvc = MockMvcBuilders.standaloneSetup(
                     new StaticResourceController(workspace),
-                    new AppController(appService, userService, new ProjectDownloadServiceImpl(), workspace)).build();
+                    new AppController(appService, userService, new ProjectDownloadServiceImpl(), workspace,
+                            mock(GenerationTaskCoordinator.class), mock(TaskEventSubscriptions.class))).build();
 
             mvc.perform(get("/static/html_42/"))
                     .andExpect(status().isOk())

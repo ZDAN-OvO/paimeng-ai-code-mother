@@ -38,7 +38,10 @@ public interface ChatHistoryService extends IService<ChatHistory> {
      */
     Page<ChatHistory> listAppChatHistoryByPage(Long appId, int pageSize,
                                                LocalDateTime lastCreateTime,
+                                               Long lastId,
                                                User loginUser);
+
+    Page<ChatHistory> listAdminChatHistoryByPage(ChatHistoryQueryRequest query);
 
     /**
      * 获取查询包装类

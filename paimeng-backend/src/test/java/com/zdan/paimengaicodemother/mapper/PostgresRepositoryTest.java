@@ -4,9 +4,7 @@ import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.spring.FlexTransactionManager;
 import com.mybatisflex.spring.boot.MybatisFlexAutoConfiguration;
 import com.zaxxer.hikari.HikariDataSource;
-import com.zdan.paimengaicodemother.ai.codegen.route.AiCodeGenTypeRoutingService;
-import com.zdan.paimengaicodemother.ai.codegen.route.AiCodeGenTypeRoutingServiceFactory;
-import com.zdan.paimengaicodemother.ai.enums.CodeGenTypeEnum;
+import com.zdan.paimengaicodemother.agent.PythonAgentClient;
 import com.zdan.paimengaicodemother.config.MyBatisFlexConfig;
 import com.zdan.paimengaicodemother.config.WorkspaceProperties;
 import com.zdan.paimengaicodemother.constant.AppConstant;
@@ -27,6 +25,8 @@ import com.zdan.paimengaicodemother.service.UserService;
 import com.zdan.paimengaicodemother.service.impl.AppServiceImpl;
 import com.zdan.paimengaicodemother.service.impl.ChatHistoryServiceImpl;
 import com.zdan.paimengaicodemother.service.impl.UserServiceImpl;
+import com.zdan.paimengaicodemother.task.GenerationTaskCoordinator;
+import com.zdan.paimengaicodemother.task.GenerationTaskStore;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.junit.jupiter.api.Test;
 import org.mybatis.spring.annotation.MapperScan;
@@ -52,7 +52,6 @@ import java.time.LocalDateTime;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 @SpringJUnitConfig(PostgresRepositoryTest.RepositoryConfiguration.class)
@@ -61,7 +60,7 @@ import static org.mockito.Mockito.when;
 @Transactional
 @MockitoBean(types = {
         AiCodeGeneratorFacade.class, StreamHandlerExecutor.class,
-        ScreenshotService.class, WorkspaceProperties.class
+        ScreenshotService.class, WorkspaceProperties.class, GenerationTaskCoordinator.class, GenerationTaskStore.class
 })
 class PostgresRepositoryTest {
 
@@ -92,7 +91,7 @@ class PostgresRepositoryTest {
     private JdbcTemplate jdbc;
 
     @MockitoBean
-    private AiCodeGenTypeRoutingServiceFactory routingFactory;
+    private PythonAgentClient agent;
 
     @Test
     void registrationAndLoginUseTheUniqueAccountIndexRule() {
@@ -154,9 +153,7 @@ class PostgresRepositoryTest {
     @Test
     void createsAppAndPaginatesCaseInsensitiveSearchAndFeaturedApps() {
         User owner = insertLegacyOwner();
-        AiCodeGenTypeRoutingService router = mock(AiCodeGenTypeRoutingService.class);
-        when(routingFactory.createAiCodeGenTypeRoutingService()).thenReturn(router);
-        when(router.routeCodeGenType(anyString())).thenReturn(CodeGenTypeEnum.HTML);
+        when(agent.route(anyString())).thenReturn("html");
 
         AppAddRequest request = new AppAddRequest();
         request.setInitPrompt("O'Clock Demo");
@@ -226,7 +223,9 @@ class PostgresRepositoryTest {
 
         chatHistoryService.addChatMessage(LEGACY_APP_ID, "New Question", "user", owner);
         chatHistoryService.addChatMessage(LEGACY_APP_ID, "New Answer", "ai", owner);
-        Page<ChatHistory> history = chatHistoryService.listAppChatHistoryByPage(LEGACY_APP_ID, 10, null, owner);
+        var pageQuery = new ChatHistoryQueryRequest();
+        pageQuery.setAppId(LEGACY_APP_ID);
+        Page<ChatHistory> history = chatHistoryService.page(Page.of(1, 10), chatHistoryService.getQueryWrapper(pageQuery));
 
         assertThat(history.getRecords()).extracting(ChatHistory::getMessage)
                 .containsExactly("New Answer", "New Question", "Legacy Answer", "Legacy Question");
@@ -240,8 +239,8 @@ class PostgresRepositoryTest {
         assertThat(newAnswer.getCreateTime()).isAfter(LEGACY_TIME);
         assertThat(newAnswer.getUpdateTime()).isNotNull();
         assertThat(history.getRecords().getLast().getId()).isEqualTo(LEGACY_APP_ID + 10);
-        assertThat(chatHistoryService.listAppChatHistoryByPage(LEGACY_APP_ID, 10, LEGACY_TIME.plusDays(1), owner)
-                .getRecords()).extracting(ChatHistory::getId).containsExactly(LEGACY_APP_ID + 11, LEGACY_APP_ID + 10);
+        pageQuery.setLastCreateTime(LEGACY_TIME.plusDays(1));
+        assertThat(chatHistoryService.list(chatHistoryService.getQueryWrapper(pageQuery))).extracting(ChatHistory::getId).containsExactly(LEGACY_APP_ID + 11, LEGACY_APP_ID + 10);
 
         ChatHistoryQueryRequest query = new ChatHistoryQueryRequest();
         query.setAppId(LEGACY_APP_ID);
@@ -249,8 +248,9 @@ class PostgresRepositoryTest {
         assertThat(chatHistoryService.list(chatHistoryService.getQueryWrapper(query))).extracting(ChatHistory::getId)
                 .containsExactly(LEGACY_APP_ID + 11);
 
-        chatHistoryService.removeByAppId(LEGACY_APP_ID);
-        assertThat(chatHistoryService.listAppChatHistoryByPage(LEGACY_APP_ID, 10, null, owner).getRecords()).isEmpty();
+        pageQuery.setLastCreateTime(null);
+        assertThat(chatHistoryMapper.deleteByQuery(chatHistoryService.getQueryWrapper(pageQuery))).isEqualTo(4);
+        assertThat(chatHistoryService.list(chatHistoryService.getQueryWrapper(pageQuery))).isEmpty();
         assertThat(jdbc.queryForObject("""
                 SELECT COUNT(*) FROM chat_history WHERE "appId" = ? AND "isDelete" = 1
                 """, Integer.class, LEGACY_APP_ID)).isEqualTo(4);

@@ -25,6 +25,9 @@ spring:
 
 # 共享工作区。相对子目录以工作区根为基准，也可以单独配置绝对路径。
 paimeng:
+  agent:
+    base-url: "${AGENT_SERVICE_BASE_URL:http://127.0.0.1:8000}"
+    internal-token: "${INTERNAL_API_TOKEN:}"
   workspace:
     root: "${PAIMENG_WORKSPACE_ROOT:}"
     code-output-root-dir: code_output

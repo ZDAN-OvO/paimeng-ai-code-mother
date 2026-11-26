@@ -6,7 +6,10 @@ import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryColumn;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
+import com.zdan.paimengaicodemother.agent.PythonAgentClient;
+import com.zdan.paimengaicodemother.agent.PythonAgentClient.AgentException;
 import com.zdan.paimengaicodemother.constant.UserConstant;
+import com.zdan.paimengaicodemother.exception.BusinessException;
 import com.zdan.paimengaicodemother.exception.ErrorCode;
 import com.zdan.paimengaicodemother.exception.ThrowUtils;
 import com.zdan.paimengaicodemother.mapper.ChatHistoryMapper;
@@ -44,9 +47,11 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
             "id", "message", "messageType", "appId", "userId", "createTime", "updateTime");
 
     private final AppService appService;
+    private final PythonAgentClient agent;
 
-    public ChatHistoryServiceImpl(@Lazy AppService appService) {
+    public ChatHistoryServiceImpl(@Lazy AppService appService, PythonAgentClient agent) {
         this.appService = appService;
+        this.agent = agent;
     }
 
     @Override
@@ -89,29 +94,53 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
     }
 
     @Override
-    public Page<ChatHistory> listAppChatHistoryByPage(Long appId, int pageSize,
-                                                      LocalDateTime lastCreateTime,
-                                                      User loginUser) {
-
+    public Page<ChatHistory> listAppChatHistoryByPage(Long appId, int pageSize, LocalDateTime lastCreateTime,
+                                                      Long lastId, User loginUser) {
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不能为空");
         ThrowUtils.throwIf(pageSize <= 0 || pageSize > 50, ErrorCode.PARAMS_ERROR, "页面大小必须在1-50之间");
+        ThrowUtils.throwIf(lastId != null && (lastId <= 0 || lastCreateTime == null),
+                ErrorCode.PARAMS_ERROR, "消息游标需要有效的 ID 和创建时间");
         ThrowUtils.throwIf(loginUser == null, ErrorCode.NOT_LOGIN_ERROR);
 
-        // 验证权限：只有应用创建者和管理员可以查看
         App app = appService.getById(appId);
         ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
         boolean isAdmin = UserConstant.ADMIN_ROLE.equals(loginUser.getUserRole());
         boolean isCreator = app.getUserId().equals(loginUser.getId());
         ThrowUtils.throwIf(!isAdmin && !isCreator, ErrorCode.NO_AUTH_ERROR, "无权查看该应用的对话历史");
 
-        // 构建查询条件
-        ChatHistoryQueryRequest queryRequest = new ChatHistoryQueryRequest();
-        queryRequest.setAppId(appId);
-        queryRequest.setLastCreateTime(lastCreateTime);
-        QueryWrapper queryWrapper = this.getQueryWrapper(queryRequest);
+        try {
+            return page(1, pageSize, agent.appHistory(appId, pageSize, lastCreateTime, lastId));
+        } catch (AgentException error) {
+            throw translateAgentError(error);
+        }
+    }
 
-        // 查询数据
-        return this.page(Page.of(1, pageSize), queryWrapper);
+    @Override
+    public Page<ChatHistory> listAdminChatHistoryByPage(ChatHistoryQueryRequest query) {
+        ThrowUtils.throwIf(query == null || query.getPageNum() <= 0 || query.getPageSize() <= 0,
+                ErrorCode.PARAMS_ERROR);
+        String sortField = query.getSortField();
+        ThrowUtils.throwIf(StrUtil.isNotBlank(sortField) && !SORTABLE_FIELDS.contains(sortField),
+                ErrorCode.PARAMS_ERROR, "历史排序字段非法");
+        try {
+            return page(query.getPageNum(), query.getPageSize(), agent.adminHistory(query));
+        } catch (AgentException error) {
+            throw translateAgentError(error);
+        }
+    }
+
+    private static Page<ChatHistory> page(int number, int size, PythonAgentClient.HistoryPage source) {
+        Page<ChatHistory> page = Page.of(number, size, source.totalRow());
+        page.setRecords(source.records());
+        return page;
+    }
+
+    private static BusinessException translateAgentError(AgentException error) {
+        if (error.status() == 422) {
+            return new BusinessException(ErrorCode.PARAMS_ERROR, "历史查询参数无效");
+        }
+        log.warn("Python 对话历史接口失败", error);
+        return new BusinessException(ErrorCode.OPERATION_ERROR, "暂时无法访问对话历史，请稍后重试");
     }
 
     @Override
@@ -171,8 +200,11 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
 
     @Override
     public void removeByAppId(Long appId) {
-        this.mapper.deleteByQuery(QueryWrapper.create()
-                .eq(ChatHistory::getAppId, appId));
+        try {
+            agent.deleteHistory(appId);
+        } catch (AgentException error) {
+            throw translateAgentError(error);
+        }
     }
 
     /**
