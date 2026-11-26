@@ -6,12 +6,11 @@ spring:
   session:
     store-type: redis
     timeout: 2592000s
-  # mysql
+  # PostgreSQL。通过 local 配置或 SPRING_DATASOURCE_* 提供连接参数。
   datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/paimeng_ai_code_mother
-    username: root
-    password: root
+    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://localhost:5432/paimeng_java
+    username: paimeng_java
   # redis
   data:
     redis:

@@ -3,6 +3,7 @@ package com.zdan.paimengaicodemother.service.impl;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import com.mybatisflex.core.paginate.Page;
+import com.mybatisflex.core.query.QueryColumn;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import com.zdan.paimengaicodemother.constant.UserConstant;
@@ -25,6 +26,10 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Set;
+
+import static com.zdan.paimengaicodemother.service.impl.PostgresQueryConditions.containsIgnoringCase;
+import static com.zdan.paimengaicodemother.service.impl.PostgresQueryConditions.equalIgnoringCaseAndTrailingSpaces;
 
 /**
  * 对话历史 服务层实现。
@@ -34,6 +39,9 @@ import java.util.List;
 @Slf4j
 @Service
 public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatHistory> implements ChatHistoryService {
+
+    private static final Set<String> SORTABLE_FIELDS = Set.of(
+            "id", "message", "messageType", "appId", "userId", "createTime", "updateTime");
 
     private final AppService appService;
 
@@ -48,6 +56,7 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
             QueryWrapper queryWrapper = QueryWrapper.create()
                     .eq(ChatHistory::getAppId, appId)
                     .orderBy(ChatHistory::getCreateTime, false)
+                    .orderBy(ChatHistory::getId, false)
                     .limit(1, maxCount);
             List<ChatHistory> historyList = this.list(queryWrapper);
             if (CollUtil.isEmpty(historyList)) {
@@ -122,23 +131,25 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
         String sortOrder = chatHistoryQueryRequest.getSortOrder();
 
         // 拼接查询条件
-        queryWrapper.eq("id", id)
-                .like("message", message)
-                .eq("messageType", messageType)
-                .eq("appId", appId)
-                .eq("userId", userId);
+        queryWrapper.eq(ChatHistory::getId, id)
+                .and(containsIgnoringCase("message", message))
+                .and(equalIgnoringCaseAndTrailingSpaces("messageType", messageType))
+                .eq(ChatHistory::getAppId, appId)
+                .eq(ChatHistory::getUserId, userId);
 
         // 游标查询逻辑 - 只使用 createTime 作为游标
         if (lastCreateTime != null) {
-            queryWrapper.lt("createTime", lastCreateTime);
+            queryWrapper.lt(ChatHistory::getCreateTime, lastCreateTime);
         }
 
         // 排序
         if (StrUtil.isNotBlank(sortField)) {
-            queryWrapper.orderBy(sortField, "ascend".equals(sortOrder));
+            ThrowUtils.throwIf(!SORTABLE_FIELDS.contains(sortField), ErrorCode.PARAMS_ERROR, "历史排序字段非法");
+            queryWrapper.orderBy(new QueryColumn(sortField), "ascend".equals(sortOrder));
         } else {
-            // 默认按创建时间降序排列
-            queryWrapper.orderBy("createTime", false);
+            // 旧消息可能在同一秒写入，以 ID 确定它们的顺序。
+            queryWrapper.orderBy(ChatHistory::getCreateTime, false)
+                    .orderBy(ChatHistory::getId, false);
         }
 
         return queryWrapper;

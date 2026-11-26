@@ -3,10 +3,12 @@ package com.zdan.paimengaicodemother.service.impl;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
+import com.mybatisflex.core.query.QueryColumn;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import com.zdan.paimengaicodemother.exception.BusinessException;
 import com.zdan.paimengaicodemother.exception.ErrorCode;
+import com.zdan.paimengaicodemother.exception.ThrowUtils;
 import com.zdan.paimengaicodemother.mapper.UserMapper;
 import com.zdan.paimengaicodemother.model.dto.user.UserQueryRequest;
 import com.zdan.paimengaicodemother.model.entity.User;
@@ -16,14 +18,18 @@ import com.zdan.paimengaicodemother.model.vo.UserVO;
 import com.zdan.paimengaicodemother.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.DigestUtils;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.zdan.paimengaicodemother.constant.UserConstant.USER_LOGIN_STATE;
+import static com.zdan.paimengaicodemother.service.impl.PostgresQueryConditions.containsIgnoringCase;
+import static com.zdan.paimengaicodemother.service.impl.PostgresQueryConditions.equalIgnoringCaseAndTrailingSpaces;
 
 /**
  * 用户 服务层实现
@@ -33,6 +39,10 @@ import static com.zdan.paimengaicodemother.constant.UserConstant.USER_LOGIN_STAT
 @Service
 @Slf4j
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements UserService {
+
+    private static final Set<String> SORTABLE_FIELDS = Set.of(
+            "id", "userAccount", "userName", "userAvatar", "userProfile", "userRole",
+            "createTime", "editTime", "updateTime");
 
     @Override
     public QueryWrapper getQueryWrapper(UserQueryRequest userQueryRequest) {
@@ -46,13 +56,17 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         String userRole = userQueryRequest.getUserRole();
         String sortField = userQueryRequest.getSortField();
         String sortOrder = userQueryRequest.getSortOrder();
-        return QueryWrapper.create()
-                .eq("id", id)
-                .eq("userRole", userRole)
-                .like("userAccount", userAccount)
-                .like("userName", userName)
-                .like("userProfile", userProfile)
-                .orderBy(sortField, "ascend".equals(sortOrder));
+        QueryWrapper queryWrapper = QueryWrapper.create()
+                .eq(User::getId, id)
+                .and(equalIgnoringCaseAndTrailingSpaces("userRole", userRole))
+                .and(containsIgnoringCase("userAccount", userAccount))
+                .and(containsIgnoringCase("userName", userName))
+                .and(containsIgnoringCase("userProfile", userProfile));
+        if (StrUtil.isNotBlank(sortField)) {
+            ThrowUtils.throwIf(!SORTABLE_FIELDS.contains(sortField), ErrorCode.PARAMS_ERROR, "用户排序字段非法");
+            queryWrapper.orderBy(new QueryColumn(sortField), "ascend".equals(sortOrder));
+        }
+        return queryWrapper;
     }
 
     @Override
@@ -120,9 +134,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         // 2. 加密
         String encryptPassword = getEncryptPassword(userPassword);
         // 查询用户是否存在
-        QueryWrapper queryWrapper = new QueryWrapper();
-        queryWrapper.eq("userAccount", userAccount);
-        queryWrapper.eq("userPassword", encryptPassword);
+        QueryWrapper queryWrapper = QueryWrapper.create()
+                .where(equalIgnoringCaseAndTrailingSpaces("userAccount", userAccount))
+                .and(equalIgnoringCaseAndTrailingSpaces("userPassword", encryptPassword));
         User user = this.mapper.selectOneByQuery(queryWrapper);
         // 用户不存在
         if (user == null) {
@@ -167,8 +181,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "两次输入的密码不一致");
         }
         // 2. 检查是否重复
-        QueryWrapper queryWrapper = new QueryWrapper();
-        queryWrapper.eq("userAccount", userAccount);
+        QueryWrapper queryWrapper = QueryWrapper.create()
+                .where(equalIgnoringCaseAndTrailingSpaces("userAccount", userAccount));
         long count = this.mapper.selectCountByQuery(queryWrapper);
         if (count > 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "账号重复");
@@ -181,7 +195,13 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         user.setUserPassword(encryptPassword);
         user.setUserName("无名");
         user.setUserRole(UserRoleEnum.USER.getValue());
-        boolean saveResult = this.save(user);
+        boolean saveResult;
+        try {
+            saveResult = this.save(user);
+        } catch (DuplicateKeyException e) {
+            // 两个并发注册都通过查重时，由唯一索引拒绝后写入的账号。
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "账号重复");
+        }
         if (!saveResult) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "注册失败，数据库错误");
         }

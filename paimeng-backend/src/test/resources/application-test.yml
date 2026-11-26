@@ -1,0 +1,7 @@
+paimeng:
+  test:
+    postgres:
+      # 指向执行过 sql/pg/01_init_java_db.sql 的独立 PostgreSQL 测试库。
+      url: "${PG_TEST_JDBC_URL}"
+      username: "${PG_TEST_USERNAME}"
+      password: "${PG_TEST_PASSWORD}"

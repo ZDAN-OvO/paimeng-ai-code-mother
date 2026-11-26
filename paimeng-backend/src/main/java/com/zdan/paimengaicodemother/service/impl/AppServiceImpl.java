@@ -5,6 +5,7 @@ import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
+import com.mybatisflex.core.query.QueryColumn;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import com.zdan.paimengaicodemother.ai.codegen.route.AiCodeGenTypeRoutingService;
@@ -40,6 +41,9 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static com.zdan.paimengaicodemother.service.impl.PostgresQueryConditions.containsIgnoringCase;
+import static com.zdan.paimengaicodemother.service.impl.PostgresQueryConditions.equalIgnoringCaseAndTrailingSpaces;
+
 /**
  * 应用 服务层实现。
  *
@@ -48,6 +52,10 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppService {
+
+    private static final Set<String> SORTABLE_FIELDS = Set.of(
+            "id", "appName", "cover", "initPrompt", "codeGenType", "deployKey",
+            "deployedTime", "priority", "userId", "editTime", "createTime", "updateTime");
 
     private final UserService userService;
     private final ChatHistoryService chatHistoryService;
@@ -311,15 +319,19 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         String sortField = appQueryRequest.getSortField();
         String sortOrder = appQueryRequest.getSortOrder();
 
-        return QueryWrapper.create()
-                .eq("id", id)
-                .like("appName", appName)
-                .like("cover", cover)
-                .like("initPrompt", initPrompt)
-                .eq("codeGenType", codeGenType)
-                .eq("deployKey", deployKey)
-                .eq("priority", priority)
-                .eq("userId", userId)
-                .orderBy(sortField, "ascend".equals(sortOrder));
+        QueryWrapper queryWrapper = QueryWrapper.create()
+                .eq(App::getId, id)
+                .and(containsIgnoringCase("appName", appName))
+                .and(containsIgnoringCase("cover", cover))
+                .and(containsIgnoringCase("initPrompt", initPrompt))
+                .and(equalIgnoringCaseAndTrailingSpaces("codeGenType", codeGenType))
+                .and(equalIgnoringCaseAndTrailingSpaces("deployKey", deployKey))
+                .eq(App::getPriority, priority)
+                .eq(App::getUserId, userId);
+        if (StrUtil.isNotBlank(sortField)) {
+            ThrowUtils.throwIf(!SORTABLE_FIELDS.contains(sortField), ErrorCode.PARAMS_ERROR, "应用排序字段非法");
+            queryWrapper.orderBy(new QueryColumn(sortField), "ascend".equals(sortOrder));
+        }
+        return queryWrapper;
     }
 }

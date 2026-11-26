@@ -22,9 +22,10 @@ public class MybatisFlexCodeGenerator {
         // 获取数据源元信息
         Dict dict = YamlUtil.loadByPath("application.yml");
         Map<String, Object> dataSourceConfig = dict.getByPath("spring.datasource");
-        String url = String.valueOf(dataSourceConfig.get("url"));
-        String username = String.valueOf(dataSourceConfig.get("username"));
-        String password = String.valueOf(dataSourceConfig.get("password"));
+        Map<String, String> env = System.getenv();
+        String url = env.getOrDefault("SPRING_DATASOURCE_URL", (String) dataSourceConfig.get("url"));
+        String username = env.getOrDefault("SPRING_DATASOURCE_USERNAME", (String) dataSourceConfig.get("username"));
+        String password = env.getOrDefault("SPRING_DATASOURCE_PASSWORD", (String) dataSourceConfig.get("password"));
 
         // 配置数据源
         HikariDataSource dataSource = new HikariDataSource();
