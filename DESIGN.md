@@ -33,6 +33,14 @@ Python 通过 `MODEL_BASE_URL`、`MODEL_NAME` 和 `MODEL_API_KEY` 配置 Respons
 
 先在 Java PG 执行 `01_init_java_db.sql`，再从旧 MySQL 导入用户、应用和历史。应用切换到 Python 历史前，在独立的 Python PG 依次执行 `02_init_python_history_db.sql` 和 `04_python_generation_history.sql`。Java PG 执行 `03_generation_task.sql` 后存储新任务和待处理的历史清理请求。
 
-迁移前停止源库写入并等待在途任务结束。用 `migrate_mysql_to_pg_java.py` 和 `migrate_java_pg_to_python_history.py` 分别完成两次迁移。脚本校验历史内容、主键和归属。确认目标库记录以及已发布项目的目录后，再打开写入。
+迁移前停止源库写入，并等待在途任务结束。用 `migrate_mysql_to_pg_java.py` 和 `migrate_java_pg_to_python_history.py` 分别完成两次迁移。脚本核对历史内容、主键和归属。确认目标库记录以及已发布项目的目录后，再打开写入。
+
+### 停写与排空
+
+所有 Java 实例共用 `TASK_REDIS_URL` 和 `WRITE_BARRIER_NAMESPACE`。第一次启动新环境时，执行 `uv run --script sql/pg/write_barrier.py init` 初始化写入准入。登记状态丢失时，Java 会拒绝新写入，待操作者核对后恢复。
+
+在 Java PG 阶段，执行 `uv run --script sql/pg/write_barrier.py pause` 取得批次号。把 `WRITE_BARRIER_PG_DSN` 指向源 Java PG，执行 `uv run --script sql/pg/write_barrier.py await <批次号> --timeout 120`。工具等在途写入结算，并核对未交付任务及待清理的历史。状态为 `java_drained` 后，仍要停掉独立的 Python 写入方并排空在途请求。核对迁移结果后，用 `resume <批次号>` 恢复写入。未处理的后台失败会阻止排空。处理后，用 `resolve-failed` 记录登记号和核对证据。
+
+MySQL 阶段使用旧版 Java 的运行和数据库记录，独立确认旧代码生成、截图回写和历史清理均已结束。将 MySQL 的停写时点与 Java PG 切换前的停写时点分别记录。
 
 服务职责、历史缓存、任务回放和目录交付的取舍记录在 [架构决策](docs/adr/) 中。术语见 [项目术语](GLOSSARY.md)。

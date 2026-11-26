@@ -7,6 +7,7 @@ import com.zaxxer.hikari.HikariDataSource;
 import com.zdan.paimengaicodemother.agent.PythonAgentClient;
 import com.zdan.paimengaicodemother.config.MyBatisFlexConfig;
 import com.zdan.paimengaicodemother.config.WorkspaceProperties;
+import com.zdan.paimengaicodemother.cutover.WriteBarrier;
 import com.zdan.paimengaicodemother.constant.AppConstant;
 import com.zdan.paimengaicodemother.core.AiCodeGeneratorFacade;
 import com.zdan.paimengaicodemother.core.handler.StreamHandlerExecutor;
@@ -60,7 +61,8 @@ import static org.mockito.Mockito.when;
 @Transactional
 @MockitoBean(types = {
         AiCodeGeneratorFacade.class, StreamHandlerExecutor.class,
-        ScreenshotService.class, WorkspaceProperties.class, GenerationTaskCoordinator.class, GenerationTaskStore.class
+        ScreenshotService.class, WorkspaceProperties.class, GenerationTaskCoordinator.class, GenerationTaskStore.class,
+        WriteBarrier.class
 })
 class PostgresRepositoryTest {
 

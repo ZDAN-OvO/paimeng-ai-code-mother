@@ -1,6 +1,7 @@
 package com.zdan.paimengaicodemother.job.cycle;
 
 import com.zdan.paimengaicodemother.config.WorkspaceProperties;
+import com.zdan.paimengaicodemother.cutover.WriteBarrier;
 import com.zdan.paimengaicodemother.utils.WebScreenshotUtils;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -18,9 +19,11 @@ import lombok.extern.slf4j.Slf4j;
 public class ScreenshotConfig {
 
     private final WorkspaceProperties workspaceProperties;
+    private final WriteBarrier writeBarrier;
 
-    public ScreenshotConfig(WorkspaceProperties workspaceProperties) {
+    public ScreenshotConfig(WorkspaceProperties workspaceProperties, WriteBarrier writeBarrier) {
         this.workspaceProperties = workspaceProperties;
+        this.writeBarrier = writeBarrier;
     }
 
     /**
@@ -28,12 +31,14 @@ public class ScreenshotConfig {
      */
     @Scheduled(cron = "0 0 2 * * ?")
     public void cleanupTempScreenshots() {
-        log.info("开始定时清理过期的临时截图文件");
         try {
-            WebScreenshotUtils.cleanupTempFiles(workspaceProperties.getScreenshotRootDir());
-            log.info("定时清理临时截图文件完成");
-        } catch (Exception e) {
-            log.error("定时清理临时截图文件失败", e);
+            writeBarrier.write("screenshots.cleanup", () -> {
+                log.info("开始定时清理过期的临时截图文件");
+                WebScreenshotUtils.cleanupTempFiles(workspaceProperties.getScreenshotRootDir());
+                return null;
+            });
+        } catch (WriteBarrier.Paused ignored) {
+            // 停写时跳过新的定时清理，已启动的清理可以结束。
         }
     }
 }
