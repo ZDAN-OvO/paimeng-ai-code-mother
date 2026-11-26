@@ -1,6 +1,8 @@
 ### CUSTOM ###
 application-local.yml
 tmp
+.venv/
+__pycache__/
 
 HELP.md
 target/
