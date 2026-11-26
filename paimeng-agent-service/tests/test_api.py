@@ -23,13 +23,14 @@ MESSAGES = "/internal/v1/apps/123/messages"
         (" HTML\n", "html"),
         ("multi_file", "multi_file"),
         ("<think>比较 HTML 和多文件</think>\nVUE_PROJECT", "vue_project"),
+        ("比较 HTML 和多文件\n</think>\nVUE_PROJECT", "vue_project"),
     ],
 )
 def test_parse_route(model_output, expected):
     assert parse_code_gen_type(model_output) == expected
 
 
-@pytest.mark.parametrize("model_output", ["", "html or multi_file", "html；这是解释", "<think>html"])
+@pytest.mark.parametrize("model_output", ["", "html or multi_file", "html；这是解释", "<think>html", "思考</think>html；这是解释"])
 def test_reject_route_outside_allowlist(model_output):
     with pytest.raises(InvalidRouteOutput):
         parse_code_gen_type(model_output)
@@ -80,7 +81,12 @@ def test_health_token_and_cursor_validation(settings):
 
 @pytest.mark.parametrize(
     ("output", "finish_status", "expected_status"),
-    [("MULTI_FILE", "completed", 200), ("Use html.", "completed", 502), ("html", "incomplete", 502)],
+    [
+        ("MULTI_FILE", "completed", 200),
+        ("思考两种类型。\n</think>\nMULTI_FILE", "completed", 200),
+        ("Use html.", "completed", 502),
+        ("html", "incomplete", 502),
+    ],
 )
 def test_route_uses_responses_stream_and_checks_model_output(
     settings, monkeypatch, output, finish_status, expected_status

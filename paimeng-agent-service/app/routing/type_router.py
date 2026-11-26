@@ -11,7 +11,7 @@ PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "codegen-routing
 SYSTEM_PROMPT = PROMPT_PATH.read_text(encoding="utf-8") + (
     "\n只输出 html、multi_file 或 vue_project 三个值之一。不要添加解释。"
 )
-LEADING_REASONING = re.compile(r"\A<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+LEADING_REASONING = re.compile(r"\A.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 
 
 class InvalidRouteOutput(ValueError):
