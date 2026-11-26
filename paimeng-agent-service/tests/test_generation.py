@@ -153,11 +153,15 @@ def test_multi_file_empty_asset_blocks_preserve_existing_files(generation):
     assert (workspace / "script.js").read_text(encoding="utf-8") == "wireButtons();"
 
 
-def test_multi_file_requests_assets_referenced_by_model_before_delivery(generation):
+@pytest.mark.parametrize("empty_blocks", [False, True])
+def test_multi_file_requests_assets_referenced_by_model_before_delivery(generation, empty_blocks):
     client, _, turns, requests, start = generation
     workspace, request = start("multi_file")
+    initial = '```html\n<link href="./style.css?v=1"><script src="script.js"></script>\n```'
+    if empty_blocks:
+        initial += "\n```css\n\n```\n```js\n\n```"
     turns.extend([
-        [_text('```html\n<link href="./style.css?v=1"><script src="script.js"></script>\n```'), _finish()],
+        [_text(initial), _finish()],
         [_text("```css\nbody { color: blue; }\n```\n```js\nconsole.log('ready');\n```"), _finish()],
     ])
 

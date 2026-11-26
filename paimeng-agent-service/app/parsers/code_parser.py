@@ -37,7 +37,9 @@ def save_static_files(workspace: Path, mode: CodeGenType, content: str) -> None:
     blocks: dict[str, str] = {}
     for match in FENCED_BLOCK.finditer(content):
         language = match[1].lower()
-        blocks.setdefault("javascript" if language == "js" else language, match[2].strip())
+        source = match[2].strip()
+        if source:
+            blocks.setdefault("javascript" if language == "js" else language, source)
 
     html = blocks.get("html", "")
     if not html and mode == "html" and HTML_START.match(content.strip()):
