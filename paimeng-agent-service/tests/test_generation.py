@@ -135,6 +135,23 @@ def test_static_generation_filters_reasoning_and_keeps_optional_files(generation
     history.commit_generation_result.assert_not_called()
 
 
+def test_multi_file_empty_asset_blocks_preserve_existing_files(generation):
+    client, _, turns, _, start = generation
+    workspace, request = start("multi_file")
+    (workspace / "style.css").write_text("body { color: red; }", encoding="utf-8")
+    (workspace / "script.js").write_text("wireButtons();", encoding="utf-8")
+    turns.append([
+        _text("```html\n<link rel='stylesheet' href='style.css'><script src='script.js'></script>\n```\n"
+              "```css\n\n```\n```js\n\n```"),
+        _finish(),
+    ])
+
+    response = client.post(RUN_URL, json=request, headers=HEADERS)
+
+    assert response.status_code == 200
+    assert (workspace / "style.css").read_text(encoding="utf-8") == "body { color: red; }"
+    assert (workspace / "script.js").read_text(encoding="utf-8") == "wireButtons();"
+
 
 def test_multi_file_requests_assets_referenced_by_model_before_delivery(generation):
     client, _, turns, requests, start = generation

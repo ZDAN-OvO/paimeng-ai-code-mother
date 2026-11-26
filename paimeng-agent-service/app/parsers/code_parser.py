@@ -52,9 +52,13 @@ def save_static_files(workspace: Path, mode: CodeGenType, content: str) -> None:
         references.close()
         missing = []
         for language, filename in STATIC_ASSETS:
-            if blocks.get(language) or (language in blocks and filename in references.files):
-                files[filename] = blocks[language]
-            elif filename in references.files and not resolve_safe_path(workspace, filename).is_file():
+            source = blocks.get(language, "")
+            if source:
+                files[filename] = source
+                continue
+            if filename not in references.files:
+                continue
+            if not resolve_safe_path(workspace, filename).is_file():
                 missing.append(filename)
         if missing:
             raise MissingStaticAssets(missing)
