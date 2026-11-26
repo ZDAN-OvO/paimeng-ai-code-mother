@@ -28,7 +28,9 @@ import com.zdan.paimengaicodemother.task.TaskEventSubscriptions;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -141,12 +143,28 @@ public class AppController {
     }
 
     @GetMapping(value = "/chat/tasks/{taskId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter taskEvents(@PathVariable UUID taskId,
-                                 @RequestHeader(name = "Last-Event-ID", required = false) String headerCursor,
-                                 @RequestParam(required = false) String lastEventId,
-                                 HttpServletRequest request) {
-        long userId = userService.getLoginUser(request).getId();
-        return subscriptions.subscribe(taskId, userId, headerCursor == null ? lastEventId : headerCursor, false);
+    public ResponseEntity<SseEmitter> taskEvents(
+            @PathVariable UUID taskId,
+            @RequestHeader(name = "Last-Event-ID", required = false) String headerCursor,
+            @RequestParam(required = false) String lastEventId,
+            HttpServletRequest request) {
+        try {
+            long userId = userService.getLoginUser(request).getId();
+            return ResponseEntity.ok(subscriptions.subscribe(
+                    taskId, userId, headerCursor == null ? lastEventId : headerCursor, false));
+        } catch (BusinessException error) {
+            int code = error.getCode();
+            if (code == ErrorCode.NOT_LOGIN_ERROR.getCode()) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+            }
+            if (code == ErrorCode.NO_AUTH_ERROR.getCode() || code == ErrorCode.FORBIDDEN_ERROR.getCode()) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+            }
+            if (code == ErrorCode.NOT_FOUND_ERROR.getCode()) {
+                return ResponseEntity.notFound().build();
+            }
+            throw error;
+        }
     }
 
     @GetMapping(value = "/chat/gen/code", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
