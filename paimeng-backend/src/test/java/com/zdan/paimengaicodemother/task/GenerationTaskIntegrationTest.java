@@ -294,7 +294,8 @@ class GenerationTaskIntegrationTest {
 
         GenerationTask saved = store.byId(task.id());
         assertThat(saved.status()).isEqualTo(GenerationTask.Status.COMMITTING);
-        assertThat(mapper.readTree(saved.commitPayload()).path("content").asText()).isEqualTo(BODY);
+        String expectedHistory = mustRestore ? "生成目录切换失败\n\n" + BODY : BODY;
+        assertThat(mapper.readTree(saved.commitPayload()).path("content").asText()).isEqualTo(expectedHistory);
         if (mustRestore) {
             assertThat(saved.phase()).isEqualTo(GenerationTask.Phase.RESTORING);
             assertThat(mapper.readTree(saved.commitPayload()).path("status").asText()).isEqualTo("failed");
@@ -321,7 +322,7 @@ class GenerationTaskIntegrationTest {
         assertThat(store.byId(task.id()).resultCommitted()).isTrue();
         assertThat(runs.get()).isEqualTo(1);
         assertThat(committed).hasSize(1);
-        assertThat(committed.get(task.id().toString()).path("content").asText()).isEqualTo(BODY);
+        assertThat(committed.get(task.id().toString()).path("content").asText()).isEqualTo(expectedHistory);
         assertThat(attempts.get()).isEqualTo(point == CrashPoint.AFTER_HISTORY ? 2 : 1);
         if (newApp) {
             assertThat(task.paths().current()).doesNotExist();
@@ -332,6 +333,21 @@ class GenerationTaskIntegrationTest {
         assertThat(task.paths().backup()).doesNotExist();
         assertThat(events.read(task.id(), "0-0").getLast().getValue().get("event"))
                 .isEqualTo(mustRestore ? "business-error" : "done");
+    }
+
+    @Test
+    void failedCandidatePersistsReasonAlongsideModelOutput() throws Exception {
+        GenerationTask task = seedTask();
+        runScript.set((exchange, request) -> {
+            startEvents(exchange);
+            send(exchange, "failed", Map.of(
+                    "content", BODY, "code", "BUILD_FAILED", "message", "Vue 构建失败（第 3 次）"));
+        });
+        coordinator(mock(GenerationRateLimitService.class)).runOrRecover(task.id(), app);
+
+        assertThat(store.byId(task.id()).status()).isEqualTo(GenerationTask.Status.FAILED);
+        assertThat(committed.get(task.id().toString()).path("content").asText())
+                .isEqualTo("Vue 构建失败（第 3 次）\n\n" + BODY);
     }
 
     @Test

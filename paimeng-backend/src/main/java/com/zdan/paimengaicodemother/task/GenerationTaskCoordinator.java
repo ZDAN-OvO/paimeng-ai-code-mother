@@ -339,7 +339,9 @@ public class GenerationTaskCoordinator {
     }
 
     private static Candidate failure(UUID id, String content, JsonNode buildResult, String code, String message) {
-        return new Candidate(new CommitResult(id.toString(), "failed", content, buildResult), code, message);
+        // 失败终态的原因随模型正文写入历史，刷新后仍可查看。
+        String historyContent = content.isBlank() ? message : message + "\n\n" + content;
+        return new Candidate(new CommitResult(id.toString(), "failed", historyContent, buildResult), code, message);
     }
 
     private String encode(CommitResult result) {
