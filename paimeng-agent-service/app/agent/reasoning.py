@@ -10,6 +10,8 @@ class VisibleText:
     def __init__(self):
         self.pending = ""
         self.in_think = False
+        self.confirmed = False
+        self.prefix: list[str] = []
         self.parts: list[str] = []
 
     def push(self, text: str, *, final: bool = False) -> str:
@@ -25,18 +27,23 @@ class VisibleText:
         position = 0
         for marker in THINK_TAG.finditer(text):
             if not self.in_think:
-                visible.append(text[position:marker.start()])
+                (visible if self.confirmed else self.prefix).append(text[position:marker.start()])
             if marker.group().startswith("</"):
-                if not self.in_think:
-                    # 网关偶尔省略起始标记，已收到的前缀不能用作产物。
-                    self.parts.clear()
-                    visible.clear()
+                if not self.confirmed:
+                    # 网关有时省略起始标记。闭标签前的文本尚不能确认为正文。
+                    self.prefix.clear()
+                    self.confirmed = True
                 self.in_think = False
             else:
                 self.in_think = True
             position = marker.end()
         if not self.in_think:
-            visible.append(text[position:])
+            (visible if self.confirmed else self.prefix).append(text[position:])
+            if final and not self.confirmed:
+                # 没有推理标记时，收到完整响应才能确认此前的文本。
+                visible.extend(self.prefix)
+                self.prefix.clear()
+                self.confirmed = True
         result = "".join(visible)
         if result:
             self.parts.append(result)

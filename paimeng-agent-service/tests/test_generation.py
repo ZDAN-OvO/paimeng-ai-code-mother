@@ -125,12 +125,34 @@ def test_static_generation_filters_reasoning_and_keeps_optional_files(generation
 
     assert events[-1] == ("completed", {"content": "\n\n" + visible, "buildResult": None})
     assert [kind for kind, _ in events[:-1]] == ["delta"] * (len(events) - 1)
+    assert "".join(event["text"] for _, event in events[:-1]) == events[-1][1]["content"]
+    assert len(events[:-1]) > 1  # 正文边界已确认后，保留增量发送。
     assert (workspace / "index.html").read_text(encoding="utf-8") == "<!doctype html><html><body>站点</body></html>"
     assert not (workspace / "script.js").exists()
     if mode == "multi_file":
         assert (workspace / "style.css").read_text(encoding="utf-8") == "body { color: blue; }"
     assert [item["content"] for item in requests[0]["input"] if item["role"] == "user"] == [request["message"]]
     history.commit_generation_result.assert_not_called()
+
+
+
+def test_multi_file_requests_assets_referenced_by_model_before_delivery(generation):
+    client, _, turns, requests, start = generation
+    workspace, request = start("multi_file")
+    turns.extend([
+        [_text('```html\n<link href="./style.css?v=1"><script src="script.js"></script>\n```'), _finish()],
+        [_text("```css\nbody { color: blue; }\n```\n```js\nconsole.log('ready');\n```"), _finish()],
+    ])
+
+    events = _events(client.post(RUN_URL, json=request, headers=HEADERS))
+
+    assert len(requests) == 2
+    assert requests[1]["input"][-1]["role"] == "user"
+    assert "style.css" in requests[1]["input"][-1]["content"]
+    assert "script.js" in requests[1]["input"][-1]["content"]
+    assert events[-1][0] == "completed"
+    assert (workspace / "style.css").read_text(encoding="utf-8") == "body { color: blue; }"
+    assert (workspace / "script.js").read_text(encoding="utf-8") == "console.log('ready');"
 
 
 def test_generation_context_uses_latest_budget_and_keeps_current_once(generation, make_message):
@@ -173,6 +195,7 @@ def test_reasoning_with_code_and_no_visible_body_cannot_be_saved(generation):
     events = _events(client.post(RUN_URL, json=request, headers=HEADERS))
     assert events[-1][0] == "failed"
     assert events[-1][1]["content"] == ""
+    assert len(events) == 1
     assert not (workspace / "index.html").exists()
 
 

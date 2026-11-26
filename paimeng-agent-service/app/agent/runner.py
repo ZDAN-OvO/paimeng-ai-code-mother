@@ -11,7 +11,7 @@ from app.db.history_repository import CONTEXT_MESSAGE_LIMIT
 from app.db.models import HistoryMessage
 from app.guardrail.input_safety import validate_input
 from app.history import HistoryService
-from app.parsers.code_parser import save_static_files
+from app.parsers.code_parser import MissingStaticAssets, save_static_files
 from app.routing.type_router import CodeGenType
 from app.tools.workspace_tools import TOOL_SCHEMAS, WorkspaceError, WorkspaceTools, generation_workspace, scan_workspace
 
@@ -97,13 +97,9 @@ class GenerationRunner:
                         yield event
                 return
 
-            turn = ResponsesTurn()
-            async with aclosing(self._turn(turn, items, None, progress)) as events:
+            async with aclosing(self._static(workspace, run.mode, items, progress)) as events:
                 async for event in events:
                     yield event
-            if turn.calls:
-                raise ResponsesError("静态页面生成返回了未声明的工具调用")
-            save_static_files(workspace, run.mode, progress.content)
             scan_workspace(workspace)
         except WorkspaceError as exc:
             yield progress.failed("INVALID_WORKSPACE", str(exc))
@@ -116,6 +112,31 @@ class GenerationRunner:
             yield progress.failed("GENERATION_FAILED", "生成任务执行异常")
             return
         yield GenerationEvent("completed", {"content": progress.content, "buildResult": progress.build_result})
+
+    async def _static(
+        self, workspace: Path, mode: CodeGenType, items: list[dict], progress: _Progress
+    ) -> AsyncIterator[GenerationEvent]:
+        for attempt in range(2):
+            turn = ResponsesTurn()
+            async with aclosing(self._turn(turn, items, None, progress)) as events:
+                async for event in events:
+                    yield event
+            if turn.calls:
+                raise ResponsesError("静态页面生成返回了未声明的工具调用")
+            try:
+                save_static_files(workspace, mode, progress.content)
+                return
+            except MissingStaticAssets as exc:
+                if attempt == 1:
+                    raise
+                items.extend([
+                    {"role": "assistant", "content": progress.content},
+                    {
+                        "role": "user",
+                        "content": f"上面的 index.html 引用了以下文件，但缺少对应代码块：{'、'.join(exc.filenames)}。"
+                                   "请补齐这些文件的完整 Markdown 代码块。只输出缺少的文件，不要重复 HTML。",
+                    },
+                ])
 
     async def _turn(
         self, turn: ResponsesTurn, items: list[dict], schemas: list[dict] | None, progress: _Progress

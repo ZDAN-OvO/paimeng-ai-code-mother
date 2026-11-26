@@ -1,4 +1,5 @@
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 from app.routing.type_router import CodeGenType
@@ -9,6 +10,27 @@ FENCED_BLOCK = re.compile(
     re.IGNORECASE | re.MULTILINE | re.DOTALL,
 )
 HTML_START = re.compile(r"\A(?:<!doctype\s+html\b|<html(?:\s|>)|<head(?:\s|>)|<body(?:\s|>))", re.IGNORECASE)
+
+STATIC_ASSETS = (("css", "style.css"), ("javascript", "script.js"))
+
+
+class MissingStaticAssets(WorkspaceError):
+    def __init__(self, filenames: list[str]):
+        self.filenames = filenames
+        super().__init__("页面引用的文件缺失：" + "、".join(filenames))
+
+
+class _AssetReferences(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.files: set[str] = set()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attribute = {"link": "href", "script": "src"}.get(tag)
+        if not attribute:
+            return
+        path = (dict(attrs).get(attribute) or "").split("?", 1)[0].split("#", 1)[0]
+        self.files.add(path.removeprefix("./"))
 
 
 def save_static_files(workspace: Path, mode: CodeGenType, content: str) -> None:
@@ -25,8 +47,16 @@ def save_static_files(workspace: Path, mode: CodeGenType, content: str) -> None:
 
     files = {"index.html": html}
     if mode == "multi_file":
-        for language, filename in (("css", "style.css"), ("javascript", "script.js")):
-            if blocks.get(language):
+        references = _AssetReferences()
+        references.feed(html)
+        references.close()
+        missing = []
+        for language, filename in STATIC_ASSETS:
+            if blocks.get(language) or (language in blocks and filename in references.files):
                 files[filename] = blocks[language]
+            elif filename in references.files and not resolve_safe_path(workspace, filename).is_file():
+                missing.append(filename)
+        if missing:
+            raise MissingStaticAssets(missing)
     for filename, source in files.items():
         resolve_safe_path(workspace, filename).write_text(source, encoding="utf-8", newline="")
