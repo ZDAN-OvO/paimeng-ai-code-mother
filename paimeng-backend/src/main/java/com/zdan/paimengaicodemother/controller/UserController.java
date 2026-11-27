@@ -6,6 +6,7 @@ import com.zdan.paimengaicodemother.annotation.AuthCheck;
 import com.zdan.paimengaicodemother.common.BaseResponse;
 import com.zdan.paimengaicodemother.common.DeleteRequest;
 import com.zdan.paimengaicodemother.common.ResultUtils;
+import com.zdan.paimengaicodemother.cutover.CutoverWrite;
 import com.zdan.paimengaicodemother.exception.BusinessException;
 import com.zdan.paimengaicodemother.exception.ErrorCode;
 import com.zdan.paimengaicodemother.exception.ThrowUtils;
@@ -45,6 +46,7 @@ public class UserController {
      */
     @PostMapping("/update")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    @CutoverWrite
     public BaseResponse<Boolean> updateUser(@RequestBody UserUpdateRequest userUpdateRequest) {
         if (userUpdateRequest == null || userUpdateRequest.getId() == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
@@ -63,6 +65,7 @@ public class UserController {
      */
     @PostMapping("/delete")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    @CutoverWrite
     public BaseResponse<Boolean> deleteUser(@RequestBody DeleteRequest deleteRequest) {
         if (deleteRequest == null || deleteRequest.getId() <= 0) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
@@ -162,6 +165,7 @@ public class UserController {
      * @param userRegisterRequest 用户注册请求
      */
     @PostMapping("register")
+    @CutoverWrite
     public BaseResponse<Long> userRegister(@RequestBody UserRegisterRequest userRegisterRequest) {
         ThrowUtils.throwIf(userRegisterRequest == null, ErrorCode.PARAMS_ERROR);
         String userAccount = userRegisterRequest.getUserAccount();

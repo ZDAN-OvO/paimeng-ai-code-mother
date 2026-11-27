@@ -10,6 +10,7 @@ import com.zdan.paimengaicodemother.common.ResultUtils;
 import com.zdan.paimengaicodemother.config.WorkspaceProperties;
 import com.zdan.paimengaicodemother.constant.AppConstant;
 import com.zdan.paimengaicodemother.constant.UserConstant;
+import com.zdan.paimengaicodemother.cutover.CutoverWrite;
 import com.zdan.paimengaicodemother.exception.BusinessException;
 import com.zdan.paimengaicodemother.exception.ErrorCode;
 import com.zdan.paimengaicodemother.exception.ThrowUtils;
@@ -184,6 +185,7 @@ public class AppController {
      * @return 应用 id
      */
     @PostMapping("/add")
+    @CutoverWrite
     public BaseResponse<Long> addApp(@RequestBody AppAddRequest appAddRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(appAddRequest == null, ErrorCode.PARAMS_ERROR);
         // 获取当前登录用户
@@ -201,6 +203,7 @@ public class AppController {
      * @return 更新结果
      */
     @PostMapping("/update")
+    @CutoverWrite
     public BaseResponse<Boolean> updateApp(@RequestBody AppUpdateRequest appUpdateRequest, HttpServletRequest request) {
         if (appUpdateRequest == null || appUpdateRequest.getId() == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
@@ -357,6 +360,7 @@ public class AppController {
      */
     @PostMapping("/admin/update")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    @CutoverWrite
     public BaseResponse<Boolean> updateAppByAdmin(@RequestBody AppAdminUpdateRequest appAdminUpdateRequest) {
         if (appAdminUpdateRequest == null || appAdminUpdateRequest.getId() == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);

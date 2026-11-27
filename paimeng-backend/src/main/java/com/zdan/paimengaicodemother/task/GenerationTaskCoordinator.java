@@ -9,6 +9,7 @@ import com.zdan.paimengaicodemother.agent.PythonAgentClient.AgentException;
 import com.zdan.paimengaicodemother.agent.PythonAgentClient.CommitResult;
 import com.zdan.paimengaicodemother.agent.PythonAgentClient.GenerationRequest;
 import com.zdan.paimengaicodemother.ai.enums.CodeGenTypeEnum;
+import com.zdan.paimengaicodemother.cutover.WriteBarrier;
 import com.zdan.paimengaicodemother.exception.BusinessException;
 import com.zdan.paimengaicodemother.exception.ErrorCode;
 import com.zdan.paimengaicodemother.exception.ThrowUtils;
@@ -40,22 +41,29 @@ public class GenerationTaskCoordinator {
     private final GenerationRateLimitService rateLimit;
     private final PythonAgentClient agent;
     private final ObjectMapper mapper;
+    private final WriteBarrier writeBarrier;
     private final ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor();
     private final ScheduledExecutorService clock = Executors.newScheduledThreadPool(2);
     private final Set<UUID> working = ConcurrentHashMap.newKeySet();
     private final Set<Long> deletingHistory = ConcurrentHashMap.newKeySet();
 
     public GenerationTaskCoordinator(GenerationTaskStore store, TaskEventStreamService events, WorkspaceStagingManager workspace,
-                                     GenerationRateLimitService rateLimit, PythonAgentClient agent, ObjectMapper mapper) {
+                                     GenerationRateLimitService rateLimit, PythonAgentClient agent, ObjectMapper mapper,
+                                     WriteBarrier writeBarrier) {
         this.store = store;
         this.events = events;
         this.workspace = workspace;
         this.rateLimit = rateLimit;
         this.agent = agent;
         this.mapper = mapper;
+        this.writeBarrier = writeBarrier;
     }
 
     public Submission submit(Long appId, String message, String requestId, long userId) {
+        return writeBarrier.write("generation.submit:" + appId, () -> submitAdmitted(appId, message, requestId, userId));
+    }
+
+    private Submission submitAdmitted(Long appId, String message, String requestId, long userId) {
         ThrowUtils.throwIf(appId == null || appId <= 0 || message == null || message.isBlank()
                 || message.indexOf(0) >= 0 || requestId == null || requestId.isBlank()
                 || requestId.length() > 200 || requestId.indexOf(0) >= 0,
@@ -115,12 +123,17 @@ public class GenerationTaskCoordinator {
     }
 
     public boolean deleteApp(long appId) {
+        return writeBarrier.write("app.delete:" + appId, () -> deleteAdmitted(appId));
+    }
+
+    private boolean deleteAdmitted(long appId) {
         boolean deleted = store.admission(appId, session -> {
             ThrowUtils.throwIf(session.active(appId) != null, ErrorCode.OPERATION_ERROR, "应用正在生成，请稍后删除");
             boolean removed = session.deleteApp(appId);
             ThrowUtils.throwIf(!removed, ErrorCode.OPERATION_ERROR, "删除应用失败");
             return removed;
         });
+        // 删除事务已登记待清理的历史，恢复扫描也会处理这条记录。
         enqueueDeletion(appId);
         return deleted;
     }
@@ -157,14 +170,16 @@ public class GenerationTaskCoordinator {
             return;
         }
         workers.execute(() -> {
-            try {
-                store.admission(appId, session -> {
-                    if (session.historyDeletionPending(appId)) {
-                        agent.deleteHistory(appId);
-                        session.historyDeleted(appId);
-                    }
-                    return null;
-                });
+            try (var ticket = writeBarrier.recover("history.delete:" + appId)) {
+                if (ticket != null) {
+                    store.admission(appId, session -> {
+                        if (session.historyDeletionPending(appId)) {
+                            agent.deleteHistory(appId);
+                            session.historyDeleted(appId);
+                        }
+                        return null;
+                    });
+                }
             } catch (RuntimeException error) {
                 log.error("清理历史等待恢复，appId={}", appId, error);
             } finally {
@@ -174,6 +189,14 @@ public class GenerationTaskCoordinator {
     }
 
     void runOrRecover(UUID id, long appId) {
+        try (var ticket = writeBarrier.recover("generation.run:" + id)) {
+            if (ticket != null) {
+                runRegistered(id, appId);
+            }
+        }
+    }
+
+    private void runRegistered(UUID id, long appId) {
         Attempt attempt = store.withDelivery(appId, session -> {
             GenerationTask task = session.byId(id);
             if (task == null) {

@@ -12,8 +12,8 @@ import com.zdan.paimengaicodemother.agent.PythonAgentClient;
 import com.zdan.paimengaicodemother.agent.PythonAgentClient.AgentException;
 import com.zdan.paimengaicodemother.config.WorkspaceProperties;
 import com.zdan.paimengaicodemother.constant.AppConstant;
-import com.zdan.paimengaicodemother.core.AiCodeGeneratorFacade;
-import com.zdan.paimengaicodemother.core.handler.StreamHandlerExecutor;
+import com.zdan.paimengaicodemother.cutover.WriteBarrier;
+import com.zdan.paimengaicodemother.cutover.WriteBarrier.Ticket;
 import com.zdan.paimengaicodemother.exception.BusinessException;
 import com.zdan.paimengaicodemother.exception.ErrorCode;
 import com.zdan.paimengaicodemother.exception.ThrowUtils;
@@ -22,12 +22,10 @@ import com.zdan.paimengaicodemother.model.dto.app.AppAddRequest;
 import com.zdan.paimengaicodemother.model.dto.app.AppQueryRequest;
 import com.zdan.paimengaicodemother.model.entity.App;
 import com.zdan.paimengaicodemother.model.entity.User;
-import com.zdan.paimengaicodemother.model.enums.ChatHistoryMessageTypeEnum;
 import com.zdan.paimengaicodemother.ai.enums.CodeGenTypeEnum;
 import com.zdan.paimengaicodemother.model.vo.AppVO;
 import com.zdan.paimengaicodemother.model.vo.UserVO;
 import com.zdan.paimengaicodemother.service.AppService;
-import com.zdan.paimengaicodemother.service.ChatHistoryService;
 import com.zdan.paimengaicodemother.service.ScreenshotService;
 import com.zdan.paimengaicodemother.service.UserService;
 import com.zdan.paimengaicodemother.task.GenerationTaskCoordinator;
@@ -35,7 +33,6 @@ import com.zdan.paimengaicodemother.task.GenerationTaskStore;
 import com.zdan.paimengaicodemother.task.WorkspaceStagingManager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import reactor.core.publisher.Flux;
 
 import java.io.File;
 import java.io.IOException;
@@ -62,33 +59,27 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             "deployedTime", "priority", "userId", "editTime", "createTime", "updateTime");
 
     private final UserService userService;
-    private final ChatHistoryService chatHistoryService;
-    private final AiCodeGeneratorFacade aiCodeGeneratorFacade;
-    private final StreamHandlerExecutor streamHandlerExecutor;
     private final ScreenshotService screenshotService;
     private final PythonAgentClient agent;
     private final GenerationTaskCoordinator tasks;
     private final GenerationTaskStore taskStore;
     private final WorkspaceProperties workspaceProperties;
+    private final WriteBarrier writeBarrier;
 
     public AppServiceImpl(UserService userService,
-                          ChatHistoryService chatHistoryService,
-                          AiCodeGeneratorFacade aiCodeGeneratorFacade,
-                          StreamHandlerExecutor streamHandlerExecutor,
                           ScreenshotService screenshotService,
                           PythonAgentClient agent,
                           GenerationTaskCoordinator tasks,
                           GenerationTaskStore taskStore,
-                          WorkspaceProperties workspaceProperties) {
+                          WorkspaceProperties workspaceProperties,
+                          WriteBarrier writeBarrier) {
         this.userService = userService;
-        this.chatHistoryService = chatHistoryService;
-        this.aiCodeGeneratorFacade = aiCodeGeneratorFacade;
-        this.streamHandlerExecutor = streamHandlerExecutor;
         this.screenshotService = screenshotService;
         this.agent = agent;
         this.tasks = tasks;
         this.taskStore = taskStore;
         this.workspaceProperties = workspaceProperties;
+        this.writeBarrier = writeBarrier;
     }
 
     @Override
@@ -137,6 +128,19 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
     @Override
     public String deployApp(Long appId, User loginUser) {
+        try (var ticket = writeBarrier.begin("app.publish:" + appId)) {
+            try {
+                return deployApp(appId, loginUser, ticket);
+            } catch (BusinessException error) {
+                throw error;
+            } catch (RuntimeException | Error error) {
+                ticket.fail(error);
+                throw error;
+            }
+        }
+    }
+
+    private String deployApp(Long appId, User loginUser, Ticket ticket) {
         // 参数校验
         validateParam(appId, loginUser);
         // 身份校验
@@ -158,105 +162,68 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         Path project = workspaceProperties.getCodeOutputRootDir().resolve(sourceDirName);
         String deployDirPath = workspaceProperties.getCodeDeployRootDir().resolve(deployKey).toString();
         taskStore.readDeliveredWorkspace(appId, () -> {
+            Path source;
             try {
-                Path source = WorkspaceStagingManager.deploymentSource(project, codeGenType);
-                FileUtil.copyContent(source.toFile(), new File(deployDirPath), true);
-                return null;
-            } catch (IOException | RuntimeException error) {
-                log.warn("应用部署失败，appId={} userId={}", appId, loginUser.getId(), error);
+                source = WorkspaceStagingManager.deploymentSource(project, codeGenType);
+            } catch (IOException error) {
+                log.warn("应用缺少可部署的产物，appId={}", appId, error);
                 throw new BusinessException(ErrorCode.PARAMS_ERROR, "应用缺少可部署的产物或复制失败");
             }
+            try {
+                FileUtil.copyContent(source.toFile(), new File(deployDirPath), true);
+            } catch (RuntimeException error) {
+                ticket.fail(error);
+                throw new BusinessException(ErrorCode.PARAMS_ERROR, "应用缺少可部署的产物或复制失败");
+            }
+            return null;
         });
-        // 将部署消息上传到数据库中
-        app.setDeployKey(deployKey);
-        app.setDeployedTime(LocalDateTime.now());
-        boolean updateRes = this.updateById(app);
-        ThrowUtils.throwIf(!updateRes, ErrorCode.OPERATION_ERROR, "更新应用部署信息失败");
-        // 返回可访问的 URL 路径
-        String appDeployUrl = StrUtil.format("{}/{}", AppConstant.CODE_DEPLOY_HOST, deployKey);
-        // 异步执行截图并更新应用封面
-        generateAppScreenshotAsync(appId, appDeployUrl);
-        return appDeployUrl;
+        try {
+            app.setDeployKey(deployKey);
+            app.setDeployedTime(LocalDateTime.now());
+            boolean updateRes = this.updateById(app);
+            ThrowUtils.throwIf(!updateRes, ErrorCode.OPERATION_ERROR, "更新应用部署信息失败");
+            String appDeployUrl = StrUtil.format("{}/{}", AppConstant.CODE_DEPLOY_HOST, deployKey);
+            // 发布登记仍在，暂停准入也允许先登记已受理发布的截图回写。
+            startScreenshot(appId, appDeployUrl, ticket.child("app.screenshot:" + appId));
+            return appDeployUrl;
+        } catch (RuntimeException | Error error) {
+            ticket.fail(error);
+            throw error;
+        }
     }
 
     @Override
     public void generateAppScreenshotAsync(Long appId, String appDeployUrl) {
-        Thread.startVirtualThread(() -> {
-            String screenshotWebUrl = screenshotService.generateAndUploadScreenshot(appDeployUrl);
-            App updateApp = new App();
-            updateApp.setId(appId);
-            updateApp.setCover(screenshotWebUrl);
-            boolean updated = this.updateById(updateApp);
-            ThrowUtils.throwIf(!updated, ErrorCode.OPERATION_ERROR, "更新应用封面字段失败");
-        });
+        startScreenshot(appId, appDeployUrl, writeBarrier.begin("app.screenshot:" + appId));
     }
 
-    /**
-     * 参数校验 - 2 param
-     */
+    private void startScreenshot(Long appId, String appDeployUrl, Ticket ticket) {
+        try {
+            Thread.startVirtualThread(() -> {
+                try (ticket) {
+                    try {
+                        String screenshotWebUrl = screenshotService.generateAndUploadScreenshot(appDeployUrl);
+                        ThrowUtils.throwIf(StrUtil.isBlank(screenshotWebUrl), ErrorCode.OPERATION_ERROR, "截图地址为空");
+                        App updateApp = new App();
+                        updateApp.setId(appId);
+                        updateApp.setCover(screenshotWebUrl);
+                        boolean updated = this.updateById(updateApp);
+                        ThrowUtils.throwIf(!updated, ErrorCode.OPERATION_ERROR, "更新应用封面字段失败");
+                    } catch (RuntimeException | Error error) {
+                        ticket.fail(error);
+                    }
+                }
+            });
+        } catch (RuntimeException | Error error) {
+            ticket.fail(error);
+            throw error;
+        }
+    }
+
     private void validateParam(Long appId, User loginUser) {
-        validateParam(appId, "override", loginUser);
-    }
-
-    @Override
-    public Flux<String> chatToGenCode(Long appId, String message, User loginUser) {
-        // 参数校验
-        validateParam(appId, message, loginUser);
-        // 用户只能给自己的应用生成代码
-        App app = Optional.ofNullable(this.getById(appId))
-                .orElseThrow(() -> new BusinessException(ErrorCode.PARAMS_ERROR, "应用不存在"));
-        if (!app.getUserId().equals(loginUser.getId())) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "无权限生成代码");
-        }
-        // 调用代码生成门面类
-        String codeGenType = app.getCodeGenType();
-        CodeGenTypeEnum codeGenTypeEnum = Optional.ofNullable(CodeGenTypeEnum.getEnumByValue(codeGenType))
-                .orElseThrow(() -> new BusinessException(ErrorCode.PARAMS_ERROR, "代码生成类型不合法"));
-        // 调用 AI 前，先将用户消息添加到会话历史中
-        chatHistoryService.addChatMessage(appId, message, ChatHistoryMessageTypeEnum.USER.getValue(), loginUser);
-        // 调用 AI 生成代码
-        Flux<String> contentFlux = aiCodeGeneratorFacade.generateAndSaveCodeStream(message, codeGenTypeEnum, appId);
-        // 保存会话消息后返回
-        return streamHandlerExecutor.doHandle(contentFlux, chatHistoryService, appId, loginUser, codeGenTypeEnum);
-    }
-
-    /**
-     * 参数校验 - 3 param
-     */
-    private void validateParam(Long appId, String message, User loginUser) {
-        if (appId == null || StrUtil.isBlank(message) || loginUser == null) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "所有参数均不能为空");
-        }
-        if (appId <= 0) {
-            log.error("the given appId is illegal, appId: {}", appId);
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "应用 id 值不合法");
-        }
-        if (loginUser.getId() == null || loginUser.getId() <= 0) {
-            log.error("error user, the given user's id is illegal, loginUser: {}, userId: {}", loginUser, loginUser.getId());
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "用户 id 值不合法");
-        }
-    }
-
-    /**
-     * 返回 AI 响应流之前，保存对话历史 - 弃用，现已使用处理器处理
-     */
-    @Deprecated
-    private Flux<String> saveAiResponseBeforeReturn(Flux<String> contentFlux, Long appId, User loginUser) {
-        // 字符串拼接器，用于当流式返回所有的代码之后，再保存代码
-        StringBuilder aiResponseBuilder = new StringBuilder();
-        return contentFlux
-                // 实时收集代码片段
-                .doOnNext(aiResponseBuilder::append)
-                .doOnComplete(
-                        () -> chatHistoryService.addChatMessage(appId, aiResponseBuilder.toString(),
-                                ChatHistoryMessageTypeEnum.AI.getValue(), loginUser)
-                )
-                .doOnError(throwable -> {
-                    // 如果 AI 回复失败，也要将异常消息保存到数据库中
-                    String errorMessage = StrUtil.format("AI 回复失败 {} ", throwable.getMessage());
-                    chatHistoryService.addChatMessage(appId, errorMessage,
-                            ChatHistoryMessageTypeEnum.AI.getValue(), loginUser);
-                });
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用 id 值不合法");
+        ThrowUtils.throwIf(loginUser == null || loginUser.getId() == null || loginUser.getId() <= 0,
+                ErrorCode.PARAMS_ERROR, "用户 id 值不合法");
     }
 
     @Override

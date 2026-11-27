@@ -1,4 +1,59 @@
 declare namespace API {
+  type CreateChatTaskRequest = {
+    appId: string
+    message: string
+    clientRequestId: string
+  }
+
+  type ChatTaskStatus = 'running' | 'committing' | 'succeeded' | 'success' | 'failed'
+
+  type CreateChatTaskResult = {
+    taskId: string | null
+    appId: string
+    status?: ChatTaskStatus
+    reused: boolean
+    conflict: boolean
+    code?: string
+    message?: string
+  }
+
+  type ActiveChatTask = {
+    taskId: string
+    appId: string
+    status: ChatTaskStatus
+    resultCommitted: boolean
+    streamAvailable: boolean
+  }
+
+  type ChatTaskResponse<T> = {
+    code: number
+    data?: T
+    message?: string
+  }
+
+  type ChatTaskMessageEvent = { taskId: string; d: string }
+
+  type ChatTaskStatusEvent = {
+    taskId: string
+    phase:
+      | 'tool_running'
+      | 'tool_completed'
+      | 'tool_failed'
+      | 'building'
+      | 'repairing'
+      | 'committing'
+      | 'resync_required'
+    message?: string
+    attempt?: number
+    toolName?: string
+    toolCallId?: string
+    isError?: boolean
+  }
+
+  type ChatTaskDoneEvent = { taskId: string; status: 'success' }
+
+  type ChatTaskErrorEvent = { taskId: string; status: 'failed'; code: string; message?: string }
+
   type AppAddRequest = {
     initPrompt?: string
   }
@@ -110,11 +165,11 @@ declare namespace API {
   }
 
   type ChatHistory = {
-    id?: number
+    id?: string
     message?: string
     messageType?: string
-    appId?: number
-    userId?: number
+    appId?: string
+    userId?: string
     createTime?: string
     updateTime?: string
     isDelete?: number
@@ -163,9 +218,10 @@ declare namespace API {
   }
 
   type listAppChatHistoryParams = {
-    appId: number
+    appId: string | number
     pageSize?: number
     lastCreateTime?: string
+    lastId?: string
   }
 
   type LoginUserVO = {
