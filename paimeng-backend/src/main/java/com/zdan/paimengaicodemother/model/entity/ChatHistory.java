@@ -1,5 +1,6 @@
 package com.zdan.paimengaicodemother.model.entity;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import com.mybatisflex.annotation.Column;
 import com.mybatisflex.annotation.Id;
 import com.mybatisflex.annotation.KeyType;
@@ -65,12 +66,14 @@ public class ChatHistory implements Serializable {
      * 创建时间
      */
     @Column("createTime")
+    @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
     private LocalDateTime createTime;
 
     /**
      * 更新时间
      */
     @Column("updateTime")
+    @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
     private LocalDateTime updateTime;
 
     /**

@@ -65,7 +65,7 @@ public class GlobalExceptionHandler {
         // 判断是否是SSE请求（通过Accept头或URL路径）
         boolean isSseRequest =
                 (accept != null && accept.contains("text/event-stream")) || uri.contains("/chat/gen/code");
-        if (isSseRequest) {
+        if (isSseRequest && !response.isCommitted()) {
             try {
                 // 设置SSE响应头
                 response.setContentType("text/event-stream");
@@ -80,11 +80,8 @@ public class GlobalExceptionHandler {
                 );
                 String errorJson = JSONUtil.toJsonStr(errorData);
                 // 发送业务错误事件（避免与标准error事件冲突）
-                String sseData = "event: business-error\ndata: " + errorJson + "\n\n";
+                String sseData = "id: 0-0\nevent: business-error\ndata: " + errorJson + "\n\n";
                 response.getWriter().write(sseData);
-                response.getWriter().flush();
-                // 发送结束事件
-                response.getWriter().write("event: done\ndata: {}\n\n");
                 response.getWriter().flush();
                 // 表示已处理SSE请求
                 return true;

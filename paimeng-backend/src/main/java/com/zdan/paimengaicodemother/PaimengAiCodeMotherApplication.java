@@ -1,7 +1,6 @@
 package com.zdan.paimengaicodemother;
 
 import com.zdan.paimengaicodemother.config.WorkspaceProperties;
-import dev.langchain4j.community.store.embedding.redis.spring.RedisEmbeddingStoreAutoConfiguration;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -15,10 +14,7 @@ import org.springframework.cache.annotation.EnableCaching;
  */
 @EnableCaching
 @EnableConfigurationProperties(WorkspaceProperties.class)
-@SpringBootApplication(exclude = {
-        // 排除 Langchain4j-Redis 依赖的默认向量加载配置（目前不需要 rag 知识库）
-        RedisEmbeddingStoreAutoConfiguration.class
-})
+@SpringBootApplication
 @MapperScan("com.zdan.paimengaicodemother.mapper")
 public class PaimengAiCodeMotherApplication {
 
