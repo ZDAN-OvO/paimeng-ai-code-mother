@@ -1,22 +1,22 @@
 package com.zdan.paimengaicodemother.controller;
 
 import com.mybatisflex.core.paginate.Page;
-import com.mybatisflex.core.query.QueryWrapper;
 import com.zdan.paimengaicodemother.annotation.AuthCheck;
 import com.zdan.paimengaicodemother.common.BaseResponse;
 import com.zdan.paimengaicodemother.common.ResultUtils;
 import com.zdan.paimengaicodemother.constant.UserConstant;
-import com.zdan.paimengaicodemother.exception.ErrorCode;
-import com.zdan.paimengaicodemother.exception.ThrowUtils;
 import com.zdan.paimengaicodemother.model.dto.chathistory.ChatHistoryQueryRequest;
 import com.zdan.paimengaicodemother.model.entity.ChatHistory;
 import com.zdan.paimengaicodemother.model.entity.User;
 import com.zdan.paimengaicodemother.service.ChatHistoryService;
 import com.zdan.paimengaicodemother.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigInteger;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 对话历史 控制层。
@@ -42,17 +42,21 @@ public class ChatHistoryController {
      * @param appId          应用ID
      * @param pageSize       页面大小
      * @param lastCreateTime 最后一条记录的创建时间
+     * @param lastId         同秒内最后一条消息的 ID
      * @param request        请求
      * @return 对话历史分页
      */
     @GetMapping("/app/{appId}")
-    public BaseResponse<Page<ChatHistory>> listAppChatHistory(@PathVariable Long appId,
+    public BaseResponse<HistoryPage> listAppChatHistory(@PathVariable Long appId,
                                                               @RequestParam(defaultValue = "10") int pageSize,
-                                                              @RequestParam(required = false) LocalDateTime lastCreateTime,
+                                                              @RequestParam(required = false)
+                                                              @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+                                                              LocalDateTime lastCreateTime,
+                                                              @RequestParam(required = false) Long lastId,
                                                               HttpServletRequest request) {
         User loginUser = userService.getLoginUser(request);
-        Page<ChatHistory> result = chatHistoryService.listAppChatHistoryByPage(appId, pageSize, lastCreateTime, loginUser);
-        return ResultUtils.success(result);
+        Page<ChatHistory> result = chatHistoryService.listAppChatHistoryByPage(appId, pageSize, lastCreateTime, lastId, loginUser);
+        return ResultUtils.success(new HistoryPage(result));
     }
 
     /**
@@ -63,14 +67,16 @@ public class ChatHistoryController {
      */
     @PostMapping("/admin/list/page/vo")
     @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
-    public BaseResponse<Page<ChatHistory>> listAllChatHistoryByPageForAdmin(
+    public BaseResponse<HistoryPage> listAllChatHistoryByPageForAdmin(
             @RequestBody ChatHistoryQueryRequest chatHistoryQueryRequest) {
-        ThrowUtils.throwIf(chatHistoryQueryRequest == null, ErrorCode.PARAMS_ERROR);
-        long pageNum = chatHistoryQueryRequest.getPageNum();
-        long pageSize = chatHistoryQueryRequest.getPageSize();
-        // 查询数据
-        QueryWrapper queryWrapper = chatHistoryService.getQueryWrapper(chatHistoryQueryRequest);
-        Page<ChatHistory> result = chatHistoryService.page(Page.of(pageNum, pageSize), queryWrapper);
-        return ResultUtils.success(result);
+        return ResultUtils.success(new HistoryPage(chatHistoryService.listAdminChatHistoryByPage(chatHistoryQueryRequest)));
+    }
+
+    public record HistoryPage(List<ChatHistory> records, BigInteger pageNumber, BigInteger pageSize,
+                              BigInteger totalPage, BigInteger totalRow) {
+        HistoryPage(Page<ChatHistory> page) {
+            this(page.getRecords(), BigInteger.valueOf(page.getPageNumber()), BigInteger.valueOf(page.getPageSize()),
+                    BigInteger.valueOf(page.getTotalPage()), BigInteger.valueOf(page.getTotalRow()));
+        }
     }
 }
