@@ -22,6 +22,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.zip.ZipInputStream;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
@@ -35,6 +36,31 @@ class WorkspaceRoutesTest {
 
     @TempDir
     Path repo;
+
+    @Test
+    void previewBridgeLoadsFromNestedHtmlAndKeepsAssetsUntouched() throws Exception {
+        Path dist = Files.createDirectories(repo.resolve("tmp/code_output/vue_project_42/dist"));
+        String index = "<!DOCTYPE html><html lang=\"zh-CN\"><head><base href=\"./assets/\">"
+                + "<link rel=\"stylesheet\" href=\"app.css\"></head><body><div id=\"app\"></div></body></html>";
+        Files.writeString(dist.resolve("index.html"), index);
+        Files.writeString(dist.resolve("app.css"), "body { color: red; }");
+        WorkspaceProperties workspace = new WorkspaceProperties(
+                repo, repo.resolve("tmp").toString(), "code_output", "code_staging", "code_deploy", "screenshots");
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new StaticResourceController(workspace)).build();
+
+        mvc.perform(get("/api/static/vue_project_42/dist/index.html").contextPath("/api"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("<!DOCTYPE html><html lang=\"zh-CN\"><head>"
+                        + "<script defer src=\"../../_visual-editor.js\"></script><base href=\"./assets/\">")))
+                .andExpect(content().string(containsString("href=\"app.css\"")));
+        mvc.perform(get("/api/static/_visual-editor.js").contextPath("/api"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("paimeng-visual-editor")));
+        mvc.perform(get("/api/static/vue_project_42/dist/app.css").contextPath("/api"))
+                .andExpect(status().isOk())
+                .andExpect(content().string("body { color: red; }"));
+        assertEquals(index, Files.readString(dist.resolve("index.html")));
+    }
 
     @Test
     void previewAndDownloadReadTheSameExistingProjectFromBothWorkingDirectories() throws Exception {
@@ -64,7 +90,8 @@ class WorkspaceRoutesTest {
 
             mvc.perform(get("/static/html_42/"))
                     .andExpect(status().isOk())
-                    .andExpect(content().bytes(index));
+                    .andExpect(content().string(containsString("<script defer src=\"../_visual-editor.js\"></script>")))
+                    .andExpect(content().string(containsString("<p>Existing project</p>")));
             byte[] download = mvc.perform(get("/app/download/42"))
                     .andExpect(status().isOk())
                     .andExpect(content().contentType("application/zip"))

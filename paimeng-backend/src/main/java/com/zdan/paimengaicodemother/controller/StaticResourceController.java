@@ -2,6 +2,8 @@ package com.zdan.paimengaicodemother.controller;
 
 import com.zdan.paimengaicodemother.config.WorkspaceProperties;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
@@ -14,9 +16,11 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.HandlerMapping;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.util.regex.Pattern;
 
 /**
  * 静态资源访问
@@ -27,10 +31,28 @@ import java.nio.file.Path;
 @RequestMapping("/static")
 public class StaticResourceController {
 
+    private static final String EDITOR_SCRIPT = "_visual-editor.js";
+    private static final String HTML_GAP = "\\s*(?:<!--.*?-->\\s*)*";
+    private static final String HTML_TAG_END = """
+            (?:[^"'<>]++|"[^"]*"|'[^']*')*>""";
+    private static final Pattern HTML_START = Pattern.compile(
+            "\uFEFF?" + HTML_GAP
+                    + "(?:<!doctype\\s+[^>]*>" + HTML_GAP + ")?"
+                    + "(?:<html(?=[\\s>])" + HTML_TAG_END + HTML_GAP + ")?"
+                    + "(?:<head(?=[\\s>])" + HTML_TAG_END + ")?",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
     private final WorkspaceProperties workspaceProperties;
 
     public StaticResourceController(WorkspaceProperties workspaceProperties) {
         this.workspaceProperties = workspaceProperties;
+    }
+
+    @GetMapping("/" + EDITOR_SCRIPT)
+    public ResponseEntity<Resource> serveVisualEditor() {
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_TYPE, "application/javascript; charset=UTF-8")
+                .body(new ClassPathResource("preview/visual-editor.js"));
     }
 
     /**
@@ -72,12 +94,27 @@ public class StaticResourceController {
                 return ResponseEntity.notFound().build();
             }
 
+            Resource resource = file.toString().endsWith(".html")
+                    ? previewHtml(file, resourcePath)
+                    : new FileSystemResource(file);
             return ResponseEntity.ok()
-                    .header("Content-Type", getContentTypeWithCharset(file.toString()))
-                    .body(new FileSystemResource(file));
+                    .header(HttpHeaders.CONTENT_TYPE, getContentTypeWithCharset(file.toString()))
+                    .body(resource);
         } catch (IOException | InvalidPathException error) {
             return ResponseEntity.notFound().build();
         }
+    }
+
+    private Resource previewHtml(Path file, String resourcePath) throws IOException {
+        String html = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+        int depth = (int) resourcePath.chars().filter(character -> character == '/').count();
+        String script = "<script defer src=\"" + "../".repeat(depth) + EDITOR_SCRIPT + "\"></script>";
+
+        // 在 base 标签之前解析脚本地址，使相对路径沿用浏览器看到的 API 前缀。
+        var start = HTML_START.matcher(html);
+        int offset = start.lookingAt() ? start.end() : 0;
+        String preview = html.substring(0, offset) + script + html.substring(offset);
+        return new ByteArrayResource(preview.getBytes(StandardCharsets.UTF_8));
     }
 
     /**
