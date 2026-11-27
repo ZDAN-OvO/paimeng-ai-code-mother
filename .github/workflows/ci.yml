@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: paimeng_ci_fixture
+        ports:
+          - "5432:5432"
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 3s --health-retries 12
+      redis:
+        image: redis:7.2.11
+        ports:
+          - "6379:6379"
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      PG_TEST_JDBC_URL: jdbc:postgresql://127.0.0.1:5432/paimeng_java
+      PG_TEST_USERNAME: postgres
+      PG_TEST_PASSWORD: paimeng_ci_fixture
+      SPRING_DATASOURCE_URL: jdbc:postgresql://127.0.0.1:5432/paimeng_java
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: paimeng_ci_fixture
+      SPRING_DATA_REDIS_PASSWORD: ""
+      TASK_REDIS_URL: redis://127.0.0.1:6379/2
+      INTERNAL_API_TOKEN: paimeng_ci_internal_fixture
+      COS_CLIENT_SECRET_ID: local-fixture
+      COS_CLIENT_SECRET_KEY: local-fixture
+      COS_CLIENT_REGION: ap-guangzhou
+      COS_CLIENT_BUCKET: local-fixture-000000000
+      PAIMENG_TEST_REDIS_URL: redis://127.0.0.1:6379/1
+      PAIMENG_TEST_DOCKER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: paimeng-frontend/package-lock.json
+      - name: 初始化隔离测试数据库
+        if: ${{ hashFiles('sql/pg/01_init_java_db.sql') != '' }}
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$POSTGRES_CONTAINER" createdb -U postgres paimeng_java
+          docker exec "$POSTGRES_CONTAINER" createdb -U postgres paimeng_agent
+          for schema in sql/pg/01_init_java_db.sql sql/pg/03_generation_task.sql; do
+            if [[ -f "$schema" ]]; then
+              docker exec -i "$POSTGRES_CONTAINER" psql -X -U postgres -d paimeng_java -v ON_ERROR_STOP=1 < "$schema"
+            fi
+          done
+      - name: Java 测试
+        working-directory: paimeng-backend
+        run: |
+          if [[ ! -d src/main/java/com/zdan/paimengaicodemother/langgraph4j ]]; then
+            ./mvnw -B -ntp verify
+          elif [[ -f ../sql/pg/03_generation_task.sql ]]; then
+            ./mvnw -B -ntp -Dtest='WorkspacePropertiesTest,WorkspaceRoutesTest,PostgresRepositoryTest,*Task*Test,*Staging*Test,*PythonAgentClient*Test' verify
+          elif [[ -f ../sql/pg/01_init_java_db.sql ]]; then
+            ./mvnw -B -ntp -Dtest='WorkspacePropertiesTest,WorkspaceRoutesTest,PostgresRepositoryTest' verify
+          else
+            ./mvnw -B -ntp -Dtest='WorkspacePropertiesTest,WorkspaceRoutesTest' verify
+          fi
+      - name: Python 测试（含 PostgreSQL、Redis 和 Docker）
+        if: ${{ hashFiles('paimeng-agent-service/pyproject.toml') != '' }}
+        working-directory: paimeng-agent-service
+        run: |
+          pipx install 'uv==0.12.7'
+          export PAIMENG_TEST_PG_DSN="postgresql://${PG_TEST_USERNAME}:${PG_TEST_PASSWORD}@127.0.0.1:5432/paimeng_agent"
+          uv run --locked pytest -q -rs
+      - name: 前端测试和生产构建
+        working-directory: paimeng-frontend
+        run: |
+          npm ci
+          if [[ -f tests/app-chat-task.test.mjs ]]; then
+            node --test tests/app-chat-task.test.mjs
+          fi
+          npm run build
