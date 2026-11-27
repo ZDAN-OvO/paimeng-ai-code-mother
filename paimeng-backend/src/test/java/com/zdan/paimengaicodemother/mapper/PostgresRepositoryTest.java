@@ -9,8 +9,6 @@ import com.zdan.paimengaicodemother.config.MyBatisFlexConfig;
 import com.zdan.paimengaicodemother.config.WorkspaceProperties;
 import com.zdan.paimengaicodemother.cutover.WriteBarrier;
 import com.zdan.paimengaicodemother.constant.AppConstant;
-import com.zdan.paimengaicodemother.core.AiCodeGeneratorFacade;
-import com.zdan.paimengaicodemother.core.handler.StreamHandlerExecutor;
 import com.zdan.paimengaicodemother.exception.BusinessException;
 import com.zdan.paimengaicodemother.model.dto.app.AppAddRequest;
 import com.zdan.paimengaicodemother.model.dto.app.AppQueryRequest;
@@ -60,7 +58,6 @@ import static org.mockito.Mockito.when;
 @ActiveProfiles("test")
 @Transactional
 @MockitoBean(types = {
-        AiCodeGeneratorFacade.class, StreamHandlerExecutor.class,
         ScreenshotService.class, WorkspaceProperties.class, GenerationTaskCoordinator.class, GenerationTaskStore.class,
         WriteBarrier.class
 })

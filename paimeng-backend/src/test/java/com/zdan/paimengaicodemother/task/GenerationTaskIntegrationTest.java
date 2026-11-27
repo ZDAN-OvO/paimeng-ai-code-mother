@@ -584,7 +584,7 @@ class GenerationTaskIntegrationTest {
                 });
             }
         };
-        var appService = new AppServiceImpl(null, null, null, null, screenshots, agent, null, delivery,
+        var appService = new AppServiceImpl(null, screenshots, agent, null, delivery,
                 workspace, writeBarrier) {
             @Override
             public App getById(Serializable id) {
