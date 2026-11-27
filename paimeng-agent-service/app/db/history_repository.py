@@ -1,16 +1,20 @@
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import UUID
 
 from sqlalchemy import ColumnElement, func, insert, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from app.db.models import ChatMessage, ChatSession, HistoryMessage, MessageType, SHANGHAI_NOW
+from app.db.models import (
+    ChatMessage, ChatSession, GenerationMessageTask, GenerationStatus, HistoryMessage, MessageType, SHANGHAI_NOW,
+)
 
 CONTEXT_MESSAGE_LIMIT = 20
 
 MESSAGES = ChatMessage.__table__
 SESSIONS = ChatSession.__table__
+GENERATION_TASKS = GenerationMessageTask.__table__
 VISIBLE = ChatMessage.is_deleted.is_(False)
 SORT_COLUMNS = {
     "id": ChatMessage.id,
@@ -28,6 +32,10 @@ class HistoryDeleted(Exception):
 
 
 class MessageConflict(Exception):
+    pass
+
+
+class GenerationTaskNotFound(Exception):
     pass
 
 
@@ -65,6 +73,27 @@ def _cursor(before: datetime, before_id: int | None) -> ColumnElement[bool]:
     return tuple_(ChatMessage.created_at, ChatMessage.id) < tuple_(before, before_id)
 
 
+async def _insert_message(
+    connection: AsyncConnection,
+    previous_version: int,
+    app_id: int,
+    user_id: int,
+    message_type: MessageType,
+    message: str,
+    task_id: int | None = None,
+) -> MessageWrite:
+    row = (
+        await connection.execute(
+            insert(MESSAGES).values(
+                app_id=app_id, user_id=user_id, message_type=message_type, message=message, task_id=task_id,
+            ).returning(MESSAGES)
+        )
+    ).mappings().one()
+    version = previous_version + 1
+    await connection.execute(update(SESSIONS).where(SESSIONS.c.app_id == app_id).values(version=version))
+    return MessageWrite(HistoryMessage.model_validate(row), previous_version, version)
+
+
 class HistoryRepository:
     def __init__(self, engine: AsyncEngine):
         self.engine = engine
@@ -98,22 +127,80 @@ class HistoryRepository:
                         raise MessageConflict
                     return MessageWrite(HistoryMessage.model_validate(existing), None, previous_version)
 
-            row = (
-                await connection.execute(
-                    insert(MESSAGES).values(
-                        app_id=app_id,
-                        user_id=user_id,
-                        message_type=message_type,
-                        message=message,
-                        task_id=task_id,
-                    ).returning(MESSAGES)
-                )
-            ).mappings().one()
-            version = previous_version + 1
-            await connection.execute(
-                update(SESSIONS).where(SESSIONS.c.app_id == app_id).values(version=version)
+            return await _insert_message(
+                connection, previous_version, app_id, user_id, message_type, message, task_id
             )
-            return MessageWrite(HistoryMessage.model_validate(row), previous_version, version)
+
+    async def start_generation(
+        self, app_id: int, user_id: int, task_id: UUID, content: str, *, allow_existing: bool = False
+    ) -> MessageWrite:
+        async with self.engine.begin() as connection:
+            session = await _lock_session(connection, app_id)
+            if session["is_deleted"]:
+                raise HistoryDeleted
+            if allow_existing:
+                existing = (
+                    await connection.execute(
+                        select(MESSAGES)
+                        .join(GENERATION_TASKS, GENERATION_TASKS.c.user_message_id == MESSAGES.c.id)
+                        .where(GENERATION_TASKS.c.app_id == app_id, GENERATION_TASKS.c.task_id == task_id, VISIBLE)
+                    )
+                ).mappings().one_or_none()
+                if existing is not None:
+                    if existing["user_id"] != user_id or existing["message"] != content:
+                        raise MessageConflict
+                    return MessageWrite(HistoryMessage.model_validate(existing), None, session["version"])
+            result = await _insert_message(connection, session["version"], app_id, user_id, "user", content)
+            started = await connection.scalar(
+                pg_insert(GENERATION_TASKS)
+                .values(app_id=app_id, task_id=task_id, user_message_id=result.message.id)
+                .on_conflict_do_nothing(index_elements=[GENERATION_TASKS.c.app_id, GENERATION_TASKS.c.task_id])
+                .returning(GENERATION_TASKS.c.task_id)
+            )
+            if started is None:
+                # 回滚上面的历史追加，避免同时进入同一个临时目录。
+                raise MessageConflict
+            return result
+
+    async def commit_generation_result(
+        self, app_id: int, task_id: UUID, status: GenerationStatus, content: str, build_result: dict | None
+    ) -> MessageWrite:
+        async with self.engine.begin() as connection:
+            session = await _lock_session(connection, app_id)
+            if session["is_deleted"]:
+                raise HistoryDeleted
+            task = (
+                await connection.execute(
+                    select(GENERATION_TASKS, MESSAGES.c.user_id)
+                    .join(MESSAGES, GENERATION_TASKS.c.user_message_id == MESSAGES.c.id)
+                    .where(GENERATION_TASKS.c.app_id == app_id, GENERATION_TASKS.c.task_id == task_id, VISIBLE)
+                )
+            ).mappings().one_or_none()
+            if task is None:
+                raise GenerationTaskNotFound
+
+            if task["result_message_id"] is not None:
+                existing = (
+                    await connection.execute(select(MESSAGES).where(MESSAGES.c.id == task["result_message_id"]))
+                ).mappings().one()
+                # Python 中 True == 1，交给 JSONB 判断构建结果是否确实相同。
+                same_build = await connection.scalar(
+                    select(GENERATION_TASKS.c.build_result.is_not_distinct_from(build_result))
+                    .where(GENERATION_TASKS.c.app_id == app_id, GENERATION_TASKS.c.task_id == task_id)
+                )
+                if existing["message"] != content or task["status"] != status or not same_build:
+                    raise MessageConflict
+                return MessageWrite(HistoryMessage.model_validate(existing), None, session["version"])
+
+            result = await _insert_message(connection, session["version"], app_id, task["user_id"], "ai", content)
+            await connection.execute(
+                update(GENERATION_TASKS).where(
+                    GENERATION_TASKS.c.app_id == app_id, GENERATION_TASKS.c.task_id == task_id,
+                ).values(
+                    result_message_id=result.message.id, status=status, build_result=build_result,
+                )
+            )
+            return result
 
     async def version(self, app_id: int) -> int:
         async with self.engine.connect() as connection:

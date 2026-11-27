@@ -32,6 +32,9 @@ def postgres_schemas():
             ddl = (SQL_ROOT / "02_init_python_history_db.sql").read_text(encoding="utf-8")
             admin.execute(ddl)
             admin.execute(ddl)
+            generation_ddl = (SQL_ROOT / "04_python_generation_history.sql").read_text(encoding="utf-8")
+            admin.execute(generation_ddl)
+            admin.execute(generation_ddl)
             yield dsn, target, source
         finally:
             for name in (target, source):

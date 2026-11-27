@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     model_name: str = Field(min_length=1)
     model_api_key: SecretStr
     paimeng_workspace_root: Path | None = None
+    generation_context_tokens: int = Field(default=16_000, ge=1_000)
     internal_api_token: SecretStr
 
     @field_validator("python_pg_password", "model_api_key", "internal_api_token")

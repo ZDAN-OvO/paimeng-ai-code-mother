@@ -48,7 +48,7 @@
               加载更多历史消息
             </a-button>
           </div>
-          <div v-for="(message, index) in messages" :key="index" class="message-item">
+          <div v-for="message in messages" :key="message.key" class="message-item">
             <div v-if="message.type === 'user'" class="user-message">
               <div class="message-content">{{ message.content }}</div>
               <div class="message-avatar">
@@ -61,6 +61,10 @@
               </div>
               <div class="message-content">
                 <MarkdownRenderer v-if="message.content" :content="message.content" />
+                <div v-for="status in message.statuses" :key="status.id" class="task-status">
+                  {{ status.text }}
+                </div>
+                <div v-if="message.error" class="task-error" role="status">{{ message.error }}</div>
                 <div v-if="message.loading" class="loading-indicator">
                   <a-spin size="small" />
                   <span>AI 正在思考...</span>
@@ -118,7 +122,7 @@
                 :rows="4"
                 :maxlength="1000"
                 @keydown.enter.prevent="sendMessage"
-                :disabled="isGenerating || !isOwner"
+                disabled
               />
             </a-tooltip>
             <a-textarea
@@ -128,14 +132,14 @@
               :rows="4"
               :maxlength="1000"
               @keydown.enter.prevent="sendMessage"
-              :disabled="isGenerating"
+              :disabled="isChatBusy"
             />
             <div class="input-actions">
               <a-button
                 type="primary"
                 @click="sendMessage"
-                :loading="isGenerating"
-                :disabled="!isOwner"
+                :loading="isGenerating || submitting"
+                :disabled="!isOwner || isChatBusy"
               >
                 <template #icon>
                   <SendOutlined />
@@ -176,7 +180,7 @@
             <div class="placeholder-icon">🌐</div>
             <p>网站文件生成完成后将在这里展示</p>
           </div>
-          <div v-else-if="isGenerating" class="preview-loading">
+          <div v-else-if="!previewUrl" class="preview-loading">
             <a-spin size="large" />
             <p>正在生成网站...</p>
           </div>
@@ -210,7 +214,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick, onUnmounted, computed } from 'vue'
+import { ref, onMounted, nextTick, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser'
@@ -220,6 +224,7 @@ import {
   deleteApp as deleteAppApi,
 } from '@/api/appController'
 import { listAppChatHistory } from '@/api/chatHistoryController'
+import { buildTaskEventsUrl, createChatTask, getActiveChatTask } from '@/api/appTaskController'
 import { CodeGenTypeEnum, formatCodeGenType } from '@/utils/codeGenTypes'
 import request from '@/request'
 
@@ -227,7 +232,7 @@ import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
 import AppDetailModal from '@/components/AppDetailModal.vue'
 import DeploySuccessModal from '@/components/DeploySuccessModal.vue'
 import aiAvatar from '@/assets/aiAvatar.png'
-import { API_BASE_URL, getStaticPreviewUrl } from '@/config/env'
+import { getStaticPreviewUrl } from '@/config/env'
 import { VisualEditor, type ElementInfo } from '@/utils/visualEditor'
 
 import {
@@ -243,28 +248,59 @@ const route = useRoute()
 const router = useRouter()
 const loginUserStore = useLoginUserStore()
 
-// 应用信息
-const appInfo = ref<API.AppVO>()
-const appId = ref<any>()
+interface ChatPage {
+  appId: string
+  signal: AbortSignal
+}
 
-// 对话相关
 interface Message {
+  key: string
   type: 'user' | 'ai'
   content: string
   loading?: boolean
-  createTime?: string
+  statuses?: { id: string; text: string }[]
+  error?: string
 }
 
-const messages = ref<Message[]>([])
+interface TaskSession {
+  id: string
+  running: boolean
+  lastEventId?: string
+  optimisticUser?: Message
+  assistant: Message
+  needsUserHistory: boolean
+}
+
+const HISTORY_PAGE_SIZE = 10
+const TASK_RECOVERY_DELAY = 2000
+const appInfo = ref<API.AppVO>()
+const appId = ref('')
+const historyMessages = ref<Message[]>([])
+const liveTask = ref<TaskSession>()
 const userInput = ref('')
-const isGenerating = ref(false)
+const checkingTask = ref(false)
+const submitting = ref(false)
+const isGenerating = computed(() => liveTask.value?.running ?? false)
+const isChatBusy = computed(() => checkingTask.value || submitting.value || isGenerating.value)
+const messages = computed(() => {
+  const task = liveTask.value
+  if (!task) return historyMessages.value
+  return [
+    ...historyMessages.value,
+    ...(task.optimisticUser ? [task.optimisticUser] : []),
+    task.assistant,
+  ]
+})
 const messagesContainer = ref<HTMLElement>()
 
-// 对话历史相关
 const loadingHistory = ref(false)
 const hasMoreHistory = ref(false)
-const lastCreateTime = ref<string>()
-const historyLoaded = ref(false)
+let historyCursor: { lastCreateTime: string; lastId: string } | undefined
+let historyRequest = 0
+let pageController: AbortController | undefined
+let eventSource: EventSource | undefined
+let recoveryTimer: ReturnType<typeof setTimeout> | undefined
+let pendingDraft: { content: string; requestId: string } | undefined
 
 // 预览相关
 const previewUrl = ref('')
@@ -289,7 +325,9 @@ const visualEditor = new VisualEditor({
 
 // 权限相关
 const isOwner = computed(() => {
-  return appInfo.value?.userId === loginUserStore.loginUser.id
+  const ownerId = appInfo.value?.userId
+  const loginId = loginUserStore.loginUser.id
+  return ownerId != null && loginId != null && String(ownerId) === String(loginId)
 })
 
 const isAdmin = computed(() => {
@@ -304,308 +342,438 @@ const showAppDetail = () => {
   appDetailVisible.value = true
 }
 
-// 加载对话历史
-const loadChatHistory = async (isLoadMore = false) => {
-  if (!appId.value || loadingHistory.value) return
+// 分页游标原样回传，保留同一秒内的排序。
+async function loadChatHistory(page: ChatPage, { more = false, onlyUserTail = false } = {}) {
+  if (page.signal.aborted || (more && (loadingHistory.value || !historyCursor))) return false
+  const requestNumber = ++historyRequest
   loadingHistory.value = true
   try {
-    const params: API.listAppChatHistoryParams = {
-      appId: appId.value,
-      pageSize: 10,
+    const res = await listAppChatHistory(
+      { appId: page.appId, pageSize: HISTORY_PAGE_SIZE, ...(more ? historyCursor : {}) },
+      { signal: page.signal },
+    )
+    if (page.signal.aborted || requestNumber !== historyRequest) return false
+    if (res.data.code !== 0 || !res.data.data) {
+      throw new Error(res.data.message || '加载对话历史失败')
     }
-    // 如果是加载更多，传递最后一条消息的创建时间作为游标
-    if (isLoadMore && lastCreateTime.value) {
-      params.lastCreateTime = lastCreateTime.value
-    }
-    const res = await listAppChatHistory(params)
-    if (res.data.code === 0 && res.data.data) {
-      const chatHistories = res.data.data.records || []
-      if (chatHistories.length > 0) {
-        // 将对话历史转换为消息格式，并按时间正序排列（老消息在前）
-        const historyMessages: Message[] = chatHistories
-          .map((chat) => ({
-            type: (chat.messageType === 'user' ? 'user' : 'ai') as 'user' | 'ai',
-            content: chat.message || '',
-            createTime: chat.createTime,
-          }))
-          .reverse() // 反转数组，让老消息在前
-        if (isLoadMore) {
-          // 加载更多时，将历史消息添加到开头
-          messages.value.unshift(...historyMessages)
-        } else {
-          // 初始加载，直接设置消息列表
-          messages.value = historyMessages
-        }
-        // 更新游标
-        lastCreateTime.value = chatHistories[chatHistories.length - 1]?.createTime
-        // 检查是否还有更多历史
-        hasMoreHistory.value = chatHistories.length === 10
-      } else {
-        hasMoreHistory.value = false
+
+    const records = res.data.data.records ?? []
+    // 活跃任务只补已落库的用户消息，助手结果由终态统一对齐。
+    if (onlyUserTail && records[0]?.messageType !== 'user') return false
+    const incoming = records
+      .map<Message>((chat, index) => ({
+        key: `history:${chat.id ?? `${chat.createTime}:${index}`}`,
+        type: chat.messageType === 'user' ? 'user' : 'ai',
+        content: chat.message ?? '',
+      }))
+      .reverse()
+
+    if (more) {
+      historyMessages.value.unshift(...incoming)
+    } else {
+      const overlap = historyMessages.value.findIndex((chat) => chat.key === incoming[0]?.key)
+      if (overlap > 0) {
+        // 保留已经展开的更早历史和相应游标。
+        historyMessages.value = [...historyMessages.value.slice(0, overlap), ...incoming]
+        return true
       }
-      historyLoaded.value = true
+      historyMessages.value = incoming
     }
+    const oldest = records[records.length - 1]
+    historyCursor =
+      oldest?.createTime && oldest.id
+        ? { lastCreateTime: oldest.createTime, lastId: String(oldest.id) }
+        : undefined
+    hasMoreHistory.value = Boolean(historyCursor && records.length === HISTORY_PAGE_SIZE)
+    return true
   } catch (error) {
-    console.error('加载对话历史失败：', error)
-    message.error('加载对话历史失败')
+    if (!page.signal.aborted && requestNumber === historyRequest && !onlyUserTail) {
+      console.error('加载对话历史失败：', error)
+      message.error('加载对话历史失败')
+    }
+    return false
   } finally {
-    loadingHistory.value = false
+    if (requestNumber === historyRequest && !page.signal.aborted) loadingHistory.value = false
   }
 }
 
-// 加载更多历史消息
-const loadMoreHistory = async () => {
-  await loadChatHistory(true)
+function loadMoreHistory() {
+  const page = getCurrentPage()
+  if (page) void loadChatHistory(page, { more: true })
 }
 
-// 获取应用信息
-const fetchAppInfo = async () => {
-  const id = route.params.id as string
-  if (!id) {
-    message.error('应用ID不存在')
-    router.push('/')
+function getCurrentPage(): ChatPage | undefined {
+  if (pageController && appId.value) {
+    return { appId: appId.value, signal: pageController.signal }
+  }
+}
+
+async function readActiveTask(page: ChatPage) {
+  const res = await getActiveChatTask(page.appId, page.signal)
+  if (res.data.code !== 0) throw new Error(res.data.message || '查询生成任务失败')
+  return res.data.data ?? null
+}
+
+function isRunning(task: API.ActiveChatTask) {
+  const status = task.status.toLowerCase()
+  return status === 'running' || status === 'committing'
+}
+
+function isSuccessful(task: API.ActiveChatTask) {
+  const status = task.status.toLowerCase()
+  return task.resultCommitted && (status === 'succeeded' || status === 'success')
+}
+
+async function fetchAppInfo(page: ChatPage) {
+  try {
+    const res = await getAppVoById({ id: page.appId as unknown as number }, { signal: page.signal })
+    if (page.signal.aborted) return
+    if (res.data.code !== 0 || !res.data.data) throw new Error(res.data.message)
+    appInfo.value = res.data.data
+  } catch (error) {
+    if (!page.signal.aborted) {
+      console.error('获取应用信息失败：', error)
+      message.error('获取应用信息失败')
+      void router.push('/')
+    }
     return
   }
 
-  appId.value = id
-
   try {
-    const res = await getAppVoById({ id: id as unknown as number })
-    if (res.data.code === 0 && res.data.data) {
-      appInfo.value = res.data.data
+    if (!isOwner.value) {
+      if (isAdmin.value) {
+        await loadChatHistory(page)
+        if (!page.signal.aborted && historyMessages.value.length >= 2) updatePreview()
+      }
+      return
+    }
+    const firstTask = await readActiveTask(page)
+    if (page.signal.aborted) return
+    const loaded = await loadChatHistory(page)
+    if (page.signal.aborted) return
+    const latestTask = await readActiveTask(page)
+    if (page.signal.aborted) return
 
-      // 先加载对话历史
-      await loadChatHistory()
-      // 如果有至少2条对话记录，展示对应的网站
-      if (messages.value.length >= 2) {
+    if (latestTask?.resultCommitted && !isRunning(latestTask)) {
+      await loadChatHistory(page)
+      if (page.signal.aborted) return
+    }
+    if (latestTask && isSuccessful(latestTask)) {
+      updatePreview(latestTask.taskId)
+    } else if (
+      historyMessages.value.length >= 2 &&
+      (latestTask?.status.toLowerCase() !== 'failed' || historyMessages.value.length > 2)
+    ) {
+      updatePreview()
+    }
+
+    if (latestTask && isRunning(latestTask)) {
+      subscribeTaskStream(page, latestTask.taskId)
+    } else if (!latestTask && !firstTask && loaded && historyMessages.value.length === 0) {
+      const prompt = appInfo.value.initPrompt
+      if (prompt) await submitTask(page, prompt, `init:${page.appId}`, true)
+    }
+    scrollToBottom()
+  } catch (error) {
+    if (!page.signal.aborted) {
+      console.error('查询生成任务失败：', error)
+      if (historyMessages.value.length === 0) await loadChatHistory(page)
+      if (page.signal.aborted) return
+      if (historyMessages.value.length >= 2) updatePreview()
+      message.error('查询生成任务失败，请刷新后重试')
+    }
+  }
+}
+
+function newRequestId() {
+  if (crypto.randomUUID) return crypto.randomUUID()
+  // 局域网 HTTP 等环境可能只开放 getRandomValues。
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join('-')
+}
+
+async function sendMessage() {
+  const page = getCurrentPage()
+  const draft = userInput.value.trim()
+  if (!page || !draft || !isOwner.value || isChatBusy.value) return
+
+  let content = draft
+  const element = selectedElementInfo.value
+  if (element) {
+    content += '\n\n选中元素信息：'
+    if (element.pagePath) content += `\n- 页面路径: ${element.pagePath}`
+    content += `\n- 标签: ${element.tagName.toLowerCase()}\n- 选择器: ${element.selector}`
+    if (element.textContent) content += `\n- 当前内容: ${element.textContent.substring(0, 100)}`
+  }
+
+  if (pendingDraft?.content !== content) pendingDraft = { content, requestId: newRequestId() }
+  await submitTask(page, content, pendingDraft.requestId)
+}
+
+async function submitTask(page: ChatPage, content: string, requestId: string, initial = false) {
+  submitting.value = true
+  try {
+    const res = await createChatTask(
+      { appId: page.appId, message: content, clientRequestId: requestId },
+      page.signal,
+    )
+    if (page.signal.aborted) return
+
+    const result = res.data.data
+    if (res.data.code !== 0 || !result) {
+      throw new Error(res.data.message || '提交生成任务失败，请重试')
+    }
+    if (!initial) pendingDraft = undefined
+    if (result.code === 'HISTORY_EXISTS') {
+      await loadChatHistory(page)
+      if (!page.signal.aborted && historyMessages.value.length >= 2 && !previewUrl.value) {
         updatePreview()
       }
-      // 检查是否需要自动发送初始提示词
-      // 只有在是自己的应用且没有对话历史时才自动发送
-      if (
-        appInfo.value.initPrompt &&
-        isOwner.value &&
-        messages.value.length === 0 &&
-        historyLoaded.value
-      ) {
-        await sendInitialMessage(appInfo.value.initPrompt)
+      scrollToBottom()
+      return
+    }
+    if (!result.taskId) throw new Error('服务器未返回生成任务编号')
+
+    if (result.conflict) message.info('该应用正在生成')
+    const accepted = !result.reused && !result.conflict
+    if (accepted && !initial) {
+      userInput.value = ''
+      if (selectedElementInfo.value) {
+        clearSelectedElement()
+        if (isEditMode.value) toggleEditMode()
+      }
+    }
+    subscribeTaskStream(page, result.taskId, accepted ? content : undefined)
+  } catch (error) {
+    if (!page.signal.aborted) {
+      message.error(error instanceof Error ? error.message : '提交生成任务失败，请重试')
+    }
+  } finally {
+    if (!page.signal.aborted) submitting.value = false
+  }
+}
+
+function closeTaskStream() {
+  clearTimeout(recoveryTimer)
+  recoveryTimer = undefined
+  const source = eventSource
+  eventSource = undefined
+  source?.close()
+}
+
+function subscribeTaskStream(page: ChatPage, taskId: string, acceptedMessage?: string) {
+  if (page.signal.aborted || (liveTask.value?.id === taskId && liveTask.value.running)) return
+  closeTaskStream()
+  liveTask.value = {
+    id: taskId,
+    running: true,
+    needsUserHistory: acceptedMessage === undefined,
+    optimisticUser:
+      acceptedMessage === undefined
+        ? undefined
+        : { key: `task:${taskId}:user`, type: 'user', content: acceptedMessage },
+    assistant: { key: `task:${taskId}:ai`, type: 'ai', content: '', loading: true, statuses: [] },
+  }
+  connectTaskStream(page, liveTask.value)
+  scrollToBottom()
+}
+
+function isNewEventId(id: string, previous?: string) {
+  const streamId = /^(\d+)-(\d+)$/
+  const next = streamId.exec(id)
+  if (!next) return false
+  if (!previous) return true
+  const last = streamId.exec(previous)!
+  const time = BigInt(next[1]!) - BigInt(last[1]!)
+  return time > 0n || (time === 0n && BigInt(next[2]!) > BigInt(last[2]!))
+}
+
+const statusLabels = {
+  tool_running: '正在调用工具',
+  tool_completed: '工具调用完成',
+  tool_failed: '工具调用失败',
+  building: '正在构建网站',
+  repairing: '正在修复并重新构建',
+  committing: '正在交付网站',
+}
+
+function formatTaskStatus(status: API.ChatTaskStatusEvent) {
+  if (status.phase === 'resync_required') return ''
+  const label = statusLabels[status.phase]
+  const tool = status.toolName ? ` · ${status.toolName}` : ''
+  const attempt =
+    status.attempt && (status.phase === 'building' || status.phase === 'repairing')
+      ? `（第 ${status.attempt} 次）`
+      : ''
+  return `${label}${tool}${attempt}${status.message ? `：${status.message}` : ''}`
+}
+
+function connectTaskStream(page: ChatPage, task: TaskSession) {
+  const source = new EventSource(buildTaskEventsUrl(task.id, task.lastEventId), {
+    withCredentials: true,
+  })
+  eventSource = source
+
+  function listen<T extends { taskId: string; phase?: API.ChatTaskStatusEvent['phase'] }>(
+    name: string,
+    apply: (payload: T, id: string) => void,
+  ) {
+    source.addEventListener(name, (event: MessageEvent<string>) => {
+      if (page.signal.aborted || eventSource !== source) return
+      let payload: T
+      try {
+        payload = JSON.parse(event.data)
+      } catch (error) {
+        console.error('解析生成任务事件失败：', error)
+        return
+      }
+      if (payload?.taskId !== task.id) return
+
+      if (name === 'status' && payload.phase === 'resync_required') {
+        // 回源提示可以使用合成 ID，先处理提示，再判断普通事件是否重复。
+        closeTaskStream()
+        const hadCursor = Boolean(task.lastEventId)
+        task.lastEventId = undefined
+        task.assistant.content = ''
+        task.assistant.statuses = []
+        task.assistant.loading = true
+        if (hadCursor) void recoverTask(page, task, true)
+        else scheduleTaskRecovery(page, task, true)
+        return
+      }
+
+      if (!isNewEventId(event.lastEventId, task.lastEventId)) return
+      task.lastEventId = event.lastEventId
+      if (task.needsUserHistory && (name === 'message' || name === 'status')) {
+        task.needsUserHistory = false
+        void loadChatHistory(page, { onlyUserTail: true }).then(scrollToBottom)
+      }
+      apply(payload, event.lastEventId)
+      scrollToBottom()
+    })
+  }
+
+  listen<API.ChatTaskMessageEvent>('message', (payload) => {
+    if (typeof payload.d === 'string') {
+      task.assistant.content += payload.d
+      task.assistant.loading = false
+    }
+  })
+  listen<API.ChatTaskStatusEvent>('status', (payload, id) => {
+    task.assistant.statuses?.push({ id, text: formatTaskStatus(payload) })
+    task.assistant.loading = false
+  })
+  listen<API.ChatTaskDoneEvent>('done', (payload) => {
+    if (payload.status === 'success') void finishTask(page, task, { previewTaskId: task.id })
+  })
+  listen<API.ChatTaskErrorEvent>('business-error', (payload) => {
+    if (payload.status === 'failed') {
+      void finishTask(page, task, { error: payload.message || '生成过程中出现错误' })
+    }
+  })
+
+  source.onerror = () => {
+    // CONNECTING 时由浏览器带 Last-Event-ID 自动重连，保留当前气泡和游标。
+    if (eventSource !== source || source.readyState !== EventSource.CLOSED) return
+    closeTaskStream()
+    scheduleTaskRecovery(page, task, false)
+  }
+}
+
+function scheduleTaskRecovery(page: ChatPage, task: TaskSession, reloadHistory: boolean) {
+  recoveryTimer = setTimeout(() => void recoverTask(page, task, reloadHistory), TASK_RECOVERY_DELAY)
+}
+
+async function recoverTask(page: ChatPage, task: TaskSession, reloadHistory: boolean) {
+  try {
+    if (reloadHistory) {
+      const loaded = await loadChatHistory(page, { onlyUserTail: true })
+      const newest = historyMessages.value[historyMessages.value.length - 1]
+      if (loaded && newest?.content === task.optimisticUser?.content) {
+        task.optimisticUser = undefined
+      }
+    }
+    if (page.signal.aborted || liveTask.value !== task) return
+
+    const latest = await readActiveTask(page)
+    if (page.signal.aborted || liveTask.value !== task) return
+    if (latest?.taskId === task.id && !latest.resultCommitted && !isRunning(latest)) {
+      scheduleTaskRecovery(page, task, reloadHistory)
+      return
+    }
+    if (latest && isRunning(latest)) {
+      if (latest.taskId !== task.id) {
+        await loadChatHistory(page, { onlyUserTail: true })
+        if (!page.signal.aborted) subscribeTaskStream(page, latest.taskId)
+      } else if (latest.streamAvailable) {
+        connectTaskStream(page, task)
+      } else {
+        scheduleTaskRecovery(page, task, false)
       }
     } else {
-      message.error('获取应用信息失败')
-      router.push('/')
+      await finishTask(page, task, {
+        previewTaskId: latest && isSuccessful(latest) ? latest.taskId : undefined,
+      })
     }
   } catch (error) {
-    console.error('获取应用信息失败：', error)
-    message.error('获取应用信息失败')
-    router.push('/')
+    if (!page.signal.aborted && liveTask.value === task) {
+      console.error('恢复生成任务事件流失败：', error)
+      scheduleTaskRecovery(page, task, reloadHistory)
+    }
   }
 }
 
-// 发送初始消息
-const sendInitialMessage = async (prompt: string) => {
-  // 添加用户消息
-  messages.value.push({
-    type: 'user',
-    content: prompt,
-  })
+async function finishTask(
+  page: ChatPage,
+  task: TaskSession,
+  result: { previewTaskId?: string; error?: string },
+) {
+  const { previewTaskId, error } = result
+  closeTaskStream()
+  task.running = false
+  task.assistant.loading = false
+  task.assistant.error = error
+  checkingTask.value = true
+  if (previewTaskId) updatePreview(previewTaskId)
 
-  // 添加AI消息占位符
-  const aiMessageIndex = messages.value.length
-  messages.value.push({
-    type: 'ai',
-    content: '',
-    loading: true,
-  })
-
-  await nextTick()
+  const loaded = await loadChatHistory(page)
+  if (page.signal.aborted) return
+  if (loaded) {
+    const latestMessage = historyMessages.value[historyMessages.value.length - 1]
+    if (error && latestMessage?.type === 'ai' && !latestMessage.content.includes(error)) {
+      latestMessage.error = error
+    }
+    liveTask.value = undefined
+  }
+  checkingTask.value = false
   scrollToBottom()
-
-  // 开始生成
-  isGenerating.value = true
-  await generateCode(prompt, aiMessageIndex)
 }
 
-// 发送消息
-const sendMessage = async () => {
-  if (!userInput.value.trim() || isGenerating.value) {
-    return
+function updatePreview(taskId?: string) {
+  const codeGenType = appInfo.value?.codeGenType || CodeGenTypeEnum.HTML
+  const url = getStaticPreviewUrl(codeGenType, appId.value)
+  const nextUrl = taskId ? `${url}?${new URLSearchParams({ task: taskId })}` : url
+  if (previewUrl.value !== nextUrl) {
+    previewReady.value = false
+    previewUrl.value = nextUrl
   }
+}
 
-  let message = userInput.value.trim()
-  // 如果有选中的元素，将元素信息添加到提示词中
-  if (selectedElementInfo.value) {
-    let elementContext = `\n\n选中元素信息：`
-    if (selectedElementInfo.value.pagePath) {
-      elementContext += `\n- 页面路径: ${selectedElementInfo.value.pagePath}`
+function scrollToBottom() {
+  void nextTick(() => {
+    if (messagesContainer.value) {
+      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
     }
-    elementContext += `\n- 标签: ${selectedElementInfo.value.tagName.toLowerCase()}\n- 选择器: ${selectedElementInfo.value.selector}`
-    if (selectedElementInfo.value.textContent) {
-      elementContext += `\n- 当前内容: ${selectedElementInfo.value.textContent.substring(0, 100)}`
-    }
-    message += elementContext
-  }
-  userInput.value = ''
-  // 添加用户消息（包含元素信息）
-  messages.value.push({
-    type: 'user',
-    content: message,
   })
-
-  // 发送消息后，清除选中元素并退出编辑模式
-  if (selectedElementInfo.value) {
-    clearSelectedElement()
-    if (isEditMode.value) {
-      toggleEditMode()
-    }
-  }
-
-  // 添加AI消息占位符
-  const aiMessageIndex = messages.value.length
-  messages.value.push({
-    type: 'ai',
-    content: '',
-    loading: true,
-  })
-
-  await nextTick()
-  scrollToBottom()
-
-  // 开始生成
-  isGenerating.value = true
-  await generateCode(message, aiMessageIndex)
-}
-
-// 生成代码 - 使用 EventSource 处理流式响应
-const generateCode = async (userMessage: string, aiMessageIndex: number) => {
-  let eventSource: EventSource | null = null
-  let streamCompleted = false
-
-  try {
-    // 获取 axios 配置的 baseURL
-    const baseURL = request.defaults.baseURL || API_BASE_URL
-
-    // 构建URL参数
-    const params = new URLSearchParams({
-      appId: appId.value || '',
-      message: userMessage,
-    })
-
-    const url = `${baseURL}/app/chat/gen/code?${params}`
-
-    // 创建 EventSource 连接
-    eventSource = new EventSource(url, {
-      withCredentials: true,
-    })
-
-    let fullContent = ''
-
-    // 处理接收到的消息
-    eventSource.onmessage = function (event) {
-      if (streamCompleted) return
-
-      try {
-        // 解析JSON包装的数据
-        const parsed = JSON.parse(event.data)
-        const content = parsed.d
-
-        // 拼接内容
-        if (content !== undefined && content !== null) {
-          fullContent += content
-          messages.value[aiMessageIndex].content = fullContent
-          messages.value[aiMessageIndex].loading = false
-          scrollToBottom()
-        }
-      } catch (error) {
-        console.error('解析消息失败:', error)
-        handleError(error, aiMessageIndex)
-      }
-    }
-
-    // 处理done事件
-    eventSource.addEventListener('done', function () {
-      if (streamCompleted) return
-
-      streamCompleted = true
-      isGenerating.value = false
-      eventSource?.close()
-
-      // 延迟更新预览，确保后端已完成处理
-      setTimeout(async () => {
-        await fetchAppInfo()
-        updatePreview()
-      }, 1000)
-    })
-
-    // 处理business-error事件（后端限流等错误）
-    eventSource.addEventListener('business-error', function (event: MessageEvent) {
-      if (streamCompleted) return
-
-      try {
-        const errorData = JSON.parse(event.data)
-        console.error('SSE业务错误事件:', errorData)
-
-        // 显示具体的错误信息
-        const errorMessage = errorData.message || '生成过程中出现错误'
-        messages.value[aiMessageIndex].content = `❌ ${errorMessage}`
-        messages.value[aiMessageIndex].loading = false
-        message.error(errorMessage)
-
-        streamCompleted = true
-        isGenerating.value = false
-        eventSource?.close()
-      } catch (parseError) {
-        console.error('解析错误事件失败:', parseError, '原始数据:', event.data)
-        handleError(new Error('服务器返回错误'), aiMessageIndex)
-      }
-    })
-
-    // 处理错误
-    eventSource.onerror = function () {
-      if (streamCompleted || !isGenerating.value) return
-      // 检查是否是正常的连接关闭
-      if (eventSource?.readyState === EventSource.CONNECTING) {
-        streamCompleted = true
-        isGenerating.value = false
-        eventSource?.close()
-
-        setTimeout(async () => {
-          await fetchAppInfo()
-          updatePreview()
-        }, 1000)
-      } else {
-        handleError(new Error('SSE连接错误'), aiMessageIndex)
-      }
-    }
-  } catch (error) {
-    console.error('创建 EventSource 失败：', error)
-    handleError(error, aiMessageIndex)
-  }
-}
-
-// 错误处理函数
-const handleError = (error: unknown, aiMessageIndex: number) => {
-  console.error('生成代码失败：', error)
-  messages.value[aiMessageIndex].content = '抱歉，生成过程中出现了错误，请重试。'
-  messages.value[aiMessageIndex].loading = false
-  message.error('生成失败，请重试')
-  isGenerating.value = false
-}
-
-// 更新预览
-const updatePreview = () => {
-  if (appId.value) {
-    const codeGenType = appInfo.value?.codeGenType || CodeGenTypeEnum.HTML
-    const newPreviewUrl = getStaticPreviewUrl(codeGenType, appId.value)
-    previewUrl.value = newPreviewUrl
-    previewReady.value = true
-  }
-}
-
-// 滚动到底部
-const scrollToBottom = () => {
-  if (messagesContainer.value) {
-    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
-  }
 }
 
 // 下载代码
@@ -753,19 +921,53 @@ const getInputPlaceholder = () => {
   return '请描述你想生成的网站，越详细效果越好哦'
 }
 
-// 页面加载时获取应用信息
-onMounted(() => {
-  fetchAppInfo()
+function onPreviewMessage(event: MessageEvent) {
+  visualEditor.handleIframeMessage(event)
+}
 
-  // 监听 iframe 消息
-  window.addEventListener('message', (event) => {
-    visualEditor.handleIframeMessage(event)
-  })
+watch(
+  () => route.params.id,
+  async (id) => {
+    pageController?.abort()
+    closeTaskStream()
+    pageController = new AbortController()
+    appId.value = typeof id === 'string' ? id : ''
+    appInfo.value = undefined
+    historyMessages.value = []
+    liveTask.value = undefined
+    userInput.value = ''
+    pendingDraft = undefined
+    historyCursor = undefined
+    hasMoreHistory.value = false
+    loadingHistory.value = false
+    checkingTask.value = false
+    submitting.value = false
+    previewUrl.value = ''
+    previewReady.value = false
+    clearSelectedElement()
+    visualEditor.disableEditMode()
+    isEditMode.value = false
+
+    const page = getCurrentPage()
+    if (!page) return
+    checkingTask.value = true
+    try {
+      await fetchAppInfo(page)
+    } finally {
+      if (!page.signal.aborted) checkingTask.value = false
+    }
+  },
+  { immediate: true },
+)
+
+onMounted(() => {
+  window.addEventListener('message', onPreviewMessage)
 })
 
-// 清理资源
 onUnmounted(() => {
-  // EventSource 会在组件卸载时自动清理
+  pageController?.abort()
+  closeTaskStream()
+  window.removeEventListener('message', onPreviewMessage)
 })
 </script>
 
@@ -881,6 +1083,17 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   color: #666;
+}
+
+.task-status {
+  margin-top: 4px;
+  color: #595959;
+  font-size: 13px;
+}
+
+.task-error {
+  margin-top: 4px;
+  color: #a8071a;
 }
 
 /* 加载更多按钮 */
