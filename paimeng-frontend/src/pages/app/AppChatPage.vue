@@ -165,7 +165,7 @@
               <template #icon>
                 <EditOutlined />
               </template>
-              {{ isEditMode ? '退出编辑' : '编辑模式' }}
+              {{ isEditMode ? '退出编辑' : editState === 'starting' ? '取消开启' : '编辑模式' }}
             </a-button>
             <a-button v-if="previewUrl" type="link" @click="openInNewTab">
               <template #icon>
@@ -186,6 +186,8 @@
           </div>
           <iframe
             v-else
+            :key="previewUrl"
+            ref="previewFrame"
             :src="previewUrl"
             class="preview-iframe"
             frameborder="0"
@@ -214,7 +216,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick, onUnmounted, computed, watch } from 'vue'
+import { ref, shallowRef, onMounted, nextTick, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser'
@@ -304,7 +306,7 @@ let pendingDraft: { content: string; requestId: string } | undefined
 
 // 预览相关
 const previewUrl = ref('')
-const previewReady = ref(false)
+const previewFrame = shallowRef<HTMLIFrameElement | null>(null)
 
 // 部署相关
 const deploying = ref(false)
@@ -315,12 +317,21 @@ const deployUrl = ref('')
 const downloading = ref(false)
 
 // 可视化编辑相关
-const isEditMode = ref(false)
+const editState = ref<'idle' | 'starting' | 'editing'>('idle')
+const isEditMode = computed(() => editState.value === 'editing')
 const selectedElementInfo = ref<ElementInfo | null>(null)
 const visualEditor = new VisualEditor({
   onElementSelected: (elementInfo: ElementInfo) => {
     selectedElementInfo.value = elementInfo
   },
+  onSelectionCleared: () => {
+    selectedElementInfo.value = null
+  },
+  onEditStateChange: (state) => {
+    editState.value = state
+    if (state === 'idle') selectedElementInfo.value = null
+  },
+  onEditTimeout: () => message.warning('预览未能开启编辑，请刷新后重试'),
 })
 
 // 权限相关
@@ -547,10 +558,7 @@ async function submitTask(page: ChatPage, content: string, requestId: string, in
     const accepted = !result.reused && !result.conflict
     if (accepted && !initial) {
       userInput.value = ''
-      if (selectedElementInfo.value) {
-        clearSelectedElement()
-        if (isEditMode.value) toggleEditMode()
-      }
+      if (selectedElementInfo.value) visualEditor.disableEditMode()
     }
     subscribeTaskStream(page, result.taskId, accepted ? content : undefined)
   } catch (error) {
@@ -763,7 +771,7 @@ function updatePreview(taskId?: string) {
   const url = getStaticPreviewUrl(codeGenType, appId.value)
   const nextUrl = taskId ? `${url}?${new URLSearchParams({ task: taskId })}` : url
   if (previewUrl.value !== nextUrl) {
-    previewReady.value = false
+    visualEditor.disconnect()
     previewUrl.value = nextUrl
   }
 }
@@ -856,14 +864,9 @@ const openDeployedSite = () => {
   }
 }
 
-// iframe加载完成
-const onIframeLoad = () => {
-  previewReady.value = true
-  const iframe = document.querySelector('.preview-iframe') as HTMLIFrameElement
-  if (iframe) {
-    visualEditor.init(iframe)
-    visualEditor.onIframeLoad()
-  }
+const onIframeLoad = (event: Event) => {
+  const iframe = previewFrame.value
+  if (iframe && event.currentTarget === iframe) visualEditor.onIframeLoad(iframe)
 }
 
 // 编辑应用
@@ -892,21 +895,10 @@ const deleteApp = async () => {
   }
 }
 
-// 可视化编辑相关函数
 const toggleEditMode = () => {
-  // 检查 iframe 是否已经加载
-  const iframe = document.querySelector('.preview-iframe') as HTMLIFrameElement
-  if (!iframe) {
-    message.warning('请等待页面加载完成')
-    return
+  if (!visualEditor.toggleEditMode()) {
+    message.warning('预览尚未连接，暂时无法编辑')
   }
-  // 确保 visualEditor 已初始化
-  if (!previewReady.value) {
-    message.warning('请等待页面加载完成')
-    return
-  }
-  const newEditMode = visualEditor.toggleEditMode()
-  isEditMode.value = newEditMode
 }
 
 const clearSelectedElement = () => {
@@ -942,11 +934,8 @@ watch(
     loadingHistory.value = false
     checkingTask.value = false
     submitting.value = false
+    visualEditor.disconnect()
     previewUrl.value = ''
-    previewReady.value = false
-    clearSelectedElement()
-    visualEditor.disableEditMode()
-    isEditMode.value = false
 
     const page = getCurrentPage()
     if (!page) return
@@ -967,6 +956,7 @@ onMounted(() => {
 onUnmounted(() => {
   pageController?.abort()
   closeTaskStream()
+  visualEditor.disconnect()
   window.removeEventListener('message', onPreviewMessage)
 })
 </script>

@@ -16,6 +16,9 @@ const readApi = (filename) =>
   transpile(readFileSync(new URL(`../src/api/${filename}`, import.meta.url), 'utf8'))
 const taskApiCode = readApi('appTaskController.ts')
 const historyApiCode = readApi('chatHistoryController.ts')
+const editorCode = transpile(
+  readFileSync(new URL('../src/utils/visualEditor.ts', import.meta.url), 'utf8'),
+)
 
 const appId = '1900000000000000059'
 const time = '2026-11-25T21:32:01'
@@ -110,6 +113,7 @@ function mountChat(t, server) {
       'ant-design-vue': {
         message: {
           info: (text) => notices.push({ type: 'info', text }),
+          warning: (text) => notices.push({ type: 'warning', text }),
           error: (text) => notices.push({ type: 'error', text }),
         },
       },
@@ -126,12 +130,11 @@ function mountChat(t, server) {
       '@/assets/aiAvatar.png': {},
       '@/config/env': env,
       '@/utils/codeGenTypes': { CodeGenTypeEnum: { HTML: 'html' } },
-      '@/utils/visualEditor': {
-        VisualEditor: class {
-          clearSelection() {}
-          disableEditMode() {}
-        },
-      },
+      '@/utils/visualEditor': evaluate(
+        editorCode,
+        {},
+        { window: { location: { href: 'http://chat.test/' } } },
+      ),
       '@ant-design/icons-vue': {},
     },
     {
@@ -392,4 +395,256 @@ test('切换应用和卸载页面会关闭旧流并忽略迟到的事件', async
   assert.deepEqual(tab.text(), [otherId, ''])
   tab.unmount()
   assert.equal(tab.streams[1].readyState, 2)
+})
+
+test('跨源预览须确认编辑已开启，退出或导航后忽略迟到的点选消息', () => {
+  const selected = []
+  const states = []
+  const sent = []
+  const origin = new URL(preview).origin
+  const contentWindow = {
+    postMessage: (data, targetOrigin) => sent.push({ ...data, targetOrigin }),
+  }
+  const iframe = {
+    src: preview + '?task=delivered',
+    contentWindow,
+    get contentDocument() {
+      return null
+    },
+  }
+  const { VisualEditor } = evaluate(
+    editorCode,
+    {},
+    {
+      window: { location: { href: 'http://chat.test/app/chat/' + appId } },
+    },
+  )
+  const editor = new VisualEditor({
+    onElementSelected: (element) => selected.push(element),
+    onEditStateChange: (state) => states.push(state),
+  })
+  const receive = (type, data = {}, overrides = {}) =>
+    editor.handleIframeMessage({
+      source: contentWindow,
+      origin,
+      data: { channel: 'paimeng-visual-editor', connectionId: sent[0].connectionId, type, ...data },
+      ...overrides,
+    })
+  const element = {
+    tagName: 'path',
+    id: '',
+    className: 'icon',
+    textContent: '',
+    selector: 'svg > path.icon',
+  }
+
+  editor.onIframeLoad(iframe)
+  assert.equal(sent[0].type, 'connect')
+  assert.equal(sent[0].targetOrigin, origin)
+  assert.equal(editor.toggleEditMode(), false)
+  receive('ready', { pageUrl: iframe.src }, { source: {} })
+  receive('ready', { pageUrl: iframe.src }, { origin: 'http://unrelated.test' })
+  receive('ready', { pageUrl: 'http://test/api/other/' })
+  assert.equal(editor.toggleEditMode(), false)
+  receive('ready', { pageUrl: iframe.src })
+  assert.equal(editor.toggleEditMode(), true)
+  const first = sent.at(-1).editId
+  assert.deepEqual(states, ['starting'])
+  editor.disableEditMode()
+  receive('editing', { editId: first, pageUrl: iframe.src })
+  assert.deepEqual(states, ['starting', 'idle'])
+
+  assert.equal(editor.toggleEditMode(), true)
+  const editId = sent.at(-1).editId
+  assert.notEqual(editId, first)
+  receive('editing', { editId, pageUrl: iframe.src })
+  assert.equal(states.at(-1), 'editing')
+  receive('selected', { editId, element, pageUrl: 'http://test/api/other/' })
+  receive('selected', { editId, element: { ...element, selector: [] }, pageUrl: iframe.src })
+  assert.deepEqual(selected, [])
+  receive('selected', {
+    editId,
+    element,
+    pageUrl: iframe.src + '&filter=open%20now&task=business#/items?task=15',
+  })
+  receive('selected', { editId, element, pageUrl: preview + 'about.html?task=business#team' })
+  assert.deepEqual(
+    selected.map(({ pagePath, selector }) => [pagePath, selector]),
+    [
+      ['?filter=open%20now&task=business#/items?task=15', 'svg > path.icon'],
+      ['about.html?task=business#team', 'svg > path.icon'],
+    ],
+  )
+
+  editor.onIframeLoad(iframe)
+  receive('selected', { editId, element, pageUrl: iframe.src })
+  assert.equal(selected.length, 2)
+  assert.equal(states.at(-1), 'idle')
+  editor.disconnect()
+})
+
+test('预览脚本点选 SVG 后，聊天提交选择器并在任务交付后更新预览', async (t) => {
+  const taskId = 'svg-update'
+  let records = oldHistory
+  const tab = mountChat(t, {
+    active: () => null,
+    history: () => records,
+    submit: ({ message }) => {
+      assert.equal(
+        message,
+        '换成蓝色\n\n选中元素信息：\n- 页面路径: #/icons?size=large\n- 标签: path' +
+          '\n- 选择器: svg#badge > path.glyph:nth-child(1)',
+      )
+      records = [row(3, 'user', message), ...records]
+      return { taskId, conflict: false, reused: false }
+    },
+  })
+  await flush()
+
+  const pageUrl = new URL(tab.state.previewUrl)
+  pageUrl.hash = '/icons?size=large'
+  const chatOrigin = 'http://chat.test'
+  const listeners = new Map()
+  const toFrame = []
+  const contentWindow = {
+    postMessage(data, origin) {
+      assert.equal(origin, pageUrl.origin)
+      toFrame.push(data)
+    },
+  }
+  const parent = {
+    postMessage(data, origin) {
+      assert.equal(origin, chatOrigin)
+      tab.state.onPreviewMessage({ source: contentWindow, origin: pageUrl.origin, data })
+    },
+  }
+  const browser = {
+    parent,
+    location: pageUrl,
+    history: {
+      pushState(_state, _unused, url) {
+        pageUrl.href = new URL(url, pageUrl).href
+      },
+      replaceState(_state, _unused, url) {
+        pageUrl.href = new URL(url, pageUrl).href
+      },
+    },
+    addEventListener: (type, listener) => listeners.set(type, listener),
+    removeEventListener: (type) => listeners.delete(type),
+  }
+  const deliver = () => {
+    for (const data of toFrame.splice(0)) {
+      listeners.get('message')({ source: parent, origin: chatOrigin, data })
+    }
+  }
+
+  class FakeElement {
+    id = ''
+    classList = []
+    attributes = new Map()
+    children = []
+    style = {}
+    constructor(localName) {
+      this.tagName = localName
+      this.localName = localName
+    }
+    appendChild(child) {
+      this.children.push(child)
+      child.parentElement = this
+    }
+    setAttribute(name, value) {
+      this.attributes.set(name, value)
+    }
+    removeAttribute(name) {
+      this.attributes.delete(name)
+    }
+    remove() {}
+  }
+  const doc = {
+    head: new FakeElement('head'),
+    body: new FakeElement('body'),
+    createElement: (name) => new FakeElement(name),
+  }
+  const svg = new FakeElement('svg')
+  svg.id = 'badge'
+  doc.body.appendChild(svg)
+  const path = new FakeElement('path')
+  path.classList = ['glyph']
+  path.className = { baseVal: 'glyph' }
+  svg.appendChild(path)
+  const bridge = readFileSync(
+    new URL('../../paimeng-backend/src/main/resources/preview/visual-editor.js', import.meta.url),
+    'utf8',
+  )
+  const runBridge = new Function(
+    'window',
+    'document',
+    'Element',
+    'CSS',
+    'setTimeout',
+    'clearTimeout',
+    bridge,
+  )
+  runBridge(
+    browser,
+    doc,
+    FakeElement,
+    { escape: (name) => name },
+    () => 1,
+    () => {},
+  )
+
+  const iframe = { src: tab.state.previewUrl, contentWindow }
+  tab.state.previewFrame = iframe
+  tab.state.onIframeLoad({ currentTarget: iframe })
+  deliver()
+  assert.equal(listeners.has('click'), false)
+  tab.state.toggleEditMode()
+  assert.equal(tab.state.isEditMode, false)
+  deliver()
+  assert.equal(tab.state.isEditMode, true)
+
+  const selectPath = () => {
+    let prevented = false
+    listeners.get('click')({
+      target: path,
+      preventDefault: () => {
+        prevented = true
+      },
+      stopImmediatePropagation() {},
+    })
+    assert.equal(prevented, true)
+    assert.equal(tab.state.selectedElementInfo.className, 'glyph')
+    assert.equal(path.attributes.has('data-paimeng-visual-selected'), true)
+  }
+  selectPath()
+  browser.history.pushState({}, '', '#/other')
+  assert.equal(tab.state.selectedElementInfo, null)
+  assert.equal(path.attributes.has('data-paimeng-visual-selected'), false)
+  selectPath()
+  assert.equal(tab.state.selectedElementInfo.pagePath, '#/other')
+  browser.history.replaceState({}, '', '#/icons?size=large')
+  assert.equal(tab.state.selectedElementInfo, null)
+  assert.equal(path.attributes.has('data-paimeng-visual-selected'), false)
+  selectPath()
+
+  tab.state.toggleEditMode()
+  deliver()
+  assert.equal(listeners.has('click'), false)
+  assert.equal(path.attributes.has('data-paimeng-visual-selected'), false)
+  assert.equal(tab.state.selectedElementInfo, null)
+
+  tab.state.toggleEditMode()
+  deliver()
+  selectPath()
+  tab.state.userInput = '换成蓝色'
+  await tab.state.sendMessage()
+  deliver()
+  assert.equal(tab.state.isEditMode, false)
+  assert.equal(listeners.has('click'), false)
+
+  records = [row(4, 'ai', '已更新 SVG'), ...records]
+  tab.streams[0].emit('done', '50-1', { taskId, status: 'success' })
+  await flush()
+  assert.equal(tab.state.previewUrl, preview + '?task=' + taskId)
 })
