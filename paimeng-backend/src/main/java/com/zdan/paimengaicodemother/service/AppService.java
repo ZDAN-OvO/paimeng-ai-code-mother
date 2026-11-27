@@ -4,11 +4,9 @@ import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.core.service.IService;
 import com.zdan.paimengaicodemother.model.dto.app.AppAddRequest;
 import com.zdan.paimengaicodemother.model.dto.app.AppQueryRequest;
-import com.zdan.paimengaicodemother.model.dto.chathistory.ChatHistoryQueryRequest;
 import com.zdan.paimengaicodemother.model.entity.App;
 import com.zdan.paimengaicodemother.model.entity.User;
 import com.zdan.paimengaicodemother.model.vo.AppVO;
-import reactor.core.publisher.Flux;
 
 import java.util.List;
 
@@ -44,15 +42,6 @@ public interface AppService extends IService<App> {
      * @param appDeployUrl 应用的部署 url
      */
     void generateAppScreenshotAsync(Long appId, String appDeployUrl);
-
-    /**
-     * 通过对话生成应用代码
-     *
-     * @param appId     应用 id
-     * @param message   提示词
-     * @param loginUser 当前登录用户
-     */
-    Flux<String> chatToGenCode(Long appId, String message, User loginUser);
 
     /**
      * 获取应用封装类

@@ -61,6 +61,9 @@ public class WebScreenshotUtils {
                 log.error("删除临时文件失败, 重试次数：{}", i, e);
             }
         }
+        if (!deleted && screenshotRootDir.toFile().exists()) {
+            throw new IllegalStateException("无法清理临时截图文件");
+        }
     }
 
     /**

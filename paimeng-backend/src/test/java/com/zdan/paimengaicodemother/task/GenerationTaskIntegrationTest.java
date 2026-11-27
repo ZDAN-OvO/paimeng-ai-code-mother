@@ -11,15 +11,22 @@ import com.zdan.paimengaicodemother.agent.PythonAgentClient;
 import com.zdan.paimengaicodemother.config.JsonConfig;
 import com.zdan.paimengaicodemother.config.WorkspaceProperties;
 import com.zdan.paimengaicodemother.controller.AppController;
+import com.zdan.paimengaicodemother.controller.UserController;
+import com.zdan.paimengaicodemother.cutover.WriteAdmissionAspect;
+import com.zdan.paimengaicodemother.cutover.WriteBarrier;
 import com.zdan.paimengaicodemother.exception.BusinessException;
 import com.zdan.paimengaicodemother.exception.GlobalExceptionHandler;
 import com.zdan.paimengaicodemother.model.entity.User;
 import com.zdan.paimengaicodemother.ratelimiter.aspect.RateLimitAspect;
 import com.zdan.paimengaicodemother.service.AppService;
+import com.zdan.paimengaicodemother.service.ScreenshotService;
+import com.zdan.paimengaicodemother.service.impl.AppServiceImpl;
+import com.zdan.paimengaicodemother.model.entity.App;
 import com.zdan.paimengaicodemother.service.ProjectDownloadService;
 import com.zdan.paimengaicodemother.service.UserService;
 import io.lettuce.core.RedisURI;
 import java.io.IOException;
+import java.io.Serializable;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -32,6 +39,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.function.Supplier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
@@ -51,6 +59,8 @@ import org.redisson.config.Config;
 import org.springframework.aop.aspectj.annotation.AspectJProxyFactory;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
@@ -63,7 +73,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -90,6 +102,7 @@ class GenerationTaskIntegrationTest {
     private final AtomicInteger attempts = new AtomicInteger();
     private final AtomicInteger registrationRequests = new AtomicInteger();
     private final AtomicInteger forcedCommitStatus = new AtomicInteger();
+    private final AtomicInteger forcedDeleteStatus = new AtomicInteger();
     private final AtomicReference<Runnable> deleteHistoryHook = new AtomicReference<>(() -> { });
     private final AtomicReference<Runnable> getHistoryHook = new AtomicReference<>(() -> { });
     private final Map<String, String> registered = new ConcurrentHashMap<>();
@@ -100,6 +113,9 @@ class GenerationTaskIntegrationTest {
     private JdbcTemplate jdbc;
     private LettuceConnectionFactory redisConnection;
     private StringRedisTemplate redis;
+    private WriteBarrier writeBarrier;
+    private final RedisScript<String> barrierScript =
+            RedisScript.of(new ClassPathResource("cutover/write-barrier.lua"), String.class);
     private HttpServer server;
     private ExecutorService httpWorkers;
     private WorkspaceProperties workspace;
@@ -124,6 +140,8 @@ class GenerationTaskIntegrationTest {
         redisConnection.afterPropertiesSet();
         redis = redisConfig.taskRedisTemplate(redisConnection);
         redis.afterPropertiesSet();
+        writeBarrier = new WriteBarrier(redis, prefix + "barrier");
+        assertThat(barrierCommand("init", UUID.randomUUID().toString())).isEqualTo("ok");
         events = new TaskEventStreamService(redis, mapper, prefix, Duration.ofSeconds(6));
 
         workspace = new WorkspaceProperties(root.toString(), "code_output", "code_staging", "code_deploy", "screenshots");
@@ -519,6 +537,174 @@ class GenerationTaskIntegrationTest {
         assertThat(runs.get()).isZero();
     }
 
+    @Test
+    void userRegistrationKeepsItsRouteAndRejectsWritesWhilePaused() throws Exception {
+        var users = mock(UserService.class);
+        when(users.userRegister(anyString(), anyString(), anyString())).thenReturn(user);
+        var proxy = new AspectJProxyFactory(new UserController(users));
+        proxy.addAspect(new WriteAdmissionAspect(writeBarrier));
+        var mvc = MockMvcBuilders.standaloneSetup((UserController) proxy.getProxy())
+                .setControllerAdvice(new GlobalExceptionHandler()).build();
+        String body = mapper.writeValueAsString(Map.of("userAccount", "fixture-user",
+                "userPassword", "fixture-password", "checkPassword", "fixture-password"));
+        MvcResult accepted = mvc.perform(post("/user/register").contentType(MediaType.APPLICATION_JSON)
+                .content(body)).andReturn();
+        assertThat(mapper.readTree(accepted.getResponse().getContentAsByteArray()).path("code").asInt()).isZero();
+
+        pauseWrites();
+        MvcResult rejected = mvc.perform(post("/user/register").contentType(MediaType.APPLICATION_JSON)
+                .content(body)).andReturn();
+        assertThat(mapper.readTree(rejected.getResponse().getContentAsByteArray()).path("code").asInt()).isNotZero();
+        verify(users).userRegister("fixture-user", "fixture-password", "fixture-password");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void publicationHandsOffToScreenshotWhilePausedAndRecordsWriteFailure(boolean failScreenshot) throws Exception {
+        var publishing = new CountDownLatch(1);
+        var publish = new CountDownLatch(1);
+        var screenshotting = new CountDownLatch(1);
+        var saveCover = new CountDownLatch(1);
+        var screenshots = mock(ScreenshotService.class);
+        when(screenshots.generateAndUploadScreenshot(anyString())).thenAnswer(call -> {
+            screenshotting.countDown();
+            waitFor(saveCover);
+            if (failScreenshot) {
+                throw new IllegalStateException("模拟封面生成失败");
+            }
+            return "https://example.invalid/cover";
+        });
+        var delivery = new GenerationTaskStore(db) {
+            @Override
+            public <T> T readDeliveredWorkspace(long appId, Supplier<T> read) {
+                return super.readDeliveredWorkspace(appId, () -> {
+                    publishing.countDown();
+                    waitFor(publish);
+                    return read.get();
+                });
+            }
+        };
+        var appService = new AppServiceImpl(null, screenshots, agent, null, delivery,
+                workspace, writeBarrier) {
+            @Override
+            public App getById(Serializable id) {
+                var row = new App();
+                row.setId((Long) id);
+                row.setUserId(user);
+                row.setCodeGenType("html");
+                return row;
+            }
+
+            @Override
+            public boolean updateById(App row) {
+                if (row.getCover() != null) {
+                    return jdbc.update("UPDATE app SET cover = ? WHERE id = ?", row.getCover(), row.getId()) == 1;
+                }
+                return jdbc.update("UPDATE app SET \"deployKey\" = ? WHERE id = ?",
+                        row.getDeployKey(), row.getId()) == 1;
+            }
+        };
+        Path project = Files.createDirectories(workspace.getCodeOutputRootDir().resolve("html_" + app));
+        Files.writeString(project.resolve("index.html"), NEW);
+        var owner = new User();
+        owner.setId(user);
+        var otherInstance = new WriteBarrier(redis, prefix + "barrier");
+
+        try (var caller = Executors.newVirtualThreadPerTaskExecutor()) {
+            var response = caller.submit(() -> appService.deployApp(app, owner));
+            try {
+                assertThat(publishing.await(10, TimeUnit.SECONDS)).isTrue();
+                String epoch = pauseWrites();
+                assertThatThrownBy(() -> otherInstance.begin("new.write")).isInstanceOf(WriteBarrier.Paused.class);
+                assertThat(barrierCommand("seal", epoch)).isEqualTo("busy");
+
+                publish.countDown();
+                assertThat(screenshotting.await(10, TimeUnit.SECONDS)).isTrue();
+                assertThat(response.get(10, TimeUnit.SECONDS)).isNotBlank();
+                assertThat(jdbc.queryForObject("SELECT cover FROM app WHERE id = ?", String.class, app)).isNull();
+                assertThat(barrierEntries().values()).anyMatch(value -> value.toString().contains("app.screenshot:" + app));
+                assertThat(barrierCommand("seal", epoch)).isEqualTo("busy");
+
+                saveCover.countDown();
+                if (failScreenshot) {
+                    await().atMost(WAIT).untilAsserted(() -> assertThat(barrierEntries().keySet())
+                            .anyMatch(key -> key.toString().startsWith("failed:")));
+                    assertThat(jdbc.queryForObject("SELECT cover FROM app WHERE id = ?", String.class, app)).isNull();
+                    assertThat(barrierCommand("seal", epoch)).isEqualTo("busy");
+                } else {
+                    await().atMost(WAIT).untilAsserted(() -> assertThat(barrierEntries()).hasSize(2));
+                    assertThat(jdbc.queryForObject("SELECT cover FROM app WHERE id = ?", String.class, app))
+                            .isEqualTo("https://example.invalid/cover");
+                    assertThat(barrierCommand("seal", epoch)).matches("[0-9]+[.][0-9]{6}");
+                    assertThat(otherInstance.recover("old-scan")).isNull();
+                }
+            } finally {
+                publish.countDown();
+                saveCover.countDown();
+            }
+        }
+    }
+
+    @Test
+    void appDeletionSurvivesPauseAndRetainsPendingHistoryUntilRecoveryCommits() throws Exception {
+        var admissionHeld = new CountDownLatch(1);
+        var releaseAdmission = new CountDownLatch(1);
+        var firstDeletion = new CountDownLatch(1);
+        var releaseDeletion = new CountDownLatch(1);
+        var coordinator = coordinator(mock(GenerationRateLimitService.class));
+        forcedDeleteStatus.set(503);
+        deleteHistoryHook.set(() -> {
+            firstDeletion.countDown();
+            waitFor(releaseDeletion);
+        });
+        try (var caller = Executors.newVirtualThreadPerTaskExecutor()) {
+            var lock = caller.submit(() -> store.admission(app, session -> {
+                admissionHeld.countDown();
+                waitFor(releaseAdmission);
+                return null;
+            }));
+            try {
+                assertThat(admissionHeld.await(10, TimeUnit.SECONDS)).isTrue();
+                var deletion = caller.submit(() -> coordinator.deleteApp(app));
+                await().atMost(WAIT).untilAsserted(() -> assertThat(barrierEntries().values())
+                        .anyMatch(value -> value.toString().contains("app.delete:" + app)));
+                String epoch = pauseWrites();
+                assertThat(barrierCommand("seal", epoch)).isEqualTo("busy");
+                releaseAdmission.countDown();
+                lock.get(10, TimeUnit.SECONDS);
+                assertThat(firstDeletion.await(10, TimeUnit.SECONDS)).isTrue();
+                assertThat(deletion.get(10, TimeUnit.SECONDS)).isTrue();
+                assertThat(store.pendingHistoryDeletions()).contains(app);
+                assertThat(barrierCommand("seal", epoch)).isEqualTo("busy");
+
+                releaseDeletion.countDown();
+                await().atMost(WAIT).untilAsserted(() -> assertThat(barrierEntries()).hasSize(2));
+                assertThat(store.pendingHistoryDeletions()).contains(app);
+
+                forcedDeleteStatus.set(0);
+                coordinator(mock(GenerationRateLimitService.class)).startRecovery();
+                await().atMost(WAIT).untilAsserted(() -> {
+                    assertThat(store.pendingHistoryDeletions()).doesNotContain(app);
+                    assertThat(barrierEntries()).hasSize(2);
+                });
+                assertThat(barrierCommand("seal", epoch)).matches("[0-9]+[.][0-9]{6}");
+            } finally {
+                releaseAdmission.countDown();
+                releaseDeletion.countDown();
+            }
+        }
+    }
+
+    private String pauseWrites() {
+        String epoch = UUID.randomUUID().toString();
+        assertThat(barrierCommand("pause", epoch)).isEqualTo(epoch);
+        return epoch;
+    }
+
+    private Map<Object, Object> barrierEntries() {
+        return redis.opsForHash().entries(prefix + "barrier:writes");
+    }
+
     private void expireLease() {
         assertThat(redis.expire(prefix + "lease:" + app, Duration.ofMillis(50))).isTrue();
         assertThat(redis.expire(prefix + "lease:" + app + ":fence", Duration.ofMillis(50))).isTrue();
@@ -538,9 +724,13 @@ class GenerationTaskIntegrationTest {
     }
 
     private GenerationTaskCoordinator coordinator(GenerationRateLimitService rate) {
-        var coordinator = new GenerationTaskCoordinator(store, events, manager, rate, agent, mapper);
+        var coordinator = new GenerationTaskCoordinator(store, events, manager, rate, agent, mapper, writeBarrier);
         coordinators.add(coordinator);
         return coordinator;
+    }
+
+    private String barrierCommand(String... arguments) {
+        return redis.execute(barrierScript, List.of(prefix + "barrier:writes"), (Object[]) arguments);
     }
 
     private void addApp(long id) {
@@ -605,7 +795,8 @@ class GenerationTaskIntegrationTest {
             }
             if (exchange.getRequestMethod().equals("DELETE")) {
                 deleteHistoryHook.get().run();
-                exchange.sendResponseHeaders(204, -1);
+                int forced = forcedDeleteStatus.get();
+                exchange.sendResponseHeaders(forced == 0 ? 204 : forced, -1);
                 return;
             }
             var result = mapper.readTree(exchange.getRequestBody());
