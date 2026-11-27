@@ -6,12 +6,11 @@ spring:
   session:
     store-type: redis
     timeout: 2592000s
-  # mysql
+  # PostgreSQL。通过 local 配置或 SPRING_DATASOURCE_* 提供连接参数。
   datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/paimeng_ai_code_mother
-    username: root
-    password: root
+    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://localhost:5432/paimeng_java
+    username: paimeng_java
   # redis
   data:
     redis:
@@ -26,6 +25,9 @@ spring:
 
 # 共享工作区。相对子目录以工作区根为基准，也可以单独配置绝对路径。
 paimeng:
+  agent:
+    base-url: "${AGENT_SERVICE_BASE_URL:http://127.0.0.1:8000}"
+    internal-token: "${INTERNAL_API_TOKEN:}"
   workspace:
     root: "${PAIMENG_WORKSPACE_ROOT:}"
     code-output-root-dir: code_output
@@ -55,8 +57,3 @@ knife4j:
   enable: true
   setting:
     language: zh_cn
-
-
-#logging:
-#  level:
-#    dev.langchain4j: DEBUG
