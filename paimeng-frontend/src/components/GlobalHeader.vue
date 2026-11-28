@@ -1,5 +1,6 @@
 <template>
-  <a-layout-header class="header">
+  <HomeNavigation v-if="home" @logout="doLogout" />
+  <a-layout-header v-else class="header">
     <a-row :wrap="false">
       <!-- 左侧：Logo和标题 -->
       <a-col flex="200px">
@@ -13,7 +14,7 @@
       <!-- 中间：导航菜单 -->
       <a-col flex="auto">
         <a-menu
-          v-model:selectedKeys="selectedKeys"
+          :selected-keys="selectedKeys"
           mode="horizontal"
           :items="menuItems"
           @click="handleMenuClick"
@@ -48,21 +49,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, h } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { type MenuProps, message } from 'ant-design-vue'
 import { useLoginUserStore } from '@/stores/loginUser.ts'
 import { userLogout } from '@/api/userController.ts'
 import { LogoutOutlined, HomeOutlined } from '@ant-design/icons-vue'
+import HomeNavigation from './HomeNavigation.vue'
 
+defineProps<{ home?: boolean }>()
 const loginUserStore = useLoginUserStore()
 const router = useRouter()
-// 当前选中菜单
-const selectedKeys = ref<string[]>(['/'])
-// 监听路由变化，更新当前选中菜单
-router.afterEach((to, from, next) => {
-  selectedKeys.value = [to.path]
-})
+const route = useRoute()
+const selectedKeys = computed(() => [route.path])
 
 // 菜单配置项
 const originItems = [
@@ -106,7 +105,6 @@ const menuItems = computed<MenuProps['items']>(() => filterMenus(originItems))
 // 处理菜单点击
 const handleMenuClick: MenuProps['onClick'] = (e) => {
   const key = e.key as string
-  selectedKeys.value = [key]
   // 跳转到对应页面
   if (key.startsWith('/')) {
     router.push(key)
