@@ -1,80 +1,146 @@
 <template>
   <div id="appChatPage">
-    <!-- 顶部栏 -->
-    <div class="header-bar">
-      <div class="header-left">
+    <header class="workspace-header">
+      <div class="work-identity">
+        <RouterLink to="/" class="quiet-control back-link" aria-label="返回首页">
+          <ArrowLeftOutlined /><span class="action-label">返回首页</span>
+        </RouterLink>
         <h1 class="app-name">{{ appInfo?.appName || '网站生成器' }}</h1>
-        <a-tag v-if="appInfo?.codeGenType" color="blue" class="code-gen-type-tag">
-          {{ formatCodeGenType(appInfo.codeGenType) }}
-        </a-tag>
+        <span v-if="appInfo?.codeGenType" class="type-tag">{{
+          formatCodeGenType(appInfo.codeGenType)
+        }}</span>
       </div>
-      <div class="header-right">
-        <a-button type="default" @click="showAppDetail">
-          <template #icon>
-            <InfoCircleOutlined />
-          </template>
-          应用详情
-        </a-button>
-        <a-button
-          type="primary"
-          ghost
+      <div class="workspace-actions">
+        <button type="button" class="quiet-control" aria-label="应用详情" @click="showAppDetail">
+          <InfoCircleOutlined /><span class="action-label">应用详情</span>
+        </button>
+        <button
+          type="button"
+          class="quiet-control"
+          aria-label="下载代码"
+          :disabled="!isOwner || downloading"
           @click="downloadCode"
-          :loading="downloading"
-          :disabled="!isOwner"
         >
-          <template #icon>
-            <DownloadOutlined />
+          <DownloadOutlined /><span class="action-label">下载代码</span>
+        </button>
+        <a-dropdown v-if="deployUrl && !deploying" :trigger="['click']" placement="bottomRight">
+          <button type="button" class="deploy-control deploy-status">
+            <CheckOutlined aria-hidden="true" /> 已部署
+          </button>
+          <template #overlay>
+            <a-menu>
+              <a-menu-item key="open"
+                ><a :href="deployUrl" target="_blank" rel="noopener noreferrer"
+                  >打开发布网站</a
+                ></a-menu-item
+              >
+              <a-menu-item key="copy"
+                ><button class="deploy-menu-action" type="button" @click="copyDeployUrl">
+                  复制链接
+                </button></a-menu-item
+              >
+              <a-menu-item v-if="isOwner" key="redeploy"
+                ><button class="deploy-menu-action" type="button" @click="deployApp">
+                  重新部署
+                </button></a-menu-item
+              >
+            </a-menu>
           </template>
-          下载代码
-        </a-button>
-        <a-button type="primary" @click="deployApp" :loading="deploying">
-          <template #icon>
-            <CloudUploadOutlined />
-          </template>
-          部署
-        </a-button>
+        </a-dropdown>
+        <button
+          v-else
+          type="button"
+          class="deploy-control"
+          :class="{ 'deploy-status': deploying }"
+          :disabled="!isOwner || !previewUrl || deploying"
+          :aria-busy="deploying"
+          @click="deployApp"
+        >
+          <CloudUploadOutlined aria-hidden="true" /> {{ deploying ? '部署中…' : '部署' }}
+        </button>
       </div>
+    </header>
+
+    <div class="mobile-tabs" aria-label="工作区视图">
+      <button type="button" :aria-pressed="activePanel === 'chat'" @click="activePanel = 'chat'">
+        查看对话
+      </button>
+      <button
+        type="button"
+        :aria-pressed="activePanel === 'preview'"
+        @click="activePanel = 'preview'"
+      >
+        查看预览
+      </button>
     </div>
 
-    <!-- 主要内容区域 -->
-    <div class="main-content">
-      <!-- 左侧对话区域 -->
-      <div class="chat-section">
-        <!-- 消息区域 -->
-        <div class="messages-container" ref="messagesContainer">
-          <!-- 加载更多按钮 -->
-          <div v-if="hasMoreHistory" class="load-more-container">
-            <a-button type="link" @click="loadMoreHistory" :loading="loadingHistory" size="small">
-              加载更多历史消息
-            </a-button>
+    <div
+      ref="workspaceGrid"
+      class="workspace-grid"
+      :class="['show-' + activePanel, { 'is-dragging': dragging }]"
+      :style="chatWidth == null ? undefined : { '--chat-width': chatWidth + 'px' }"
+    >
+      <section id="workspace-chat" class="chat-section" aria-labelledby="chat-title">
+        <div class="panel-heading chat-heading">
+          <h2 id="chat-title">对话</h2>
+          <span class="preview-status">{{ previewUrl ? '预览已就绪' : '等待预览' }}</span>
+        </div>
+        <div ref="messagesContainer" class="messages-container">
+          <div v-if="hasMoreHistory" class="history-control">
+            <button
+              type="button"
+              class="creation-chip"
+              :disabled="loadingHistory"
+              @click="loadMoreHistory"
+            >
+              {{ loadingHistory ? '正在加载…' : '加载更多历史消息' }}
+            </button>
           </div>
-          <div v-for="message in messages" :key="message.key" class="message-item">
-            <div v-if="message.type === 'user'" class="user-message">
-              <div class="message-content">{{ message.content }}</div>
-              <div class="message-avatar">
-                <a-avatar :src="loginUserStore.loginUser.userAvatar" />
-              </div>
-            </div>
+          <div v-for="entry in messages" :key="entry.key" class="message-item">
+            <div v-if="entry.type === 'user'" class="user-message">{{ entry.content }}</div>
             <div v-else class="ai-message">
-              <div class="message-avatar">
-                <a-avatar :src="aiAvatar" />
-              </div>
-              <div class="message-content">
-                <MarkdownRenderer v-if="message.content" :content="message.content" />
-                <div v-for="status in message.statuses" :key="status.id" class="task-status">
-                  {{ status.text }}
-                </div>
-                <div v-if="message.error" class="task-error" role="status">{{ message.error }}</div>
-                <div v-if="message.loading" class="loading-indicator">
-                  <a-spin size="small" />
-                  <span>AI 正在思考...</span>
+              <span class="ai-mark" aria-hidden="true">✱</span>
+              <div class="ai-content">
+                <strong class="ai-name">派蒙</strong>
+                <MarkdownRenderer v-if="entry.content" :content="entry.content" />
+                <div v-if="entry.error" class="task-error" role="status">{{ entry.error }}</div>
+                <details
+                  v-if="entry !== liveTask?.assistant && entry.statuses?.length"
+                  class="task-details"
+                >
+                  <summary>生成记录</summary>
+                  <div v-for="status in entry.statuses" :key="status.id">{{ status.text }}</div>
+                </details>
+                <div v-if="isGenerating && entry === liveTask?.assistant" class="generation">
+                  <div class="generation-label" role="status">{{ generationLabel }}</div>
+                  <div class="progress-track" role="progressbar" aria-label="生成进度">
+                    <span />
+                  </div>
                 </div>
               </div>
             </div>
           </div>
+          <div
+            v-if="previewUrl && isOwner && !isChatBusy && messages.length && !latestMessage?.error"
+            class="followups"
+          >
+            <div class="preview-status"><CheckOutlined /> 预览已就绪</div>
+            <button
+              v-for="suggestion in suggestions"
+              :key="suggestion"
+              type="button"
+              class="creation-chip"
+              :disabled="!!userInput.trim()"
+              @click="useSuggestion(suggestion)"
+            >
+              <PlusOutlined aria-hidden="true" /> {{ suggestion }}
+            </button>
+          </div>
+          <p v-if="!isOwner && appInfo && !messages.length" class="read-only-note">
+            对话仅作品所有者可编辑。
+          </p>
         </div>
 
-        <!-- 选中元素信息展示 -->
         <a-alert
           v-if="selectedElementInfo"
           class="selected-element-alert"
@@ -112,92 +178,132 @@
           </template>
         </a-alert>
 
-        <!-- 用户消息输入框 -->
-        <div class="input-container">
-          <div class="input-wrapper">
-            <a-tooltip v-if="!isOwner" title="无法在别人的作品下对话哦~" placement="top">
-              <a-textarea
-                v-model:value="userInput"
-                :placeholder="getInputPlaceholder()"
-                :rows="4"
-                :maxlength="1000"
-                @keydown.enter.prevent="sendMessage"
-                disabled
-              />
-            </a-tooltip>
-            <a-textarea
-              v-else
-              v-model:value="userInput"
+        <form class="composer-area" @submit.prevent="sendMessage">
+          <div class="creation-composer chat-composer">
+            <textarea
+              ref="chatInput"
+              v-model="userInput"
+              aria-label="对话输入"
               :placeholder="getInputPlaceholder()"
-              :rows="4"
               :maxlength="1000"
-              @keydown.enter.prevent="sendMessage"
-              :disabled="isChatBusy"
+              :disabled="!isOwner || isChatBusy"
+              @keydown="handleChatKey"
             />
-            <div class="input-actions">
-              <a-button
-                type="primary"
-                @click="sendMessage"
-                :loading="isGenerating || submitting"
+            <div class="composer-controls">
+              <span v-if="isOwner" class="shortcut">回车发送 · ⇧↵ 换行</span>
+              <span v-else class="shortcut">只读</span>
+              <button
+                class="creation-send"
+                type="submit"
+                aria-label="发送消息"
                 :disabled="!isOwner || isChatBusy"
               >
-                <template #icon>
-                  <SendOutlined />
-                </template>
-              </a-button>
+                <ArrowUpOutlined />
+              </button>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <div
+        class="splitter"
+        role="separator"
+        tabindex="0"
+        aria-label="调整对话区宽度"
+        aria-orientation="vertical"
+        aria-controls="workspace-chat"
+        :aria-valuemin="MIN_CHAT_WIDTH"
+        :aria-valuemax="maxChatWidth"
+        :aria-valuenow="currentChatWidth"
+        @keydown="resizeWithKeyboard"
+        @pointerdown="startResize"
+        @pointermove="moveResize"
+        @pointerup="stopResize"
+        @pointercancel="stopResize"
+        @lostpointercapture="stopResize"
+      />
+
+      <section class="preview-section" aria-labelledby="preview-title">
+        <div class="panel-heading preview-toolbar">
+          <h2 id="preview-title">预览</h2>
+          <div class="preview-address" :title="previewAddress">
+            <LinkOutlined /><span>{{ previewAddress || '等待预览' }}</span>
+          </div>
+          <div class="preview-actions">
+            <button
+              v-if="isOwner && previewUrl"
+              type="button"
+              class="quiet-control edit-control"
+              :aria-label="editLabel"
+              :aria-pressed="isEditMode"
+              :title="editLabel"
+              @click="toggleEditMode"
+            >
+              <EditOutlined /><span>{{ editLabel }}</span>
+            </button>
+            <div class="viewport-switch" aria-label="预览尺寸">
+              <button
+                type="button"
+                class="icon-control"
+                title="桌面预览"
+                aria-label="桌面预览"
+                :aria-pressed="!phonePreview"
+                @click="phonePreview = false"
+              >
+                <DesktopOutlined />
+              </button>
+              <button
+                type="button"
+                class="icon-control"
+                title="手机预览"
+                aria-label="手机预览"
+                :aria-pressed="phonePreview"
+                @click="phonePreview = true"
+              >
+                <MobileOutlined />
+              </button>
+            </div>
+            <button
+              type="button"
+              class="icon-control"
+              title="刷新预览"
+              aria-label="刷新预览"
+              :disabled="!previewUrl"
+              @click="refreshPreview"
+            >
+              <ReloadOutlined />
+            </button>
+            <button
+              type="button"
+              class="icon-control"
+              title="新窗口打开"
+              aria-label="新窗口打开"
+              :disabled="!previewUrl"
+              @click="openInNewTab"
+            >
+              <ExportOutlined />
+            </button>
+          </div>
+        </div>
+        <div class="preview-stage" :class="{ 'phone-preview': phonePreview }">
+          <div class="preview-canvas">
+            <iframe
+              v-if="previewUrl"
+              :key="previewKey"
+              ref="previewFrame"
+              :src="previewUrl"
+              title="网站预览"
+              @load="onIframeLoad"
+            />
+            <div v-else class="preview-empty" role="status">
+              <span class="preview-empty-icon"><GlobalOutlined /></span>
+              <span>{{ isGenerating ? '正在生成网站…' : '网站生成后将在这里预览' }}</span>
             </div>
           </div>
         </div>
-      </div>
-      <!-- 右侧网页展示区域 -->
-      <div class="preview-section">
-        <div class="preview-header">
-          <h3>生成后的网页展示</h3>
-          <div class="preview-actions">
-            <a-button
-              v-if="isOwner && previewUrl"
-              type="link"
-              :danger="isEditMode"
-              @click="toggleEditMode"
-              :class="{ 'edit-mode-active': isEditMode }"
-              style="padding: 0; height: auto; margin-right: 12px"
-            >
-              <template #icon>
-                <EditOutlined />
-              </template>
-              {{ isEditMode ? '退出编辑' : editState === 'starting' ? '取消开启' : '编辑模式' }}
-            </a-button>
-            <a-button v-if="previewUrl" type="link" @click="openInNewTab">
-              <template #icon>
-                <ExportOutlined />
-              </template>
-              新窗口打开
-            </a-button>
-          </div>
-        </div>
-        <div class="preview-content">
-          <div v-if="!previewUrl && !isGenerating" class="preview-placeholder">
-            <div class="placeholder-icon">🌐</div>
-            <p>网站文件生成完成后将在这里展示</p>
-          </div>
-          <div v-else-if="!previewUrl" class="preview-loading">
-            <a-spin size="large" />
-            <p>正在生成网站...</p>
-          </div>
-          <iframe
-            v-else
-            :key="previewUrl"
-            ref="previewFrame"
-            :src="previewUrl"
-            class="preview-iframe"
-            frameborder="0"
-            @load="onIframeLoad"
-          ></iframe>
-        </div>
-      </div>
+      </section>
     </div>
 
-    <!-- 应用详情弹窗 -->
     <AppDetailModal
       v-model:open="appDetailVisible"
       :app="appInfo"
@@ -206,12 +312,21 @@
       @delete="deleteApp"
     />
 
-    <!-- 部署成功弹窗 -->
-    <DeploySuccessModal
-      v-model:open="deployModalVisible"
-      :deploy-url="deployUrl"
-      @open-site="openDeployedSite"
-    />
+    <div v-if="showDeployNotice" class="deployment-notice">
+      <span class="notice-icon" aria-hidden="true"><CheckOutlined /></span>
+      <div role="status">
+        <strong>部署成功</strong>
+        <p>{{ appInfo?.appName || '网站' }}已发布。</p>
+      </div>
+      <button
+        type="button"
+        class="icon-control"
+        aria-label="关闭部署提示"
+        @click="dismissDeployNotice"
+      >
+        <CloseOutlined />
+      </button>
+    </div>
   </div>
 </template>
 
@@ -232,18 +347,25 @@ import request from '@/request'
 
 import MarkdownRenderer from '@/components/MarkdownRenderer.vue'
 import AppDetailModal from '@/components/AppDetailModal.vue'
-import DeploySuccessModal from '@/components/DeploySuccessModal.vue'
-import aiAvatar from '@/assets/aiAvatar.png'
-import { getStaticPreviewUrl } from '@/config/env'
+import { getDeployUrl, getStaticPreviewUrl } from '@/config/env'
 import { VisualEditor, type ElementInfo } from '@/utils/visualEditor'
 
 import {
   CloudUploadOutlined,
-  SendOutlined,
+  ArrowUpOutlined,
+  ArrowLeftOutlined,
   ExportOutlined,
   InfoCircleOutlined,
   DownloadOutlined,
   EditOutlined,
+  CheckOutlined,
+  CloseOutlined,
+  DesktopOutlined,
+  GlobalOutlined,
+  LinkOutlined,
+  MobileOutlined,
+  PlusOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons-vue'
 
 const route = useRoute()
@@ -275,14 +397,22 @@ interface TaskSession {
 
 const HISTORY_PAGE_SIZE = 10
 const TASK_RECOVERY_DELAY = 2000
+const MIN_CHAT_WIDTH = 300
+const DESKTOP_WIDTH = 800
+const suggestions = ['补充联系信息', '调整为深色主题']
 const appInfo = ref<API.AppVO>()
 const appId = ref('')
 const historyMessages = ref<Message[]>([])
 const liveTask = ref<TaskSession>()
 const userInput = ref('')
+const chatInput = ref<HTMLTextAreaElement>()
 const checkingTask = ref(false)
 const submitting = ref(false)
 const isGenerating = computed(() => liveTask.value?.running ?? false)
+const generationLabel = computed(() => {
+  const statuses = liveTask.value?.assistant.statuses ?? []
+  return statuses[statuses.length - 1]?.text || '正在生成网站…'
+})
 const isChatBusy = computed(() => checkingTask.value || submitting.value || isGenerating.value)
 const messages = computed(() => {
   const task = liveTask.value
@@ -294,6 +424,7 @@ const messages = computed(() => {
   ]
 })
 const messagesContainer = ref<HTMLElement>()
+const latestMessage = computed(() => messages.value[messages.value.length - 1])
 
 const loadingHistory = ref(false)
 const hasMoreHistory = ref(false)
@@ -307,11 +438,37 @@ let pendingDraft: { content: string; requestId: string } | undefined
 // 预览相关
 const previewUrl = ref('')
 const previewFrame = shallowRef<HTMLIFrameElement | null>(null)
+const previewKey = ref(0)
+const previewAddress = computed(() => {
+  if (!previewUrl.value) return ''
+  const url = new URL(previewUrl.value, window.location.origin)
+  return url.host + url.pathname
+})
+const phonePreview = ref(false)
+const activePanel = ref<'chat' | 'preview'>('chat')
+const workspaceGrid = ref<HTMLElement>()
+const workspaceWidth = ref(0)
+const chatWidth = ref<number>()
+const dragging = ref(false)
+let activePointer: { id: number; offset: number } | undefined
+let workspaceObserver: ResizeObserver | undefined
+
+const maxChatWidth = computed(() =>
+  Math.max(
+    MIN_CHAT_WIDTH,
+    Math.floor(Math.min(workspaceWidth.value * 0.62, workspaceWidth.value - 381)),
+  ),
+)
+const currentChatWidth = computed(() => {
+  const defaultWidth = Math.max(320, Math.min(workspaceWidth.value * 0.29, 445))
+  return Math.min(maxChatWidth.value, chatWidth.value ?? Math.round(defaultWidth))
+})
 
 // 部署相关
 const deploying = ref(false)
-const deployModalVisible = ref(false)
 const deployUrl = ref('')
+const showDeployNotice = ref(false)
+let deployNoticeTimer: ReturnType<typeof setTimeout> | undefined
 
 // 下载相关
 const downloading = ref(false)
@@ -319,6 +476,9 @@ const downloading = ref(false)
 // 可视化编辑相关
 const editState = ref<'idle' | 'starting' | 'editing'>('idle')
 const isEditMode = computed(() => editState.value === 'editing')
+const editLabel = computed(() =>
+  isEditMode.value ? '退出编辑' : editState.value === 'starting' ? '取消开启' : '编辑模式',
+)
 const selectedElementInfo = ref<ElementInfo | null>(null)
 const visualEditor = new VisualEditor({
   onElementSelected: (elementInfo: ElementInfo) => {
@@ -441,6 +601,7 @@ async function fetchAppInfo(page: ChatPage) {
     if (page.signal.aborted) return
     if (res.data.code !== 0 || !res.data.data) throw new Error(res.data.message)
     appInfo.value = res.data.data
+    deployUrl.value = res.data.data.deployKey ? getDeployUrl(res.data.data.deployKey) : ''
   } catch (error) {
     if (!page.signal.aborted) {
       console.error('获取应用信息失败：', error)
@@ -454,7 +615,7 @@ async function fetchAppInfo(page: ChatPage) {
     if (!isOwner.value) {
       if (isAdmin.value) {
         await loadChatHistory(page)
-        if (!page.signal.aborted && historyMessages.value.length >= 2) updatePreview()
+        void restorePreview(page)
       }
       return
     }
@@ -471,11 +632,8 @@ async function fetchAppInfo(page: ChatPage) {
     }
     if (latestTask && isSuccessful(latestTask)) {
       updatePreview(latestTask.taskId)
-    } else if (
-      historyMessages.value.length >= 2 &&
-      (latestTask?.status.toLowerCase() !== 'failed' || historyMessages.value.length > 2)
-    ) {
-      updatePreview()
+    } else if (historyMessages.value.length || latestTask) {
+      void restorePreview(page)
     }
 
     if (latestTask && isRunning(latestTask)) {
@@ -490,7 +648,7 @@ async function fetchAppInfo(page: ChatPage) {
       console.error('查询生成任务失败：', error)
       if (historyMessages.value.length === 0) await loadChatHistory(page)
       if (page.signal.aborted) return
-      if (historyMessages.value.length >= 2) updatePreview()
+      void restorePreview(page)
       message.error('查询生成任务失败，请刷新后重试')
     }
   }
@@ -546,9 +704,7 @@ async function submitTask(page: ChatPage, content: string, requestId: string, in
     if (!initial) pendingDraft = undefined
     if (result.code === 'HISTORY_EXISTS') {
       await loadChatHistory(page)
-      if (!page.signal.aborted && historyMessages.value.length >= 2 && !previewUrl.value) {
-        updatePreview()
-      }
+      void restorePreview(page)
       scrollToBottom()
       return
     }
@@ -766,14 +922,99 @@ async function finishTask(
   scrollToBottom()
 }
 
-function updatePreview(taskId?: string) {
+function makePreviewUrl(taskId?: string) {
   const codeGenType = appInfo.value?.codeGenType || CodeGenTypeEnum.HTML
   const url = getStaticPreviewUrl(codeGenType, appId.value)
-  const nextUrl = taskId ? `${url}?${new URLSearchParams({ task: taskId })}` : url
+  return taskId ? `${url}?${new URLSearchParams({ task: taskId })}` : url
+}
+
+async function restorePreview(page: ChatPage) {
+  if (page.signal.aborted || previewUrl.value) return
+  const url = makePreviewUrl()
+  try {
+    const response = await fetch(url, {
+      credentials: 'include',
+      cache: 'no-store',
+      signal: page.signal,
+    })
+    void response.body?.cancel().catch(() => {})
+    const isHtml = response.headers.get('content-type')?.startsWith('text/html')
+    if (response.ok && isHtml && !page.signal.aborted && !previewUrl.value) {
+      updatePreview()
+      scrollToBottom()
+    }
+  } catch {
+    // 初次生成与旧产物不可用时，继续展示预览空态。
+  }
+}
+
+function updatePreview(taskId?: string) {
+  const nextUrl = makePreviewUrl(taskId)
   if (previewUrl.value !== nextUrl) {
     visualEditor.disconnect()
     previewUrl.value = nextUrl
+    previewKey.value++
   }
+}
+
+function refreshPreview() {
+  visualEditor.disconnect()
+  previewKey.value++
+}
+
+function handleChatKey(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return
+  event.preventDefault()
+  void sendMessage()
+}
+
+function useSuggestion(suggestion: string) {
+  if (userInput.value.trim() || !isOwner.value || isChatBusy.value) return
+  userInput.value = suggestion
+  chatInput.value?.focus()
+}
+
+function setChatWidth(width: number) {
+  chatWidth.value = Math.round(Math.max(MIN_CHAT_WIDTH, Math.min(maxChatWidth.value, width)))
+}
+
+function startResize(event: PointerEvent) {
+  if (event.button !== 0 || activePointer || !workspaceGrid.value) return
+  const handle = event.currentTarget as HTMLElement
+  handle.setPointerCapture(event.pointerId)
+  activePointer = {
+    id: event.pointerId,
+    offset:
+      event.clientX - workspaceGrid.value.getBoundingClientRect().left - currentChatWidth.value,
+  }
+  dragging.value = true
+  event.preventDefault()
+}
+
+function moveResize(event: PointerEvent) {
+  if (!activePointer || activePointer.id !== event.pointerId || !workspaceGrid.value) return
+  setChatWidth(
+    event.clientX - workspaceGrid.value.getBoundingClientRect().left - activePointer.offset,
+  )
+}
+
+function stopResize(event?: PointerEvent) {
+  if (event && activePointer?.id !== event.pointerId) return
+  activePointer = undefined
+  dragging.value = false
+}
+
+function resizeWithKeyboard(event: KeyboardEvent) {
+  const width = currentChatWidth.value
+  const target = {
+    ArrowLeft: width - 16,
+    ArrowRight: width + 16,
+    Home: MIN_CHAT_WIDTH,
+    End: maxChatWidth.value,
+  }[event.key]
+  if (target == null) return
+  event.preventDefault()
+  setChatWidth(target)
 }
 
 function scrollToBottom() {
@@ -786,17 +1027,16 @@ function scrollToBottom() {
 
 // 下载代码
 const downloadCode = async () => {
-  if (!appId.value) {
-    message.error('应用ID不存在')
-    return
-  }
+  const page = getCurrentPage()
+  if (!page || !isOwner.value || downloading.value) return
   downloading.value = true
   try {
     const API_BASE_URL = request.defaults.baseURL || ''
-    const url = `${API_BASE_URL}/app/download/${appId.value}`
+    const url = `${API_BASE_URL.replace(/\/$/, '')}/app/download/${page.appId}`
     const response = await fetch(url, {
       method: 'GET',
       credentials: 'include',
+      signal: page.signal,
     })
     if (!response.ok) {
       throw new Error(`下载失败: ${response.status}`)
@@ -806,6 +1046,7 @@ const downloadCode = async () => {
     const fileName = contentDisposition?.match(/filename="(.+)"/)?.[1] || `app-${appId.value}.zip`
     // 下载文件
     const blob = await response.blob()
+    if (page.signal.aborted) return
     const downloadUrl = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = downloadUrl
@@ -815,52 +1056,63 @@ const downloadCode = async () => {
     URL.revokeObjectURL(downloadUrl)
     message.success('代码下载成功')
   } catch (error) {
-    console.error('下载失败：', error)
-    message.error('下载失败，请重试')
+    if (!page.signal.aborted) {
+      console.error('下载失败：', error)
+      message.error('下载失败，请重试')
+    }
   } finally {
-    downloading.value = false
+    if (!page.signal.aborted) downloading.value = false
   }
 }
 
 // 部署应用
 const deployApp = async () => {
-  if (!appId.value) {
-    message.error('应用ID不存在')
-    return
-  }
+  const page = getCurrentPage()
+  if (!page || !isOwner.value || !previewUrl.value || deploying.value) return
 
+  dismissDeployNotice()
   deploying.value = true
   try {
-    const res = await deployAppApi({
-      appId: appId.value as unknown as number,
-    })
-
-    if (res.data.code === 0 && res.data.data) {
-      deployUrl.value = res.data.data
-      deployModalVisible.value = true
-      message.success('部署成功')
-    } else {
-      message.error('部署失败：' + res.data.message)
-    }
+    const res = await deployAppApi(
+      { appId: page.appId as unknown as number },
+      { signal: page.signal },
+    )
+    if (page.signal.aborted) return
+    if (res.data.code !== 0 || !res.data.data) throw new Error(res.data.message || '请重试')
+    // 服务端提供发布标识，用户打开的链接统一使用前端配置的发布域名。
+    const key = new URL(res.data.data).pathname.split('/').filter(Boolean).pop()
+    if (!key || !/^[A-Za-z0-9_-]+$/.test(key)) throw new Error('服务器未返回有效的发布地址')
+    deployUrl.value = getDeployUrl(key)
+    showDeployNotice.value = true
+    deployNoticeTimer = setTimeout(dismissDeployNotice, 5000)
   } catch (error) {
-    console.error('部署失败：', error)
-    message.error('部署失败，请重试')
+    if (!page.signal.aborted) {
+      message.error('部署失败：' + (error instanceof Error ? error.message : '请重试'))
+    }
   } finally {
-    deploying.value = false
+    if (!page.signal.aborted) deploying.value = false
+  }
+}
+
+function dismissDeployNotice() {
+  clearTimeout(deployNoticeTimer)
+  showDeployNotice.value = false
+}
+
+async function copyDeployUrl() {
+  const page = getCurrentPage()
+  try {
+    await navigator.clipboard.writeText(deployUrl.value)
+    if (!page?.signal.aborted) message.success('发布链接已复制')
+  } catch {
+    if (!page?.signal.aborted) message.error('复制失败，请打开网站后复制地址')
   }
 }
 
 // 在新窗口打开预览
 const openInNewTab = () => {
   if (previewUrl.value) {
-    window.open(previewUrl.value, '_blank')
-  }
-}
-
-// 打开部署的网站
-const openDeployedSite = () => {
-  if (deployUrl.value) {
-    window.open(deployUrl.value, '_blank')
+    window.open(previewUrl.value, '_blank', 'noopener,noreferrer')
   }
 }
 
@@ -910,7 +1162,7 @@ const getInputPlaceholder = () => {
   if (selectedElementInfo.value) {
     return `正在编辑 ${selectedElementInfo.value.tagName.toLowerCase()} 元素，描述您想要的修改...`
   }
-  return '请描述你想生成的网站，越详细效果越好哦'
+  return isOwner.value ? '告诉派蒙你想改些什么…' : '仅作品所有者可以发送消息'
 }
 
 function onPreviewMessage(event: MessageEvent) {
@@ -936,6 +1188,12 @@ watch(
     submitting.value = false
     visualEditor.disconnect()
     previewUrl.value = ''
+    deployUrl.value = ''
+    deploying.value = false
+    downloading.value = false
+    appDetailVisible.value = false
+    dismissDeployNotice()
+    activePanel.value = 'chat'
 
     const page = getCurrentPage()
     if (!page) return
@@ -951,335 +1209,25 @@ watch(
 
 onMounted(() => {
   window.addEventListener('message', onPreviewMessage)
+  const grid = workspaceGrid.value
+  if (grid) {
+    workspaceWidth.value = grid.clientWidth
+    workspaceObserver = new ResizeObserver(() => {
+      workspaceWidth.value = grid.clientWidth
+      if (workspaceWidth.value < DESKTOP_WIDTH) stopResize()
+    })
+    workspaceObserver.observe(grid)
+  }
 })
 
 onUnmounted(() => {
   pageController?.abort()
   closeTaskStream()
   visualEditor.disconnect()
+  workspaceObserver?.disconnect()
+  dismissDeployNotice()
   window.removeEventListener('message', onPreviewMessage)
 })
 </script>
 
-<style scoped>
-#appChatPage {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  padding: 16px;
-  background: #fdfdfd;
-}
-
-/* 顶部栏 */
-.header-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.code-gen-type-tag {
-  font-size: 12px;
-}
-
-.app-name {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #1a1a1a;
-}
-
-.header-right {
-  display: flex;
-  gap: 12px;
-}
-
-/* 主要内容区域 */
-.main-content {
-  flex: 1;
-  display: flex;
-  gap: 16px;
-  padding: 8px;
-  overflow: hidden;
-}
-
-/* 左侧对话区域 */
-.chat-section {
-  flex: 2;
-  display: flex;
-  flex-direction: column;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  overflow: hidden;
-}
-
-.messages-container {
-  flex: 0.9;
-  padding: 16px;
-  overflow-y: auto;
-  scroll-behavior: smooth;
-}
-
-.message-item {
-  margin-bottom: 12px;
-}
-
-.user-message {
-  display: flex;
-  justify-content: flex-end;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.ai-message {
-  display: flex;
-  justify-content: flex-start;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.message-content {
-  max-width: 70%;
-  padding: 12px 16px;
-  border-radius: 12px;
-  line-height: 1.5;
-  word-wrap: break-word;
-}
-
-.user-message .message-content {
-  background: #1890ff;
-  color: white;
-}
-
-.ai-message .message-content {
-  background: #f5f5f5;
-  color: #1a1a1a;
-  padding: 8px 12px;
-}
-
-.message-avatar {
-  flex-shrink: 0;
-}
-
-.loading-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #666;
-}
-
-.task-status {
-  margin-top: 4px;
-  color: #595959;
-  font-size: 13px;
-}
-
-.task-error {
-  margin-top: 4px;
-  color: #a8071a;
-}
-
-/* 加载更多按钮 */
-.load-more-container {
-  text-align: center;
-  padding: 8px 0;
-  margin-bottom: 16px;
-}
-
-/* 输入区域 */
-.input-container {
-  padding: 16px;
-  background: white;
-}
-
-.input-wrapper {
-  position: relative;
-}
-
-.input-wrapper .ant-input {
-  padding-right: 50px;
-}
-
-.input-actions {
-  position: absolute;
-  bottom: 8px;
-  right: 8px;
-}
-
-/* 右侧预览区域 */
-.preview-section {
-  flex: 3;
-  display: flex;
-  flex-direction: column;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  overflow: hidden;
-}
-
-.preview-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px;
-  border-bottom: 1px solid #e8e8e8;
-}
-
-.preview-header h3 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.preview-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.preview-content {
-  flex: 1;
-  position: relative;
-  overflow: hidden;
-}
-
-.preview-placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: #666;
-}
-
-.placeholder-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-}
-
-.preview-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: #666;
-}
-
-.preview-loading p {
-  margin-top: 16px;
-}
-
-.preview-iframe {
-  width: 100%;
-  height: 100%;
-  border: none;
-}
-
-.selected-element-alert {
-  margin: 0 16px;
-}
-
-/* 响应式设计 */
-@media (max-width: 1024px) {
-  .main-content {
-    flex-direction: column;
-  }
-
-  .chat-section,
-  .preview-section {
-    flex: none;
-    height: 50vh;
-  }
-}
-
-@media (max-width: 768px) {
-  .header-bar {
-    padding: 12px 16px;
-  }
-
-  .app-name {
-    font-size: 16px;
-  }
-
-  .main-content {
-    padding: 8px;
-    gap: 8px;
-  }
-
-  .message-content {
-    max-width: 85%;
-  }
-
-  /* 选中元素信息样式 */
-  .selected-element-alert {
-    margin: 0 16px;
-  }
-
-  .selected-element-info {
-    line-height: 1.4;
-  }
-
-  .element-header {
-    margin-bottom: 8px;
-  }
-
-  .element-details {
-    margin-top: 8px;
-  }
-
-  .element-item {
-    margin-bottom: 4px;
-    font-size: 13px;
-  }
-
-  .element-item:last-child {
-    margin-bottom: 0;
-  }
-
-  .element-tag {
-    font-family: 'Monaco', 'Menlo', monospace;
-    font-size: 14px;
-    font-weight: 600;
-    color: #007bff;
-  }
-
-  .element-id {
-    color: #28a745;
-    margin-left: 4px;
-  }
-
-  .element-class {
-    color: #ffc107;
-    margin-left: 4px;
-  }
-
-  .element-selector-code {
-    font-family: 'Monaco', 'Menlo', monospace;
-    background: #f6f8fa;
-    padding: 2px 4px;
-    border-radius: 3px;
-    font-size: 12px;
-    color: #d73a49;
-    border: 1px solid #e1e4e8;
-  }
-
-  /* 编辑模式按钮样式 */
-  .edit-mode-active {
-    background-color: #52c41a !important;
-    border-color: #52c41a !important;
-    color: white !important;
-  }
-
-  .edit-mode-active:hover {
-    background-color: #73d13d !important;
-    border-color: #73d13d !important;
-  }
-}
-</style>
+<style scoped src="@/pages/app/workspace.css"></style>

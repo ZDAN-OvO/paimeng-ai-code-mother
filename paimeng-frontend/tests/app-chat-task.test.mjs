@@ -75,6 +75,7 @@ function mountChat(t, server) {
   request.defaults = { baseURL: 'http://test/api/' }
   const env = {
     API_BASE_URL: request.defaults.baseURL,
+    getDeployUrl: (key) => `https://publish.test/${key}`,
     getStaticPreviewUrl: (type, id) => `http://test/api/static/${type}_${id}/`,
   }
   const taskApi = evaluate(taskApiCode, { '@/request': { default: request }, '@/config/env': env })
@@ -115,19 +116,25 @@ function mountChat(t, server) {
           info: (text) => notices.push({ type: 'info', text }),
           warning: (text) => notices.push({ type: 'warning', text }),
           error: (text) => notices.push({ type: 'error', text }),
+          success: (text) => notices.push({ type: 'success', text }),
         },
       },
       '@/stores/loginUser': { useLoginUserStore: () => ({ loginUser: { id: 456 } }) },
       '@/api/appController': {
-        getAppVoById: async ({ id }) => response({ id, userId: '456', initPrompt: initialPrompt }),
+        getAppVoById: async ({ id }) =>
+          response({
+            id,
+            userId: '456',
+            initPrompt: initialPrompt,
+            ...server.app?.(id),
+          }),
+        deployApp: (data, options) => server.deploy(data, options),
       },
       '@/api/chatHistoryController': historyApi,
       '@/api/appTaskController': taskApi,
       '@/request': { default: request },
       '@/components/MarkdownRenderer.vue': {},
       '@/components/AppDetailModal.vue': {},
-      '@/components/DeploySuccessModal.vue': {},
-      '@/assets/aiAvatar.png': {},
       '@/config/env': env,
       '@/utils/codeGenTypes': { CodeGenTypeEnum: { HTML: 'html' } },
       '@/utils/visualEditor': evaluate(
@@ -139,6 +146,16 @@ function mountChat(t, server) {
     },
     {
       EventSource: FakeEventSource,
+      fetch: async (url, options) => {
+        assert.match(url, /\/api\/static\//)
+        assert.equal(options.credentials, 'include')
+        assert.ok(options.signal instanceof AbortSignal)
+        const exists = server.previewExists ? await server.previewExists(url, options) : true
+        return new Response(null, {
+          status: exists ? 200 : 404,
+          headers: exists ? { 'content-type': 'text/html; charset=utf-8' } : {},
+        })
+      },
       window: { addEventListener() {}, removeEventListener() {} },
       setTimeout: (callback) => {
         const id = Symbol()
@@ -283,6 +300,68 @@ test('已有历史不会重发初始提示词，翻页原样发送同秒复合�
     Array.from({ length: 11 }, (_, index) => String(index)),
   )
   assert.equal(tab.state.hasMoreHistory, false)
+})
+
+test('首轮失败后续接任务与连续失败重入，均先确认有可访问的预览', async (t) => {
+  const failedHistory = [
+    row(4, 'ai', '再次失败'),
+    row(3, 'user', '再试一次'),
+    row(2, 'ai', '生成失败'),
+    row(1, 'user', '创建网站'),
+  ]
+  const recovering = mountChat(t, {
+    active: () => active('retry'),
+    history: () => failedHistory.slice(2),
+    previewExists: () => false,
+  })
+  const failed = mountChat(t, {
+    active: () => active('retry', 'failed'),
+    history: () => failedHistory,
+    previewExists: () => false,
+  })
+  await flush()
+  assert.equal(recovering.state.isGenerating, true)
+  assert.equal(recovering.state.previewUrl, '')
+  assert.equal(failed.state.previewUrl, '')
+  assert.equal(failed.streams.length, 0)
+})
+
+test('切换应用忽略迟到部署结果，新请求用配置域名且失败时保留原发布', async (t) => {
+  const nextApp = '1900000000000000060'
+  const deployments = []
+  const tab = mountChat(t, {
+    active: () => null,
+    history: () => oldHistory,
+    app: (id) => ({ deployKey: id === nextApp ? 'existing' : undefined }),
+    deploy: (data, options) =>
+      new Promise((resolve) => deployments.push({ data, options, resolve })),
+  })
+  await flush()
+  const old = tab.state.deployApp()
+  assert.equal(tab.state.deploying, true)
+  tab.route.params.id = nextApp
+  await flush()
+  assert.equal(deployments[0].options.signal.aborted, true)
+  assert.equal(tab.state.deployUrl, 'https://publish.test/existing')
+
+  const current = tab.state.deployApp()
+  deployments[0].resolve(response('http://localhost/old'))
+  await old
+  assert.equal(tab.state.deploying, true)
+  assert.equal(tab.state.showDeployNotice, false)
+  assert.equal(tab.state.deployUrl, 'https://publish.test/existing')
+
+  deployments[1].resolve(response('http://localhost/new'))
+  await current
+  assert.equal(tab.state.deployUrl, 'https://publish.test/new')
+  assert.equal(tab.state.showDeployNotice, true)
+
+  const failed = tab.state.deployApp()
+  deployments[2].resolve({ data: { code: 40000, message: '部署失败' } })
+  await failed
+  assert.equal(tab.state.deploying, false)
+  assert.equal(tab.state.showDeployNotice, false)
+  assert.equal(tab.state.deployUrl, 'https://publish.test/new')
 })
 
 test('并发撞车原样保留输入，重连事件去重，失败时保留旧预览和失败原因', async (t) => {

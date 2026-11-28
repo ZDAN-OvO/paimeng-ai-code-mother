@@ -1,149 +1,159 @@
-<template>
-  <div class="app-card" :class="{ 'app-card--featured': featured }">
-    <div class="app-preview">
-      <img v-if="app.cover" :src="app.cover" :alt="app.appName" />
-      <div v-else class="app-placeholder">
-        <span>🤖</span>
-      </div>
-      <div class="app-overlay">
-        <a-space>
-          <a-button type="primary" @click="handleViewChat">查看对话</a-button>
-          <a-button v-if="app.deployKey" type="default" @click="handleViewWork">查看作品</a-button>
-        </a-space>
-      </div>
-    </div>
-    <div class="app-info">
-      <div class="app-info-left">
-        <a-avatar :src="app.user?.userAvatar" :size="40">
-          {{ app.user?.userName?.charAt(0) || 'U' }}
-        </a-avatar>
-      </div>
-      <div class="app-info-right">
-        <h3 class="app-title">{{ app.appName || '未命名应用' }}</h3>
-        <p class="app-author">
-          {{ app.user?.userName || (featured ? '官方' : '未知用户') }}
-        </p>
-      </div>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-interface Props {
-  app: API.AppVO
-  featured?: boolean
-}
+import { computed, ref, watch } from 'vue'
+import { ExportOutlined, GlobalOutlined, MessageOutlined } from '@ant-design/icons-vue'
+import { getDeployUrl } from '@/config/env'
+import { formatCodeGenType } from '@/utils/codeGenTypes'
 
-interface Emits {
-  (e: 'view-chat', appId: string | number | undefined): void
-  (e: 'view-work', app: API.AppVO): void
-}
+const props = defineProps<{ app: API.AppVO; featured?: boolean }>()
+const coverFailed = ref(false)
+watch(
+  () => props.app.cover,
+  () => {
+    coverFailed.value = false
+  },
+)
 
-const props = withDefaults(defineProps<Props>(), {
-  featured: false,
-})
-
-const emit = defineEmits<Emits>()
-
-const handleViewChat = () => {
-  emit('view-chat', props.app.id)
-}
-
-const handleViewWork = () => {
-  emit('view-work', props.app)
-}
+const title = computed(() => props.app.appName || '未命名应用')
+const category = computed(() => formatCodeGenType(props.app.codeGenType))
+const chat = computed(() =>
+  props.app.id == null
+    ? undefined
+    : {
+        name: '应用对话',
+        params: { id: String(props.app.id) },
+      },
+)
+const published = computed(() => (props.app.deployKey ? getDeployUrl(props.app.deployKey) : ''))
+const showcase = computed(() => props.featured && Boolean(published.value))
 </script>
 
+<template>
+  <article class="project-card">
+    <div class="project-cover">
+      <img v-if="app.cover && !coverFailed" :src="app.cover" alt="" @error="coverFailed = true" />
+      <GlobalOutlined v-else aria-hidden="true" />
+    </div>
+    <div class="project-meta">
+      <div class="project-copy">
+        <h3>
+          <a
+            v-if="showcase"
+            class="project-link"
+            :href="published"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {{ title }}
+          </a>
+          <RouterLink v-else-if="chat" class="project-link" :to="chat">
+            {{ title }}
+          </RouterLink>
+          <span v-else>{{ title }}</span>
+        </h3>
+        <p>{{ category }}</p>
+      </div>
+      <RouterLink
+        v-if="showcase && chat"
+        class="project-action"
+        :to="chat"
+        :aria-label="'查看对话 · ' + title"
+        title="查看对话"
+      >
+        <MessageOutlined />
+      </RouterLink>
+      <a
+        v-else-if="published && !showcase && chat"
+        class="project-action"
+        :href="published"
+        target="_blank"
+        rel="noopener noreferrer"
+        :aria-label="'打开发布网站 · ' + title"
+        title="打开发布网站"
+      >
+        <ExportOutlined />
+      </a>
+      <ExportOutlined v-else-if="chat || showcase" class="project-arrow" aria-hidden="true" />
+    </div>
+  </article>
+</template>
+
 <style scoped>
-.app-card {
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 16px;
-  overflow: hidden;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  transition:
-    transform 0.3s,
-    box-shadow 0.3s;
-  cursor: pointer;
-}
-
-.app-card:hover {
-  transform: translateY(-8px);
-  box-shadow: 0 15px 50px rgba(0, 0, 0, 0.25);
-}
-
-.app-preview {
-  height: 180px;
-  background: #f5f5f5;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
+.project-card {
   position: relative;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--white);
 }
-
-.app-preview img {
+.project-card:hover,
+.project-card:focus-within {
+  border-color: #c9c6be;
+}
+.project-cover {
+  display: grid;
+  height: 155px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 11px 11px 0 0;
+  background: var(--slot);
+  color: #9b968b;
+  font-size: 30px;
+}
+.project-cover img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
-
-.app-placeholder {
-  font-size: 48px;
-  color: #d9d9d9;
-}
-
-.app-overlay {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+.project-meta {
   display: flex;
   align-items: center;
-  justify-content: center;
-  opacity: 0;
-  transition: opacity 0.3s;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 65px;
+  padding: 9px 14px;
 }
-
-.app-card:hover .app-overlay {
-  opacity: 1;
-}
-
-.app-info {
-  padding: 16px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.app-info-left {
-  flex-shrink: 0;
-}
-
-.app-info-right {
-  flex: 1;
+.project-copy {
   min-width: 0;
 }
-
-.app-title {
-  font-size: 16px;
-  font-weight: 600;
-  margin: 0 0 4px;
-  color: #1a1a1a;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.app-author {
-  font-size: 14px;
-  color: #666;
+.project-copy h3,
+.project-copy p {
   margin: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+}
+.project-copy h3 {
+  font-size: 14px;
+  font-weight: 650;
+}
+.project-copy p {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.project-link {
+  color: var(--ink);
+}
+.project-link::after {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius);
+  content: '';
+}
+.project-action {
+  position: relative;
+  display: grid;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--muted);
+}
+.project-action:hover {
+  background: var(--slot);
+  color: var(--ink);
+}
+.project-arrow {
+  padding-inline: 9px;
+  color: var(--muted);
 }
 </style>

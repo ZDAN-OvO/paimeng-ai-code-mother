@@ -10,48 +10,53 @@ import ChatManagePage from '@/pages/admin/ChatManagePage.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
+  scrollBehavior(to, from, savedPosition) {
+    if (savedPosition) return savedPosition
+    if (to.hash === '#my-works') return { el: '#my-works', top: 20 }
+    if (to.path !== from.path || from.hash) return { top: 0 }
+  },
   routes: [
     {
       path: '/',
       name: '主页',
-      component: HomePage
+      component: HomePage,
     },
     {
       path: '/user/login',
       name: '用户登录',
-      component: UserLoginPage
+      component: UserLoginPage,
     },
     {
       path: '/user/register',
       name: '用户注册',
-      component: UserRegisterPage
+      component: UserRegisterPage,
     },
     {
       path: '/admin/userManage',
       name: '用户管理',
-      component: UserManagePage
+      component: UserManagePage,
     },
     {
       path: '/admin/appManage',
       name: '应用管理',
-      component: AppManagePage
+      component: AppManagePage,
     },
     {
       path: '/admin/chatManage',
       name: '对话管理',
-      component: ChatManagePage
+      component: ChatManagePage,
     },
     {
       path: '/app/chat/:id',
       name: '应用对话',
-      component: AppChatPage
+      component: AppChatPage,
     },
     {
       path: '/app/edit/:id',
       name: '编辑应用',
-      component: AppEditPage
-    }
-  ]
+      component: AppEditPage,
+    },
+  ],
 })
 
 export default router
